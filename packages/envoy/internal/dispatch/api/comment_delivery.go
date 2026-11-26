@@ -1408,7 +1408,7 @@ func (s *server) planCommentReply(
 	if err != nil {
 		return plan, err
 	}
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
+	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, graphstore.VisibilityProject, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
 		return plan, err
 	}
 	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
@@ -1654,6 +1654,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, plan.refusal)
 		return
 	}
+	// A session replying in an ask's thread follows the ask: the follow is planned here, under
+	// the owner lock the reply's write already holds and before any of its writes
+	// (asks.PlanFollowAuthor), and queued with what the reply states, after its event.
+	var follow asks.PlannedFollow
+	if plan.thread.AskID != nil {
+		var err error
+		if follow, err = asks.PlanFollowAuthor(r.Context(), tx, *plan.thread.AskID, actor, plan.createdAt); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// The index the named block's comment was found to owe is written here, before the reply's
 	// own writes, as refs.IndexItemIfOwed writes one.
 	if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
@@ -1676,7 +1687,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 		b.Queue("", `
 			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			where `+graphstore.KeptHeadRows+`
 			returning `+commentColumns+`
 		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
 			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {
@@ -1754,9 +1766,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			if err := graphstore.QueueAuthored(b, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 				return err
 			}
+			graphstore.QueueHeads(b, append(graphstore.HeldHeads(plan.stored.written), graphstore.NodeKey{Kind: graphstore.KindComment, ID: reply.ID}))
 		}
 		if plan.thread.AskID != nil {
-			if _, err := asks.QueueFollowAuthor(b, *plan.thread.AskID, actor, plan.createdAt, event.ID); err != nil {
+			if _, err := follow.Queue(b, event.ID); err != nil {
 				return err
 			}
 		}
@@ -1829,5 +1842,6 @@ func queueAnsweredDelivery(
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,
 	}})
+	graphstore.QueueHeads(b, []graphstore.NodeKey{{Kind: answered.itemKind, ID: answered.itemID}})
 	return nil
 }

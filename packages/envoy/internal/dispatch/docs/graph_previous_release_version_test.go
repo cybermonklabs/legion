@@ -734,6 +734,62 @@ func TestAVersionThePreviousReleaseWritesThatOnlyDropsABlockReachesTheStore(t *t
 	requireCensusReadsZero(t, database, "after the previous release, which only dropped a block while it held the block-index lease, left, with no second backfill")
 }
 
+// A tick of this build marks a document whose version a build of an earlier rule of the block
+// index indexed itself. Such a build writes store_version for each version it indexes, as this
+// build's pass does, and states none of this rule's facts of its blocks and no record that a pass
+// of this rule stated it (stated_version, stated_rule): the document's store_version stands at its
+// version and no pass of this rule has stated it. A document a pass of this rule stated at its
+// version is not marked again (markVersionedDocuments, refs.UnstatedBlockIndexSQL).
+//
+// Two documents are written and indexed by this build. The stand-in for a build of an earlier rule
+// leaves the first's row as that build's own index of its version leaves it, and an
+// artifact.version event names each document. This build's next tick marks the first alone, and
+// its drain states it by this rule.
+func TestTheTickMarksAVersionABuildOfAnEarlierRuleIndexed(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	appendIssueEvent(t, database)
+	earlier := createOwedDocument(t, database, service, "CORE-1", "", "earlier", nestedSpec("earlier"), "")
+	settle(t, database, earlier)
+	stated := createOwedDocument(t, database, service, "CORE-1", "", "stated", nestedSpec("stated"), "")
+	settle(t, database, stated)
+	drainBlockIndex(t, service, "seed")
+	// A tick reads every event already written, so the cursor stands past them all.
+	awaitedBlockIndexTick(t, service)
+
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set stated_version = null, stated_rule = null where artifact_id = $1
+	`, earlier); err != nil {
+		t.Fatalf("leave the row as a build of an earlier rule leaves it: %v", err)
+	}
+	var version, storeVersion int
+	if err := database.Pool.QueryRow(ctx, `
+		select version, store_version from document_block_versions where artifact_id = $1
+	`, earlier).Scan(&version, &storeVersion); err != nil || version != storeVersion {
+		t.Fatalf("the document stands at version %d with store_version %d (%v), want the two equal: the case proves nothing", version, storeVersion, err)
+	}
+	for _, document := range []string{earlier, stated} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into events (issue_key, seq, type, actor, payload, notify)
+			select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
+			       jsonb_build_object('artifact_id', $1::text, 'version', jsonb_build_object('number', $2::int)), false
+			from events where issue_key = 'CORE-1'
+		`, document, version); err != nil {
+			t.Fatalf("append the version's event of %s: %v", document, err)
+		}
+	}
+
+	tick := awaitedBlockIndexTick(t, service)
+	if tick.Marked != 1 {
+		t.Errorf("the tick over the two documents' events marked %d document(s), want the one a build of an earlier rule indexed and no pass of this rule stated", tick.Marked)
+	}
+	drainBlockIndex(t, service, "after the tick")
+	if marked := markedDocuments(t, database); marked != 0 {
+		t.Errorf("%d document(s) still hold this build's mark after its drain, want none", marked)
+	}
+	requireStatedByThisRule(t, database, earlier, version, "after this build's drain")
+}
+
 // registerProcess records a live server process serving commit, as a process registers once it
 // has bound its port (processes.Register), and answers the call that deregisters it, which the
 // test's cleanup makes too where the test has not.

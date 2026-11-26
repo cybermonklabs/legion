@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -16,8 +19,8 @@ import (
 // On an issue that Legion runs, a version of the issue's spec (its primary document) or of its
 // Verification document is written only by a person, by an architect of the issue, or by an
 // architect of an issue above it: the session of an architect row of issue_role_holders on the
-// issue's parent chain (dispatch://INFRA-4764/spec, R1 and R2). The chain climbs only to a parent
-// of the issue's own project, as "Legion runs" does (issueChainSQL), so an issue whose parent is of
+// issue's parent chain (R1 and R2 of the spec-writer spec). The chain climbs only to a parent of
+// the issue's own project, as "Legion runs" does (issueChainSQL), so an issue whose parent is of
 // another project is the root of its own project's tree here. Every route that writes such a
 // version calls refuseSpecWriter inside its transaction, after the owner's lock and before its
 // first document call and its first write, so a write it refuses with 403
@@ -57,6 +60,14 @@ import (
 // out to the root. The Legion daemon, which writes no parent, passes none of these checks. A create
 // under no parent is not checked: the controller files a root with the label legion when a person's
 // answer asks Legion to run it.
+//
+// The same check holds every write of a requirement, criterion or check node of an issue Legion
+// runs, and of a value or a relation out of one, on the same terms (refuseSpecWriterOfNode): the
+// state and the settle of such a node (node_state.go), a pointer out of one (writePointer), and an
+// edit of the issue's tree artifact that creates, changes, removes or moves one
+// (refuseSpecWriterOfTreeEdit). A plan node, a result, a lens, a finding, a risk and a constraint
+// are no such nodes, and a relation out of one of them into such a node is a relation out of it,
+// so the check passes those writes without a read.
 
 // specWriterArchitectRole is the role whose sessions write the spec and the Verification document
 // of an issue Legion runs: the first role of legionagents.Roles.
@@ -118,6 +129,9 @@ const (
 	// specWriteOutOfLegion writes the labels or the parent of the issue so that Legion no longer
 	// runs it, after which the check no longer holds its documents.
 	specWriteOutOfLegion
+	// specWriteNode writes a requirement, criterion or check node of the issue, or a value or a
+	// relation out of one (refuseSpecWriterOfNode).
+	specWriteNode
 )
 
 // daemonPasses reports whether the session of the Legion daemon of the issue's project passes the
@@ -177,6 +191,10 @@ type specWrite struct {
 	// run, above the labelled issue (refuseSpecWriterOfMovedSubtree). The refusal names it, and so
 	// does the refusal's log line.
 	moved string
+	// node is the node a specWriteNode writes, as the refusal and its log line name it: its type
+	// and its address. document is then the document whose query takes that type of node
+	// (specWriterNodeDocuments).
+	node string
 }
 
 // chainIssue is the first issue of the write's chain, the one its architects are read from and
@@ -189,9 +207,10 @@ func (write specWrite) chainIssue() string {
 }
 
 // documentName is the name the refusal gives the document of write: the document a document write
-// writes, and the issue's spec.md for every other act.
+// writes, the document whose query takes the node a node write writes, and the issue's spec.md for
+// every other act.
 func (write specWrite) documentName() string {
-	if write.act == specWriteDocument {
+	if write.act == specWriteDocument || write.act == specWriteNode {
 		return write.document
 	}
 	return specDocumentName
@@ -289,6 +308,9 @@ func (refusal *specWriterRefusal) refuse() error {
 	if write.moved != "" {
 		logged = append(logged, "moved", write.moved)
 	}
+	if write.node != "" {
+		logged = append(logged, "node", write.node)
+	}
 	slog.Info(specWriterRefusalLine, logged...)
 	return errorf(http.StatusForbidden, "DOCUMENT_WRITER_NOT_ARCHITECT", "%s", refusal.message())
 }
@@ -374,6 +396,9 @@ func (refusal *specWriterRefusal) message() string {
 	case specWriteOutOfLegion:
 		act = "take " + write.issue + " out of Legion"
 		why = "Legion runs " + write.issue + ". When Legion stops running it, any session can write its " + document + "."
+	case specWriteNode:
+		act = "write the " + write.node + " of " + write.issue
+		why = "Legion runs " + write.issue + "."
 	default:
 		act = "write " + document + " of " + write.issue
 		why = "Legion runs " + write.issue + "."
@@ -414,14 +439,18 @@ func (refusal *specWriterRefusal) message() string {
 // specWriterDocumentName is the name the check gives a stored document, and whether the check
 // holds the document at all: spec.md for an issue's spec (isSpecDocument), and verification.md for
 // its Verification document (documentPlays, so an older row whose role is still null is held by
-// its slug). The check holds no other document, and no document of a project or of a session.
+// its slug). A file plays no role (documentPlays), but a file uploaded under the Verification
+// document's name takes that document's slug, so it is held as the document it would stand in
+// for: a writer the check refuses could otherwise hold the name the document needs. The check
+// holds no other document, and no document of a project or of a session.
 func specWriterDocumentName(artifact model.Artifact) (string, bool) {
 	switch {
 	case artifact.IssueKey == nil:
 		return "", false
 	case isSpecDocument(artifact):
 		return specDocumentName, true
-	case documentPlays(artifact, model.ArtifactRoleVerification):
+	case documentPlays(artifact, model.ArtifactRoleVerification),
+		artifact.Kind != "doc" && !artifact.Retired && artifact.Slug == roleSlugs[model.ArtifactRoleVerification]:
 		return verificationDocumentName, true
 	}
 	return "", false
@@ -455,6 +484,60 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 		}
 	}
 	return nil
+}
+
+// specWriterNodeDocuments are the types of the nodes the check holds (refuseSpecWriterOfNode), each
+// with the document whose query takes nodes of that type (graphstore's queryTakes), which the
+// refusal names: a criterion and a requirement are the spec's, a check the Verification
+// document's. A block is taken by its type as its document_blocks row holds it, the type a rule
+// that names a block type reads (graphstore.BlockTypeCheck), since every block carries the
+// supertag block alone.
+var specWriterNodeDocuments = map[string]string{
+	"criterion":               specDocumentName,
+	"requirement":             specDocumentName,
+	graphstore.BlockTypeCheck: verificationDocumentName,
+}
+
+// specWriterHeldTypes are the types specWriterNodeDocuments holds, as one statement's argument.
+var specWriterHeldTypes = slices.Sorted(maps.Keys(specWriterNodeDocuments))
+
+// specWriterNodeTypeSQL is the type of the block node $1 where a document_blocks row holds it at
+// one of the types $2, read through the row's node_id index (document_blocks_node_id), and no row
+// where none does.
+const specWriterNodeTypeSQL = `select type from document_blocks where node_id = $1 and type = any($2) limit 1`
+
+// refuseSpecWriterOfNode is the check of a write that creates or changes the node of the issue key
+// that the store keys as end, which the caller read at address, or a value or a relation out of
+// it (refuseSpecWriterOfNodeType). It passes a person, and every node that is no block, with no
+// read; a block no document_blocks row holds at one of the types the check holds - a block of
+// another type, a finding of a lens - passes after one. q is the caller's transaction, after the
+// issue's owner lock.
+func refuseSpecWriterOfNode(ctx context.Context, q queryer, writer specWriter, key string, end storedEnd, address string) error {
+	if writer.person || end.kind != refs.BlockNodeKind {
+		return nil
+	}
+	var typ string
+	err := q.QueryRow(ctx, specWriterNodeTypeSQL, end.id, specWriterHeldTypes).Scan(&typ)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the type of the node %s of %s: %w", address, key, err)
+	}
+	return refuseSpecWriterOfNodeType(ctx, q, writer, key, typ, address)
+}
+
+// refuseSpecWriterOfNodeType is the check of a write of the node of the issue key of type typ at
+// address, or of a value or a relation out of it: for a requirement, a criterion or a check
+// (specWriterNodeDocuments), the check of a version of the issue's spec or Verification document
+// (refuseSpecWriter), whose refusal names the node by its type and its address and the document
+// whose query takes it; every other type passes with no read.
+func refuseSpecWriterOfNodeType(ctx context.Context, q queryer, writer specWriter, key, typ, address string) error {
+	document, held := specWriterNodeDocuments[typ]
+	if !held {
+		return nil
+	}
+	return refuseSpecWriter(ctx, q, writer, specWrite{act: specWriteNode, issue: key, document: document, node: typ + " " + address})
 }
 
 // refuseSpecWriterOfAsk is the check of a write that settles a block ask's closed state into its

@@ -760,16 +760,17 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 }
 
-// GET /issues/{key}/asks?state=open must also stay on the asks_open partial index even
-// after Postgres switches the underlying prepared statement from a per-execution custom
-// plan (built for that call's actual bound values) to a cached generic plan, which it
-// automatically considers starting on a statement's 6th execution. queryOwnerAsks bakes the
-// open case's state predicate into the query text as a literal instead of a bound
-// parameter specifically so that no plan kind can lose the fact that it always matches
-// state = 'open'; a $-parameterized predicate keeps the index for a custom plan (built
-// knowing the actual bound value) but loses it for a generic one, which cannot assume the
-// parameter is always 'open' and so cannot prove the partial index applies at all -
-// forcing a sequential scan of asks.
+// GET /issues/{key}/asks?state=open must also stay on an index of asks even after Postgres
+// switches the underlying prepared statement from a per-execution custom plan (built for that
+// call's actual bound values) to a cached generic plan, which it automatically considers
+// starting on a statement's 6th execution. The open list picks the issue's asks by their node's
+// state (askNodeStateOf, R3), which no index of asks holds, so it reaches them through the
+// issue's own index, asks_issue_key (20261101182426), keyed on the issue the statement binds,
+// and filters each by its node: the partial index asks_open (0001) is keyed on the row's state,
+// which this read no longer tests. The test's name is from when it read asks_open; what it holds
+// is that no plan kind reads asks whole. queryOwnerAsks still writes the state into the query text
+// as a literal rather than a bound parameter, so the statement's text, and with it every plan
+// pgx caches for it, is one for each state.
 //
 // plan_cache_mode = force_generic_plan pins every execution (including the first) to a
 // generic plan instead of relying on Postgres's cost-based custom/generic switch, which
@@ -817,7 +818,7 @@ func TestListIssueAsksOpenQueryUsesAsksOpenIndex(t *testing.T) {
 		t.Fatalf("explain plans = %#v, want one plan", plans)
 	}
 	if explaintest.SeqScansRelation(t, plans[0].Plan, "asks") {
-		t.Fatalf("open asks generic query plan sequentially scans asks; want an index scan via asks_open:\n%s", planJSON)
+		t.Fatalf("open asks generic query plan sequentially scans asks; want an index scan via asks_issue_key:\n%s", planJSON)
 	}
 }
 

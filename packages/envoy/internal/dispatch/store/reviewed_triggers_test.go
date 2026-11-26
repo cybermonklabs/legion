@@ -10,24 +10,103 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
+// reviewedGraphNodesTrigger is one of graph_nodes' triggers as pgmigrate's reviewedTriggers entry
+// reviewed it: its definition as pg_get_triggerdef prints it, and the function it runs, whose
+// source reviewedTriggerFunctions holds.
+type reviewedGraphNodesTrigger struct{ definition, function string }
+
 // reviewedGraphNodesTriggers are graph_nodes' triggers as pgmigrate's reviewedTriggers entries
-// reviewed them: each trigger's definition as pg_get_triggerdef prints it, and the source of the
-// function both run as pg_proc.prosrc holds it. The census admits a bounded write of graph_nodes
-// above its table limit beside these triggers by name alone, and reads no trigger's body
-// (pgmigrate's unreviewedTriggers), so a migration that changes either trigger or its function
-// changes what was reviewed, and this test fails until a person reads the new text and writes it
-// here and on that list.
-var reviewedGraphNodesTriggers = map[string]string{
-	"graph_nodes_block_schema_written": "CREATE TRIGGER graph_nodes_block_schema_written AFTER INSERT OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((new.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()",
-	"graph_nodes_block_schema_removed": "CREATE TRIGGER graph_nodes_block_schema_removed AFTER DELETE ON public.graph_nodes FOR EACH ROW WHEN ((old.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()",
+// reviewed them, and reviewedTriggerFunctions the source of each function they run as
+// pg_proc.prosrc holds it. The census admits a bounded write of graph_nodes above its table limit
+// beside these triggers by name alone, and reads no trigger's body (pgmigrate's
+// unreviewedTriggers), so a migration that changes a trigger or its function changes what was
+// reviewed, and this test fails until a person reads the new text and writes it here and on that
+// list.
+var reviewedGraphNodesTriggers = map[string]reviewedGraphNodesTrigger{
+	"graph_nodes_block_schema_written": {"CREATE TRIGGER graph_nodes_block_schema_written AFTER INSERT OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((new.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()", "block_schema_changed"},
+	"graph_nodes_block_schema_removed": {"CREATE TRIGGER graph_nodes_block_schema_removed AFTER DELETE ON public.graph_nodes FOR EACH ROW WHEN ((old.kind = ANY (ARRAY['supertag'::text, 'attribute'::text]))) EXECUTE FUNCTION block_schema_changed()", "block_schema_changed"},
+	"graph_nodes_head_marks":           {"CREATE TRIGGER graph_nodes_head_marks AFTER INSERT OR DELETE OR UPDATE ON public.graph_nodes FOR EACH ROW WHEN ((current_setting('dispatch.head_rows'::text, true) IS DISTINCT FROM 'kept'::text)) EXECUTE FUNCTION issue_head_marks_drop()", "issue_head_marks_drop"},
+}
+
+var reviewedTriggerFunctions = map[string]string{
+	"block_schema_changed":  reviewedBlockSchemaChanged,
+	"issue_head_marks_drop": reviewedIssueHeadMarksDrop,
 }
 
 // reviewedBlockSchemaChanged is block_schema_changed's source as 20261109051232_graph_supertags
-// created it, the body both triggers run: one notification on one channel with no payload, which
-// Postgres folds into one per transaction, and no table read.
+// created it, the body both block schema triggers run: one notification on one channel with no
+// payload, which Postgres folds into one per transaction, and no table read.
 const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block_schema', '');\n  return null;\nend "
 
-// The two graph_nodes triggers on pgmigrate's reviewed list, over a store this tree's runner
+// reviewedIssueHeadMarksDrop is issue_head_marks_drop's source as 20261123180100_issue_tree_head
+// created it, the body graph_nodes_head_marks runs (and graph_tuples' and document_blocks' head
+// mark triggers): for each row, the nodes whose head rows the row's write moves - a node row's
+// node, inserted, updated or deleted (OLD on delete) - a probe of issue_head_nodes_node for each,
+// then, for each issue those probes and the nodes' addresses name, the issue's head fill lock in
+// share mode and a delete of its issue_head_marks row by its primary key.
+const reviewedIssueHeadMarksDrop = `
+declare
+  held text;
+  fact graph_tuples;
+  node graph_nodes;
+  named_kinds text[] := '{}';
+  named_ids text[] := '{}';
+begin
+  if tg_table_name = 'graph_tuples' then
+    if tg_op = 'DELETE' then
+      fact := old;
+    else
+      fact := new;
+    end if;
+    named_kinds := array[fact.from_kind];
+    named_ids := array[fact.from_id];
+    if fact.kind = 'part_of' and fact.to_kind <> 'value' then
+      named_kinds := named_kinds || fact.to_kind;
+      named_ids := named_ids || fact.to_id;
+    end if;
+  elsif tg_table_name = 'graph_nodes' then
+    if tg_op = 'DELETE' then
+      node := old;
+    else
+      node := new;
+    end if;
+    named_kinds := array[node.kind];
+    named_ids := array[node.id];
+  else
+    if tg_op <> 'INSERT' then
+      if old.node_id is not null then
+        named_kinds := named_kinds || 'block'::text;
+        named_ids := named_ids || old.node_id;
+      end if;
+    end if;
+    if tg_op <> 'DELETE' then
+      if new.node_id is not null then
+        named_kinds := named_kinds || 'block'::text;
+        named_ids := named_ids || new.node_id;
+      end if;
+    end if;
+  end if;
+  for held in
+    select found.issue_key from (
+      select head.issue_key
+      from unnest(named_kinds, named_ids) named (kind, id)
+      join issue_head_nodes head on head.node_kind = named.kind collate "C" and head.node_address = named.id collate "C"
+      union
+      select case when named.kind = 'issue' then named.id else split_part(named.id, '/', 1) end
+      from unnest(named_kinds, named_ids) named (kind, id)
+      where named.kind = 'issue' or (named.kind in ('artifact', 'version', 'block') and named.id not like 'lens/%')
+    ) found
+    where found.issue_key is not null
+    order by hashtext('issue:' || found.issue_key), found.issue_key
+  loop
+    perform pg_advisory_xact_lock_shared(1212498244, hashtext('issue:' || held));
+    delete from issue_head_marks mark where mark.issue_key = held;
+  end loop;
+  return null;
+end
+`
+
+// The graph_nodes triggers on pgmigrate's reviewed list, over a store this tree's runner
 // migrated, are the triggers the list's entries reviewed: the list names exactly the enabled
 // triggers graph_nodes holds, and each one's definition and its function's source are the reviewed
 // text. The control changes the function's body in the test's own database, as a later migration
@@ -112,16 +191,16 @@ func reviewedTriggerDifferences(t *testing.T, ctx context.Context, store *Store,
 			where t.tgrelid = 'graph_nodes'::regclass and t.tgname = $1`, name).Scan(&definition, &function, &source); err != nil {
 			t.Fatalf("read the trigger %s: %v", name, err)
 		}
-		if definition != want {
-			differences = append(differences, fmt.Sprintf("%s: defined as %q, reviewed as %q", name, definition, want))
+		if definition != want.definition {
+			differences = append(differences, fmt.Sprintf("%s: defined as %q, reviewed as %q", name, definition, want.definition))
 		}
-		if function != "block_schema_changed" {
-			differences = append(differences, fmt.Sprintf("%s: runs %s, reviewed as running block_schema_changed", name, function))
+		if function != want.function {
+			differences = append(differences, fmt.Sprintf("%s: runs %s, reviewed as running %s", name, function, want.function))
 			continue
 		}
-		if source != reviewedBlockSchemaChanged && !functions[function] {
+		if reviewed := reviewedTriggerFunctions[function]; source != reviewed && !functions[function] {
 			functions[function] = true
-			differences = append(differences, fmt.Sprintf("%s: its source is %q, reviewed as %q", function, source, reviewedBlockSchemaChanged))
+			differences = append(differences, fmt.Sprintf("%s: its source is %q, reviewed as %q", function, source, reviewed))
 		}
 	}
 	return differences

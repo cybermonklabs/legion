@@ -31,6 +31,7 @@ import type {
   UserIssueState,
 } from "../../../api/types";
 import { HeaderSlot } from "../../issue-page/slots/header";
+import { treeAnswer } from "../../issue-page/tree-read/tree-fixtures";
 import { issueStatuses } from "../../project/board-model";
 import { IssueBoard } from "../../project/IssueBoard";
 import { IssuesTable } from "../../project/IssuesTable";
@@ -206,6 +207,10 @@ function renderOutlineHeader(shown: IssueDetails) {
     spyOn(api, "getMyState").mockResolvedValue({ [shown.key]: state }),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
+    // The tree read, which the header reads since the page draws its outline from it: every read
+    // of it, the one with no view and Conversation's, which sends `kind`, answers an issue with no
+    // node.
+    spyOn(api, "getIssueTree").mockResolvedValue(treeAnswer([])),
   ];
   answerRequests(
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>

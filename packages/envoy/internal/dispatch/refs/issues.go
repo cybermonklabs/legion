@@ -65,10 +65,10 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 // above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
 // not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
 // This is the server's one recursive descendant walk over whole subtrees that answers a reader:
-// api's coverage read is this query. IssueDescendantRows is the same walk for a rule of a write,
-// which answers no reader and so binds no visibility predicate. api's issueChildrenStatement is a
-// different read — one row per direct child, with a rollup over that child's own subtree — and
-// stays its own.
+// api's coverage read and the issue tree's read are this query. IssueDescendantRows is the same
+// walk for a rule of a write, which answers no reader and so binds no visibility predicate. api's
+// issueChildrenStatement is a different read — one row per direct child, with a rollup over that
+// child's own subtree — and stays its own.
 //
 // It answers for who: an issue who may not see is not in the answer, and the walk does not pass
 // below it, so neither it nor the issues it holds are reached through it (VisibleKind).

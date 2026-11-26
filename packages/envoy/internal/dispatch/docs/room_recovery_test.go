@@ -566,9 +566,9 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 	defer ledger.Discard()
 
 	failsFast(t, "a joined write whose room fails under it", func() error {
-		return service.applyLive(joined, artifactID, model.Actor{Kind: "user", ID: "alice"}, func(doc *crdt.Doc, _ pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+		return service.applyLive(joined, artifactID, model.Actor{Kind: "user", ID: "alice"}, func(doc liveDoc, _ pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 			service.failRoom(artifactID, errors.New("injected room failure"))
-			tree, err := treeOf(doc)
+			tree, err := doc.tree()
 			if err != nil {
 				return err
 			}

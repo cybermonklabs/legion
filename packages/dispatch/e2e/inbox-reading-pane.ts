@@ -18,7 +18,8 @@ import {
   createProject,
   createProjectDocument,
   editArtifact,
-  getArtifactText,
+  getArtifact,
+  getArtifactVersion,
   getInbox,
   handAskOn,
   listMyReplies,
@@ -425,8 +426,10 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
     indexedRow((row) => row.block_id === OPEN_ANSWERED),
   ]);
 
-  // Question 8's answer writes `state="answered"` into its block in the answer's own
-  // transaction, which the live text shows.
+  // Question 8's answer puts `state="answered"` on its block's opening line, and the document's
+  // settlement then writes the version that stores it. The live text serves no server-owned
+  // attribute, so the newest version's stored markdown is where the state shows.
+  // kept for one release: stored-ask-state
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
@@ -434,7 +437,10 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   );
   await expect
     .poll(async () => {
-      const { markdown } = await getArtifactText(talk.id);
+      const newest = Math.max(
+        ...((await getArtifact(talk.id)).versions ?? []).map((v) => v.number)
+      );
+      const { markdown } = await getArtifactVersion(talk.id, newest);
       return markdown.split("\n").find((line) => line.includes(`#${OPEN_ANSWERED}`)) ?? "";
     }, INDEX_PROBE)
     .toContain('state="answered"');

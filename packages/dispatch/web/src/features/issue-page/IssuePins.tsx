@@ -25,7 +25,7 @@ import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
@@ -37,11 +37,9 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * line says, with a link that opens the history and its Unpin. The pin of a row itself is the
  * focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
- * The words come from the reads the outline and the history are drawn from, so the list costs no
- * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and
- * with its options (`EVENT_FRESH`: kept fresh by events, never read again by its age, and by a
- * window focus only while its last read failed), so it shares the outline's answer and is read
- * again only when the outline's is. A record's line is its one line, as the outline draws a
+ * Pins use the outline's reads for comments, messages and asks with their threads
+ * (`issueAskThreadsQuery`), with the same `EVENT_FRESH` options. Pinned history events use
+ * the pages of the log already held. A record's line is its one line, as the outline draws a
  * node's (`PinLine`), drawn whole, wrapping rather than cut. Where a read has not answered, has
  * failed, or holds no words for a pin - a handoff, an event older than the history has read -
  * the pin is drawn by the page's word for its kind and never by its id. Until the reader's own
@@ -72,7 +70,7 @@ export function IssuePins({
   const pins = pinnedConversations([...(dismissed ?? [])]);
   const eventPins = pinnedEventIds([...(dismissed ?? [])]);
   const reading = pins.length > 0;
-  const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH, enabled: reading });
+  const asks = useQuery({ ...issueAskThreadsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list

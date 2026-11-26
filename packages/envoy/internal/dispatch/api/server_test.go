@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -69,12 +70,14 @@ const apiTestParallelism = 8
 
 // TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
 // databases to drop and drops their templates, inside the broker harness's Run, which then drops
-// the database brokerstoretest.URL made the contract rows' broker schemas in.
+// the database brokerstoretest.URL made the contract rows' broker schemas in, and both inside
+// cmdtest.Run, which makes the directory the two dispatch binaries
+// tree_read_skeleton_bound_test.go builds are written into and removes it once the tests end.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+	os.Exit(cmdtest.Run(func() int { return brokerstoretest.Run(func() int { return storetest.Main(m) }) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
@@ -228,6 +231,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// browserPeers admits a browser peer to the document service's rooms (connectBrowserPeer),
+	// which dials with the X-Dispatch-User header its Identity reads: a test that writes as a
+	// person's own editor does. Without it the service holds no identity and admits no peer.
+	browserPeers bool
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
@@ -268,6 +275,10 @@ type testServerOptions struct {
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
 	listenerRosterUncached bool
+	// issueTreePageSize is Deps.IssueTreePageSize, the most nodes one page of the tree read
+	// answers; zero keeps issueTreePageSize, as every deployment does. A test of paging sets a
+	// few, so a small issue reads several pages.
+	issueTreePageSize int
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -370,7 +381,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	var peers identity.Identity
+	if options.browserPeers {
+		peers = headerIdentity(database)
+	}
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: peers})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -442,6 +457,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.IssueTreePageSize = options.issueTreePageSize
 	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
@@ -915,34 +931,19 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 	}
 }
 
+// A document whose store cannot be read answers its text and blocks 503 DOC_SERVICE_UNAVAILABLE.
+// The issue is made through a server whose store works, since an issue is born converted and its
+// create writes the spec's fragment into the issue room it seeds; the reads go through a second
+// server on the same database whose store fails every read (readingServer).
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	t.Parallel()
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store:       database,
-		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
-		Events:      broker,
-	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
-		Store:    database,
-		Identity: headerIdentity(database),
-		Docs:     documentService,
-		Events:   broker,
-	})
-	if err != nil {
-		t.Fatalf("new API dependencies: %v", err)
-	}
-	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-
-	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
+	writer, database, _ := newTestServer(t, testServerOptions{})
+	if response := dispatchRequest(t, writer, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	issueResponse := dispatchRequest(t, mux, http.MethodPost, "/api/v1/issues", map[string]string{
+	issueResponse := dispatchRequest(t, writer, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Issue", "spec": "before",
 	}, "alice")
 	if issueResponse.Code != http.StatusCreated {
@@ -951,6 +952,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	issue := decodeBody[struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, issueResponse)
+	mux := readingServer(t, database, failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, nil)
 
 	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"DOC_SERVICE_UNAVAILABLE"`) {
@@ -973,8 +975,8 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
-	return docs.DocumentStamp{}, errors.New("persistence unavailable")
+func (failingLoadStore) DocumentStamp(context.Context, string) (string, docs.DocumentStamp, error) {
+	return "", docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
 func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocument, error) {
@@ -2163,10 +2165,12 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
+	// A document of an issue room is indexed by the room's pass, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, artifact.Artifact.ID).Scan(&references); err != nil {
 		t.Fatalf("count uploaded document references: %v", err)
 	}
@@ -2192,10 +2196,12 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
+	// The spec is a fragment of the issue room it is born in, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, issue.PrimaryArtifactID).Scan(&references); err != nil {
 		t.Fatalf("count created document references: %v", err)
 	}

@@ -1253,6 +1253,7 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
     document: null,
+    entries: [],
     open_questions: [],
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
@@ -1369,6 +1370,36 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
     expect(getMyStateSpy).not.toHaveBeenCalled();
   } finally {
     view.unmount();
+    getIssueSpy.mockRestore();
+    getMyStateSpy.mockRestore();
+  }
+});
+
+// Graph's addresses are the new issue page's alone: today's page draws Not found at them, as it
+// did before the new page named them, and reads no issue.
+test("IssuePage renders a not-found view for a graph address without fetching the issue", async () => {
+  const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  try {
+    for (const path of ["/issues/CORE-1/graph", "/issues/CORE-1/graph/node-1"]) {
+      const view = renderIssuePage(path);
+      try {
+        await screen.findByRole("heading", { name: "Page not found" });
+        expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
+        expect(
+          screen.queryByRole("tablist", { name: "Issue detail" }),
+          `${path} drew the issue's tabs`
+        ).not.toBeInTheDocument();
+        expect(document.title, `the title at ${path}`).toBe("Not found · Dispatch");
+        expect(getIssueSpy, `${path} read the issue`).not.toHaveBeenCalled();
+        expect(getMyStateSpy, `${path} read the reader's state`).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
     getIssueSpy.mockRestore();
     getMyStateSpy.mockRestore();
   }
@@ -2245,7 +2276,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2263,12 +2294,12 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
     // The primary document keeps today's chip and its review actions, inside its own step.
     expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
-    // The two steps nobody has written say so, rather than borrowing the spec's state.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The step nobody has written says so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     // The steps take the chip's place when one of them holds the primary document: the row
     // draws one approval area, not both, so it carries one pair of controls.
     expect(
@@ -2288,7 +2319,7 @@ test("IssuePage draws the steps of a root whose parent is in another project", a
   const restore = stubIssuePage({ ...issue, parent: "OTHR-6" });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2305,7 +2336,7 @@ test("IssuePage draws the steps of a root whose parent is in another project", a
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
   } finally {
     view.unmount();
     listProjects.mockRestore();
@@ -2323,11 +2354,11 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       },
     ],
   });
-  // A deployment may gate the decisions and the Verification document and not the spec; the
-  // spec still has an approval to answer, and only the header's own chip can answer it.
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria"],
+    gated_steps: ["criteria"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2344,9 +2375,9 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria"]);
-    // Neither step holds the primary document, so neither carries its state or its actions.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    ).toEqual(["criteria"]);
+    // The step holds no primary document, so it carries neither its state nor its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
     // The primary document's own chip stays in the state row, with both of its controls.
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();

@@ -142,6 +142,39 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  invokeLens: (client) =>
+    client.invokeLens("DSP-1", { on: "dispatch://DSP-1", kind: "trade-off", actor }),
+  addLensFinding: (client) =>
+    client.addLensFinding("DSP-1", "lens/lens-1", { text: "A finding.", actor }),
+  writeRisk: (client) =>
+    client.writeRisk("DSP-1", {
+      lens: "lens/lens-1",
+      heading: "A failure.",
+      early_warning: "A sign.",
+      prevention: "A guard.",
+      actor,
+    }),
+  writeConstraint: (client) =>
+    client.writeConstraint("DSP-1", { standard: "RFC 9110", reference: "9.2.2", actor }),
+  issueConstraints: (client) => client.issueConstraints("DSP-1"),
+  writePointer: (client) =>
+    client.writePointer("DSP-1", "lens/lens-1", {
+      kind: "has_kind",
+      action: "append",
+      to: "trade-off",
+      actor,
+    }),
+  lenses: (client) => client.lenses("dispatch://DSP-1/spec"),
+  writeNodeState: (client) =>
+    client.writeNodeState("DSP-1", "lens/lens-1", { state: "proposed", actor }),
+  settleNode: (client) => client.settleNode("DSP-1", "lens/lens-1", { actor }),
+  issueProposed: (client) => client.issueProposed("DSP-1"),
+  convertPremortem: (client) =>
+    client.convertPremortem("DSP-1", "premortem-md", {
+      prevented_by: [{ risk: 0, checks: [], reason: "No check covers it." }],
+      dry_run: true,
+      actor,
+    }),
   listSteps: (client) => client.listSteps("DSP-1"),
   listProjectPlans: (client) =>
     client.listProjectPlans("DSP", {

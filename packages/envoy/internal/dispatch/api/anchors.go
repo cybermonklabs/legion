@@ -17,16 +17,35 @@ import (
 // resolveAnchor returns the anchor, its document's name, and the version the anchor snapshot
 // wrote (nil when the live document already matched the newest version). The result carries
 // what that write moved in the reference graph, which the caller names on its event.
+//
+// A quote anchor that names a block_id is found inside that block alone, occurrence counting
+// that block's matches (docs.QuoteScope): a block_id beside a mark_id, an empty one, one that names
+// no block of the anchor's document and one whose block does not hold the quote are each refused
+// 400 INVALID_ANCHOR naming block_id, before the caller writes its row. An anchor on a document of
+// a converted issue reads that document's own row, which stays a doc, and its mark is written into
+// the document's fragment of the issue's room (docs' targetOf), with the id the artifact read
+// gives.
 func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, input *model.AnchorInput, kind docs.MarkKind, rowID string, actor model.Actor) (*model.Anchor, string, *docs.VersionResult, error) {
 	if input == nil {
 		return nil, "", nil, nil
 	}
 	artifactRef := strings.TrimSpace(input.Artifact)
-	if artifactRef == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
+	switch named := strings.TrimSpace(input.Node) != ""; {
+	case artifactRef != "" && named:
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor names both artifact and node: an anchor is on a document's text by artifact or on a node's text by node, never both")
+	case named:
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor node is taken by a comment's write alone: an ask anchors on a document's text by artifact")
+	case artifactRef == "":
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR",
+			"anchor names neither artifact nor node: name the document by artifact or, for a comment, the node by node")
 	}
 	quotePath := input.Quote != nil && input.MarkID == nil
 	markPath := input.Quote == nil && input.MarkID != nil && input.Occurrence == nil
+	if input.BlockID != nil && input.MarkID != nil {
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor block_id selects where a quote is found and is refused beside mark_id")
+	}
 	if !quotePath && !markPath {
 		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor must provide quote with optional occurrence or mark_id")
 	}
@@ -36,11 +55,17 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	if input.MarkID != nil && strings.TrimSpace(*input.MarkID) == "" {
 		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor mark_id must not be empty")
 	}
+	if input.BlockID != nil && *input.BlockID == "" {
+		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor block_id must not be empty")
+	}
 	artifact, err := s.loadAnchorArtifact(ctx, tx, owner, artifactRef)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if artifact.Kind != "doc" {
+	// An issue's tree artifact is read as a document (R8): its own fragment of the room holds the
+	// blocks written into the issue rather than into a document, and a comment on one of them
+	// stands under that block (R31).
+	if artifact.Kind != "doc" && artifact.Kind != "tree" {
 		return nil, "", nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "anchors require a document artifact")
 	}
 
@@ -50,11 +75,22 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	// inside it and read through it.
 	if input.Quote != nil {
 		anchor.MarkID = rowID
+		scope := &docs.QuoteScope{Occurrence: input.Occurrence}
+		if input.BlockID != nil {
+			scope.BlockID = *input.BlockID
+		}
 		anchored, err = s.deps.Docs.MarkQuote(ctx, artifact.ID, docs.MarkSpec{
 			Kind: kind,
 			ID:   rowID,
 			By:   actor,
-		}, *input.Quote, input.Occurrence)
+		}, *input.Quote, scope)
+		var outside *pmdoc.QuoteBlockError
+		if errors.As(err, &outside) {
+			if !outside.Held {
+				return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor block_id %q names no block of the document", outside.BlockID)
+			}
+			return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor block_id %q names a block that does not hold the quote", outside.BlockID)
+		}
 		if err != nil {
 			return &anchor, artifact.Name, nil, err
 		}
@@ -83,7 +119,11 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		anchor.BlockID = &anchored.BlockID
 	}
 
-	snapshot, err := s.deps.Docs.SnapshotVersion(ctx, artifact.ID, actor)
+	// Nothing the pin's transaction does after this version reads its block index or its record:
+	// the anchor's block id came from the rendering the mark was written into (docs.Anchored), so a
+	// version above the bound leaves its blocks to the block-index reconciliation, and a carry to it
+	// pins its stored markdown's digest (docs.WithDeferredBlockIndex).
+	snapshot, err := s.deps.Docs.SnapshotVersion(docs.WithDeferredBlockIndex(ctx), artifact.ID, actor)
 	if err != nil {
 		return &anchor, artifact.Name, nil, err
 	}

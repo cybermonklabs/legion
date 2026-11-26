@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -35,8 +38,9 @@ type RebuildReport struct {
 // supplied markdown, which changes the document), a latest version holding an element this build
 // does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
 // Proof document, drops an open ask block, introduces a block pointer at a block the attribute
-// may not name (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI
-// proves (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller
+// may not name (refuseBlockPointers), introduces a check block that breaks a rule of a check CI
+// proves (refuseCICheckBlocks), or introduces a reading in an ask that holds no answer
+// (refuseReadingsWithoutAnswers), each against the latest version. Supplied markdown is caller
 // text: it is parsed as an upload is, and its rendering is weighed as a new document's is
 // (SeedText). The latest version is the server's own rendering of the document, read back as
 // every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
@@ -55,15 +59,27 @@ type RebuildReport struct {
 // would preflight against it. That is also why the close's states go into the seed rather than
 // through a live write after it (WriteIssueAskStates): such a write's fork is refused while the
 // rebuild holds the room, and would read the old history through the pool that owns loads.
+//
+// A document of an issue room is rebuilt in the room it is edited in (targetOf): the room's stored
+// history is the one that does not load and the one the rebuild replaces, so every refusal, hold
+// and lock above is the room's, and the seed holds every fragment of the room (rebuildRoomSeeds) -
+// the document's own from its latest version or the supplied markdown, and each other document's
+// from that document's latest version, the one text of it a history that does not load leaves.
+// The rules that read ask blocks read the room's, whose asks its tree artifact holds.
 func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return RebuildReport{}, VersionResult{}, errUnjoined
 	}
-	if _, loaded := s.rebuilding.LoadOrStore(artifactID, struct{}{}); loaded {
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return RebuildReport{}, VersionResult{}, err
+	}
+	room := target.room
+	if _, loaded := s.rebuilding.LoadOrStore(room, struct{}{}); loaded {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is already being rebuilt", ErrDocumentLive, artifactID)
 	}
-	ledgerFrom(ctx).holdRebuild(artifactID)
+	ledgerFrom(ctx).holdRebuild(room)
 	// A room still loading is not resident yet. It reads the same history the check below reads,
 	// so it can only fail on a history that cannot load, and its successor load is refused above.
 	// A room stays resident for roomIdleTimeout after its last editor leaves, and ygo's idle
@@ -81,10 +97,10 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// (roomCatchUps.closeReplaced), and until then its settlement and its browser's append are
 	// refused (ErrRoomBehindHead) and lead to the same close, and the reload reads the rebuilt
 	// document.
-	if s.srv.GetDoc(artifactID) != nil {
+	if s.srv.GetDoc(room) != nil {
 		return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenHere, askAfterTwoMinutes)
 	}
-	answers, _, err := s.roomQueries.ask(ctx, tx, artifactID, roomQueryHolds)
+	answers, _, err := s.roomQueries.ask(ctx, tx, room, roomQueryHolds)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: ask the other processes whether they hold the document: %v", ErrServiceUnavailable, err)
 	}
@@ -98,7 +114,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// case this route exists for, so it is read here instead - as Load reads it, and before the
 	// load, so an append that lands between the two leaves the head behind the history judged
 	// and the rebuild refused rather than let through over a history nothing judged.
-	loadedHead, err := s.persistence.Head(ctx, artifactID)
+	loadedHead, err := s.persistence.Head(ctx, room)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: read the document's head before rebuild: %v", ErrServiceUnavailable, err)
 	}
@@ -112,7 +128,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// the report names as the history's fault. Any other load failure is the store's, not the
 	// document's, and the caller may retry past it.
 	var validationErr error
-	loaded, err := s.persistence.Load(ctx, artifactID)
+	loaded, err := s.persistence.Load(ctx, room)
 	switch {
 	case errors.Is(err, ErrDocumentUnloadable):
 		validationErr = err
@@ -131,9 +147,14 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
-	// the approval request the version moves, from changing under this transaction.
+	// the approval request the version moves, from changing under this transaction. A retired
+	// document, which takes no new text, read beside that lock, is refused (retiredWriteRefusal):
+	// its history is not replaced and no version is written.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
+		return RebuildReport{}, VersionResult{}, err
+	}
+	if err := retiredWriteRefusal(ctx, tx, artifactID, owner); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	latest, err := latestVersion(ctx, tx, artifactID)
@@ -181,8 +202,26 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err := content(tree); err != nil {
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
-	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree); err != nil {
-		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
+	// The issue room's other fragments, and the room's whole tree, which the rules reading the ask
+	// blocks read: asks of an issue room are its tree artifact's. A document that is its own room
+	// and holds no other fragment is its own whole.
+	var layout roomLayout
+	if !target.ownRoom() || owner.Kind == "tree" {
+		if layout, err = readRoomLayout(ctx, tx, room); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+	}
+	asksOf, whole := documentAsksOf(artifactID), tree
+	var seeds, held []*pmdoc.Node
+	if len(layout) > 0 {
+		if seeds, held, err = rebuildRoomSeeds(ctx, tx, room, layout, artifactID, tree, stored); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		asksOf, whole = roomAsksOf(room), joinedSeeds(seeds)
+	}
+	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
+	if err := s.refuseDroppedAskBlocks(ctx, asksOf, whole, dropper{person: true, remover: personOf(actor), actor: actor}); err != nil {
+		return RebuildReport{}, VersionResult{}, err
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
 	// latest version need not: no settlement versions a document whose history does not load,
@@ -191,17 +230,29 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
 	// from the rows as they stand under the issue's owner lock this transaction holds, and every
-	// readable ask block with no ask row marked resolved. The ask rows are taken before RebuildTx
-	// takes the document's advisory lock, the order the close's own write takes them in
-	// (WriteIssueAskStates). Once this transaction commits, the rebuilt document reads as the
-	// issue's other documents do.
+	// readable ask block with no ask row marked resolved. The sweep is written as the fleet stands
+	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
+	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
+	// each gets the ones a version keeps, which the release before's readers of a stored version
+	// read its state from, written from its ask's node, or from its row where the node is behind it,
+	// and none of the rest of the seven (readIssueAskStateWrites, keptAskState, keptFromItsNode). The ask
+	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
+	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
+	// reads as the issue's other documents do. In an issue room the sweep is written into the whole
+	// room, whose blocks are each fragment's own (joinFragments), so every fragment's tree takes it.
 	var closedStates *issueAskStateWrites
 	if !open {
-		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true)
+		// kept for one release: roll-window-attributes
+		// kept for one release: stored-ask-state
+		twoBuilds, err := anotherBuildServes(ctx, tx)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		if !closedStates.apply(tree) {
+		closedStates, err = readIssueAskStateWrites(ctx, tx, asksOf, owner, whole, closedIssueAskState, true, twoBuilds)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		if !closedStates.apply(whole) {
 			closedStates = nil
 		}
 	}
@@ -213,9 +264,10 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := weighRendering("", canonical); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
-		// over the latest version is checked. That version is read back as the tree before the
-		// write; one that does not read back holds no pointer and no check block.
+		// Supplied markdown is a caller's write, so a block pointer, a check block or a reading it
+		// introduces over the latest version is checked. That version is read back as the tree
+		// before the write; one that does not read back holds no pointer, no check block and no
+		// reading.
 		var prior *pmdoc.Node
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
@@ -226,8 +278,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
+		if err := refuseReadingsWithoutAnswers(ctx, tx, artifactID, tree, prior); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
 	}
-	seed, err := encodeDocumentTreeHolding(tree, stored)
+	var seed []byte
+	if len(layout) > 0 {
+		seed, err = encodeDocumentSeed(layout.fragments(), seeds, held, nil)
+	} else {
+		seed, err = encodeDocumentTreeHolding(tree, stored)
+	}
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("seed rebuilt document tree: %w", err)
 	}
@@ -236,7 +296,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// history validated as one that cannot load: a second rebuild of the document on another
 	// process that loaded the same history waits on the owner lock above until this one commits,
 	// then finds the head moved and is refused.
-	report, err := s.persistence.RebuildTx(ctx, tx, artifactID, loadedHead, seed)
+	report, err := s.persistence.RebuildTx(ctx, tx, room, loadedHead, seed)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
@@ -253,13 +313,14 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// which the mark is ordered by. The writes credit no one, as the close's do (the zero
 		// owedUpdates): no pending author is added, and the latest edit source the row names is
 		// kept.
-		owed, err := updateOwedStatement(artifactID, owedUpdates{})
+		owed, err := updateOwedStatement(room, owedUpdates{})
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
+		// kept for one release: roll-window-attributes
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
 	if markdown == nil || canonical == latest.markdown {
@@ -267,13 +328,17 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	// RebuildTx holds the document's advisory lock until this transaction ends, so the pending
 	// authors read here are the ones the version's commit deletes.
-	capture, err := s.capturePendingAuthors(ctx, tx, artifactID, nil, &actor, everyCredit)
+	capture, err := s.capturePendingAuthors(ctx, tx, target, nil, &actor, everyCredit)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
+	// A rebuild's route marks its write (WithDeferredBlockIndex): nothing after this version reads
+	// its block index or its record, so a version above deferBlockIndexBlocks leaves its blocks to
+	// the block-index reconciliation (versionWrite.deferLarge).
 	written, err := s.writeVersionTx(ctx, tx, artifactID, renderedTree{tree: tree, markdown: canonical, offsets: offsets}, actor, &versionWrite{
-		authors: actorSlice(capture.authors),
-		capture: &capture,
+		authors:    actorSlice(capture.authors),
+		capture:    &capture,
+		deferLarge: deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
@@ -282,7 +347,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// made the document's latest change, whatever edit the broken history still had pending. It is
 	// recorded as the latest edit source for the versions that follow, and names this version's
 	// edit notice (recordEditNotice), which goes when that actor is a person.
-	if err := recordLatestEditSource(ctx, tx, artifactID, &actor); err != nil {
+	if err := recordLatestEditSource(ctx, tx, room, &actor); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	if err := s.recordEditNotice(ctx, tx, artifactID, written.version.Number, actorSlice(capture.authors), &actor); err != nil {
@@ -290,6 +355,38 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	report.SourceVersion = written.version.Number
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
+}
+
+// rebuildRoomSeeds is the tree each fragment of the issue room room holds once it is rebuilt, in
+// the order of layout's fragments, beside the tree each was read from (held, which the seed holds
+// already: pmdoc.UpdateHolding): the rebuilt document artifactID's tree, read from stored (nil for
+// supplied markdown), and every other fragment its own document's latest version, read back as
+// every stored rendering is (pmdoc.ParseRendering) - a room's history that does not load leaves no
+// fragment to read from it. A document with no version, or whose latest version is empty, leaves
+// its fragment holding nothing, as a document created empty is stored (renderFragment).
+func rebuildRoomSeeds(ctx context.Context, tx pgx.Tx, room string, layout roomLayout, artifactID string, tree, stored *pmdoc.Node) (seeds, held []*pmdoc.Node, err error) {
+	documents := layout.documents(room)
+	latest, err := readRoomVersions(ctx, tx, documents)
+	if err != nil {
+		return nil, nil, err
+	}
+	seeds, held = make([]*pmdoc.Node, len(documents)), make([]*pmdoc.Node, len(documents))
+	for index, document := range documents {
+		switch {
+		case document == artifactID:
+			seeds[index], held[index] = tree, stored
+		case latest[index].markdown != "":
+			parsed, parseErr := pmdoc.ParseRendering(latest[index].markdown)
+			if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
+				return nil, nil, newer
+			}
+			if seeds[index], err = uploadedInput(parsed, parseErr); err != nil {
+				return nil, nil, fmt.Errorf("read back the latest version of %s, a document of room %s: %w", document, room, err)
+			}
+			held[index] = parsed
+		}
+	}
+	return seeds, held, nil
 }
 
 // The causes and next steps of the rebuild refusals liveRebuildRefusal builds.
@@ -314,14 +411,66 @@ func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next 
 		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
-// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
-// names: a rebuild discards every edit made after it.
-func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+// savedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
+// refused rebuild names, since a rebuild discards every edit made after it, and the one a refused
+// write into a retired document names (RetiredDocumentError). A retired document takes no new
+// version, so its number stays the latest, and the version's own address
+// (GET /api/v1/artifacts/{id}/versions/{number}) answers a read of it.
+func savedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
 	var number int
-	if err := tx.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
 	`, artifactID).Scan(&number); err != nil {
 		return 0, fmt.Errorf("read latest document version number: %w", err)
 	}
 	return number, nil
+}
+
+// joinedSeeds is the one tree an issue room's seed holds, every fragment's in the room's order
+// (joinFragments), a fragment that holds nothing read as no block: what the rules that read the
+// room's ask blocks read.
+func joinedSeeds(seeds []*pmdoc.Node) *pmdoc.Node {
+	parts := make([]*pmdoc.Node, len(seeds))
+	for index, seed := range seeds {
+		parts[index] = seed
+		if seed == nil {
+			parts[index] = &pmdoc.Node{Type: "doc"}
+		}
+	}
+	joined, _ := joinFragments(parts)
+	return joined
+}
+
+// encodeDocumentSeed writes trees, each into the fragment of fragments beside it, and margin into a
+// fresh document and returns its one durable update, as encodeDocumentTreeHolding does for a tree
+// alone: an issue room's seed carries every fragment of the room. A fragment whose tree is nil
+// holds nothing, and is left so. held is each live tree the seed is cut from, whose elements the
+// document already holds (pmdoc.UpdateHolding), so an element a newer build wrote there is put
+// back rather than refused.
+func encodeDocumentSeed(fragments []string, trees, held []*pmdoc.Node, margin map[string]any) ([]byte, error) {
+	doc := crdt.New()
+	written := make([]*crdt.YXmlFragment, len(fragments))
+	for index, name := range fragments {
+		if trees[index] != nil {
+			written[index] = doc.GetXmlFragment(name)
+		}
+	}
+	marks := doc.GetMap(marksMapName)
+	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		for index, fragment := range written {
+			if fragment == nil {
+				continue
+			}
+			if err := pmdoc.UpdateHolding(transaction, fragment, trees[index], held[index]); err != nil {
+				return err
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(margin)) {
+			marks.Set(transaction, key, margin[key])
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
 }

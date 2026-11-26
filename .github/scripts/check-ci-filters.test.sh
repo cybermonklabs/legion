@@ -4959,7 +4959,7 @@ READS = (
     ("contracts", "packages/daemon/internal/intake/testdata/dispatch/server-started.json",
      "`packages/contracts/src/dispatch-api.test.ts#the envelope Dispatch publishes for an announcement carries a payload this schema reads`"),
     ("dispatch_ui", "packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json",
-     "`packages/proof-editor/tests/ask-concurrent-edit.test.ts#the server's block node types and the schema's typed blocks are the live schema's block group`"),
+     "`packages/proof-editor/tests/ask-concurrent-edit.test.ts#the server's block node types and the schema's typed blocks naming no parents are the live schema's block group`"),
     ("claude_envoy", "packages/envoy-client/test/stall-proxy.ts",
      "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#startStallProxy`"),
     ("pi_legion", "packages/dispatch/e2e/harness-processes.ts", "packages/pi-legion's tsc program"),

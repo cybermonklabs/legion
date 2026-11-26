@@ -7,11 +7,12 @@
 # each person authored, what reached each session, that a failed or pending attempt earns no
 # tuple and that a queued one earns one, and that a failed one earns its session no node. It
 # checks the role, the session and the page, and it holds every read against a table of
-# identities a person wrote into this driver. A message earns no
-# tuple in this child - only a comment has a node on the near end of a delivery, and
-# the child that moves the inbox, the messages and the read state gives a message its own - so
-# what the driver reads of the message is the
-# role it reaches and that role's page, and that nothing stands on the message itself (G10).
+# identities a person wrote into this driver. A message is a node of its project, written with
+# its own create and carrying that node's base attributes, and earns no delivery or authorship
+# tuple in this child - only a comment has a node on the near end of a delivery, and a later
+# change gives a message those tuples - so what the driver reads of the message is its node, the
+# role it reaches and that role's page, and that no other tuple stands on the message itself
+# (G10).
 #
 # The run writes at least one tuple of every kind it holds, and G14 holds every tuple standing on
 # this run's nodes, of every kind, to the writer, the causing event and a time its record allows:

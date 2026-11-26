@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -43,6 +44,8 @@ var oneHopTables = []copyTable{
 	{"issues", []string{"key", "project_key", "number", "title", "created_by", "rank", "parent_key"}},
 	{"events", []string{"issue_key", "seq", "type", "actor", "payload", "notify", "published_at"}},
 	{"artifacts", []string{"id", "issue_key", "project_key", "slug", "name", "kind", "created_by", "ref_key"}},
+	{"document_rooms", []string{"artifact_id", "room"}},
+	{"issue_room_blocks", []string{"tree_artifact_id", "block_id", "document_id"}},
 	{"artifact_versions", []string{"artifact_id", "number", "authors"}},
 	{"document_indexed_versions", []string{"artifact_id", "version"}},
 	{"document_blocks", []string{"artifact_id", "block_id", "node_id", "type", "text_sha256", "excerpt", "changed_version", "changed_at"}},
@@ -60,6 +63,8 @@ var oneHopTables = []copyTable{
 	{"ask_block_refs", []string{"ask_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
 	{"comment_block_refs", []string{"comment_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
 	{"message_block_refs", []string{"message_id", "block_id", "from_node", "to_kind", "to_id", "kind"}},
+	{"graph_nodes", []string{"kind", "id", "supertag", "visibility", "state", "made_at", "made_by", "source_event"}},
+	{"graph_tuples", []string{"from_kind", "from_id", "kind", "to_kind", "to_id", "at", "who", "source_event", "asserted"}},
 }
 
 // fixtureAuthors is the authors of every version of the one-hop fixture, whose rows are each made
@@ -144,7 +149,8 @@ type oneHopFixture struct {
 	database *store.Store
 	issue    string
 	// links and linkedFrom are the rows each field must hold, as relatedSummary writes them,
-	// sorted; members is the documents of links, each at depth 1 with its via, by ref_key.
+	// sorted; members is the documents of links, each at depth 1 with its via and of kind artifact
+	// at its own address (documentMember), by ref_key.
 	links, linkedFrom []string
 	members           []Member
 	// own is every node of the issue and its own content as a graph node names it, which neither
@@ -523,6 +529,29 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 			}
 			add("components", "OPS", id, "Component "+strconv.Itoa(index), "prose", nullable(parent), 1, 1)
 			add("component_facts", "OPS", id, at, at)
+			// Each component a node of the store, everyone in the project's to read, so that
+			// graph_nodes, which every visibility predicate of the read reads (VisibleKind), holds
+			// oneHopMinimumRows too.
+			add("graph_nodes", "component", "OPS/"+id, "component", graphstore.VisibilityProject, graphstore.StateLive, at, edgesFixtureActor, int(graphstore.NoEvent))
+			// Its part_of its parent, as the store states a component's place, so that
+			// graph_tuples, which the resolution of a block target reads for a move
+			// (ResolvedBlockSQL), holds oneHopMinimumRows too.
+			if parent != "" {
+				add("graph_tuples", "component", "OPS/"+id, graphstore.TuplePartOf, "component", "OPS/"+parent, at, edgesFixtureActor, int(graphstore.NoEvent), "true")
+			}
+		}
+		// Each other issue's room, with one document in it, as a conversion records one: the
+		// room's tree artifact, the document's document_rooms row and the issue_room_blocks row of
+		// its block, so that the tables the read reads to find a block's room and the document
+		// holding it (ResolvedBlockSQL, heldBlockDocument) hold oneHopMinimumRows too. No block of
+		// the room is written, so no link of the read meets it.
+		for number := 1; number <= oneHopMinimumRows; number++ {
+			owner := "OPS-" + strconv.Itoa(number)
+			tree, member := seededUUID(random).String(), seededUUID(random).String()
+			add("artifacts", tree, owner, "OPS", "tree", "Tree of "+owner, "tree", edgesFixtureActor, owner+"/tree")
+			add("artifacts", member, owner, "OPS", "room-md", "Room document of "+owner, "doc", edgesFixtureActor, owner+"/room-md")
+			add("document_rooms", member, tree)
+			add("issue_room_blocks", tree, "b1", member)
 		}
 	}
 
@@ -543,7 +572,7 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if key[0] == "artifact" {
 			for _, doc := range first {
 				if doc.id.String() == key[1] {
-					fixture.members = append(fixture.members, Member{RefKey: doc.refKey, Depth: 1, Via: row.via})
+					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, row.via))
 				}
 			}
 		}

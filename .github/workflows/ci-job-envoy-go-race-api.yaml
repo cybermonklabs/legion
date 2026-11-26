@@ -61,6 +61,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun
+      # (runDispatchCLI, internal/dispatch/api/decision_entries_test.go), and fails without it.
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod

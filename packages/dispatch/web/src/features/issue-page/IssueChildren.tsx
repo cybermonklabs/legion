@@ -9,13 +9,14 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { issueStatusWord } from "./page-words";
 
 /**
- * What a child issue's row of the outline draws beside its title (R12, the
- * architect's ruling 5, the prototype's `.kr`): the children are one group of rows of the outline,
- * each child a row the reader focuses and moves through as any other, and no section above the
- * outline. The row's words are the child's title (`tree-drafts.ts`'s `addChildren`); after them,
- * in the margin's small grey, how it stands, what blocks it and who holds it
- * (`ChildIssueFacts`); and its key is the row's tag, a link to its own page (`ChildIssueTag`).
- * The header keeps the children's bar and both counts (R13).
+ * What a child issue draws beside its title, on its row of the outline and on its entry of the
+ * children's section above the outline (`children-section.tsx`, R14; the architect's ruling 5,
+ * the prototype's `.kr`). The outline draws each child as a row where the tree places it, one the
+ * reader focuses and moves through as any other. The row's words are the child's title
+ * (`tree-read/tree-nodes.ts`); after them, in the margin's small grey, how it stands, what blocks
+ * it and who holds it (`ChildIssueFacts`). The section's entry leads with the child's key, a link
+ * to its own page (`ChildIssueTag`); the row's tag is the key too, which opens the child in the
+ * section (`NodeRow.tsx`). The header keeps the children's bar and both counts (R13).
  *
  * Every colour is the page's own palette: the key in the child kind's colour, the keys that
  * block it in the ink with the bullets' grey under them, as a link in a node's words is drawn,
@@ -24,8 +25,8 @@ import { issueStatusWord } from "./page-words";
  * no tree's keys reach keeps them in it (R9).
  */
 
-/** The key of a child issue as its row's tag: the child's own page, in the child kind's colour
- *  (the prototype's `tagH`). */
+/** The key of a child issue as its entry of the children's section leads with it: the child's
+ *  own page, in the child kind's colour (the prototype's `tagH`). */
 export function ChildIssueTag({
   child,
   tabStops = false,

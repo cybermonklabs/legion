@@ -269,7 +269,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither %s nor any table, and the runner can create neither; name an existing schema in the search_path", versionTable)
 	}
 	report := &Report{VersionTable: versionTable, TableLimit: options.TableLimit, LongTransaction: options.LongTransaction}
-	recorded, err := recordedVersions(ctx, tx, versionTable)
+	recorded, err := RecordedVersions(ctx, tx, versionTable)
 	if err != nil {
 		return nil, err
 	}
@@ -573,8 +573,10 @@ func migrationLockTimeouts(sql string) []string {
 	return settings
 }
 
-// recordedVersions reads every version versionTable records; none when the table does not exist.
-func recordedVersions(ctx context.Context, tx pgx.Tx, versionTable string) (map[int]bool, error) {
+// RecordedVersions reads every version versionTable records; none when the table does not exist.
+// The census reads it so, and so does a reader that holds a database to the migrations its binary
+// embeds (dispatch's store.UnappliedMigrations).
+func RecordedVersions(ctx context.Context, tx pgx.Tx, versionTable string) (map[int]bool, error) {
 	recorded := map[int]bool{}
 	var exists bool
 	if err := tx.QueryRow(ctx, "select to_regclass($1) is not null", versionTable).Scan(&exists); err != nil {

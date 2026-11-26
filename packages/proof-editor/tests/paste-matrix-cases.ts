@@ -550,7 +550,7 @@ for (const [shape, spec, quote, clipboard, stored] of [
     ':::ask{#q1 urgency="med" multiple="false"}\nWhich here?\n\n- X\n- Y\n:::\n',
     "Which here?",
     { html: "", text: "First\nSecond" },
-    ':::ask{#q1 urgency="med" multiple="false" state="open"}\nWhich here?First\\\nSecond\n\n- X\n- Y\n:::\n',
+    ':::ask{#q1 urgency="med" multiple="false"}\nWhich here?First\\\nSecond\n\n- X\n- Y\n:::\n',
   ],
   [
     "a markdown hard break into a paragraph",

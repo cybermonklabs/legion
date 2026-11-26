@@ -108,7 +108,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    issue.BlockedBy,
+			BlockedBy:    WaitsOf(issue.Needs, issue.BlockedBy),
 			ClaimedBy:    issue.Claim.holder(),
 			ClaimUnread:  issue.Claim.unread(),
 		})
@@ -529,8 +529,8 @@ func (c *HTTPClient) messageBody(ctx context.Context, key, id string) (string, e
 }
 
 // Approval reads GET /api/v1/artifacts/{id} and returns the document's derived approval state,
-// the issue carrying it, and what the document is on that issue: its primary flag, its role and
-// its slug, which is how a design-gate step finds the document it binds to.
+// the issue carrying it, and what the document is on that issue: its primary flag and its role,
+// which is how a design-gate step finds the document it binds to.
 func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval, error) {
 	var response artifactResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &response); err != nil {
@@ -551,7 +551,6 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		Reason:        response.Approval.Reason,
 		Primary:       response.Primary,
 		Role:          response.Role,
-		Slug:          response.Slug,
 	}
 	if response.Approval.At != nil {
 		at, err := time.Parse(time.RFC3339Nano, *response.Approval.At)
@@ -820,8 +819,20 @@ type issueSummaryResponse struct {
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
+	Needs        *[]string      `json:"needs"`
 	BlockedBy    []string       `json:"blocked_by"`
 	Claim        *claimResponse `json:"claim"`
+}
+
+// WaitsOf is the issues an issue answer says the issue waits on: its needs, which a Dispatch of
+// the issue-tree spec's release on answers, and else its blocked_by, which the Dispatch of the
+// release before answers alone, since a new daemon can meet an old Dispatch. An answer holding
+// needs is read by it, whatever blocked_by holds beside it.
+func WaitsOf(needs *[]string, blockedBy []string) []string {
+	if needs != nil {
+		return *needs
+	}
+	return blockedBy
 }
 
 type issueResponse struct {
@@ -836,6 +847,7 @@ type issueResponse struct {
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
 	ResolvedRepo      *string        `json:"resolved_repo"`
+	Needs             *[]string      `json:"needs"`
 	BlockedBy         []string       `json:"blocked_by"`
 	Claim             *claimResponse `json:"claim"`
 }
@@ -855,7 +867,7 @@ func (r issueResponse) issue() Issue {
 		PrimaryArtifactID: r.PrimaryArtifactID,
 		LastSeq:           r.LastSeq,
 		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
+		BlockedBy:         WaitsOf(r.Needs, r.BlockedBy),
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
 	}
@@ -894,7 +906,6 @@ type issueEventResponse struct {
 
 type artifactResponse struct {
 	IssueKey *string           `json:"issue_key"`
-	Slug     string            `json:"slug"`
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`

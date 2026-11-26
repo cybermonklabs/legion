@@ -102,8 +102,16 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 
 	// The control: a row whose node is taken away is named again, by its kind and its id. No path
 	// of the tree deletes a node, so the control takes the ask's node and every tuple on either side
-	// of it out of the store itself.
+	// of it out of the store itself. The asks pass marked the ask's row and its followers' rows with
+	// the node, and a mark is a foreign key into graph_nodes, so the control first takes the marks
+	// off, leaving the rows as a build before the store wrote them.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		for _, table := range []string{"asks", "ask_followers"} {
+			if _, err := tx.Exec(ctx, `update `+table+` set node_kind = null, node_address = null
+				where node_kind = $1 and node_address = $2`, graphstore.KindAsk, seeded.ask); err != nil {
+				return err
+			}
+		}
 		_, err := tx.Exec(ctx, `
 			with tuples as (delete from graph_tuples where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))
 			delete from graph_nodes where kind = $1 and id = $2

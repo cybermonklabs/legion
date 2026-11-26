@@ -11,11 +11,15 @@
 #
 # The check vocabulary below (body, want_status, expect, query) reads the caller's own `work`,
 # `status`, `base` and `database_url`, which every driver sets after sourcing this file and before
-# its first check: a function resolves them when it runs, not when it is read. Those four are
-# named below so a reader of this file - and shellcheck, which reads one file at a time - sees what
-# it reads of its caller. The caller assigns each before its first check, and may make its own
-# readonly afterwards.
+# its first check: a function resolves them when it runs, not when it is read. The HTTP vocabulary
+# at the end reads `driver`, the script's name its first PASS line names, `session`, the session
+# its bearer writes act for, `stamp`, the run's own suffix, `login`, the person person_send sends
+# as, and `key`, the issue invoke writes a lens on; checked_issue adds to `keys`, the issues the
+# caller closes when it exits. Those are named below so a reader of this file - and shellcheck,
+# which reads one file at a time - sees what it reads of its caller. The caller assigns each it
+# uses before its first check, and may make its own readonly afterwards.
 : "${work:=}" "${status:=}" "${base:=}" "${database_url:=}"
+: "${driver:=}" "${session:=}" "${stamp:=}" "${login:=}" "${key:=}" "${cli_entry:=}"
 
 # require_env NAME…: refuses the first named environment variable that is unset or empty.
 require_env() {
@@ -63,6 +67,21 @@ require_commands() {
       exit 2
     }
   done
+}
+
+# require_server_bin sets the caller's readonly `server_bin` to the envoy-dispatch binary the run
+# serves or runs, DISPATCH_E2E_SERVER_BIN made absolute or else $TMPDIR/bin/envoy-dispatch, this
+# head's build, and refuses a path that is not an executable file.
+require_server_bin() {
+  # shellcheck disable=SC2031 # the TMPDIR `cli` exports is its own; this one is the caller's
+  server_bin="${DISPATCH_E2E_SERVER_BIN:-${TMPDIR:-/tmp}/bin/envoy-dispatch}"
+  [[ "$server_bin" == /* ]] || server_bin="$PWD/$server_bin"
+  readonly server_bin
+  [[ -x "$server_bin" ]] || {
+    printf 'DISPATCH_E2E_SERVER_BIN names %s, which is not an executable file\n' "$server_bin" >&2
+    usage
+    exit 2
+  }
 }
 
 # read_bearer sets the caller's unexported `token` to the agent bearer, DISPATCH_TOKEN or else
@@ -150,6 +169,38 @@ query() {
     fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 
+# psql_run SECTION WHAT ARGS…: psql against DATABASE_URL with ARGS, stopping at the first error, its
+# output in $work/psql.out; it runs without PGHOSTADDR, as query does. Its stdin is the caller's, so
+# SQL a heredoc gives it may name a psql variable ARGS binds (-v NAME=VALUE, read as :'NAME'),
+# which psql substitutes there and not in a -c command.
+psql_run() {
+  local section="$1" what="$2"
+  shift 2
+  env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "$@" >"$work/psql.out" 2>&1 ||
+    fail "$section" "$what" "psql: $(<"$work/psql.out")"
+}
+
+# with_vars SECTION WHAT SQL NAME=VALUE…: runs SQL with each NAME bound as a psql variable (read as
+# :'NAME'), its one value in $answer. The SQL is read from stdin, where psql substitutes a variable.
+# shellcheck disable=SC2034 # $answer is this function's answer, read by its caller
+with_vars() {
+  local section="$1" what="$2" sql="$3" pair
+  shift 3
+  local -a vars=()
+  for pair in "$@"; do
+    vars+=(-v "$pair")
+  done
+  answer="$(env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "${vars[@]}" <<<"$sql" 2>"$work/psql")" ||
+    fail "$section" "$what" "psql: $(<"$work/psql")"
+}
+
+# want_value SECTION WHAT WANT SQL: the one value SQL reads is WANT.
+want_value() {
+  query "$1" "$2" "$4"
+  [[ "$answer" == "$3" ]] || fail "$1" "$2" "read '$answer', want '$3' (from: $4)"
+  pass "$1" "$2"
+}
+
 # The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
 # driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
 # reaches it. It reads the caller's $base, $token, $session, $work, $cli_entry and what cli_env
@@ -180,4 +231,267 @@ run() {
   local section="$1" what="$2"
   shift 2
   cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
+}
+
+# --- the HTTP vocabulary of a driver that talks to a Dispatch server ----------------------------
+#
+# Each request goes to the caller's $base and leaves the answer's body in $work/body, its HTTP
+# status in $status and its Content-Type in $content_type. The agent bearer is the header line the
+# caller writes to $work/auth once read_bearer has read it, and a person's token the line
+# mint_token writes, so no bearer reaches an argument list. A driver that defines one of these
+# names itself keeps its own.
+
+# The ten lens kinds the catalogue's migration seeds, those of the lens research the catalogue is
+# seeded from (a record outside this repository).
+seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
+
+# The id of the personal token mint_token minted for each person, by login, which revoke_tokens
+# revokes.
+declare -A minted=()
+
+# request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the bearer in $work/auth;
+# `cookie:<login>`, the session cookie sign_in left in $work/jar.<login>, with the server's origin,
+# which the server requires of every write a cookie authenticates (enforceCookieOrigin); or
+# `token:<login>`, the personal token mint_token left in $work/auth.<login>. RUN names a run of the
+# command bar in the Dispatch-Going-Run header (contracts.GoingRunHeader). A request is given up
+# after $max_time seconds, 60 unless the caller sets fewer.
+# shellcheck disable=SC2034 # $content_type is this function's answer, read by its caller
+request() {
+  local -a auth data=() run=()
+  local host answer
+  case "$1" in
+    cookie:*)
+      host="${base#*://}"
+      auth=(-b "$work/jar.${1#cookie:}" -H "Origin: ${base%%://*}://${host%%/*}")
+      ;;
+    token:*) auth=(-H "@$work/auth.${1#token:}") ;;
+    *) auth=(-H "@$work/auth") ;;
+  esac
+  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
+  [[ $# -lt 5 ]] || run=(-H "Dispatch-Going-Run: $5")
+  if answer="$(curl -sS --max-time "${max_time:-60}" -X "$2" -o "$work/body" -w '%{http_code} %{content_type}' \
+    "${auth[@]}" "${data[@]}" "${run[@]}" "$base$3" 2>"$work/curl")"; then
+    status="${answer%% *}" content_type="${answer#* }"
+  else
+    status="curl failed: $(<"$work/curl")" content_type=""
+  fi
+}
+
+# send METHOD PATH [JSON]: request as the agent bearer.
+send() { request agent "$@"; }
+# person_send METHOD PATH [JSON]: request as the person $login names, whom sign_in signed in.
+person_send() { request "cookie:$login" "$@"; }
+
+# actor: the session the caller's writes act for.
+actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
+
+# close_issue KEY: the agent bearer closes the issue KEY, from a cleanup trap: a refusal is printed
+# on stderr and stops nothing.
+close_issue() {
+  send PATCH "/api/v1/issues/$1" "$(jq -cn --argjson a "$(actor)" '{status: "done", actor: $a}')"
+  [[ "$status" == 200 ]] ||
+    printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$1" "$status" "$(body)" >&2
+}
+
+# sign_in SECTION LOGIN [MORE]: signs LOGIN in through the server's dev sign-in route,
+# /auth/_dev/signin, keeping the session cookie in $work/jar.LOGIN. Its line is `PASS: SECTION
+# signed in as LOGIN`, with MORE after it where given.
+sign_in() {
+  status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar.$2" \
+    "$base/auth/_dev/signin?login=$(q "$2")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  want_status 302 "$1" "dev sign-in as $2"
+  grep -q $'\tdsession\t' "$work/jar.$2" || fail "$1" "dev sign-in as $2" "the answer set no session cookie"
+  pass "$1" "signed in as $2${3-}"
+}
+
+# mint_token LOGIN: LOGIN's cookie mints a personal token with a name and no scopes, so it holds
+# that person's own scopes (POST /api/v1/me/agent-tokens, as e2e/api.ts's mintAgentToken does). Its
+# plaintext, the answer's `token`, goes to $work/auth.LOGIN as the header request sends, and its id
+# to minted[LOGIN]. The answer, which holds the plaintext, is cleared once read, so no failure
+# message prints it.
+mint_token() {
+  local plaintext scopes
+  request "cookie:$1" POST /api/v1/me/agent-tokens "$(jq -cn --arg n "${driver%.sh} $1 $stamp" '{name: $n}')"
+  want_status 201 setup "mint a personal token for $1"
+  plaintext="$(jq -er '.token | select(type == "string" and . != "")' "$work/body")" ||
+    fail setup "mint a personal token for $1" "the answer holds no token"
+  minted[$1]="$(jq -er '.id' "$work/body")" || fail setup "mint a personal token for $1" "the answer holds no id"
+  scopes="$(jq -c '.scopes' "$work/body")"
+  printf 'Authorization: Bearer %s\n' "$plaintext" >"$work/auth.$1"
+  : >"$work/body"
+  pass setup "minted a personal token for $1 with no scopes asked for; it holds $scopes"
+}
+
+# revoke_tokens: each person's cookie revokes the token mint_token minted for them, from a cleanup
+# trap: a refusal is printed on stderr and stops nothing.
+revoke_tokens() {
+  local person
+  for person in "${!minted[@]}"; do
+    request "cookie:$person" DELETE "/api/v1/me/agent-tokens/$(q "${minted[$person]}")"
+    [[ "$status" == 2?? ]] ||
+      printf '%s: could not revoke the token %s minted: HTTP %s: %s\n' "$driver" "$person" "$status" "$(body)" >&2
+  done
+}
+
+# invoke SECTION WHAT AS BODY: AS invokes the lens BODY names on the caller's issue $key (POST
+# /api/v1/issues/{key}/lenses), and the answer is 201. It sets $lens to the lens's address and
+# $lens_id to its uuid, and keeps the answer in $work/invoked.
+invoke() {
+  request "$3" POST "/api/v1/issues/$key/lenses" "$4"
+  want_status 201 "$1" "$2"
+  cp "$work/body" "$work/invoked"
+  lens="$(jq -er '.address' "$work/invoked")" || fail "$1" "$2" "no address: $(body)"
+  lens_id="$(jq -er '.id' "$work/invoked")" || fail "$1" "$2" "no id: $(body)"
+  [[ "$lens" == "dispatch://lens/$lens_id" ]] ||
+    fail "$1" "$2" "the lens answers the address $lens, want dispatch://lens/$lens_id"
+  pass "$1" "$2 ($lens)"
+}
+
+# seeded_catalogue: the agent bearer reads the lens catalogue (GET /api/v1/schema/blocks), kept in
+# $work/catalogue.json, and it holds the ten kinds of $seeded_kinds. Its line, read before any lens
+# is written, is `PASS: <driver> the catalogue holds its ten kinds`.
+seeded_catalogue() {
+  local held
+  send GET /api/v1/schema/blocks
+  want_status 200 "$driver" "read the catalogue"
+  cp "$work/body" "$work/catalogue.json"
+  held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
+    "$work/catalogue.json")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
+  [[ "$held" == "$seeded_kinds" ]] ||
+    fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
+  pass "$driver" "the catalogue holds its ten kinds"
+}
+
+# checked_issue SECTION PROJECT TITLE: the agent bearer creates an issue in PROJECT titled TITLE,
+# adds it to the caller's `keys`, the issues it closes when it exits, and writes the issue's
+# verification document holding one check, c1, which it reads back among that document's blocks as
+# a check. It sets $checked_key to the issue, $checked_check to the check's address and
+# $checked_assignee to the person the issue went to: the project's default assignee, since the
+# bearer acts for no person, and so a person who has signed in.
+# shellcheck disable=SC2034 # $checked_assignee is this function's answer, read by its caller
+checked_issue() {
+  send POST /api/v1/issues "$(jq -cn --arg p "$2" --arg t "$3" --argjson a "$(actor)" \
+    '{project: $p, title: $t, spec: "An issue whose verification document holds one check.", force: true, actor: $a}')"
+  want_status 201 "$1" "create the issue \"$3\" in $2"
+  checked_key="$(jq -er '.key' "$work/body")" || fail "$1" "create the issue \"$3\" in $2" "no key: $(body)"
+  keys+=("$checked_key")
+  checked_assignee="$(jq -r '.assignee // empty' "$work/body")"
+  send POST "/api/v1/issues/$checked_key/artifacts" "$(jq -cn --arg k "$checked_key" --argjson a "$(actor)" \
+    '{name: "verification.md", content: "How \($k) is proved.\n\n:::check{#c1}\nThe one check of \($k).\n:::\n", actor: $a}')"
+  want_status 201 "$1" "write the verification document of $checked_key"
+  checked_check="dispatch://$checked_key/artifact/verification-md#b-c1"
+  send GET "/api/v1/issues/$checked_key/artifacts/verification-md/blocks"
+  want_status 200 "$1" "read the blocks of the verification document of $checked_key"
+  expect "$1" "created $checked_key in $2, whose verification document holds the check $checked_check" '["check"]' \
+    '[.[] | select(.id == "c1") | .type]'
+}
+
+# another_project SECTION ASSIGNEE: the agent bearer creates a project of the run's own, whose
+# default assignee is ASSIGNEE, a person who has signed in: the bearer acts for no person, so the
+# create names one (createProject in packages/envoy/internal/dispatch/api/projects.go). It sets
+# $other_project to the project's key, an X and nine letters spelling the run's second, modulo
+# 100 000, and the last four digits of its process id. No route removes a project, so it stays on
+# the server.
+another_project() {
+  other_project="X$(printf '%09d' "$((($(date +%s) % 100000) * 10000 + $$ % 10000))" | tr 0-9 A-J)"
+  send POST /api/v1/projects "$(jq -cn --arg k "$other_project" --arg d "$2" --arg n "${driver%.sh} $stamp" \
+    --argjson a "$(actor)" '{key: $k, name: "Another project of \($n)", default_assignee: $d, actor: $a}')"
+  want_status 201 "$1" "create the project $other_project, whose default assignee is $2"
+  pass "$1" "created the project $other_project, whose default assignee is $2"
+}
+
+# The leases a driver holds to keep this head's own index off what the driver leaves owed, the
+# ones cmd/dispatch's holdBlockIndexLease (block_index_lease_test.go) holds, in its order: the
+# block-index pass's (docs.BlockIndexLease) and the reference forms drain's (docs.RefsFormsLease),
+# which indexes a document through the block index's own index (docs.Service.drainFormsDocument),
+# so a hold of the block index alone would see a document it left owed indexed by the drain all
+# the same. Each is taken under the first key every loop lease is taken with, the four bytes of
+# "LOOP" (leaseNamespace in packages/envoy/internal/dispatch/duty/exclusive.go), and
+# duty.Exclusive takes a lease before every pass of its loop and skips the pass where another
+# session holds it. index_lease_seconds is how long the session holding a lease sleeps, a hang
+# guard alone, since give_index_lease ends that session as soon as the driver gives the lease
+# back, and index_lease_wait the seconds hold_index_leases waits for a lease and give_index_lease
+# for its grant to go. None is readonly: lib-baseline.sh sources this file again.
+index_lease_namespace=1280266064
+index_leases=(block-index refs-forms)
+index_lease_seconds=3600
+index_lease_wait=300
+# The pid of the psql session holding each lease, by the lease's name.
+declare -A index_lease_pids=()
+
+# index_lease_session NAME: the application_name of the psql session this driver holds the lease
+# NAME on, which give_index_lease reads its grant by in pg_locks.
+index_lease_session() { printf 'e2e-lease-%s-%d' "$1" "$$"; }
+
+# hold_index_leases SECTION: takes every lease of index_leases, in that order, each on a psql
+# session of this driver's own, and waits until that session holds it: pg_advisory_lock queues
+# behind a pass that holds the lease, which gives it back when the pass ends. A lease not held
+# inside index_lease_wait seconds, or a session that stops, fails SECTION. A lease is a session
+# lock, so each session holds its lease until give_index_lease ends it, one lease at a time where
+# the driver names one: this is holdBlockIndexLease in shell, and a driver that then reads the
+# block index's own work gives its lease back alone and the drain's once that reading ends, as
+# that helper's giveBackIndex does.
+hold_index_leases() {
+  local section="$1" name deadline=$((SECONDS + index_lease_wait))
+  for name in "${index_leases[@]}"; do
+    : >"$work/lease-$name"
+    PGAPPNAME="$(index_lease_session "$name")" env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE \
+      psql "$database_url" -X -Atq -v ON_ERROR_STOP=1 -o /dev/null >/dev/null 2>"$work/lease-$name" <<SQL &
+select pg_advisory_lock($index_lease_namespace, hashtext('$name'));
+\\warn the $name lease is held
+select pg_sleep($index_lease_seconds);
+SQL
+    index_lease_pids[$name]=$!
+    until grep -q "the $name lease is held" "$work/lease-$name"; do
+      kill -0 "${index_lease_pids[$name]}" 2>/dev/null ||
+        fail "$section" "hold the $name lease" "psql stopped: $(head -c 300 "$work/lease-$name")"
+      ((SECONDS < deadline)) ||
+        fail "$section" "hold the $name lease" "it was not given up inside ${index_lease_wait}s: $(head -c 300 "$work/lease-$name")"
+      sleep 0.2
+    done
+  done
+  pass "$section" "this driver holds the ${index_leases[*]} leases, so neither this head's block index nor its forms drain runs a pass"
+}
+
+# drop_index_leases [NAME…]: ends the session holding each lease NAME names, or every lease this
+# driver holds, and reads nothing, for a driver's cleanup; a lease this driver does not hold is
+# passed over. SIGINT makes the psql holding a lease cancel its sleep, which ON_ERROR_STOP turns
+# into its end, and the session's end frees the lock; a kill of the sleeping psql would instead
+# leave the backend holding the lease until its sleep returned.
+drop_index_leases() {
+  local name
+  local -a names=("$@")
+  ((${#names[@]} > 0)) || names=("${index_leases[@]}")
+  for name in "${names[@]}"; do
+    [[ -n "${index_lease_pids[$name]:-}" ]] || continue
+    kill -INT "${index_lease_pids[$name]}" 2>/dev/null || true
+    wait "${index_lease_pids[$name]}" 2>/dev/null || true
+    unset 'index_lease_pids[$name]'
+  done
+}
+
+# give_index_lease SECTION [NAME…]: gives back each lease NAME names, or every lease this driver
+# holds (drop_index_leases), and waits until pg_locks holds no grant of it for the session that
+# held it, since the backend frees the lock a moment after psql has gone; past index_lease_wait
+# seconds it fails SECTION.
+give_index_lease() {
+  local section="$1" name deadline
+  shift
+  local -a names=("$@")
+  ((${#names[@]} > 0)) || names=("${index_leases[@]}")
+  drop_index_leases "${names[@]}"
+  deadline=$((SECONDS + index_lease_wait))
+  for name in "${names[@]}"; do
+    while :; do
+      query "$section" "read whether this driver's session still holds the $name lease" "
+        select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
+        where a.application_name = '$(index_lease_session "$name")' and l.locktype = 'advisory' and l.granted
+          and l.classid = $index_lease_namespace and l.objid = hashtext('$name')::oid and l.objsubid = 2"
+      [[ "$answer" != 0 ]] || break
+      ((SECONDS < deadline)) ||
+        fail "$section" "give the $name lease back" "this driver's session still holds it ${index_lease_wait}s after psql ended"
+      sleep 0.2
+    done
+  done
+  pass "$section" "this driver gave the ${names[*]} lease(s) back"
 }

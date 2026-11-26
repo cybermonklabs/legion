@@ -4130,7 +4130,6 @@
           "attrs": {
             "blockId": "q2",
             "multiple": false,
-            "state": "open",
             "urgency": "blocking"
           },
           "content": [
@@ -4236,7 +4235,6 @@
           "attrs": {
             "blockId": "q1",
             "multiple": true,
-            "state": "open",
             "urgency": "low"
           },
           "content": [

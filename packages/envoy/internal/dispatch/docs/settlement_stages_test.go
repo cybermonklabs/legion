@@ -77,11 +77,16 @@ func requireStageGoesOn(t *testing.T, stage string, step settleStep, outcome set
 	}
 }
 
-// seedAnsweredAskBlock seeds a document holding one ask block, settles it so the block is
-// indexed, and answers that ask in its row alone, so the block disagrees with its row until a
-// settlement repairs it. It returns the markdown the repaired document reads as.
+// seedAnsweredAskBlock registers a live process of another build (serveTwoBuilds), seeds a
+// document holding one ask block, settles it so the block is indexed, and answers that ask on its
+// node and row alone, so the block disagrees with its row until a settlement repairs it: while
+// another build serves, settlement writes the answer into the block for that build's pages
+// (rollWindowAskAttributes), and on a fleet of one build it would write the ones a version keeps,
+// the answer's state, answerer and time (keptAskState). It returns the markdown the repaired
+// document reads as.
 func seedAnsweredAskBlock(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
+	serveTwoBuilds(t, service.store)
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext.\n")
 	service.settleRoom(artifactID, 0)
 	answer := answerBlockAsk(t, service, artifactID)

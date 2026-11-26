@@ -1,50 +1,5 @@
 import { expect, type Page, type Request } from "@playwright/test";
 
-/** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
- *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
-export interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
-  readonly gets: string[];
-  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
-  issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
-  quietFor(ms: number): boolean;
-  reset(): void;
-}
-
-export function watchTraffic(page: Page): Traffic {
-  const gets: string[] = [];
-  const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
-  page.on("request", (request) => {
-    inFlight.add(request);
-    const url = new URL(request.url());
-    if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
-    if (issue !== undefined) {
-      const key = decodeURIComponent(issue);
-      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
-    }
-  });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
-  return {
-    gets,
-    issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
-    reset: () => {
-      gets.length = 0;
-    },
-  };
-}
-
 /** One request under `/api/`, as `watchApiRequests` counts it. */
 export interface ApiRequest {
   readonly method: string;
@@ -71,7 +26,9 @@ export interface ApiRequests {
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
-   *  that waits on another read's answer has been sent. */
+   *  that waits on another read's answer has been sent. The event feed rides the page's live
+   *  socket (`/ws/live`), which Playwright reports as a websocket and never as a request, so
+   *  it holds nothing in flight. */
   quietFor(ms: number): boolean;
   /** Every request since the last `reset`, in the order the page sent them. */
   readonly requests: readonly ApiRequest[];
@@ -109,8 +66,11 @@ export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
   const inFlight = new Set<Request>();
   let lastSettledAt = Date.now();
+  // The request of a new document the main frame is loading, until that document commits.
+  let loading: Request | undefined;
   page.on("request", (request) => {
     inFlight.add(request);
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loading = request;
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
@@ -123,7 +83,22 @@ export function watchApiRequests(page: Page): ApiRequests {
     if (inFlight.delete(request)) lastSettledAt = Date.now();
   };
   page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
+  // A document that fails to load never takes the page's place, so it settles nothing else.
+  page.on("requestfailed", (request) => {
+    if (request === loading) loading = undefined;
+    settle(request);
+  });
+  // A new document takes the page's place: a read the document it replaced still had in flight
+  // can no longer answer the page, and the browser may report neither its end nor its failure,
+  // so it is settled here, as Playwright's own idle wait drops it at a new document (a move to
+  // a fragment of the same document loads none, and drops nothing). Kept, it would hold the
+  // page from ever going quiet again.
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || loading === undefined) return;
+    const kept = loading;
+    loading = undefined;
+    for (const request of inFlight) if (request !== kept) settle(request);
+  });
   return {
     byRoute: () => {
       const counts = new Map<string, number>();

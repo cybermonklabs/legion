@@ -3,17 +3,22 @@ package api
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue.
 //
-// The catalogue is the dispatch tools that write, all but two: the specs in
+// The catalogue is the dispatch tools that write, all but five: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. The catalogue holds every tool that
-// writes but dispatch_review and dispatch_project_update, and that many actions is under the
-// count where a model's choice measurably falls apart, so the list is read whole: nothing
-// searches it, and no second schema is authored per route. It leaves the two out on purpose: a
-// review records an approval or a changes request in a person's name, dispatch_project_update
-// turns a check of a project on or off (its proven-sessions setting), and the loop that proposes
-// operations on Dispatch's graph must never propose either, so goingToolRoutes names no row for
-// them.
+// what a model chooses on, and its own argument schema. The list is read whole: nothing searches
+// it, and no second schema is authored per route. How a model's choice among the actions holds up
+// as the list grows is unmeasured. The five the catalogue leaves out are left out on purpose.
+// Three record or undo a person's decision: dispatch_review records an approval or a changes
+// request in a person's name; dispatch_settle, written by a person's credential, records that the
+// person settled a proposal, which is the person's own call (spec requirement r-proposed); and
+// dispatch_state moves a node out of settled, undoing such a settle, or into gone, which is final,
+// and the caller rule a person's credential passes for those moves is the settle's own. The fourth,
+// dispatch_premortem_convert, retires a document once, through docs.RetireDocument,
+// and moves its address to the lens it writes in its place
+// (spec requirement r-premortem-nodes). The fifth, dispatch_project_update, turns a check of a
+// project on or off (its proven-sessions setting). The loop that proposes operations on
+// Dispatch's graph must never propose any of them, so goingToolRoutes names no row for them.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
@@ -22,9 +27,10 @@ package api
 // or a relation in neither edge family refuses to mount (register). The other direction is a
 // report rather than a refusal, since a write no tool in the catalogue performs is not an error:
 // most are work still to do, and the two review routes, the document header's and the one
-// dispatch_review performs, and the two routes of the proven-sessions setting, which
-// dispatch_project_update performs, are kept out on purpose. TestTheMutatingRoutesNoToolSpecNames
-// names every one of them.
+// dispatch_review performs, the settle dispatch_settle performs, the state write dispatch_state
+// performs, the pre-mortem conversion dispatch_premortem_convert performs and the two routes of
+// the proven-sessions setting, which dispatch_project_update performs, are kept out on purpose.
+// TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
@@ -42,6 +48,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -77,12 +84,15 @@ type goingToolRoute struct {
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
 // name, and so the tools the catalogue holds. A tool this map does not name is not in the
-// catalogue: the read tools; `dispatch_related`, whose POST row writes nothing (it runs the
-// related-item check and records none of it); and `dispatch_review` and
-// `dispatch_project_update`, which write and are left out on purpose. A review records an
-// approval or a changes request in a person's name, and dispatch_project_update turns a check of
-// a project on or off; the loop that proposes operations on Dispatch's graph must never propose
-// either, so neither gets a row here.
+// catalogue: the read tools, `dispatch_constraints`, `dispatch_lenses` and `dispatch_proposed`
+// among them; `dispatch_related`, whose POST row writes nothing (it runs the related-item check and
+// records none of it); and `dispatch_review`, `dispatch_settle`, `dispatch_state`,
+// `dispatch_premortem_convert` and `dispatch_project_update`, which write and are left out on
+// purpose. A review records an approval or a changes request in a person's name, a settle written
+// by a person's credential records that the person settled a proposal, a state write moves a node
+// out of settled or into gone, the pre-mortem conversion retires a document once, and
+// dispatch_project_update turns a check of a project on or off: the loop that proposes operations
+// on Dispatch's graph must never propose any of them, so none gets a row here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its
@@ -90,7 +100,7 @@ type goingToolRoute struct {
 var goingToolRoutes = map[string][]goingToolRoute{
 	"dispatch_issue": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
-		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
+		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects", "mentions"},
 	}},
 	"dispatch_issue_update": {
 		// A call that sets an option of the status change sends that route, which takes the
@@ -115,7 +125,7 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		{
 			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
 			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"child_of", "blocked_by", "affects"},
+			Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects"},
 		},
 	},
 	"dispatch_claim": {
@@ -295,6 +305,40 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
 		Path: map[string]string{"key": "issue", "phase": "phase"},
 	}},
+	// The writes of the reasoning nodes under an issue (reasoning_routes.go, constraint_routes.go
+	// and pointer_routes.go). Each node stands under its parent by its part_of tuple and states who
+	// wrote it by authored_by where the credential proves an author. The pointer row's {id} is the
+	// node's store address, which the caller percent-encodes as one segment as every placeholder
+	// here is (chooseGoingRoute).
+	"dispatch_lens": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/lenses",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "has_kind", "triggered_by", "authored_by"},
+	}},
+	"dispatch_finding": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/findings",
+		Path:      map[string]string{"key": "issue", "id": "lens"},
+		Relations: []string{"part_of", "authored_by"},
+	}},
+	"dispatch_risk": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/risks",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "prevented_by", "authored_by"},
+	}},
+	"dispatch_constraint": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/constraints",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"part_of", "authored_by"},
+	}},
+	"dispatch_pointer": {{
+		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/pointers",
+		Path:      map[string]string{"key": "issue", "id": "node"},
+		Relations: graphstore.PointerKinds(),
+	}},
+	// A node's state (dispatch_state) has no row, and neither has its settle (dispatch_settle):
+	// the state route moves a node out of settled, undoing a settle, and into gone, which is
+	// final, and a person's credential passes the settle's caller rule for both, so the loop that
+	// proposes operations must never propose either, for the reason the catalogue's header gives.
 }
 
 // GoingRoute is one row of the server's table an action writes, as the catalogue serves it.
@@ -367,11 +411,14 @@ func mutatingRoutes(routes []apiRoute) map[string]bool {
 	return mutating
 }
 
-// edgeFamilies is every relation name a catalogue entry may declare: the global relation names
-// and the `block[]` attributes of the typed blocks, which are the two families of edge the graph
-// holds and the two GET /api/v1/references?kind= accepts (references.go).
+// edgeFamilies is every relation name a catalogue entry may declare, each once: the global
+// relation names and the `block[]` attributes of the typed blocks, which are the two families of
+// edge the graph holds and the two GET /api/v1/references?kind= accepts (references.go). needs is
+// in both (model.EdgeKindNeeds), since an issue and a plan node wait by one relation.
 func edgeFamilies() []string {
-	return append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...)
+	families := append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...)
+	slices.Sort(families)
+	return slices.Compact(families)
 }
 
 // goingPlaceholders is the placeholders of a pattern, in the order it spells them.
@@ -495,8 +542,8 @@ type goingCatalogueBody struct {
 	Actions []GoingAction `json:"actions"`
 }
 
-// getGoingCatalogue serves the catalogue whole. It is a list a reader scans, so there is nothing
-// to search and nothing to page.
+// getGoingCatalogue serves the catalogue whole. Its actions are a list a reader scans, so there is
+// nothing to search and nothing to page.
 func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -523,7 +570,13 @@ type GoingCaller struct {
 	// follow records this session as the ask's follower. A caller that is no session leaves it
 	// empty, and the rows needing one are passed over.
 	Session string
-	Doer    GoingDoer
+	// Run is the run of the command bar the caller acts for, the id its POST answered, which Do
+	// names in contracts.GoingRunHeader on every write it makes, so each node the write creates or
+	// changes carries a changed_by_run tuple to that run's interaction. A caller acting for no run
+	// leaves it empty, and no header is sent. Nothing in this package builds a caller: the loop
+	// that chooses an action, which would set it, is not here.
+	Run  string
+	Doer GoingDoer
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -552,7 +605,8 @@ func (e GoingArgumentError) Error() string {
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
 // other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
 // action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// the caller's to resolve to the id a row's path takes. Every action of the catalogue writes, so
+// every request Do sends names the caller's Run, where it has one.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -585,6 +639,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if c.Run != "" {
+		request.Header.Set(contracts.GoingRunHeader, c.Run)
+	}
 	return c.Doer.Do(request)
 }
 

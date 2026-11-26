@@ -148,7 +148,7 @@ Each kind of write reaches people differently. Pick by what you need from them.
 
 | You need | Use | Where it lands |
 | --- | --- | --- |
-| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
+| A decision only a person can make | An ask (`dispatch ask`, or an ask block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
 | To point at a passage in a document | A comment with a quote (`dispatch comment`) | The document's margin and the issue's Conversation |
 | To change specific text | A suggestion (`dispatch suggest`) | The margin, where a person accepts or rejects it |
 | To tell people a deliverable landed, or answer a person's message | A message (`dispatch message`) | The issue's Conversation |
@@ -173,10 +173,10 @@ a bound of its own:
   options;
 - a comment or message body is bounded block by block: each block — a paragraph, list, quote,
   table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
-  A body holding a decision block (`:::ask`) is refused whatever its length, `400
+  A body holding an ask block (`:::ask`) is refused whatever its length, `400
   DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
-  document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
-  example, put it in a fenced code block;
+  document, as an ask block, or in an ask opened with `dispatch ask`. To show one as an example,
+  put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
   in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
@@ -217,8 +217,8 @@ An upload that replaces a file or a picture names the token of the version it re
 An upload under a name the owner holds, without `--force`, is refused before anything is sent, and the refusal prints no token: for a file or a picture it names `--force` with the token your own `dispatch doc-read` printed, or `--force` alone where the version standing under the name states no token; for an upload of another kind than the name holds (Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch keeps one kind under one name.
 A first upload of a name replaces no version, so it names no token.
 
-A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
-of the section that discusses it.
+A question the spec needs a person to decide is an **ask block**: an `:::ask` block at the end of
+the section that discusses it.
 
 ```md
 :::ask{urgency="high" multiple="false"}
@@ -231,14 +231,34 @@ Should we ship the migration this week?
 
 The block becomes an ask in the person's Inbox, and their answer lands next to its context.
 
-When every decision block is settled and the spec proposes something the person has not already
+A choice you made yourself is a `decision` block in the spec's `## Decisions` part: the choice
+first, then its reason and the options you weighed. Its attributes are `shaped`, the spec blocks
+the choice shaped; `from_ask`, the answered ask it carries out; `uncertainty` (`low`, `medium` or
+`high`) with `uncertainty_reason`; and `replaced`, set on a decision that is no longer the design.
+It asks nothing, and the person reviews it on the issue's Decisions tab.
+A person's answered ask is their decision: it stays in the spec, and your reading of it goes inside
+it as a `:::reading` block.
+
+When every ask block is settled and the spec proposes something the person has not already
 agreed to, run `dispatch request-approval` with a short `--summary` of what is new. The person
-approves that version, or requests changes with a reason. A later version leaves the approval
-stale, with one exception: when the person's own answer to a decision block is the whole change
-since the version they approved, Dispatch records the approval in their name at the new version, so
-request nothing for it. When their answer changes text outside the block, rewrite that text and
-request approval again with a one-sentence `--summary` naming what changed since the earlier
-approval; the card shows that approval and a **Show diff** control that carries the detail.
+approves that version, or requests changes with a reason. Their answer to an ask block, its
+resolve or decline, and the issue's close or reopen each write one version. When the answer,
+resolve, decline, close or reopen is that version's whole change, the version changes only that
+block's `state` and, where the ask is answered, `answered_by` and `answered_at` (the block of
+an open ask holds no `state`). No version holds the answer's words or the options chosen: they
+stay on the ask. Such a version carries no approval of its own. Dispatch carries an approval
+across the version an answer, a resolve, a decline or a reopen writes, and not across a close's.
+The version carries an approval only when the person's answer, resolve or decline is its whole
+change. If text that a person was editing in the browser is settled into the same version, the
+approval does not carry, and the request goes back to its agent.
+Any other later version leaves the approval stale, unless Dispatch carries the approval to it.
+Dispatch carries it when that version's text is the approved text, or when every change in
+it is a reading inside a decision or an answered ask, an ask block attribute the server owns, or
+the write of Dispatch's decisions step. Dispatch then records the approval in the person's name at
+the new version, so request nothing for it. When an answer means text outside the block must
+change, rewrite that text and request approval again with a one-sentence `--summary` naming what
+changed since the earlier approval; the card shows that approval and a **Show diff** control that
+carries the detail.
 
 ## Whose turn it is
 

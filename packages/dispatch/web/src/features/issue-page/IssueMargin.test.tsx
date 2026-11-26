@@ -305,7 +305,7 @@ function stubIssueApi() {
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
   const pinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     comments: spyOn(api, "listComments").mockResolvedValue([]),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
   };
@@ -386,14 +386,15 @@ function issueNames(
   };
 }
 
-/** The edge by which the issue `key` waits on CORE-1, as the Blocks row's read answers it
- *  (`getReferences` of kind `blocked_by`): `excerpt` is the title the edge carries. */
-function waitingEdge(key: string, excerpt: string): GraphEdge {
+/** The edge by which the issue `key` waits on CORE-1, as this Dispatch answers the Blocks row's
+ *  read (`getReferences` of kind `blocked_by`): of kind `needs`, unless a case names another, and
+ *  `excerpt` is the title the edge carries. */
+function waitingEdge(key: string, excerpt: string, kind: GraphEdge["kind"] = "needs"): GraphEdge {
   return {
     created_at: "2026-10-26T00:00:00Z",
     direction: "in",
     excerpt: { text: excerpt },
-    kind: "blocked_by",
+    kind,
     node: graphNode({
       id: key,
       issue_key: key,
@@ -1526,6 +1527,49 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
     );
   } finally {
     unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// This Dispatch answers an issue's wait on this one as `needs` under the Blocks row's read: the
+// row draws each issue waiting through it, and no issue whose edge into this one is of another
+// kind.
+test("Details' Blocks draws each issue that waits on this one through needs, and none of another kind", async () => {
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [
+      waitingEdge("CORE-5", "Ship the release"),
+      waitingEdge("CORE-6", "Write the notes"),
+      waitingEdge("CORE-7", "Cite the issue", "mentions"),
+    ],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
+    issueNames(refs, {
+      "CORE-5": "Ship the release",
+      "CORE-6": "Write the notes",
+      "CORE-7": "Cite the issue",
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(
+        within(detailsRow(PROPERTY_LABELS.blocks))
+          .queryAllByRole("link")
+          .map((link) => link.textContent),
+        "Blocks does not draw each issue that waits on CORE-1, and only those"
+      ).toEqual(["CORE-5", "CORE-6"])
+    );
+    expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release");
+    expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Write the notes");
+    expect(detailsRow(PROPERTY_LABELS.blocks)).not.toHaveTextContent("Cite the issue");
+  } finally {
+    unmount();
+    titles.mockRestore();
     getReferences.mockRestore();
     restore();
   }

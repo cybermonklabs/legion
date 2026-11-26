@@ -2,7 +2,7 @@ package api
 
 import "testing"
 
-// A version that differs from the one before it in more than its decision blocks names what
+// A version that differs from the one before it in more than its ask blocks names what
 // differs: R2 of dispatch://INFRA-175 sends the session holding the work a task naming the changed
 // sections, and a change set that names no section and no block tells it nothing of where to read.
 // Moving a `##` section from one side of a top-level `#` heading to the other changes the

@@ -120,7 +120,7 @@ func TestADeletedReplyDecodesAsItsReplyAndACorrectionAsNoFact(t *testing.T) {
 	}
 }
 
-// Settlement restoring a decision block it retracted appends the ask's event again — ask.answered
+// Settlement restoring an ask block it retracted appends the ask's event again — ask.answered
 // with the answer given before the retraction, or ask.opened with the block's original author —
 // marked restored: nobody asked or answered anything, so each decodes to the ask's state alone,
 // never the act the same event without the mark decodes as.

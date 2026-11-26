@@ -111,7 +111,7 @@ func (m *newsModel) drain() {
 
 // truth is the version of the spec the model says row's holder took of prompts in the run its
 // issue stands in: from the version that run started from (base), through every pair they told,
-// and, where closed says so, through every version since that changed only decision blocks, which a
+// and, where closed says so, through every version since that changed only ask blocks, which a
 // holder knows without being told. It is what the record is held never to pass with the prompts
 // the holders were told (closed), and to reach with the prompts whose credit stands (not closed).
 func (m *newsModel) truth(row *newsModelRow, prompts []*newsModelPrompt, closed bool) int {

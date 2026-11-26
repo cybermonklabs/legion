@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -209,8 +210,52 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	// The table with the test hooks is this one and the hooks, each by name, so a table that
+	// loses one row and gains another fails naming both, where a count of its rows would pass.
+	hooked := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		hooked[route.Method+" "+route.Pattern] = true
+	}
+	want := slices.Concat(slices.Collect(maps.Keys(seen)), testHookRoutes)
+	requireRouteNames(t, "the table mounted with Deps.TestHooksEnabled", hooked, want)
+}
+
+// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, by name.
+var testHookRoutes = []string{
+	"POST /api/v1/live/_test/disconnect",
+	"POST /api/v1/live/_test/rotate",
+	"POST /api/v1/artifacts/_test/quiesce",
+	"POST /api/v1/artifacts/{id}/_test/outside-schema",
+	"POST /api/v1/artifacts/{id}/_test/newer-content",
+	"POST /api/v1/agents/{session_id}/stream/_test/publish",
+	"GET /api/v1/artifacts/_test/rooms",
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes",
+	"GET /api/v1/artifacts/{id}/_test/room-counters",
+	"POST /api/v1/artifacts/{id}/_test/hold-persistence",
+	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"POST /api/v1/writes/_test/slow",
+	"POST /api/v1/settings/new-issue/_test",
+	"GET /api/v1/messages/_test/queued",
+}
+
+// requireRouteNames fails t naming each route of want that got, the routes what names, does not
+// hold, and each route got holds that want does not, so a set that loses one route and gains
+// another fails naming both.
+func requireRouteNames(t *testing.T, what string, got map[string]bool, want []string) {
+	t.Helper()
+	wanted := make(map[string]bool, len(want))
+	for _, name := range want {
+		wanted[name] = true
+		if !got[name] {
+			t.Errorf("%s: no %s", what, name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(got)) {
+		if !wanted[name] {
+			t.Errorf("%s: %s, which the list does not name", what, name)
+		}
 	}
 }
 
@@ -571,9 +616,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
-		// Turning a project's proven-sessions setting off is INFRA-4764's own row, and the
-		// person's as the default assignee above is: it weakens a check, which no credential the
-		// deployment configured may do.
+		// Turning a project's proven-sessions setting off is the spec-writer spec's own row, and
+		// the person's as the default assignee above is: it weakens a check, which no credential
+		// the deployment configured may do.
 		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",

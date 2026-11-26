@@ -108,11 +108,14 @@ func TestTheNodeWritesAppendProbesEachNodeOfItsBatchOnce(t *testing.T) {
 		},
 	} {
 		t.Run(writer.name, func(t *testing.T) {
+			// The node write's read of its nodes' types comes first (queueSupertagCheck), a probe of
+			// graph_nodes' primary key by type name that reads no node of the batch, then the node
+			// write's two statements and the append.
 			queued := queuedBy(t, writer.write)
-			if len(queued) != 3 {
-				t.Fatalf("the writer queued %d statements, want the node write's two and the append", len(queued))
+			if len(queued) != 4 {
+				t.Fatalf("the writer queued %d statements, want the supertag check, the node write's two and the append", len(queued))
 			}
-			nodeWrite, appended := queued[:2], queued[2]
+			nodeWrite, appended := queued[:3], queued[3]
 			explaintest.RequireEachRowProbedOnce(t, ctx, pool, keys, storeKeys, "the append", nodeWrite, appended)
 			mark := explaintest.Parameter(t, appended.SQL, appendMark)
 			sentinel := explaintest.Parameter(t, appended.SQL, appendSentinel)

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // renameArtifactInput is the body of PATCH /api/v1/artifacts/{id}.
@@ -82,6 +83,13 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
 		return
 	}
+	// A name a decisions document would take is refused as an upload of it is, unless the
+	// document already is one: a later upload of that name would find this document and be stored
+	// where nothing reads a decision (decisionsAreNodes).
+	if refusal := decisionsAreNodes(target, name); refusal != nil && artifact.Slug != refs.RetiredDecisionsSlug {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `
 		update artifacts set name = $2 where id = $1
 		returning `+artifactColumns, artifact.ID, name))
@@ -90,8 +98,9 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
-	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
-	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
+	// what GET /api/v1/artifacts/{id} answers, but for the digest of each version that read alone
+	// adds, and what this route answers too.
+	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}, artifactVersionsStatement); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

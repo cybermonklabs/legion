@@ -60,11 +60,12 @@ func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
 // (docs.readSchemaFleet), this process's own among them; a row left at its boot's numbers would
 // admit the reconnects the switch's socket close brings against a schema the process no longer
 // serves. The store's migration here moves, to creatable only from the next version, every element
-// that gives this build its creatable number - each block type, attribute and choice whose since
-// is that number - and raises the store to that version: this build installs it at its own version
-// and may no longer create those elements. The migration finds them by their since in the store,
-// so it names none: which element is newest changes with blocks.json. The numbers the row must
-// reach are the ones this build's own install of that store answers, read in the test's process.
+// that gives this build its creatable number - each block type, attribute, choice and item whose
+// since is that number, an item being an entry of its attribute's item_versions - and raises the
+// store to that version: this build installs it at its own version and may no longer create
+// those elements. The migration finds them by their since in the store, so it names none: which
+// element is newest changes with blocks.json. The numbers the row must reach are the ones this
+// build's own install of that store answers, read in the test's process.
 func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 	// Not parallel: it installs pmdoc's process-wide block schema.
 	ctx := context.Background()
@@ -86,6 +87,12 @@ func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 					select jsonb_object_agg(choice, case when coalesce((versions->>'since')::int, 1) = $2::int
 						then versions || jsonb_build_object('creatable_since', $1::int) else versions end)
 					from jsonb_each(attributes->'choice_versions') as entry(choice, versions)))
+				else '{}'::jsonb end
+			|| case when kind = 'attribute' and jsonb_typeof(attributes->'item_versions') = 'object' and attributes->'item_versions' <> '{}'::jsonb
+				then jsonb_build_object('item_versions', (
+					select jsonb_object_agg(item, case when coalesce((versions->>'since')::int, 1) = $2::int
+						then versions || jsonb_build_object('creatable_since', $1::int) else versions end)
+					from jsonb_each(attributes->'item_versions') as entry(item, versions)))
 				else '{}'::jsonb end
 		where kind = 'attribute' or (kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false))
 	`, built+1, before.creatable); err != nil {

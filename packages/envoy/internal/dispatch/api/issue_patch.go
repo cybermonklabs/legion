@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -41,7 +42,15 @@ type updateIssueInput struct {
 	ExternalLinks *[]model.ExternalLink `json:"external_links"`
 	Assignee      json.RawMessage       `json:"assignee"`
 	Parent        json.RawMessage       `json:"parent"`
-	BlockedBy     *[]string             `json:"blocked_by"`
+	// Needs is the replacement list of the issues this issue waits on ([] clears it), and
+	// BlockedBy the same list under the spelling a client of the release before sends; a body
+	// naming both names the same issues in each (resolveIssueWaits).
+	Needs     *[]string `json:"needs"`
+	BlockedBy *[]string `json:"blocked_by"`
+	// DuplicateOf and FiledFrom replace the issue's duplicate_of and filed_from, or clear either
+	// with null (resolveDuplicateOf, resolveFiledFrom).
+	DuplicateOf json.RawMessage `json:"duplicate_of"`
+	FiledFrom   json.RawMessage `json:"filed_from"`
 	// Advances is the replacement list of priority ids this issue advances ([] clears it), and
 	// AdvancesRevision the revision the read this write is answering returned. A write that
 	// carries the revision is a whole-set write; one that carries none writes single acts and
@@ -219,13 +228,9 @@ type issueWriteResult struct {
 // writeHandlerError answers with the status, code and text the PATCH answers.
 func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWriteResult, error) {
 	input, actor := call.fields, call.writer.actor
-	var blockers []string
-	if input.BlockedBy != nil {
-		var err error
-		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
-		if err != nil {
-			return issueWriteResult{}, err
-		}
+	waits, waitsProvided, err := resolveIssueWaits(input.Needs, input.BlockedBy)
+	if err != nil {
+		return issueWriteResult{}, err
 	}
 	var advances []string
 	if input.Advances != nil {
@@ -323,9 +328,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// pre-handler check already held the issue to the credential's project, which is therefore
 	// the issue's own, and a status change holds each issue a step of it writes to that project
 	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
-	// before any lock, and writeBlockedBy or validateIssueParent under them.
-	if call.callerProject != "" && (parentKey != "" || len(blockers) > 0) {
-		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, blockers, parentKey); err != nil {
+	// before any lock, and writeIssueNeeds or validateIssueParent under them.
+	if call.callerProject != "" && (parentKey != "" || len(waits.targets) > 0) {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, waits, parentKey); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -360,7 +365,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// A write that asks for the open-child check of an acceptance is a dependency write too: the
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
-	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
+	dependencyWrite := waitsProvided || parentProvided || input.RefuseOpenForeignChildren
 	// The lock step below reads each target's project again and refuses a scoped caller one
 	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
@@ -369,7 +374,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers, parentKey); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, waits, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -476,7 +481,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// reopening status; every other field, its repository included, and closing it again,
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
+		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || waitsProvided || len(input.DuplicateOf) > 0 || len(input.FiledFrom) > 0 || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
 			return issueWriteResult{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 		}
@@ -543,6 +548,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
 			return issueWriteResult{}, err
 		}
+	}
+	// The issue's duplicate_of and filed_from are read against the store beside the other
+	// refusals, so a refused one leaves the issue as it was.
+	duplicateOf, duplicateProvided, err := resolveDuplicateOf(ctx, tx, key, before.Project, input.DuplicateOf)
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	filedFrom, filedProvided, err := resolveFiledFrom(ctx, tx, before.Project, input.FiledFrom)
+	if err != nil {
+		return issueWriteResult{}, err
 	}
 	// The default assignee of the issue's project, for an assignee move that leaves one side
 	// holding nobody: a question on an issue nobody holds reaches its project's default, the
@@ -625,25 +640,45 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if repoProvided {
 		set("repo", repo)
 	}
-	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
+	// A write that states a relation of the issue (queueIssueRelations) writes the issue's node,
+	// and graph_edges answers the issue's relations from the store once its row names that node. A
+	// row the release before wrote names none, so such a write stamps the marker on it in this
+	// update and claims below the child_of the row names, whether or not the parent moves: the
+	// row's marker and its node's child_of stand together, as the create and the backfill write
+	// them (R9 of the issue-tree spec). The row is this write's, locked above, so the marker it
+	// reads is the one it updates.
+	stampsMarker := false
+	if waitsProvided || duplicateProvided || filedProvided || parentChanged {
+		if err := tx.QueryRow(ctx, `select node_kind is null from issues where key = $1`, key).Scan(&stampsMarker); err != nil {
+			return issueWriteResult{}, err
+		}
+		if stampsMarker {
+			set("node_kind", graphstore.KindIssue)
+			sets = append(sets, "node_address = key")
+		}
+	}
+	changed := len(sets) > 0 || componentsProvided || waitsProvided || duplicateProvided || filedProvided || input.Advances != nil
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
-	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
-	// wrote while the issue was closed reads and renders those versions, document work that must
-	// not run once the issue's update below has given the transaction its id, and it plans the
-	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
-	// and events queue after the document writes and before everything the patch queues below,
-	// which is where its writes run in the write phase.
-	var closingAsks, reopenedAsks []model.Ask
+	// are queued, not made, so the advice's queries still hold no transaction id. The close plans
+	// each ask's withdrawal here too, reading each ask's row and node before the issue's update
+	// below gives the transaction its id, and queues it after that update (recordWithdrawnAsksTx).
+	// The reopen's second half runs here too (recordRestoredAsksTx): its follow of the versions a
+	// settlement wrote while the issue was closed reads and renders those versions, document work
+	// that must not run once the issue's update below has given the transaction its id, and it
+	// plans the restored asks' parts before the follow plans the parts of the request it moves.
+	// Its writes and events queue after the document writes and before everything the patch
+	// queues below, which is where its writes run in the write phase.
+	var closingAsks withdrawal
+	var reopened restoredAsks
 	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
-			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
+		if reopened, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopened, actor)
 		}
 	}
 	if err != nil {
@@ -663,9 +698,19 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		afterRow.labels = *labelsAfter
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
-		excluded: askIDs(closingAsks),
-		opened:   askIDs(reopenedAsks),
+		excluded: askIDs(closingAsks.asks),
+		opened:   askIDs(reopened.asks),
 	})
+	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
+	// write below to move (readIssueNeeds).
+	var heldNeeds heldIssueNeeds
+	if waitsProvided {
+		read, err := readIssueNeeds(ctx, tx, key)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		heldNeeds = read
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -691,15 +736,38 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			return issueWriteResult{}, err
 		}
 	}
+	// The relations this write states, each caused by the issue's own event below
+	// (queueIssueRelations), whose projection rows are written here: its components' affects
+	// among them (writeIssueComponents).
+	relationsAt := time.Now().UTC()
+	var relations issueRelationFacts
 	if componentsProvided {
-		if err := writeIssueComponents(ctx, tx, key, before.Project, *components); err != nil {
+		affects, err := writeIssueComponents(ctx, tx, key, before.Project, *components, relationsAt)
+		if err != nil {
 			return issueWriteResult{}, err
 		}
+		relations.tuples = append(relations.tuples, affects...)
 	}
-	if input.BlockedBy != nil {
-		if err := writeBlockedBy(ctx, tx, key, before.Project, call.callerProject, blockers); err != nil {
+	if waitsProvided {
+		needs, err := writeIssueNeeds(ctx, tx, key, before.Project, call.callerProject, waits, heldNeeds, relationsAt)
+		if err != nil {
 			return issueWriteResult{}, err
 		}
+		relations.tuples = append(relations.tuples, needs...)
+	}
+	if duplicateProvided {
+		target := ""
+		if duplicateOf != nil {
+			target = *duplicateOf
+		}
+		relations.claim(key, graphstore.TupleDuplicateOf, graphstore.KindIssue, target, relationsAt)
+	}
+	if filedProvided {
+		kind, id := graphstore.KindAsk, ""
+		if filedFrom != nil {
+			kind, id = filedFrom.kind, filedFrom.id
+		}
+		relations.claim(key, graphstore.TupleFiledFrom, kind, id, relationsAt)
 	}
 	if input.Advances != nil {
 		if err := writeIssueAdvances(ctx, tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
@@ -751,6 +819,30 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq}, nil
 	}
+	// A reparent moves the issue's child_of, which the update above set issues.parent_key for,
+	// and retracts its part_of to the words of a conversation no longer on its parent or above it
+	// (R2 of the issue-tree spec): the child hangs from its new parent until someone places it
+	// again. A write that stamped the marker on the row claims the parent it names too, which is
+	// the one it already had where it did not move: that edge keeps the time the old arm dated it
+	// by, the row's created_at, as the backfill dates it.
+	if parentChanged || stampsMarker {
+		target := ""
+		if afterParent != nil {
+			target = *afterParent
+		}
+		at := relationsAt
+		if !parentChanged {
+			at = before.CreatedAt
+		}
+		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, target, at)
+	}
+	if parentChanged {
+		stranded, err := strandedWords(ctx, tx, key, afterParent, relationsAt)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		relations.tuples = append(relations.tuples, stranded...)
+	}
 	// Every owner this transaction appends to must be in one LockOwners call before the
 	// first append: the issue itself, the status-change parent, and both ends of a reparent.
 	// lockPatchOwnersAndParent already holds each of those owner locks, so LockOwners returns at once.
@@ -780,7 +872,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(ledger, key, closingAsks, actor); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -793,6 +885,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	after, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
+	}
+	// The issue's duplicate_of and filed_from are tuples its event causes, appended after that
+	// event (queueIssueRelations), so the read above holds what they were: the payload and the
+	// answer carry what this write states.
+	if duplicateProvided {
+		after.DuplicateOf = duplicateOf
+	}
+	if filedProvided {
+		after.FiledFrom = nil
+		if filedFrom != nil {
+			after.FiledFrom = &filedFrom.ref
+		}
 	}
 	eventType := "issue.updated"
 	if statusChanged && after.Status == "done" {
@@ -841,8 +945,65 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
+	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the issue as changed by that run when it changed a field of
+	// it (spec requirement r-interaction), as changedFields, which compares every field
+	// this write core writes, says; a write that sent only values the issue already held appends
+	// its event with nothing changed and names no change. Under a run it writes the issue's node as
+	// the create and the backfill write it (graphstore.IssueNode), made by the issue's creator at
+	// its created_at, the two columns of the issue's row the backfill reads them from
+	// (graphcensus/projects_backfill.go's objectKinds), and names it changed now by its writer
+	// (graphstore.PlanChangedForRun, which plans nothing for no run). A write that states a
+	// relation of the issue (queueIssueRelations) writes the same node unmarked, for no run, since
+	// graph_edges answers a relation out of a node the store holds; the comment a call leaves
+	// (queueIssueComment) states its own node. The node write is queued here, after every row and
+	// document write the patch queued above and after the node of the item filed_from names where
+	// the store held none (stateFiledFromNode), and what it states right after the issue's own
+	// event (graphstore.QueueCaused over graphstore.LatestEvent), as the create's is. A write made
+	// for no run that states no relation writes no node and sends no statement more than it did.
+	if err := stateFiledFromNode(ctx, tx, filedFrom); err != nil {
+		return issueWriteResult{}, err
+	}
+	var issueNode graphstore.Uncaused
+	// The backfill decodes created_by into a model.Actor, so a stored JSON null is the zero actor
+	// there, and here.
+	var creator model.Actor
+	if before.CreatedBy != nil {
+		creator = *before.CreatedBy
+	}
+	if len(changedFields) > 0 {
+		issueNode, err = graphstore.PlanChangedForRun(ctx, time.Now().UTC(), actor, func() (graphstore.Node, error) {
+			return graphstore.IssueNode(key, before.Project, creator, before.CreatedAt), nil
+		})
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+	}
+	if len(issueNode.Nodes) == 0 && (len(relations.claims) > 0 || len(relations.tuples) > 0) {
+		issueNode = graphstore.PlanUncaused([]graphstore.Node{graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)}, nil)
+	}
+	if len(issueNode.Nodes) > 0 {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
+		return issueWriteResult{}, err
+	}
+	// The issue's node and the relations this write states learn the issue's own event the step
+	// before appended (queueIssueRelations).
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
+		if err := queueIssueRelations(b, relations, actor); err != nil {
+			return err
+		}
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(issueNode), relations.heads()))
+		return nil
+	}); err != nil {
 		return issueWriteResult{}, err
 	}
 	appended = append(appended, event)

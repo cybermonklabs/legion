@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
+import type { Artifact, DecisionEntry, DisplayTree, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
@@ -34,7 +34,13 @@ import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
+import {
+  anchorBlock,
+  anchorQuote,
+  type ChangeAnchor,
+  changeAnchor,
+  decisionBlockId,
+} from "./decision-review";
 import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -91,8 +97,8 @@ const TONES = {
  * write disables or removes `control`. A focused control that is disabled drops the focus to the
  * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
  * after its write went out), which loses a keyboard reader's place on the page, and the tree
- * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
- * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
+ * then lets go of the row the focus held (`IssueTree.tsx`'s `useReleaseFocus`). On the row the
+ * focus has not left the tree, so the row stays focused. The row is `NodeRow`'s `data-node-row`,
  * and the move takes no scroll: the reader is already looking at it.
  */
 function keepFocusOnRow(control: HTMLElement): void {
@@ -101,11 +107,11 @@ function keepFocusOnRow(control: HTMLElement): void {
 }
 
 /**
- * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
+ * Each decision's Change the reader has open, by the decision's own address (`DecisionEntry.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
- * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
- * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
- * its words come back as the reader left them when the body opens again, rather than being
+ * for a Change that is closed, or whose words are out or landed. A read can draw a row again
+ * under a new key, and Keep and Change leave the page with the old row; held here, above the
+ * rows, the open form and its words come back as the reader left them, rather than being
  * dropped with no word said.
  * Outside a view that holds one, a Change holds its form only while it is drawn.
  */
@@ -132,8 +138,9 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * `POST /artifacts/{id}/blocks/{block}/keep` carrying the sum of the text this node drew, so a
  * decision the agent changed since is refused rather than agreed with, and Change is a comment
  * anchored to the words of the decision's first block (`anchorQuote`). They are read from the
- * decisions read the tree is already built from (`["decisions", <key>]`), so the node makes no
- * read of its own.
+ * entries of the decisions read the tree is already built from (`["decisions", <key>]`), so the
+ * node makes no read of its own. A decision whose entry names no block (`decisionBlockId`) takes
+ * neither.
  */
 export function DecisionActions({
   document,
@@ -141,11 +148,12 @@ export function DecisionActions({
   nodeReference,
   tabStops = false,
 }: {
-  /** The decisions document this node is a block of, which the Keep writes against;
-   *  `undefined` for a decision whose document the issue read does not carry. */
+  /** The document this node's `decision` block stands in - the spec, or another document of the
+   *  issue - which the Keep writes against and the Change is anchored in; `undefined` for a
+   *  decision whose document the issue read does not carry. */
   document: Artifact | undefined;
   isClosed: boolean;
-  /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
+  /** The node's own `dispatch://` address, which is the decision's own (`DecisionEntry.ref`). */
   nodeReference: string | undefined;
   /** Whether Keep and Change keep their place in the tab order: false in a tree whose keys press
    *  them (`useTreeKeymap.ts`), true in a view that no tree's keys reach (R9). */
@@ -153,10 +161,14 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery({ ...issueDecisionsQuery(issueKey, issueKey !== ""), ...EVENT_FRESH });
-  const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
-  if (decision === undefined || document === undefined || isClosed) return null;
+  const decision = (decisions.data?.entries ?? []).find((row) => row.ref === nodeReference);
+  const blockId = decision === undefined ? undefined : decisionBlockId(decision);
+  if (decision === undefined || blockId === undefined || document === undefined || isClosed) {
+    return null;
+  }
   return (
     <DecisionControls
+      blockId={blockId}
       decision={decision}
       documentId={document.id}
       issueKey={issueKey}
@@ -166,12 +178,15 @@ export function DecisionActions({
 }
 
 function DecisionControls({
+  blockId,
   decision,
   documentId,
   issueKey,
   tabStops,
 }: {
-  decision: Decision;
+  /** The block of the document the decision is, which the Keep is written against. */
+  blockId: string;
+  decision: DecisionEntry;
   documentId: string;
   issueKey: string;
   tabStops: boolean;
@@ -204,13 +219,13 @@ function DecisionControls({
   const { reads, words: name } = useDecisionHeadingWords(decision, source);
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.keep_decision} ${name}`,
     method: "POST",
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
-    write: (id: string, bounds) =>
-      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
+    write: (id: string, bounds) => api.keepDecision(id, blockId, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       // The tree notes the node before the answer is drawn (`own-act.ts`).
       noteOwnAct(decision.ref);
@@ -224,10 +239,10 @@ function DecisionControls({
           : {
               ...view,
               // The Keep is of the text this node showed, which the server took, so it applies
-              // to the row that still holds that text.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
+              // to the entry of this node that still holds that text.
+              entries: (view.entries ?? []).map((row) =>
+                row.ref === decision.ref && row.text_sha256 === decision.text_sha256
+                  ? { ...row, kept, kept_by: kept.kept_by, waiting_review: false }
                   : row
               ),
             }
@@ -310,7 +325,7 @@ function ChangeComposer({
 }: {
   /** The block the change is anchored to (`anchorBlock`), whose words the form quotes. */
   block: DisplayTree | undefined;
-  decision: Decision;
+  decision: DecisionEntry;
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
    *  form, and not when the form comes back with its row's body. */
@@ -320,10 +335,10 @@ function ChangeComposer({
    *  write are named after. */
   name: string;
   onDone: () => void;
-  /** The words of `block` as the decisions document holds them, which the change is anchored to
-   *  (`anchorQuote`). */
+  /** The words of `block` as the document the decision's block stands in holds them, which the
+   *  change is anchored to (`anchorQuote`). */
   quote: string;
-  /** The decisions document, the record the quote is a passage of. */
+  /** That document, the record the quote is a passage of. */
   source: TextSource | undefined;
 }): ReactNode {
   // The quote as the reader reads the decision: the block's plain-text projection, so a
@@ -379,8 +394,8 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
+  // Whether the send is reading the text of the document the decision's block stands in, which it
+  // does before the comment goes out: Send is off while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -410,12 +425,12 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // Which of the quote's places in the document is this decision's own, counted here, at the
+        // send, over the document's own reading, which the send reads once now: `changeAnchor`
+        // walks the document's reading down to the decision's block, which no render of a row
+        // pays for (decision 92). With no reading - the read failed - the anchor names no place:
+        // Dispatch takes it where the quote stands once, and refuses it where the quote stands
+        // more than once, which the form says in the page's words with the draft kept.
         setReading(true);
         void queryClient
           .fetchQuery({
@@ -429,12 +444,7 @@ function ChangeComposer({
           )
           .then((tree) => {
             setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
-              tree
-            );
+            const anchor = changeAnchor(decision, tree);
             send.mutate({ anchor: anchor ?? { quote }, body });
           });
       }}

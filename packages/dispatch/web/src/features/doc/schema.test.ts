@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { BlockSchema } from "../../api/types";
-import { compiledBlockSchema } from "./schema";
+import { compiledBlockSchema, editorBlockSchema } from "./schema";
 import { schemaCreatable } from "./schema-creatable";
 
 /** The compiled manifest as the build that introduces one more typed block, "future", declares
@@ -39,6 +39,9 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "requirement",
     "plan_task",
     "check",
+    "decision",
+    "reading",
+    "criterion",
   ]);
   expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);
 });
@@ -100,4 +103,27 @@ test("nodes, marks, attributes and enum choices each count toward the creatable 
       })
     )
   ).toBe(version);
+});
+
+// A document of an issue whose tree read answers `view_of` is edited under a schema in which a
+// requirement may not be created, by the type's own `creatable_since`, and nothing else differs;
+// every other document is edited under the compiled manifest itself.
+test("a view's document gets a schema that may not create a requirement, every other document the compiled one", () => {
+  const view = editorBlockSchema("CORE-1");
+  const requirement = view.types.find(({ name }) => name === "requirement");
+  const compiled = compiledBlockSchema.types.find(({ name }) => name === "requirement");
+  expect(requirement).toBeDefined();
+  expect(requirement?.creatable_since ?? 1).toBeGreaterThan(view.version);
+  expect(compiled?.creatable_since ?? 1).toBeLessThanOrEqual(compiledBlockSchema.version);
+  expect({ ...requirement, creatable_since: undefined }).toEqual({
+    ...compiled,
+    creatable_since: undefined,
+  });
+  expect(view.types.filter(({ name }) => name !== "requirement")).toEqual(
+    compiledBlockSchema.types.filter(({ name }) => name !== "requirement")
+  );
+  expect({ ...view, types: [] }).toEqual({ ...compiledBlockSchema, types: [] });
+  for (const viewOf of [null, undefined, ""]) {
+    expect(editorBlockSchema(viewOf)).toBe(compiledBlockSchema);
+  }
 });

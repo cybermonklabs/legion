@@ -198,15 +198,49 @@ type reviewedTrigger struct {
 // a later migration that replaces the trigger's function changes the body the entry reviewed, so
 // that migration reads the entry again.
 //
-// graph_nodes' two are Dispatch's: the first type migration written after the store's backfill
-// (20261123080000_graph_supertags_plan_task_steps) writes graph_nodes by bounded writes alone, and
-// the census admits it above the limit only beside them. Both run block_schema_changed, as
-// 20261109051232_graph_supertags created it and no later migration replaced it.
+// graph_nodes' two block schema triggers are Dispatch's: the first type migration written after
+// the store's backfill (20261123080000_graph_supertags_plan_task_steps) writes graph_nodes by
+// bounded writes alone, and the census admits it above the limit only beside them. Both run
+// block_schema_changed, as 20261109051232_graph_supertags created it and no later migration
+// replaced it.
+//
+// graph_tuples, graph_nodes and document_blocks each hold the head projection's trigger (migration
+// 20261123180100_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
+// insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows. On
+// document_blocks it runs for an insert, a delete and an update of the columns a head row reads. The
+// same migration gives comments, comment_blocks and comment_block_texts triggers of the same form
+// (function issue_head_items_drop), which a bounded write of one of them fires for each row it
+// writes; comments holds triggers of its own that are not reviewed here, so it stays refused.
 var reviewedTriggers = []reviewedTrigger{
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
 		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
 	{table: "graph_nodes", trigger: "graph_nodes_block_schema_removed",
 		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+	{table: "graph_tuples", trigger: "graph_tuples_head_marks", bounded: "for each row inserted or deleted (the deleted row on a delete), " +
+		"one probe of issue_head_nodes_node (node_kind, node_address) for the tuple's near end, and for a part_of one more for its far end, " +
+		"then, for each issue those probes and the two ends' addresses name, the issue's head fill advisory lock in share mode and a delete " +
+		"of issue_head_marks by its primary key; it reads and writes nothing else"},
+	{table: "graph_nodes", trigger: "graph_nodes_head_marks", bounded: "for each row inserted, updated or deleted (the deleted row on a " +
+		"delete), one probe of issue_head_nodes_node (node_kind, node_address) for the node, then, for each issue the probe and the node's " +
+		"address name, the issue's head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and " +
+		"writes nothing else"},
+	{table: "document_blocks", trigger: "document_blocks_head_marks", bounded: "for each row inserted or deleted, or updated in node_id, " +
+		"artifact_id, block_id, type, text_sha256 or changed_version, one probe of issue_head_nodes_node (node_kind, node_address) for the " +
+		"block's node (node_id), before and after an update, then, for each issue those probes and the node's address name, the issue's " +
+		"head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes nothing else"},
+	{table: "comments", trigger: "comments_head_marks", bounded: "for each row inserted or deleted (the deleted row on a delete), " +
+		"where the transaction has not set dispatch.head_rows to kept (its when clause): one probe of issue_head_nodes_node " +
+		"(node_kind, node_address) for the comment's node, then, for each issue that probe and the row's issue_key name, the " +
+		"issue's head fill advisory lock in share mode and a delete of issue_head_marks by its primary key; it reads and writes " +
+		"nothing else"},
+	{table: "comments", trigger: "comments_head_marks_update", bounded: "for each row an update moves a value the head rows " +
+		"read of, where the transaction has not set dispatch.head_rows to kept (its when clause), as comments_head_marks does"},
+	{table: "comment_blocks", trigger: "comment_blocks_head_marks", bounded: "for each row inserted, deleted or updated in a " +
+		"column the head rows read, where the transaction has not set dispatch.head_rows to kept (its when clause): one probe " +
+		"of comments by its primary key for the block's comment, then its issue's head fill advisory lock in share mode and a " +
+		"delete of issue_head_marks by its primary key; it reads and writes nothing else"},
+	{table: "comment_block_texts", trigger: "comment_block_texts_head_marks", bounded: "for each row inserted, deleted or " +
+		"updated in a column the head rows read, as comment_blocks_head_marks does"},
 }
 
 // ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,

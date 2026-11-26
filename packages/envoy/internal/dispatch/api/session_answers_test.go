@@ -376,6 +376,33 @@ func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
 	}
 }
 
+// The answer listed is the one the ask's node holds, as every read of an answer reads it (R3). The
+// row and the node differ only while a process of the release before has written the row and the
+// decisions step's catch-up has not yet stated that write on the node; here the row alone is
+// rewritten with other words and another selection, and the list reads alice's answer as the node
+// holds it.
+func TestSessionAnswersListsTheAnswerTheAsksNodeHolds(t *testing.T) {
+	t.Parallel()
+	f := newAnswersFixture(t)
+	askID := f.ask(t, answersSession, "Which database backs the queue?")
+	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
+	f.publishOutbox(t)
+	if tag, err := f.database.Pool.Exec(context.Background(), `
+		update asks set answer = jsonb_set(jsonb_set(answer, '{text}', to_jsonb('SQLite, as the row alone says.'::text)), '{selected}', '["SQLite"]')
+		where id = $1
+	`, askID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite the row's answer of ask %s alone, as the release before writes it: %v", askID, err)
+	}
+
+	item := f.only(t, answersSession)
+	if item.ID != askID || item.Author != answersAlice || item.Text != "Postgres, for the pool." || !slices.Equal(item.Selected, []string{"Postgres"}) {
+		t.Fatalf("item = %+v, want alice's answer as the ask's node holds it, not the row's words", item)
+	}
+	if !item.At.Equal(answered.Answer.At) {
+		t.Fatalf("item at = %s, want the answer's time %s", item.At, answered.Answer.At)
+	}
+}
+
 func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 	t.Parallel()
 	f := newAnswersFixture(t)

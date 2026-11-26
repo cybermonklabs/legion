@@ -9,11 +9,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -146,6 +148,37 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into ask_followers (ask_id, session_id) values ($1::uuid, 'session-backlink')
 	`, anchoredAsk)
 
+	// The same three relations as the store holds them for an ask whose row names its node: an
+	// ask on the notes document, anchored on it and owned by it, and a
+	// session that follows it, each stated on the ask's node, the rows marked. graph_edges' old
+	// arms leave these rows to the tuple arm, and the count reads the store's tuples for them.
+	// The answered ask's tie to a block, its shaped, is the store's alone: a block_refs row of the
+	// spec's block marked with the ask's node, as the writer of an ask block's links marks it.
+	storedAsk := scanFixture(t, tx, "create the ask the store holds", `
+		insert into asks (artifact_id, author, question, anchor)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'held by the store?', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, notesID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	stated := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	nodes, tuples, _ := graphstore.AskFacts(storedAsk, "CORE", nil, alice, stated, graphstore.NoEvent,
+		graphstore.AskPlaces{Anchor: notesRef, Owner: notesRef})
+	nodes = append(nodes, graphstore.SessionNode("session-stored", alice, stated, graphstore.NoEvent))
+	tuples = append(tuples,
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: graphstore.TupleFollowedBy,
+			ToKind: graphstore.KindSession, ToID: "session-stored", At: stated, Who: alice, Asserted: true},
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: "shaped",
+			ToKind: BlockNodeKind, ToID: notesRef + "#b1", At: stated, Who: alice, Asserted: true})
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("state the ask the store holds: %v", err)
+	}
+	execFixture(t, tx, "mark the ask the store holds", `
+		update asks set node_kind = 'ask', node_address = id::text where id = $1::uuid
+	`, storedAsk)
+	execFixture(t, tx, "follow the ask the store holds", `
+		insert into ask_followers (ask_id, session_id, node_kind, node_address) values ($1::uuid, 'session-stored', 'ask', $1)
+	`, storedAsk)
+
 	// components: part_of, depends_on; issue_component_members: affects.
 	sourceID := scanFixture(t, tx, "create the architecture source", `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -185,6 +218,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
 		values ($1::uuid, 'b1', $2, 'block', $3, 'mentions', 1)
 	`, specID, specBlock, notesBlock)
+	execFixture(t, tx, "tie the ask the store holds to the notes block", `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)
+		values ($1::uuid, 'b1', $2, 'block', $3, 'shaped', 1, 'ask', $4)
+	`, specID, specBlock, notesBlock, storedAsk)
 
 	// comment_blocks: a comment block's part_of; comment_block_refs: its mentions. b3 is the
 	// block a later revision removed, which keeps its row with no position and its reference.
@@ -328,14 +365,79 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message_block", removedMessageBlock},
 		{"ask_block", askPart},
 		{"ask_block", removedAskPart},
+		// The two kinds of the lens catalogue, which the seed holds (migration 20261123174710):
+		// a kind and the constraint that is its source, each named by a mention as any node is.
+		{"lens_kind", "pre-mortem"},
+		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
+		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), and a run of the
+		// command bar (its node is written below), each named by a mention as any node is.
+		{"lens", backlinkLens},
+		{"lens_block", backlinkFinding},
+		{"risk", backlinkRisk},
+		{"interaction", "22222222-2222-4222-8222-222222222222"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
 	insertReference(t, tx, "artifact", specID, "block", notesBlock)
+	// The references of a document whose row names its node, which the store answers
+	// (store.GraphEdgesArtifactRefs): the notes document, marked, cites CORE-1 through a row and
+	// the tuple its version index states beside it, which the tuple arm answers; cites the spec
+	// through a row whose tuple a process of the release before never stated, which no arm
+	// answers; and states a mention of the component CORE/core whose row that release deleted with
+	// no retraction, which no arm answers either.
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(notesRef, "CORE", "", alice, stated)}, []graphstore.Tuple{
+		graphstore.ArtifactMentions(notesRef, "issue", "CORE-1", true, alice, stated),
+		graphstore.ArtifactMentions(notesRef, "component", "CORE/core", true, alice, stated),
+	}); err != nil {
+		t.Fatalf("state the notes document and its mentions: %v", err)
+	}
+	execFixture(t, tx, "mark the notes document", `
+		update artifacts set node_kind = 'artifact', node_address = ref_key where id = $1::uuid
+	`, notesID)
+	insertReference(t, tx, "artifact", notesID, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", notesID, "artifact", specRef)
 	insertReference(t, tx, "message", rootMessage, "artifact", notesRef)
 	// A source of a node kind this build cannot address, written straight into refs as a newer
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.
 	insertReference(t, tx, "future", "x#y", "issue", "CORE-1")
+	// graph_tuples, the view's store class: an authored_by out of a lens to the person and out of
+	// an interaction to the session, which the view answers from the tuples alone. Both are kinds
+	// this build resolves, so each edge counts on its author (authoredByReasoning). The interaction
+	// is written project-visible, as no run is, because the oracle reads the view with no
+	// predicate: a run reserved for its author would be in the view's count and in no reader's.
+	for _, authored := range []struct{ fromKind, fromID, toKind, toID string }{
+		{"lens", backlinkLens, "person", "person-backlink@example.com"},
+		{"interaction", "22222222-2222-4222-8222-222222222222", "session", "session-backlink"},
+	} {
+		execFixture(t, tx, "write the "+authored.fromKind+" node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ($1, $2, $1, 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID)
+		execFixture(t, tx, "write the "+authored.fromKind+"'s authored_by", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'authored_by', $3, $4, now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID, authored.toKind, authored.toID)
+	}
+	// A has_kind out of the same lens to a kind of the catalogue, which the view answers from the
+	// tuples alone, as it answers the seed's constrained_by from each kind to its source: a lens
+	// kind's count holds the lens, and a constraint's count holds the lens kind whose source it is.
+	execFixture(t, tx, "write the lens's has_kind", `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		values ('lens', $1, 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
+	`, backlinkLens)
+	writeBacklinkReasoning(t, tx, specRef, specBlock, commentBlock)
+	// The changed_by_run of what a write made for that run changed: a lens, a finding of it and a
+	// risk under it, each answered from the tuples alone and counted on the run's node
+	// (changedByRun), the finding as the lens_block its own arm writes it as; and one out of the
+	// lens the store holds gone, which neither reading counts.
+	for _, changed := range []struct{ fromKind, fromID string }{
+		{"lens", backlinkLens}, {"block", backlinkFinding}, {"risk", backlinkRisk}, {"lens", backlinkGoneLens},
+	} {
+		execFixture(t, tx, "write the changed_by_run of "+changed.fromKind+" "+changed.fromID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'changed_by_run', 'interaction', '22222222-2222-4222-8222-222222222222', now(), '{"kind":"user","id":"alice"}', 0)
+		`, changed.fromKind, changed.fromID)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
@@ -655,6 +757,9 @@ var graphViewArms = []graphViewArm{
 	{table: "issues", fromKind: "issue", kind: "child_of", toKind: "issue"},
 	{table: "issue_links", fromKind: "issue", kind: "blocked_by", toKind: "issue"},
 	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
+	// The arm over the artifacts that carry their node, answering each one's attached_to from its
+	// part_of tuple (migration 20261117140000).
+	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
 	{table: "asks", fromKind: "ask", kind: "anchored_to", toKind: "artifact"},
 	{table: "comments", fromKind: "comment", kind: "anchored_to", toKind: "artifact"},
 	{table: "asks", fromKind: "ask", kind: "owned_by", toKind: "artifact"},
@@ -672,6 +777,10 @@ var graphViewArms = []graphViewArm{
 	// reads true: every select item of it is a column, so it is a mention arm to this test, and
 	// mentionBacklinkArms reads graph_tuples for exactly that reason.
 	{table: "graph_tuples"},
+	// The store's arm over the relations out of a finding of a lens, which writes its from_kind,
+	// lens_block, as a literal and every other item as a column (migration 20261117020856): its
+	// edges are counted by the arms of the store alone (storedFrom) that name a lens_block.
+	{table: "graph_tuples", fromKind: "lens_block"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -710,10 +819,14 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	// An arm whose to_kind is a literal is a structural arm, and backlinkArms must declare it
 	// under that kind with that edge kind. They are compared as multisets because one kind can
 	// hold the same edge kind twice: an artifact is anchored_to and owned_by from both asks and
-	// comments.
+	// comments. An arm of the store alone (storedFrom) counts rows of the view's tuple arm, whose
+	// to_kind is a column and which graphViewArms holds as graph_tuples, so it is none of them.
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
+			if len(arm.storedFrom) > 0 {
+				continue
+			}
 			declared = append(declared, kind+"/"+arm.kind)
 		}
 	}

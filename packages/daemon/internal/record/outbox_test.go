@@ -728,6 +728,45 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
+// A design-gates publish the release before queued may carry the `decisions` step, which this
+// release no longer has, and still wait in the outbox when this release boots: the boot queues a
+// fresh set over it only for an issue Dispatch does not show as done (the daemon's
+// queueRecordedGatesPublish). Such a row decodes with that step left out, so the outbox sends the
+// other gates, a set Dispatch takes, rather than retrying for ever a row it cannot decode. A row
+// that named that step alone sends the empty set, which clears the set Dispatch holds.
+func TestAQueuedDesignGatesPublishLeavesTheDecisionsStepOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    []DesignGateDocument
+	}{
+		{
+			name: "beside the remaining steps",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"},` +
+				`{"step":"criteria","artifactId":"artifact-criteria"},{"step":"spec","artifactId":"artifact-208"}]}`,
+			want: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}},
+		},
+		{
+			name:    "alone",
+			payload: `{"issue":"LEGION-208","gates":[{"step":"decisions","artifactId":"artifact-decisions"}]}`,
+			want:    []DesignGateDocument{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 62, Kind: OutboxKindDesignGatesPublish, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload: %v, want the row decoded with the decisions step left out", err)
+			}
+			publish, ok := got.(DesignGatesPublish)
+			if !ok || publish.Issue != "LEGION-208" || len(publish.Gates) != len(tc.want) ||
+				(len(tc.want) > 0 && !reflect.DeepEqual(publish.Gates, tc.want)) {
+				t.Fatalf("decoded %#v, want the publish of LEGION-208 carrying %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"

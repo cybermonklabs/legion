@@ -96,7 +96,7 @@ var largeWrites = []largeWrite{
 		}
 	}},
 	{"an editor's update", func(t *testing.T, rig largeWriteRig) {
-		peer := connectBrowserPeer(t, rig.editor, rig.specID)
+		peer := connectBrowserPeer(t, rig.handler, rig.editor, rig.specID)
 		t.Cleanup(peer.close)
 		stored := storedUpdateCount(t, rig.database, rig.specID)
 		peer.appendParagraph(t, largeMarkdown("A paragraph an editor typed."))

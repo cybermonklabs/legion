@@ -198,6 +198,71 @@ func (f *QuoteFinder) Find(quote string, occurrence, near *int) (Range, error) {
 	return f.choose(quote, matches, occurrence, near)
 }
 
+// QuoteBlockError is a quote asked for inside one block (QuoteFinder.FindInBlock) where the
+// document holds no block of that id (Held false), or the block it holds matches the quote nowhere
+// (Held true). It is a miss of the quote, so it answers ErrTargetNotFound too.
+type QuoteBlockError struct {
+	BlockID string
+	Held    bool
+}
+
+func (e *QuoteBlockError) Error() string {
+	if !e.Held {
+		return fmt.Sprintf("%s: the document holds no block %q", ErrTargetNotFound, e.BlockID)
+	}
+	return fmt.Sprintf("%s: block %q does not hold the quote", ErrTargetNotFound, e.BlockID)
+}
+
+func (e *QuoteBlockError) Unwrap() error { return ErrTargetNotFound }
+
+// FindInBlock is Find over the matches of quote that lie inside the block carrying blockID alone,
+// filtered to that block's range before it chooses among them: occurrence counts those matches in
+// document order, and with no occurrence the one match inside the block is taken however many the
+// rest of the document holds, so text written above the block moves nothing. A document with no
+// block of that id, or whose block matches the quote nowhere, is a QuoteBlockError; an occurrence
+// past the block's matches is Find's miss, counting the block's matches.
+func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range, error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return Range{}, err
+	}
+	_, block, held := findBlock(f.doc, blockID)
+	if !held {
+		return Range{}, &QuoteBlockError{BlockID: blockID}
+	}
+	inside := matches[:0]
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To {
+			inside = append(inside, match)
+		}
+	}
+	if len(inside) == 0 {
+		return Range{}, &QuoteBlockError{BlockID: blockID, Held: true}
+	}
+	return f.choose(quote, inside, occurrence, nil)
+}
+
+// OccurrenceInBlock is the occurrence FindInBlock takes for a match of quote that starts at from
+// inside the block carrying blockID: the number of that block's matches of quote, as FindInBlock
+// filters them, that start before from. held is false where the document holds no block of that
+// id or from lies outside it, where no occurrence of the block places the match.
+func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurrence int, held bool, err error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return 0, false, err
+	}
+	_, block, found := findBlock(f.doc, blockID)
+	if !found || from < block.From || from >= block.To {
+		return 0, false, nil
+	}
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To && match.From < from {
+			occurrence++
+		}
+	}
+	return occurrence, true, nil
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find

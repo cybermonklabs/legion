@@ -9,14 +9,16 @@ import "fmt"
 // compare the rows.
 //
 // Every piece is a literal copy, including the pieces this change does not touch (the fused
-// score, searchPageAndTailSQL, the meaning CTEs, relatedCoordinationRank) and the two expressions
-// the package builds in Go (store.CastableUUID's cast and askBlockNodeSQL), so that nothing of
-// the oracle is built from the package's own helpers: an oracle sharing a helper with the
-// statement under test changes with it, and the comparison then holds nothing. The cost is that
-// an edit to a part of these statements this change leaves alone has to be copied here too,
+// score, searchPageAndTailSQL, the meaning CTEs, relatedCoordinationRank) and the three
+// expressions the package builds in Go (store.CastableUUID's cast, askBlockNodeSQL and
+// askSearchTextOf), so that nothing of the oracle is built from the package's own helpers: an
+// oracle sharing a helper with the statement under test changes with it, and the comparison then
+// holds nothing. The cost is that an edit to a part of these statements this change leaves alone
+// has to be copied here too,
 // which is what the equality tests report when it is not - INFRA-1042's one scored list across
 // the kinds (mainFusedSQL for search and mainRelatedFusedSQL for the related-item check,
-// ts_rank_cd's normalisation flag, a page that names no kind) is
+// ts_rank_cd's normalisation flag, a page that names no kind) and this change's text of an ask
+// hit, its answer read from the ask's node (askSearchTextOf), are
 // copied below for exactly that reason, so the only thing these statements still answer
 // differently by is their document arm.
 //
@@ -153,13 +155,30 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- column); the two must stay in sync. issue reuses r.issue_title, already carried from the
   -- same issues row by kinds, rather than re-reading it. ask reads the text its search vector is
   -- built from (asks_search: the question, then ask_search_suffix's option labels and
-  -- descriptions, answer text and selected labels), so its snippet shows what the query matched.
+  -- descriptions, answer text and selected labels), so its snippet shows what the query matched,
+  -- with the answer read from the ask's node (askSearchTextOf, which says why the vector is the
+  -- row's).
   left join lateral (
     select case r.kind
       when 'issue' then r.issue_title
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1) -- re-resolves the latest version kinds already found once; accepted, bounded by the page size
       when 'comment' then (select c.body from comments c where c.id = r.id::uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
+      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options,
+          case when k.node_kind is null then k.answer
+               when (select f.to_id from (select distinct on (t.kind) t.to_id, t.asserted
+                       from graph_tuples t
+                       where t.from_kind = 'ask' and t.from_id = k.id::text and t.kind = 'answer_state' and t.to_kind = 'value'
+                       order by t.kind, t.seq desc) f where f.asserted offset 0) = 'answered'
+               then jsonb_build_object(
+                 'text', (select f.to_id from (select distinct on (t.kind) t.to_id, t.asserted
+                       from graph_tuples t
+                       where t.from_kind = 'ask' and t.from_id = k.id::text and t.kind = 'answer' and t.to_kind = 'value'
+                       order by t.kind, t.seq desc) f where f.asserted offset 0),
+                 'selected', ((select f.to_id from (select distinct on (t.kind) t.to_id, t.asserted
+                       from graph_tuples t
+                       where t.from_kind = 'ask' and t.from_id = k.id::text and t.kind = 'selected' and t.to_kind = 'value'
+                       order by t.kind, t.seq desc) f where f.asserted offset 0))::jsonb) end)
+        from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true

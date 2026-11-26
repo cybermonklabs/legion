@@ -1,20 +1,21 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueDecisions } from "../web/src/api/types";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
-  baseUrl,
   createAsk,
   createIssue,
   createIssueArtifact,
   createProject,
   getIssue,
   patchIssue,
-  userHeaders,
 } from "./api";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
+
+// The typeface's readers are `issue-page-typeface.ts`'s, the one copy every row reads; this
+// module passes them on to its own rows, which import them from here.
+export { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 
 declare global {
   interface Window {
@@ -85,7 +86,7 @@ export const TWENTY_LABELS = [
   "presets",
   "contents",
   "composer",
-  "decisions",
+  "revisions",
   "verification",
   "plan",
   "children",
@@ -322,18 +323,6 @@ export async function labelFillingTheRoom(page: Page, under: number): Promise<st
 /** The count of what waits on the reader, or whose turn it is when nothing waits. */
 export function waitingCount(page: Page): Locator {
   return issueHeader(page).getByTestId("issue-whose-turn");
-}
-
-/** The issue's decisions as the server reads them for alice, each with `waiting_review`
- *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
- *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
-export async function issueDecisions(key: string): Promise<IssueDecisions> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
-  const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
-  }
-  return (await response.json()) as IssueDecisions;
 }
 
 /** Details, the drawer over the right of the page. */
@@ -657,8 +646,8 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 
 /**
  * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
- * where the issue's project gates two or three steps, since the header then draws one approval
- * entry for each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
+ * where the issue's project gates two steps, since the header then draws one approval entry for
+ * each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
  * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
  * one does. No other width has a limit.
  */
@@ -780,52 +769,6 @@ export function stickyReading(page: Page): Promise<StickyReading | null> {
       },
     };
   });
-}
-
-/** The family `web/src/styles.css` declares for the typeface the new page ships and draws in. */
-export const TYPEFACE = "Dispatch Inter";
-
-/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule. Throws when no rule declares the family. */
-export async function typefaceAddress(page: Page): Promise<string> {
-  // Callers wait for the header drawn first, and the page's script runs only once its stylesheet
-  // has loaded, so the rule is there; a miss only throws.
-  const address = await page.evaluate((family) => {
-    const find = (rules: CSSRuleList, base: string): string | null => {
-      for (const rule of rules) {
-        if (rule instanceof CSSFontFaceRule) {
-          const named = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
-          const source = /url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue("src"));
-          if (named === family && source?.[1] !== undefined) return new URL(source[1], base).href;
-        } else if (rule instanceof CSSGroupingRule) {
-          const found = find(rule.cssRules, base);
-          if (found !== null) return found;
-        }
-      }
-      return null;
-    };
-    for (const sheet of document.styleSheets) {
-      const found = find(sheet.cssRules, sheet.href ?? document.baseURI);
-      if (found !== null) return found;
-    }
-    return null;
-  }, TYPEFACE);
-  if (address === null) {
-    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-  }
-  return address;
-}
-
-/** How each face of the typeface's family stands in the document's font set: `loaded` once the
- *  file arrived, `error` once its request failed. */
-export function typefaceStatuses(page: Page): Promise<string[]> {
-  return page.evaluate(
-    (family) =>
-      [...document.fonts]
-        .filter((face) => face.family.replace(/["']/g, "") === family)
-        .map((face) => face.status),
-    TYPEFACE
-  );
 }
 
 /** The stack the header's band is drawn in, as its computed `font-family`, each family

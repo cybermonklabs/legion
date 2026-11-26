@@ -138,11 +138,15 @@ const slowWithdrawal = 4 * time.Second
 
 // A close's transaction writes closed_at, then withdraws the issue's open asks, writing their blocks
 // into the issue's documents under each document's advisory lock, which it holds until it commits.
-// A browser's keystroke in a room of such a document on another process waits on that lock, so it
-// reaches the append gate only after the close committed. The keystroke was made before the close
-// took effect, so it is stored however long the withdrawal took: the gate measures closeMargin from
-// the close's commit (the close stamps closed_at again just before it commits), not from the start
-// of its transaction. The commit's notification then closes the room, and the browser reconnects
+// It writes each block's state (docs.WriteIssueAskStates): while another build serves the
+// attributes that build's pages read, and on a fleet of one build the ones a version keeps, since a
+// close writes one version that changes only the server-owned attributes of the asks' blocks (R3).
+// The test registers a process of each of two builds. A browser's
+// keystroke in a room of such a document on another process waits on that lock, so it reaches the
+// append gate only after the close committed. The keystroke was made before the close took effect,
+// so it is stored however long the withdrawal took: the gate measures closeMargin from the close's
+// commit (the close stamps closed_at again just before it commits), not from the start of its
+// transaction. The commit's notification then closes the room, and the browser reconnects
 // read-only, holding the keystroke. Here the close holds its transaction open for longer than
 // closeMargin after writing the withdrawn block, and the browser types then.
 func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
@@ -156,6 +160,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 		return wrapper
 	})
 	runDocumentRoomSync(t, database, documentService)
+	registerTwoBuilds(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "A slow close", closeDecision)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
@@ -165,7 +170,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	runDocumentRoomSync(t, second, other)
-	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, other, issue.PrimaryArtifactID)
 	wrapper.insert = func() {
 		// The close's transaction began before its withdrawal wrote the block, so the keystroke
 		// is typed more than closeMargin after that start.
@@ -219,10 +224,12 @@ func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	})
 }
 
-// storedDocumentText renders every stored update of artifactID, as a room loading it would hold it.
+// storedDocumentText renders every stored update of the room artifactID's document is edited in,
+// as a room loading it would hold it, through the document's own fragment (documentRoomOf).
 func storedDocumentText(t *testing.T, database *store.Store, artifactID string) string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select update from doc_updates where artifact_id = $1 order by version`, artifactID)
+	room, fragment := documentRoomOf(t, database.Pool, artifactID)
+	rows, err := database.Pool.Query(context.Background(), `select update from doc_updates where artifact_id = $1 order by version`, room)
 	if err != nil {
 		t.Fatalf("read the stored document updates: %v", err)
 	}
@@ -236,7 +243,7 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 			t.Fatalf("apply a stored document update: %v", err)
 		}
 	}
-	return renderDocument(t, document)
+	return renderFragment(t, document, fragment)
 }
 
 // waitForDocumentConnectionClose waits for the server to close a connected client's connection.

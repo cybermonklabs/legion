@@ -9,12 +9,14 @@ import (
 )
 
 // attachAskStates sets Ask, in place, on every ask hit of a search page: the ask's state, its
-// answer and its resolution, read from its row through docs.ScanAsk, and Author, the ask's asker,
-// from the same row. A resolved ask's answer is the last one its ask.answered events recorded
-// (loadAskAnswersByAsk), since a row that document settlement retracted while it was answered
-// keeps its answer nowhere else; those events are read only when the page holds a resolved ask.
-// One query reads every ask hit's row, and a page with no ask hit reads nothing. An ask removed
-// after the search ran has no row left and keeps Ask and Author nil.
+// answer and its resolution, read off its node (askNodeAnswerColumn, askNodeAnswer.applyTo), as
+// every read of an answer reads them (R3), and Author, the ask's asker, from its row. A resolved
+// ask's answer is the last one its ask.answered events recorded (loadAskAnswersByAsk), since a
+// resolved ask holds no answer in the shape every ask read gives it, and one that document
+// settlement retracted while it was answered keeps its answer nowhere else; those events are read
+// only when the page holds a resolved ask. One query reads every ask hit's row and node, and a page
+// with no ask hit reads nothing. An ask removed after the search ran has no row left and keeps Ask
+// and Author nil.
 func (s *server) attachAskStates(ctx context.Context, q queryer, results []model.SearchResult, reader *displayTreeReader) error {
 	indexByID := map[string]int{}
 	var askIDs []string
@@ -28,17 +30,23 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, results []model
 		return nil
 	}
 
-	rows, err := q.Query(ctx, `select `+docs.AskColumns+` from asks a where a.id = any($1::uuid[])`, askIDs)
+	rows, err := q.Query(ctx, `select `+docs.AskColumns+`, `+askNodeAnswerColumn+` from asks a where a.id = any($1::uuid[])`, askIDs)
 	if err != nil {
 		return fmt.Errorf("load search ask states: %w", err)
 	}
 	defer rows.Close()
 	var resolvedIDs []string
 	for rows.Next() {
-		ask, err := docs.ScanAsk(rows)
+		var nodeAnswer []byte
+		ask, err := docs.ScanAsk(rows, &nodeAnswer)
 		if err != nil {
 			return fmt.Errorf("scan search ask state: %w", err)
 		}
+		node, err := readAskNodeAnswer(nodeAnswer)
+		if err != nil {
+			return fmt.Errorf("read search ask %s: %w", ask.ID, err)
+		}
+		node.applyTo(&ask)
 		if ask.State == "resolved" {
 			resolvedIDs = append(resolvedIDs, ask.ID)
 		}

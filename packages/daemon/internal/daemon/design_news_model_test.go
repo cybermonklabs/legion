@@ -32,7 +32,7 @@ import (
 // implementing and a child in reviewing whose reviewer holds the phase, runs through the daemon's
 // own parts (the newsPathRig: the engine, admission, the outbox, the supervisor's machine over the
 // claim store, the one render), and a seed's random sequence of steps drives it: a person approves a
-// new version that changes the work or only its decision blocks, a person requests changes and
+// new version that changes the work or only its ask blocks, a person requests changes and
 // approves again (the gate closes and opens), the reconcile runs (and raises past a pair that
 // changed nothing of the work), the sweep queues it, the reviewer's starts run (a send, and its
 // acknowledgement), the agent starts the turn of the prompt it holds (a confirmation), the turn's
@@ -74,7 +74,7 @@ import (
 //     opening that stands exactly when no role message told it, no final credit settled it and no
 //     standing credit carried it (design_news_opening_told, design_news_told_in);
 //   - never ahead of what the holder was told: the record never says it took a version no prompt
-//     its holders read told it, beyond versions that changed only decision blocks, and never says an
+//     its holders read told it, beyond versions that changed only ask blocks, and never says an
 //     opening told that no message and no prompt they read told (told twice, never lost);
 //   - level with what its holders read: everything they read is credited, but a prompt a newer task
 //     took the place of in its turn (a supersede) and one whose final credit a refused write lost,
@@ -458,7 +458,7 @@ func (r *newsModelRow) creditedPrompts() []*newsModelPrompt {
 }
 
 // newsModelHolderPair and newsModelHolderUnchanged are how a holder's news names a version pair
-// (workflow.RenderNews): one that changed the work, and one that changed decision blocks alone.
+// (workflow.RenderNews): one that changed the work, and one that changed ask blocks alone.
 // newsModelArchitectPair is how the root architect's summary names a pair of its own.
 var (
 	newsModelHolderPair      = regexp.MustCompile(`version (\d+), since version (\d+), which your phase last took`)
@@ -544,7 +544,7 @@ type newsModel struct {
 	kinds map[string]bool
 
 	// latest is the newest version of the spec, every one of them approved when it is saved, and
-	// decisionOnly says which versions changed only decision blocks of the one before.
+	// decisionOnly says which versions changed only ask blocks of the one before.
 	latest       int
 	decisionOnly map[int]bool
 	// childGen and rootGen are the generations the child and the tree's root stand at: a re-entry
@@ -705,8 +705,8 @@ func (m *newsModel) gens(row *newsModelRow) (uint64, uint64) {
 	return m.rootGen, m.rootGen
 }
 
-// answer is Dispatch's change set of pair, by the model's versions: decision-only where every
-// version after From up to To changed only decision blocks, a changed section otherwise.
+// answer is Dispatch's change set of pair, by the model's versions: ask-only (DecisionOnly) where
+// every version after From up to To changed only ask blocks, a changed section otherwise.
 func (m *newsModel) answer(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 	changes := dispatch.ArtifactChanges{ArtifactID: pair.ArtifactID, From: pair.From, To: pair.To, DecisionOnly: true}
 	if !m.workUnchanged(pair.From, pair.To) {
@@ -716,7 +716,7 @@ func (m *newsModel) answer(pair record.VersionPair) (dispatch.ArtifactChanges, e
 	return changes, nil
 }
 
-// workUnchanged says whether every version after from up to to changed only decision blocks.
+// workUnchanged says whether every version after from up to to changed only ask blocks.
 func (m *newsModel) workUnchanged(from, to int) bool {
 	for v := from + 1; v <= to; v++ {
 		if !m.decisionOnly[v] {

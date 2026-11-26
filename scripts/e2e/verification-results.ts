@@ -300,9 +300,12 @@ async function awaitCommitStands(
 }
 
 /** Records one result through `POST /api/v1/issues/{key}/results`, and answers what Dispatch
- *  says about it: the stored row and the line the pull-request body carries. */
+ *  says about it: the stored row and the line the pull-request body carries. It states a negative
+ *  control, since Dispatch refuses a pass of a before_merge check that states none
+ *  (400 NEGATIVE_CONTROL_REQUIRED); a case that sends its own replaces it. */
 async function record(key: string, input: Json): Promise<CheckResultRecorded> {
   return (await asSession("POST", issuePath(key, "/results"), {
+    negative_control: "Broke what the check proves and the run failed.",
     role: "tester",
     verdict: "pass",
     ...input,
@@ -1667,7 +1670,7 @@ const reportedCallRefusal = `dispatch result was not called: 3 problems
 - --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.
 - --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.
 - --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.
-- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111`;
+- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111 --negative-control 'Removed the guard and the test failed.'`;
 
 /** The second text of that requirement, which `dispatch issue --title -` prints, written out the
  *  same way. */
@@ -2006,10 +2009,16 @@ await runCase("values-kept", async () => {
         want: { negative_control: "-", observed: passLine, run: "" },
       },
       {
-        argv: [...resultArgv(issue, "v3", commits.valuesKept), "--observed-file", "-"],
+        argv: [
+          ...resultArgv(issue, "v3", commits.valuesKept),
+          "--observed-file",
+          "-",
+          "--negative-control",
+          control,
+        ],
         check: "v3",
         stdin: "-",
-        want: { negative_control: "", observed: "-", run: "" },
+        want: { negative_control: control, observed: "-", run: "" },
       },
     ];
     for (const [index, step] of steps.entries()) {

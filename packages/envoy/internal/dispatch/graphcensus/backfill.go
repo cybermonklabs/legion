@@ -35,9 +35,9 @@ type KindBackfill struct {
 	// Rows is how many projection rows it gave a node, Nodes and Tuples how many of each it
 	// wrote, and Skipped how many rows it could not do and left as they were.
 	Rows, Nodes, Tuples, Skipped int64
-	// Owed is how many documents it marked owed this release's block index (store_owed_at),
-	// for the block kind alone: those whose rows it named the nodes of, and those another
-	// release indexed after the store last stated them (markStaleDocuments).
+	// Owed is how many documents it marked owed this release's block index (store_owed_at), for
+	// the block kind alone: those whose rows it named the nodes of, and those no pass of this
+	// build's rule had stated at their version (markStaleDocuments).
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
 	// is when the arm of graph_edges over that kind's table answers nothing: each of the four
@@ -55,11 +55,17 @@ type BackfillReport struct {
 // Backfill writes the nodes and tuples of the comments, document blocks and block references
 // written before the node and tuple store existed: every row of the three projected tables
 // that names no node (migration 20261109022248 added the columns and filled none of them). It
-// then gives every role the store census holds to a node and that has none its node and its page
-// (backfillRoles), since the publisher writes those only for the events it publishes from then on,
-// and every session the census holds to a node and that has none its node (backfillSessions): a
-// session that only asked, followed or was reached before the store existed was recorded by no
-// write of the store, and the followed_by edge to it would otherwise answer no node.
+// then mends what a process of the release before writes of a run of the command bar during a
+// roll or after a rollback (backfillRuns, backfillRunFrames, backfillGoneRuns): a run it recorded
+// with no interaction node, a frame it appended with no frame value, and a run whose row it
+// deleted an hour old, whose node it states gone; and the prevented_by it leaves asserted at a
+// check it drops or at a check of a document it retires, which it retracts
+// (backfillEndedPreventions). It then gives every role the store census holds to a node and that
+// has none its node and its page (backfillRoles), since the publisher writes those only for the
+// events it publishes from then on, and every session the census holds to a node and that has none
+// its node (backfillSessions): a session that only asked, followed or was reached before the store
+// existed was recorded by no write of the store, and the followed_by edge to it would otherwise
+// answer no node.
 //
 // It walks each kind in batches, writing a batch's nodes, its tuples and the projection
 // columns that name them in one transaction, so a row and its node commit together or not at
@@ -90,14 +96,16 @@ type BackfillReport struct {
 //
 // A row the release before this one deleted - the row of a block its version dropped, or of a
 // link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
-// node stated gone because its row is missing would be a repair. That release deleted it while it
-// indexed a version after the store had stated the document, so the version the store last stated
-// the document's blocks at (store_version, which only this release's index pass writes) is below
-// the version the document's rows stand at. The run marks each such document too
-// (markStaleDocuments), by those two versions and by no row of either side, and the
-// reconciliation's index pass over the latest version then states each such block gone and
-// retracts each such link, from the version's render (refs.IndexBlocks). No release deletes a
-// comment's row (writeCommentBatch).
+// node stated gone because its row is missing would be a repair. And a build of an earlier rule of
+// the block index states none of this build's facts of each block of a version it indexes - its
+// rank, its text, its placement, its place in the text (its text_parent and its text_rank), its
+// size, the supertag of its type - though it writes store_version for that version as this build's
+// pass does. So the run marks every document no pass of this build's rule has stated at its
+// version (markStaleDocuments), by the record of that pass the document's row holds
+// (stated_version, stated_rule) and by no row of either side, and
+// the reconciliation's index pass over the latest version then states what each block owes,
+// states each block the version dropped gone and retracts each link it dropped, from the
+// version's render (refs.IndexBlocks). No release deletes a comment's row (writeCommentBatch).
 //
 // Each pass walks only the rows its marker does not mark, which for the three projected tables is
 // the node column pair the view's old arms test (migration 20261109215947), names their nodes on
@@ -109,19 +117,21 @@ type BackfillReport struct {
 //
 // Every node it writes through graphstore.Write restates its node (graphstore.Node's Restates):
 // the run owns a row's facts, not the state or the visibility of the node that row names, so a
-// node another write made and then marked - a later release's proposed requirement, or a node it
-// reserved for its author - keeps what that write gave it, and one stored gone comes back live,
-// as the writer whose row it is would bring it back. The roles and the sessions go through
+// node another write made and then marked - proposed, settled, overtaken, or reserved for its
+// author - keeps what that write gave it, and one stored gone comes back live, as the writer
+// whose row it is would bring it back. The roles and the sessions go through
 // graphstore.WriteArms, whose upsert moves nothing on a node already there.
 //
-// Before it reads any row it records where it began reading the event log (recordBackfillHorizon):
-// an id at or below which every event was final by then, so every event the run cannot have seen
-// is above it, recorded as the horizon of this build's marking rule. A process of the release
-// before this one goes on writing rows that name no node, and versions of documents this build's
-// store has stated, after the run, and a build of this code of the same marking rule with no
-// event cursor of its rule to start from starts reading the log at that id (docs'
+// Before it reads any row it records where it began reading the event log (StartBackfill,
+// recordBackfillHorizon): an id at or below which every event was final by then, so every event the
+// run cannot have seen is above it, recorded as the horizon of this build's marking rule. A process
+// of the release before this one goes on writing rows that name no node, and versions of documents
+// this build's store has stated, after the run, and a build of this code of the same marking rule
+// with no event cursor of its rule to start from starts reading the log at that id (docs'
 // readEventsAfterCursor), so nothing that release writes between the run and that build's first
-// block-index tick is passed over.
+// block-index tick is passed over. Backfill waits for that record as long as the writers of the
+// event log stay open; a boot of the server records it within a bound and runs the passes apart
+// (StartBackfill, BackfillRun.Passes).
 //
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
@@ -134,86 +144,36 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 // backfillAt is Backfill as a build of the marking rule rule runs it: its marks and its horizon
 // are that rule's. A test runs a backfill of another rule through it.
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
-	report := BackfillReport{}
-	if err := requireBackfillIndexes(ctx, database); err != nil {
-		return report, err
-	}
-	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
-	// reads as "no event recorded this write" and is exactly true of a row written before the
-	// store existed. The run appends no event of its own: events.Broker is the one writer of
-	// that table (api's event-insert guard holds every other writer to it, because the broker
-	// takes the transaction id before the insert draws the event's id, which the safe horizon
-	// rests on), and the broker refuses an event that belongs to no issue, document, project or
-	// session, which a database-wide backfill belongs to none of. A run after another reads
-	// none of the rows that run marked, so it states none of their facts again; two runs at once
-	// can state such a fact twice, where both read one comment before either marks it, since the
-	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
-	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
-	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
-	horizon, err := recordBackfillHorizon(ctx, database, rule)
+	run, err := startBackfillAt(ctx, database, out, 0, rule)
 	if err != nil {
-		return report, err
+		return BackfillReport{}, err
 	}
-	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
-	if err := analyzeWalkedColumns(ctx, database); err != nil {
-		return report, err
-	}
-	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
-		return backfillBlocks(ctx, database, rule)
-	}
-	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
-		blocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
-	} {
-		done, err := write(ctx, database)
-		if err != nil {
-			return report, err
-		}
-		report.Kinds = append(report.Kinds, done)
-		writeKindBackfill(out, done)
-	}
-	// The project of every node, which a read limited to a project depends on: the node of each
-	// issue, document, ask and message written before its kind's writer wrote one, and the
-	// project of each comment and block node written before a node named its project. Both run
-	// after the passes above, so a comment or a block those passes wrote a node for takes its
-	// project from them, and the fill finds nothing of it to do. A row the object pass leaves
-	// because the store holds its node in another project (graphstore.ErrProjectMoved), which no
-	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
-	// after both.
-	var moved error
-	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
-		backfillObjectNodes, backfillScopes,
-	} {
-		done, err := write(ctx, database)
-		report.Kinds = append(report.Kinds, done...)
-		for _, kind := range done {
-			writeKindBackfill(out, kind)
-		}
-		switch {
-		case onlyProjectMoved(err):
-			moved = err
-		case err != nil:
-			return report, errors.Join(moved, err)
-		}
-	}
-	return report, moved
+	return run.Passes(ctx, out)
 }
 
-// onlyProjectMoved is whether err holds failures and every one is graphstore.ErrProjectMoved:
-// the rows backfillObjectNodes leaves while writing every other one.
-func onlyProjectMoved(err error) bool {
+// OnlyProjectMoved answers whether err holds failures and every one is graphstore.ErrProjectMoved
+// (only), the rows backfillObjectNodes leaves while writing every other one, and how many it holds
+// (moved). The failures are the members of err's join, or err itself where it joins none. A join
+// that holds another failure beside them, errors.Join(moved, err) as Passes answers a pass that
+// failed after such rows, is not only that, though errors.Is reads ErrProjectMoved in it.
+func OnlyProjectMoved(err error) (moved int, only bool) {
 	if err == nil {
-		return false
+		return 0, false
 	}
 	joined, ok := err.(interface{ Unwrap() []error })
 	if !ok {
-		return errors.Is(err, graphstore.ErrProjectMoved)
+		if errors.Is(err, graphstore.ErrProjectMoved) {
+			return 1, true
+		}
+		return 0, false
 	}
 	for _, one := range joined.Unwrap() {
 		if !errors.Is(one, graphstore.ErrProjectMoved) {
-			return false
+			return 0, false
 		}
+		moved++
 	}
-	return true
+	return moved, moved > 0
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {
@@ -222,10 +182,13 @@ func writeKindBackfill(out io.Writer, done KindBackfill) {
 }
 
 // The waits between two readings of the event log's writers (recordBackfillHorizon): 10 ms,
-// doubling to 250 ms, the steps events.Horizon.Await re-observes at.
+// doubling to 250 ms, the steps events.Horizon.Await re-observes at. BackfillHorizonWaitBound is the
+// longest a boot of the server waits for the record (StartBackfill's bound), so no writer of the
+// event log left open holds a boot's readiness longer than that.
 const (
-	backfillHorizonWaitMin = 10 * time.Millisecond
-	backfillHorizonWaitMax = 250 * time.Millisecond
+	backfillHorizonWaitMin   = 10 * time.Millisecond
+	backfillHorizonWaitMax   = 250 * time.Millisecond
+	BackfillHorizonWaitBound = 30 * time.Second
 )
 
 // recordBackfillHorizon records in graph_backfill_horizon (migrations 20261118115645 and
@@ -243,22 +206,31 @@ const (
 // The table holds one row for each marking rule (refs.BlockIndexMarkingRule), and each run
 // replaces the row of its own rule and leaves the row of every other rule as it was. Whatever the
 // release before this one wrote before the newest run of a rule began, that run reads as it reads
-// every other row: a row that names no node, and a document indexed past the version the store
-// last stated it at (markStaleDocuments), and it marks what that rule owes. So a build of that
-// rule need start reading the log no earlier than that run's horizon, and a build of another rule
-// reads nothing from it: were one row shared, a backfill of an older rule run after a newer one
-// would move the row, and the newer rule's first tick would pass over every event between the
-// two horizons, which the older backfill did not mark for it.
-func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int) (int64, error) {
+// every other row: a row that names no node, and a document no pass of that rule has stated at its
+// version (markStaleDocuments), and it marks what that rule owes. So a build of that rule need
+// start reading the log no earlier than that run's horizon, and a build of another rule reads
+// nothing from it: were one row shared, a backfill of an older rule run after a newer one would
+// move the row, and the newer rule's first tick would pass over every event between the two
+// horizons, which the older backfill did not mark for it.
+//
+// A bound above 0 ends the wait, the mark's and the readings', once it has passed: the record then
+// names the oldest writer of the event log, the transaction it waited on (events.OldestEventWriter),
+// in a HorizonBoundError, and records nothing.
+func recordBackfillHorizon(ctx context.Context, database *store.Store, bound time.Duration, rule int) (int64, error) {
+	waiting, stop := ctx, context.CancelFunc(func() {})
+	if bound > 0 {
+		waiting, stop = context.WithTimeout(ctx, bound)
+	}
+	defer stop()
 	horizon := events.NewHorizon(database.Pool)
-	mark, err := horizon.Mark(ctx)
+	mark, err := horizon.Mark(waiting)
 	if err != nil {
-		return 0, err
+		return 0, horizonWaitEnded(ctx, waiting, database, bound, err)
 	}
 	for wait := backfillHorizonWaitMin; ; wait = min(2*wait, backfillHorizonWaitMax) {
-		floor, final, err := horizon.WriterFloor(ctx, mark)
+		floor, final, err := horizon.WriterFloor(waiting, mark)
 		if err != nil {
-			return 0, err
+			return 0, horizonWaitEnded(ctx, waiting, database, bound, err)
 		}
 		if final {
 			if _, err := database.Pool.Exec(ctx, `
@@ -270,15 +242,160 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 			return floor, nil
 		}
 		select {
-		case <-ctx.Done():
-			return 0, fmt.Errorf("wait for the event log's writers open when the backfill began: %w", ctx.Err())
+		case <-waiting.Done():
+			return 0, horizonWaitEnded(ctx, waiting, database, bound, waiting.Err())
 		case <-time.After(wait):
 		}
 	}
 }
 
+// backfillPass is one pass of the backfill: it writes what the rows of one kind or more owe the
+// store and reports what it did for each kind. A pass that fails reports what it did before the
+// failure, if it read that far, beside its error.
+type backfillPass func(context.Context, *store.Store) ([]KindBackfill, error)
+
+// oneKind is the backfillPass of a pass over one kind, which reports no kind when it fails.
+func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) backfillPass {
+	return func(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
+		done, err := write(ctx, database)
+		if err != nil {
+			return nil, err
+		}
+		return []KindBackfill{done}, nil
+	}
+}
+
+// BackfillRun is a run of the backfill whose horizon StartBackfill has recorded, its passes still
+// to run (Passes), and the marking rule its marks and its horizon are of.
+type BackfillRun struct {
+	database *store.Store
+	rule     int
+}
+
+// StartBackfill begins a run of the backfill (Backfill) over database: it refuses the run, before it
+// writes anything, while any of BackfillIndexes is absent or invalid (requireBackfillIndexes), then
+// prints the run's event line to out, records the run's horizon of the event log
+// (recordBackfillHorizon) and prints it, and answers the run, whose passes the caller runs next.
+// bound is how long the record waits on the writers of the event log, 0 for as long as they stay
+// open; past it the record answers a HorizonBoundError and the run is not begun. The run is of this
+// build's marking rule (refs.BlockIndexMarkingRule).
+func StartBackfill(ctx context.Context, database *store.Store, out io.Writer, bound time.Duration) (BackfillRun, error) {
+	return startBackfillAt(ctx, database, out, bound, refs.BlockIndexMarkingRule)
+}
+
+// startBackfillAt is StartBackfill as a build of the marking rule rule begins it (backfillAt).
+func startBackfillAt(ctx context.Context, database *store.Store, out io.Writer, bound time.Duration, rule int) (BackfillRun, error) {
+	if err := requireBackfillIndexes(ctx, database); err != nil {
+		return BackfillRun{}, err
+	}
+	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
+	// reads as "no event recorded this write" and is exactly true of a row written before the
+	// store existed. The run appends no event of its own: events.Broker is the one writer of
+	// that table (api's event-insert guard holds every other writer to it, because the broker
+	// takes the transaction id before the insert draws the event's id, which the safe horizon
+	// rests on), and the broker refuses an event that belongs to no issue, document, project or
+	// session, which a database-wide backfill belongs to none of. A run after another reads
+	// none of the rows that run marked, so it states none of their facts again; two runs at once
+	// can state such a fact twice, where both read one comment before either marks it, since the
+	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
+	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
+	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
+	horizon, err := recordBackfillHorizon(ctx, database, bound, rule)
+	if err != nil {
+		return BackfillRun{}, err
+	}
+	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	return BackfillRun{database: database, rule: rule}, nil
+}
+
+// Passes runs the run's passes, in the order backfillPasses gives them, printing what each did for
+// each kind to out, and answers what they did. Before the first it gives the planner statistics of
+// the columns the walks read their rows by (analyzeWalkedColumns), on the passes' own path, so a
+// boot, which runs them on a goroutine of their own, waits on no analysis.
+func (run BackfillRun) Passes(ctx context.Context, out io.Writer) (BackfillReport, error) {
+	report := BackfillReport{}
+	if err := analyzeWalkedColumns(ctx, run.database); err != nil {
+		return report, err
+	}
+	// The passes run in the order backfillPasses gives them, which says what that order rests on.
+	// A row the object pass leaves because the store holds its node in another project
+	// (graphstore.ErrProjectMoved), which no second run cures, holds back none of the passes after
+	// it - the rest of that pass, the fill, the asks and their followers, and every later topic's:
+	// the run answers it after them all.
+	var moved error
+	for _, write := range backfillPasses(run.rule) {
+		done, err := write(ctx, run.database)
+		report.Kinds = append(report.Kinds, done...)
+		for _, kind := range done {
+			writeKindBackfill(out, kind)
+		}
+		if _, only := OnlyProjectMoved(err); only {
+			moved = err
+		} else if err != nil {
+			return report, errors.Join(moved, err)
+		}
+	}
+	return report, moved
+}
+
+// HorizonBoundError is the end of a record of the backfill's horizon at its bound: the oldest
+// writer of the event log, the transaction the record waited on, was still open. Pid is its backend,
+// 0 for a prepared transaction, and Age how long its transaction had been open. It wraps
+// context.DeadlineExceeded.
+type HorizonBoundError struct {
+	Pid int32
+	Age time.Duration
+}
+
+// NewHorizonBoundError is the record's error at its bound over the oldest writer's read
+// (events.OldestEventWriter): the writer's pid, and its age at now from since, when its transaction
+// began. A since Postgres did not show is the zero time, and its age 0.
+func NewHorizonBoundError(pid int32, since, now time.Time) *HorizonBoundError {
+	bound := &HorizonBoundError{Pid: pid}
+	if !since.IsZero() {
+		bound.Age = now.Sub(since)
+	}
+	return bound
+}
+
+func (e *HorizonBoundError) Error() string {
+	writer := fmt.Sprintf("backend pid %d", e.Pid)
+	if e.Pid == 0 {
+		writer = "a prepared transaction"
+	}
+	return fmt.Sprintf("the event log's writers held the backfill's horizon past its bound: the oldest, %s, open %s: %v",
+		writer, e.Age, context.DeadlineExceeded)
+}
+
+func (e *HorizonBoundError) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
+// horizonWaitEnded is what recordBackfillHorizon answers where err ended its wait on the writers of
+// the event log: the caller's own end of ctx, err itself where waiting, the wait's context, has not
+// ended, and the end of the bound, waiting's deadline, as a HorizonBoundError naming the oldest
+// writer of the event log then. A bound whose writer has ended by that read, as one can at the very
+// bound, is an error that names none.
+func horizonWaitEnded(ctx, waiting context.Context, database *store.Store, bound time.Duration, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		return fmt.Errorf("wait for the event log's writers open when the backfill began: %w", ctx.Err())
+	case waiting.Err() == nil:
+		return err
+	}
+	pid, since, err := events.OldestEventWriter(ctx, database.Pool)
+	switch {
+	case errors.Is(err, events.ErrNoEventWriter):
+		return fmt.Errorf("the event log's writers held the backfill's horizon past its bound of %s, and none is open now: %w", bound, context.DeadlineExceeded)
+	case err != nil:
+		return fmt.Errorf("name the writer of the event log that held the backfill's horizon past its bound of %s: %w", bound, err)
+	}
+	return NewHorizonBoundError(pid, since, time.Now())
+}
+
 // walkedColumnsAnalysis is the statement that gives the planner statistics of the column each walk
-// of the backfill reads its rows by, node_kind of the three projected tables.
+// of the backfill reads its rows by, node_kind of the three projected tables and of the four tables
+// and the documents the topic passes walk.
 //
 // Migration 20261109022248 adds those columns with the first release that carries this backfill,
 // after any analysis of the tables, so until autovacuum next analyzes a table the planner holds no
@@ -291,7 +408,18 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 // tenth of that copy's blocks read all 27,405 of them. The statement samples each table's pages
 // as any analysis does, whatever the table's size, takes SHARE UPDATE EXCLUSIVE, which no read or
 // write waits on, and writes only the statistics catalog.
-const walkedColumnsAnalysis = `analyze document_blocks (node_kind), block_refs (node_kind), comments (node_kind)`
+//
+// Migration 20261116092210_issue_tree_markers adds the same columns to issue_links, components,
+// component_depends, issue_component_members and artifacts, after any analysis of them too. With
+// no statistics of them, over a seed of 20,000 rows owed to each walk, a batch read from the
+// middle of the walk read every row past its cursor: the issue links' and the issue components'
+// walks 9,999 rows of their tables under a custom plan, the component dependencies' walk 9,999
+// under a generic one, and the orphaned references' walk 10,001 documents under a custom plan,
+// where each reads one batch once the columns hold statistics
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+const walkedColumnsAnalysis = `analyze document_blocks (node_kind), block_refs (node_kind), comments (node_kind),
+	issue_links (node_kind), components (node_kind), component_depends (node_kind), issue_component_members (node_kind),
+	artifacts (node_kind)`
 
 // analyzeWalkedColumns runs walkedColumnsAnalysis.
 func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {

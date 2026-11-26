@@ -175,7 +175,7 @@ func benchmarkReplica(b *testing.B, service *Service, live *crdt.Doc) *renderedR
 	b.Helper()
 	log := live.OpenUpdateLog()
 	testcleanup.Add(b, log.Close)
-	replica := service.keepReplica(live, log, nil)
+	replica := service.keepReplica(live, log, nil, nil)
 	live.Transact(func(*crdt.Transaction) {})
 	replica.observe("bench")
 	if replica.hold() == nil {

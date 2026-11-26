@@ -188,6 +188,18 @@ func queuedChanges(t *testing.T, database *store.Store) int {
 	return queued
 }
 
+// queuedChangesOf is how many changes wait in the queue for project's refresh to apply: the rows
+// whose item belongs to project (searchTermQueueProjectSQL).
+func queuedChangesOf(t *testing.T, database *store.Store, project string) int {
+	t.Helper()
+	var queued int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from search_term_queue q where `+searchTermQueueProjectSQL+` = $1`, project).Scan(&queued); err != nil {
+		t.Fatalf("count the queued changes of %s: %v", project, err)
+	}
+	return queued
+}
+
 // A1. The counts a pass applies from the queue are the counts a full rebuild writes, after an
 // add, an edit and a delete of each kind of item. Every change here is made through the route a
 // caller uses, apart from the three deletes and the block an ask is attached to, which no route
@@ -324,8 +336,11 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 	if result := testwait.Receive(t, "the check's refresh of the term statistics to end", srv.ensureSearchTermStats(project)); result.Err != nil {
 		t.Fatalf("the check's refresh failed: %v", result.Err)
 	}
-	if queued := queuedChanges(t, database); queued != 0 {
-		t.Fatalf("%d changes are still queued after the check's refresh", queued)
+	// The issue is born converted, so its tree and its decisions query write versions, whose
+	// document_search rows queue changes too; those name no project (searchTermDocument) and wait
+	// for the whole pass's sweep, so what this project's refresh applies is its own rows.
+	if queued := queuedChangesOf(t, database, project); queued != 0 {
+		t.Fatalf("%d changes of %s are still queued after the check's refresh", queued, project)
 	}
 	assertCountsEqualAFullRebuild(t, database, project)
 }

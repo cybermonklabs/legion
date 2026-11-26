@@ -17,7 +17,7 @@ import (
 )
 
 // decisionWriteRoutes and decisionWritePaths are what the table below must drive: the eight
-// routes a decision block can be written on, under every actor and every shape each of them
+// routes an ask block can be written on, under every actor and every shape each of them
 // takes - both a person and an agent, but for the two replies only the session, which is the
 // one writer those routes have. The comment route is driven twice over as well, as the comment
 // it stores and as the reply under an ask it stores. The test counts what it drove against
@@ -36,27 +36,27 @@ const decisionSession = "s1"
 // to, live and taking every mode.
 const decisionSessions = `[{"session_id":"s1","title":"Planner","capabilities":["btw","aside","steer"],"last_seen":1}]`
 
-// theDecisionBlock is a decision block as a writer writes one into a comment or a message: a
+// theDecisionBlock is an ask block as a writer writes one into a comment or a message: a
 // question and its options inside an `ask` directive, which the reader draws a decision card for
 // and nobody can answer where it stands.
 const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
 
-// decisionRefusal is the whole refusal a body is answered with for the decision block its block
+// decisionRefusal is the whole refusal a body is answered with for the ask block its block
 // at position, of type blockType, holds. The wording is spelled out here, as
 // itemblocks/decision_test.go spells it out for the package that writes it, rather than
 // formatted from the string the server formats it from, so the text a writer reads is read back
 // against a text this test holds.
 func decisionRefusal(position int, blockType string) string {
-	return fmt.Sprintf("body block %d (%s) holds a decision block, which nobody can answer where it stands: "+
-		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
-		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+	return fmt.Sprintf("body block %d (%s) holds an ask block, which nobody can answer where it stands: "+
+		"ask the question in the issue's own document, as an ask block there, or open an ask with "+
+		"`dispatch ask`; to show an ask block as an example, put it in a fenced code block",
 		position, blockType)
 }
 
-// decisionPlacements are the places a decision block stands in a body - at the top, in a quote,
+// decisionPlacements are the places an ask block stands in a body - at the top, in a quote,
 // in a list item and inside a callout - each with the block the refusal names: the top-level
-// block that holds the decision block, which is the decision block's own type only where it
+// block that holds the ask block, which is the ask block's own type only where it
 // stands at the top.
 //
 // The whole matrix is driven on decisionMatrixRoute alone, and every other write path drives the
@@ -131,7 +131,7 @@ func newDecisionFixture(t *testing.T) *decisionFixture {
 	t.Helper()
 	listener, _ := newBroadcastListener(t, decisionSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
-	issue := createInteractionIssue(t, handler, "DECIDE", "Decision blocks", "before")
+	issue := createInteractionIssue(t, handler, "DECIDE", "Ask blocks", "before")
 	fixture := &decisionFixture{handler: handler, database: database, issue: issue.Key, spec: issue.PrimaryArtifactID}
 
 	fixture.document = decisionProjectDocument(t, handler, "DECIDE")
@@ -308,7 +308,7 @@ func decisionWrites() []decisionWrite {
 }
 
 // assertDecisionBlockRefused requires response to be the 400 DECISION_BLOCK_IN_BODY a body
-// holding a decision block is refused with, reading want whole.
+// holding an ask block is refused with, reading want whole.
 func assertDecisionBlockRefused(t *testing.T, request string, response *httptest.ResponseRecorder, want string) {
 	t.Helper()
 	refusal := decodeBody[apiErrorBody](t, response)
@@ -318,7 +318,7 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 	}
 }
 
-// Every route that stores a comment, a message or a broadcast body refuses a decision block
+// Every route that stores a comment, a message or a broadcast body refuses an ask block
 // written into it, wherever it stands in that body and whoever writes it: 400
 // DECISION_BLOCK_IN_BODY, worded once by itemblocks.DecisionBlock, the same text on every route
 // (INFRA-1201). Nothing is stored by a refusal: the issue's comments and messages, the spec's
@@ -359,7 +359,7 @@ func TestDecisionBlockIsRefusedOnEveryWriteRoute(t *testing.T) {
 	}
 }
 
-// storeCommentWithADecisionBlock writes a comment holding a decision block the way one written
+// storeCommentWithADecisionBlock writes a comment holding an ask block the way one written
 // before the rule stood is held: the row and its block index, the two writes the create route
 // makes, made here around the check that route now makes.
 func storeCommentWithADecisionBlock(t *testing.T, database *store.Store, issueKey, body string) string {
@@ -387,14 +387,14 @@ func storeCommentWithADecisionBlock(t *testing.T, database *store.Store, issueKe
 	return id
 }
 
-// The rule refuses a decision block as it is written and changes nothing about one already
-// stored, which is the issue's non-goal: a comment holding a decision block that stands in the
+// The rule refuses an ask block as it is written and changes nothing about one already
+// stored, which is the issue's non-goal: a comment holding an ask block that stands in the
 // database is read back whole and listed with its block indexed under the type `ask`, because
 // the indexer calls neither bound nor the new rule (refs.IndexItem).
 func TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	issue := createInteractionIssue(t, handler, "STORED", "A stored decision block", "before")
+	issue := createInteractionIssue(t, handler, "STORED", "A stored ask block", "before")
 	body := "Lead text.\n\n" + theDecisionBlock + "\n"
 	id := storeCommentWithADecisionBlock(t, database, issue.Key, body)
 
@@ -411,14 +411,14 @@ func TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk(t *te
 		}
 	}
 	if !listed.Indexed || len(asks) != 1 || asks[0].Text != theDecisionBlock {
-		t.Fatalf("the stored comment lists %+v (indexed=%v), want its decision block indexed as one `ask` block",
+		t.Fatalf("the stored comment lists %+v (indexed=%v), want its ask block indexed as one `ask` block",
 			listed.Blocks, listed.Indexed)
 	}
 }
 
 // decisionRefusedParse are bodies the server's parser refuses - for a block the schema holds
 // nothing like, for a typed block it does not declare, for a line its reader and the browser's
-// read differently, and for nesting past a bound - each holding the same decision block, which
+// read differently, and for nesting past a bound - each holding the same ask block, which
 // the browser reader draws its card for all the same: the reader draws a card for every `ask` its
 // own parser makes, whatever else in the body the server's parse refused (INFRA-1201). Each is
 // named by what makes the parse refuse it, so a reader of a failure reads the class.
@@ -435,11 +435,11 @@ var decisionRefusedParse = []struct{ name, body string }{
 	},
 }
 
-// decisionAtTheTop is the whole refusal a body holding its decision block as its first block is
+// decisionAtTheTop is the whole refusal a body holding its ask block as its first block is
 // answered with.
 func decisionAtTheTop() string { return decisionRefusal(1, "ask") }
 
-// A body the parser refuses is refused for its decision block too, in the same words and under
+// A body the parser refuses is refused for its ask block too, in the same words and under
 // the same code: every write route answers one such body so, and the comment route answers one of
 // every class of refusal. Before INFRA-1201 each of these was stored while the browser drew its
 // decision card in full, which is the silent failure the rule exists to stop. Nothing is stored by
@@ -472,7 +472,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 
 // Nothing the decision-block reading does changes what a write path stores: the rule reads a body
 // whose line endings the browser reader ends a line at and this parser ends none at over a copy of
-// its own (itemblocks.Check), so a comment of lone carriage returns holding no decision block is
+// its own (itemblocks.Check), so a comment of lone carriage returns holding no ask block is
 // stored and read back whole, with no character of it lost and one comment row written.
 //
 // What its line endings are is the comment write's own rule and not this reading's: a body reaches
@@ -506,7 +506,7 @@ func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
 // is open the review answers it, and the decisions document leaves an answer's text alone — so
 // both branches are driven here: a review written with no request open, and one that answers an
 // open request. The same reason reaches artifact_reviews unchecked through the ask answer route
-// besides. So a reason holding a decision block is stored, read back whole, and draws a card on
+// besides. So a reason holding an ask block is stored, read back whole, and draws a card on
 // the approval chip that nobody can answer, which this issue does not close (INFRA-1201).
 func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 	t.Parallel()
@@ -548,20 +548,20 @@ func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 }
 
 // No document write path changed: the rule holds bodies, which carry no answer, and a document is
-// where a decision block belongs. A document write takes the markdown the body routes refuse - the
+// where an ask block belongs. A document write takes the markdown the body routes refuse - the
 // same bytes, refused as a comment and stored as a document - and a document whose markdown the
 // parser refuses is still refused for that markdown, under its own code, never for the decision
 // block it holds.
 func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T) {
 	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
-	issue := createInteractionIssue(t, handler, "DOCASK", "Decision blocks in documents", "before")
+	issue := createInteractionIssue(t, handler, "DOCASK", "Ask blocks in documents", "before")
 	content := "# Plan\n\n" + theDecisionBlock + "\n"
 
 	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/DOCASK/artifacts",
 		map[string]any{"name": "plan.md", "content": content}, "alice")
 	if uploaded.Code != http.StatusCreated {
-		t.Fatalf("the document write answered %d %s, want the decision block stored",
+		t.Fatalf("the document write answered %d %s, want the ask block stored",
 			uploaded.Code, uploaded.Body.String())
 	}
 	document := decodeBody[struct {
@@ -569,7 +569,7 @@ func TestADocumentWriteStillTakesADecisionBlockTheBodyRoutesRefuse(t *testing.T)
 	}](t, uploaded).Artifact.ID
 	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+document+"/text", nil, "alice").Body.String()
 	if !strings.Contains(text, ":::ask{") || !strings.Contains(text, "Which transport should we expose?") {
-		t.Fatalf("the document reads back %q, want the decision block it was written with", text)
+		t.Fatalf("the document reads back %q, want the ask block it was written with", text)
 	}
 
 	assertDecisionBlockRefused(t, "POST /api/v1/issues/{key}/comments", dispatchRequest(t, handler,

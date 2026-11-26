@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -230,16 +231,25 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // read, losing the edit's own index until something re-indexes that source (INFRA-3285). The
 // lock is taken before the read and the read is a statement after it, so a write committed while
 // the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
-// id, and the edges are planned under it and written last as one batch (replaceRefs). The
+// id, and the edges are planned under it and written last as one batch (PlanReplace,
+// Replacement.Queue). The
 // re-index paths beside this one take the same lock through the same read, for the same reason
 // (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
 // length of that source's own transaction, so a rebuild still never holds every owner: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // owner for the length of the pass, which is minutes on a large database.
 //
+// A document's reconcile states the edges it moves in the node and tuple store in the same
+// transaction, right after the batch that writes its refs rows (Replacement.ArtifactMentions): a
+// mentions tuple to each target it inserts and a retraction to each it deletes, dated at its rows'
+// own created_at, the transaction's now(), and signed by the first author of the document's newest
+// version (DocumentMentioning). The rebuild appends no event, so each is appended at the sentinel
+// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.QueueCaused
+// with NoEvent).
+//
 // It reads the source's own references alone, and its blocks wait for the block index RebuildAll
-// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed
-// (replaceRefs).
+// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed: its
+// replacement is queued without SettlingForms (replaceRefs reads the same rule).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
 	if err != nil {
@@ -261,8 +271,35 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, fmt.Errorf("read the author of %s %s: %w", fromKind, fromID, err)
 	}
 	located := NewReader(ctx, tx, writer, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil, false); err != nil {
+	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, text.Refs(located), nil)
+	if err != nil {
 		return false, err
+	}
+	var mentions []graphstore.UncausedTuple
+	if fromKind == graphstore.KindArtifact {
+		record, held, err := DocumentMentioning(ctx, tx, fromID)
+		if err != nil {
+			return false, err
+		}
+		if held {
+			if mentions, err = replacement.ArtifactMentions(ctx, tx, record); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	stated := graphstore.Uncaused{Tuples: mentions}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
+		return nil
+	}); err != nil {
+		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
 	}
 	return true, tx.Commit(ctx)
 }

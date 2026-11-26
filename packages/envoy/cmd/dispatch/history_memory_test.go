@@ -198,35 +198,38 @@ func (p *memoryServer) kill(t *testing.T) {
 	<-p.exited
 }
 
-// storedUpdateBytes is the size of the document's stored update log.
+// storedUpdateBytes is the size of the stored update log of the room the document is edited in
+// (documentRoom): its issue's room for an issue's spec, whose log holds the spec.
 func (h *memoryHarness) storedUpdateBytes(t *testing.T, artifactID string) int {
 	t.Helper()
 	var stored int
 	if err := h.database.Pool.QueryRow(context.Background(),
-		`select coalesce(sum(octet_length(update)), 0) from doc_updates where artifact_id = $1`, artifactID,
+		`select coalesce(sum(octet_length(update)), 0) from doc_updates where artifact_id = $1`, documentRoom(t, h.database, artifactID),
 	).Scan(&stored); err != nil {
 		t.Fatalf("measure the stored update log: %v", err)
 	}
 	return stored
 }
 
-// backdateUpdates ages the document's stored rows past the tail a compaction leaves as written
-// (two minutes), as a document left at rest is, so the compaction of a stop folds all of them.
+// backdateUpdates ages the stored rows of the room the document is edited in past the tail a
+// compaction leaves as written (two minutes), as a document left at rest is, so the compaction of a
+// stop folds all of them.
 func (h *memoryHarness) backdateUpdates(t *testing.T, artifactID string) {
 	t.Helper()
 	if _, err := h.database.Pool.Exec(context.Background(),
-		`update doc_updates set created_at = now() - interval '1 hour' where artifact_id = $1`, artifactID,
+		`update doc_updates set created_at = now() - interval '1 hour' where artifact_id = $1`, documentRoom(t, h.database, artifactID),
 	); err != nil {
 		t.Fatalf("backdate the document's rows: %v", err)
 	}
 }
 
-// foldedState applies the document's stored updates in order to one document and reports the size
-// of that document's state and its margin records: what the stored log holds that a reader sees.
+// foldedState applies the stored updates of the room the document is edited in, in order, to one
+// document and reports the size of that document's state and its margin records, which one map of
+// the room holds for every document in it: what the stored log holds that a reader sees.
 func (h *memoryHarness) foldedState(t *testing.T, artifactID string) (int, map[string]any) {
 	t.Helper()
 	rows, err := h.database.Pool.Query(context.Background(),
-		`select update from doc_updates where artifact_id = $1 order by version`, artifactID)
+		`select update from doc_updates where artifact_id = $1 order by version`, documentRoom(t, h.database, artifactID))
 	if err != nil {
 		t.Fatalf("read the stored update log: %v", err)
 	}

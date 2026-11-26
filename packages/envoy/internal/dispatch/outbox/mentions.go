@@ -2060,7 +2060,11 @@ func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, re
 	}
 	args = append(args, stored...)
 	var holds bool
-	if err := deps.Store.Pool.QueryRow(ctx, fallbackRecordWrites+arms+fallbackRecordAnswer, args...).Scan(&holds); err != nil {
+	heads := graphstore.HeadsOf(reached.nodes, reached.tuples)
+	writeHeads := func(tx pgx.Tx) error { return graphstore.WriteHeads(ctx, tx, heads) }
+	if err := recordWithHeads(ctx, deps.Store.Pool, len(heads) > 0, writeHeads, func(q rowQuerier) error {
+		return q.QueryRow(ctx, fallbackRecordWrites+arms+fallbackRecordAnswer, args...).Scan(&holds)
+	}); err != nil {
 		return false, err
 	}
 	return holds, nil

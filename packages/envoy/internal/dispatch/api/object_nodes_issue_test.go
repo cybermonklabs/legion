@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -104,7 +105,8 @@ func eventOf(t *testing.T, database *store.Store, eventType, ownerColumn, owner 
 
 // TestAnIssueCreateStoresItsNodeBeforeItsRow holds POST /api/v1/issues to writing the issue's node
 // and its spec's node before the rows that hold them, in the issue's project, caused by the
-// issue.created event the create appends.
+// issue.created event the create appends. An issue is born converted, so its spec's node is the
+// query node of query spec (decision 2 of this branch's plan).
 func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -114,7 +116,7 @@ func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "NODE", "An issue that names its project", "The spec.\n")
 	created := eventOf(t, database, "issue.created", "issue_key", issue.Key)
 	requireObjectNode(t, database, graphstore.KindIssue, issue.Key, graphstore.SupertagIssue, "NODE", nil, created)
-	requireObjectNode(t, database, graphstore.KindArtifact, issue.Key+"/spec", graphstore.SupertagDocument, "NODE", nil, created)
+	requireObjectNode(t, database, graphstore.KindArtifact, issue.Key+"/spec", graphstore.SupertagQuery, "NODE", nil, created)
 }
 
 // TestEveryUploadStoresItsDocumentsNode holds every artifact upload to writing the document's node
@@ -230,13 +232,15 @@ func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
 	}
 }
 
-// blockNodesOfDocument answers every block node of the document's ref_key.
+// blockNodesOfDocument answers every block node of the document's ref_key, or of its room's for a
+// document converted into its issue's room, whose tree keys its blocks' nodes.
 func blockNodesOfDocument(t *testing.T, database *store.Store, artifactID string) []graphstore.Node {
 	t.Helper()
 	ctx := context.Background()
 	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, artifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s: %v", artifactID, err)
+	if err := database.Pool.QueryRow(ctx, `
+		select room.ref_key from artifacts room where room.id = `+refs.DocumentRoomSQL("$1::uuid"), artifactID).Scan(&refKey); err != nil {
+		t.Fatalf("read the ref_key of %s's room: %v", artifactID, err)
 	}
 	nodes, err := graphstore.NodesOfKind(ctx, database.Pool, "block")
 	if err != nil {

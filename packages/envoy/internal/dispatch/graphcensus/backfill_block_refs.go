@@ -207,18 +207,20 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 		toIDs = append(toIDs, row.toID)
 		addresses = append(addresses, row.address)
 	}
-	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, tuples)
+		b.Queue("name the nodes of a block reference batch on their rows", `
+			update block_refs r
+			set node_kind = $7, node_address = p.address
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+				as p (artifact_id, block_id, kind, to_kind, to_id, address)
+			where r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
+			  and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
+		`, artifacts, blockIDs, kinds, toKinds, toIDs, addresses, refs.BlockNodeKind)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("append the tuples of a block reference batch: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update block_refs r
-		set node_kind = $7, node_address = p.address
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
-			as p (artifact_id, block_id, kind, to_kind, to_id, address)
-		where r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
-		  and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
-	`, artifacts, blockIDs, kinds, toKinds, toIDs, addresses, refs.BlockNodeKind); err != nil {
-		return 0, fmt.Errorf("name the nodes of a block reference batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit a block reference batch: %w", err)

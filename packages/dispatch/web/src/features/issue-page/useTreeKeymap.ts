@@ -9,14 +9,14 @@ import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { type DrawnRow, pathTo } from "./tree-fold";
+import { type DrawnRow, type PageRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 
 /**
- * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
- * and `t h`, which takes the reader to the issue's children, the outline's own rows. The chords
- * that open a view, Details or the node menu are the page's (`useIssueKeymap.ts`), because each
- * of those is an address the outline does not draw.
+ * The tree's keyboard: every key of the issue page's key table that acts on the tree itself. The
+ * chords that open a view, Details, the node menu or the children's section above the outline
+ * are the page's (`useIssueKeymap.ts`), because each of those is an address the outline does not
+ * draw.
  *
  * Every binding is registered in the page's own `issue` scope, so the registry suspends all of
  * them while a caret is in a node's text: reading mode is where no caret is, which the keymap
@@ -25,21 +25,23 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  *
  * The keys move the focus by focusing a row, never by writing the tree's own state behind the
  * browser's back: a row that takes the focus tells the tree (`NodeRow`'s `onFocus`), which
- * opens its body, scrolls it clear of the sticky identity block and leaves the tab stop on it.
- * So a key does exactly what a reader's pointer does, and the tree has one answer to where the
- * reader is.
+ * scrolls it clear of the sticky identity block and leaves the tab stop on it. So a key does
+ * exactly what a reader's pointer does, and the tree has one answer to where the reader is.
  *
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
  * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
- * blocks, and Tab from a row leaves the tree past them. The arrows press the fold control, `o`
- * the one that pins the body open, `r` and `a` Reply and Answer - `a` sets the writer's answer
- * (`OutlineWriter.answer`) and picks no option - `Shift+K` presses Keep, `Shift+C` presses
- * Change and puts the caret in the form it opens, and `f` steps through the row's links and then
- * through every other control no key presses - Copy reference, Change answer, a command's Copy,
- * an open question's options, which its own row draws as controls (`NodeRow.tsx`'s
- * `NodeOptions`) - where Enter follows the link it stopped on, presses the control or picks the
- * option. So every control of the focused row is reachable from the keyboard without a second
- * tab stop (WCAG 2.1.1), and `?` names each key by what it does, as it names every other.
+ * blocks, and Tab from a row leaves the tree past them. The arrows and `o` press the fold
+ * control - in a view whose rows keep a body open, `o` presses the control that keeps it open -
+ * `r` and `a` Reply and Answer - `a` sets the writer's answer (`OutlineWriter.answer`) and picks
+ * no option - `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it
+ * opens, and `f` steps through the row's links and then through every other control no key
+ * presses - Copy reference, Change answer, Edit, a command's Copy, an open question's options,
+ * which its own row draws as controls (`NodeRow.tsx`'s `NodeOptions`) - where Enter follows the
+ * link it stopped on, presses the control or picks the option. The controls that draw more of
+ * the outline in place stand beside the rows, and `j` and `k` press them from the row beside each
+ * (`tree-next`, `tree-previous`). So every control of the focused row is reachable from the
+ * keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by what it does, as it
+ * names every other.
  *
  * Every block of the focused row's words whose content runs past its box - a code block, a
  * table, a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can
@@ -51,16 +53,16 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
+  /** What the key list says `z` does, when it does not cycle how much of the tree is drawn. */
+  readonly cycleLabel?: string;
   /** Whether a row of the tree is being edited, which Escape in its editor leaves
    *  (`tree-leave-caret`). */
   readonly editing: boolean;
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
-  /** Takes the reader to the issue's children (`t h`): the focus on the group's first row, and
-   *  their own address. Undefined where the tree holds no child. */
-  readonly onChildren?: () => void;
-  /** Steps the cycle that says how much of the whole tree is drawn. */
+  /** What `z` does: in the outline, unfolds every node the reader folded (R11); a view that
+   *  draws more or less of itself by the key - the Decisions view's foot - draws it so. */
   readonly onCycle: () => void;
   /** Puts the caret in one node's own text, in the row the key was pressed on. */
   readonly onEdit: (row: string, node: TreeNode) => void;
@@ -69,20 +71,33 @@ export interface TreeKeyboard {
   readonly onEditEnd: () => void;
   /** Opens or closes one branch. */
   readonly onFold: (id: string, open: boolean) => void;
-  /** Draws a branch that sits below the drawn levels where it stands. */
-  readonly onOpenDeeper: (id: string) => void;
-  /** Keeps one row's body open, or lets it close. */
-  readonly onPin: (row: string) => void;
+  /** Reads the read's next page, as the control after the last row does, and puts the focus on
+   *  the first row it drew: what `j` and Down on the last row do while that control is drawn and
+   *  no row that pages a node's children follows that row. Undefined where it is not drawn. */
+  readonly onMore?: () => void;
+  /** Reads the next page of the outline read's older comments, as the control above the first
+   *  row does, and puts the focus on the first row it drew: what `k` and Up on the first row do
+   *  while that control is drawn. Undefined where it is not. */
+  readonly onOlder?: () => void;
+  /** Draws the next page of a node's children, as the row that pages them does, and puts the
+   *  focus on the first row it drew: what `j` and Down on the row above that row do. Undefined
+   *  for a view whose rows draw no such row. */
+  readonly onPage?: (row: PageRow) => void;
+  /** Keeps one row's body open, or lets it close, in a view whose rows keep a body open by `o`
+   *  (the Decisions view's). Where it is not given, `o` folds or unfolds the focused row
+   *  (`onFold`), as the outline's does (R11). */
+  readonly onPin?: (row: string) => void;
   /** Says where a key could not go, which the tree draws at the row the key was pressed on, and
    *  clears that line with `""` whenever a key does go somewhere. */
   readonly onReport: (line: string) => void;
   /** Unfolds the path down to one node and puts the focus on it. */
   readonly onReveal: (id: string) => void;
+  /** Reads the read's next pages until a node `q` or `w` looks for is loaded, and lands on it, or
+   *  reports none once no page is left: called where the loaded pages hold no such node and the
+   *  read still names a next page. Undefined where no next page remains. */
+  readonly onSearch?: (search: TreeSearch) => void;
   /** Roots the tree at one node; the issue's own id is the whole tree. */
   readonly onZoom: (id: string) => void;
-  /** Whether the tree is read one node at a time, which is how it is drawn below 1024 px
-   *  (`ZOOMED_TREE_QUERY`): there the arrows that would walk into a branch zoom into it instead. */
-  readonly oneNodeAtATime: boolean;
   /** Whether every read the tree is built from holds its answer (`slots/body.tsx`). Until then
    *  the next open question or the decision behind a row may be a node that has not arrived, so
    *  `q` and `w` with nowhere to go say nothing rather than an absence that may be false. */
@@ -92,8 +107,7 @@ export interface TreeKeyboard {
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
   readonly root: TreeNode;
   /** The node the rows are drawn from where that is not the issue, and undefined where the
-   *  whole tree is drawn from the issue. Where the tree is read one node at a time it is never
-   *  undefined: there the issue's own id stands for the issue. */
+   *  whole tree is drawn from the issue. */
   readonly zoom: string | undefined;
   /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
    *  the focused open question. It is provided wherever the page's writer provider stands above
@@ -102,8 +116,14 @@ export interface TreeKeyboard {
   readonly writer: OutlineWriter | undefined;
 }
 
-/** One row of the tree that stands for a node. The one row a deeper branch folds to stands for
- *  no node and takes no focus, so the keys step from the row above it to the row below. */
+/** What `q` or `w` looks for past the pages loaded (`TreeKeyboard.onSearch`). */
+export type TreeSearch =
+  | { readonly from: string | undefined; readonly kind: "question" }
+  | { readonly from: string; readonly kind: "decision" };
+
+/** One row of the tree that stands for a node. The row that pages a node's children stands for
+ *  no node and takes no focus: `j` and Down on the row above it press it (`tree-next`,
+ *  `tree-arrows`). */
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
 const NODE_ROW = "[data-node-row]";
@@ -144,8 +164,8 @@ const KEYED_CONTROLS = [
 ].join(", ");
 
 /** Whether a key of this keymap presses `control`: one of `KEYED_CONTROLS`, or the control that
- *  pins the body open (`o`), which carries no mark of its own and is known by its words, the
- *  page's one name for it (`NodeRow.tsx`'s `NodeBody`). */
+ *  keeps a body open in a view whose rows keep one (`o`), which carries no mark of its own and is
+ *  known by its words, the page's one name for it (`NodeRow.tsx`'s `KeepOpen`). */
 function pressedByAKey(control: HTMLElement): boolean {
   if (control.matches(KEYED_CONTROLS)) return true;
   const words = control.textContent;
@@ -199,8 +219,8 @@ export function moveToRow(target: HTMLElement, options?: FocusOptions): void {
 
 export function useTreeKeymap(tree: TreeKeyboard): void {
   // The key being pressed, noted as it sets out for its target: the keymap asks a binding's
-  // `when` with no key in hand, and a binding of two keys - `j` and Down - leaves the one that
-  // scrolls a block to the browser while the other still moves the reader.
+  // `when` with no key in hand, and a key the browser scrolls by, pressed on a block that keeps
+  // its tab stop, is left to the browser while `j` and `k` still move the reader from there.
   const pressing = useRef<KeyboardEvent | null>(null);
   useEffect(() => {
     const note = (event: KeyboardEvent): void => {
@@ -298,33 +318,84 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     tree.onReport("");
     tree.onReveal(id);
   };
+  /** The row that pages a node's children drawn right after the node row `on`, which `j` and
+   *  Down there press; undefined where the next row stands for a node, or none follows. */
+  const pageAfter = (on: number): PageRow | undefined => {
+    let seen = -1;
+    for (const [index, row] of tree.rows.entries()) {
+      if (row.kind === "node") seen += 1;
+      if (seen !== on) continue;
+      const next = tree.rows[index + 1];
+      return next?.kind === "page" ? next : undefined;
+    }
+    return undefined;
+  };
+  /** What `j` does wherever the reader reads, and Down from a row: from the page itself it goes
+   *  to the first row, and from a row to the next. */
+  const next = (): void => {
+    const { elements } = drawn();
+    const on = at(elements);
+    // The row that pages the children of a node is pressed from the row above it: it draws the
+    // next page of them, and the focus goes to the first row it drew.
+    const page = on === -1 ? undefined : pageAfter(on);
+    if (page !== undefined && tree.onPage !== undefined) {
+      tree.onReport("");
+      tree.onPage(page);
+      return;
+    }
+    // The control after the last row reads the read's next page from it: its rows are drawn
+    // where the read's order puts them, and the focus goes to the first row it drew.
+    if (on !== -1 && on === elements.length - 1 && tree.onMore !== undefined) {
+      tree.onReport("");
+      tree.onMore();
+      return;
+    }
+    moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
+  };
+  /** What `k` does wherever the reader reads, and Up from a row: from the page itself it goes to
+   *  the first row, and from a row to the one before. */
+  const previous = (): void => {
+    const { elements } = drawn();
+    const on = at(elements);
+    // The control above the first row reads the older comments from it: they are drawn where the
+    // read's order puts them, and the focus goes to the first row it drew.
+    if (on === 0 && tree.onOlder !== undefined) {
+      tree.onReport("");
+      tree.onOlder();
+      return;
+    }
+    moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
+  };
 
   useKeymap("issue", [
     // The tree is one tab stop, which Tab from the page itself enters (`treeEnterKey`).
     treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
       id: "tree-next",
-      keys: ["j", "ArrowDown"],
+      keys: "j",
       label: "Move to the next row",
       palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const on = at(elements);
-        moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
-      },
+      run: next,
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
     {
       id: "tree-previous",
-      keys: ["k", "ArrowUp"],
+      keys: "k",
       label: "Move to the previous row",
       palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const on = at(elements);
-        moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
-      },
+      run: previous,
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
+    },
+    {
+      // Down and Up scroll the page from the page itself, so they move through the tree only
+      // while the reader is on a row or on a control inside one, and do there what `j` and `k`
+      // do.
+      id: "tree-arrows",
+      keys: ["ArrowDown", "ArrowUp"],
+      label: "Move to the next / previous row while one is focused",
+      palette: false,
+      run: (event) => (event.key === "ArrowDown" ? next() : previous()),
+      when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
       // Home and End are the page's own scroll keys everywhere else, so they move through the
@@ -357,27 +428,18 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
-        // A row with nothing under it gives the key nowhere to go at every width, the row the
-        // tree is zoomed to as much as any other, and the key says so at the row. Where the tree
-        // is read one node at a time the key zooms into any other row, and steps into the zoom's
-        // own row, drawn open over what it holds, as into any open row: zooming into that row
-        // again moved nothing and said nothing.
+        // A row with nothing under it gives the key nowhere to go, the row the tree is zoomed to
+        // as much as any other, and the key says so at the row.
         if (row.expanded === undefined) {
           tree.onReport(KEY_REPORTS.nothing_under);
-          return;
-        }
-        if (tree.oneNodeAtATime && row.node.id !== tree.zoom) {
-          tree.onZoom(row.node.id);
           return;
         }
         if (row.expanded === false) {
           tree.onFold(row.node.id, true);
           return;
         }
-        // A branch below the drawn levels folds to one line of its own, so the first child is
-        // drawn only once this opens it in place.
+        // Every level is drawn, so an open row's first child is the row below it.
         if ((rows[on + 1]?.level ?? 0) > row.level) moveTo(on + 1);
-        else tree.onOpenDeeper(row.node.id);
       },
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
@@ -392,24 +454,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
-        if (tree.oneNodeAtATime) {
-          // A child of the row the tree is zoomed to asked to zoom to that row, which is the
-          // zoom already: at 390 px the key moved nothing and said nothing. It says so at the
-          // row, in the words of `KEY_REPORTS`, and the zoom's own row zooms out.
-          const parent = row.trail.at(-1);
-          if (parent === undefined) return;
-          if (parent === tree.zoom) {
-            tree.onReport(
-              parent === tree.root.id ? KEY_REPORTS.whole_tree : KEY_REPORTS.parent_zoomed
-            );
-            return;
-          }
-          tree.onZoom(parent);
-          return;
-        }
-        // Where the whole tree is drawn, the row the tree is zoomed to stays open over what it
-        // holds and its parent is above the zoom, which no row draws: the key has nowhere to go,
-        // and says so at the row.
+        // The row the tree is zoomed to stays open over what it holds and its parent is above
+        // the zoom, which no row draws: the key has nowhere to go, and says so at the row.
         if (row.node.id === tree.zoom) {
           tree.onReport(KEY_REPORTS.already_zoomed);
           return;
@@ -425,8 +471,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           }
         }
         // A top-level row of the whole tree, with nothing to fold, has the issue for its parent,
-        // which no row draws: the key has nowhere to go, and says so at the row. Where the whole
-        // tree is drawn the zoom is undefined while the rows are drawn from the issue.
+        // which no row draws: the key has nowhere to go, and says so at the row. The zoom is
+        // undefined while the rows are drawn from the issue.
         if (tree.zoom === undefined && row.trail.at(-1) === tree.root.id) {
           tree.onReport(KEY_REPORTS.whole_tree);
         }
@@ -434,15 +480,33 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
-      id: "tree-pin",
+      // `o` is the fold control's key on the outline (R11): it folds the focused row where it
+      // is open and unfolds it where it is folded. A view whose rows keep a body open by the
+      // key keeps it open there instead (`onPin`).
+      id: "tree-toggle",
       keys: "o",
-      label: "Keep the focused row's body open",
+      label:
+        tree.onPin === undefined
+          ? "Fold or unfold the focused row"
+          : "Keep the focused row's body open",
       palette: false,
       run: () => {
         const row = focusedRow();
         if (row === undefined) return;
         tree.onReport("");
-        tree.onPin(rowKeyOf(row));
+        if (tree.onPin !== undefined) {
+          tree.onPin(rowKeyOf(row));
+          return;
+        }
+        if (row.expanded === undefined) {
+          tree.onReport(KEY_REPORTS.nothing_under);
+          return;
+        }
+        if (row.node.id === tree.zoom) {
+          tree.onReport(KEY_REPORTS.already_zoomed);
+          return;
+        }
+        tree.onFold(row.node.id, row.expanded === false);
       },
       when: () => at(drawn().elements) !== -1,
     },
@@ -529,12 +593,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           return;
         }
         tree.onReport("");
-        // Where the tree is read one node at a time the key walks the breadcrumb back up a
-        // crumb at a time, so every node of the issue is reachable from any other; where the
-        // whole tree is drawn there is nothing between a zoom and the issue, so it is the
-        // issue the key comes back to.
+        // The key walks the breadcrumb back up a crumb at a time, so every node of the issue is
+        // reachable from any other (R11).
         const above = pathTo(tree.root, zoomed)?.at(-2)?.id ?? tree.root.id;
-        tree.onZoom(tree.oneNodeAtATime ? above : tree.root.id);
+        tree.onZoom(above);
         tree.onReveal(zoomed);
       },
       when: reading,
@@ -544,8 +606,14 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "q",
       label: "Move to the next open question",
       run: () => {
-        const question = nextQuestion(tree.root, focusedRow()?.node.id);
+        const from = focusedRow()?.node.id;
+        const question = nextQuestion(tree.root, from);
         if (question === undefined) {
+          if (tree.onSearch !== undefined) {
+            tree.onReport("");
+            tree.onSearch({ from, kind: "question" });
+            return;
+          }
           tree.onReport(tree.readsHeld ? KEY_REPORTS.no_next_question : "");
           return;
         }
@@ -561,6 +629,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
         if (decision === undefined) {
+          if (node !== undefined && tree.onSearch !== undefined) {
+            tree.onReport("");
+            tree.onSearch({ from: node.id, kind: "decision" });
+            return;
+          }
           tree.onReport(tree.readsHeld ? KEY_REPORTS.no_decision : "");
           return;
         }
@@ -571,7 +644,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // Reply to the focused row: a comment, a message or an ask whatever its state sets
       // the line at the outline's foot to reply to it, as the row's own Reply does; the caret
-      // goes to the line.
+      // goes to the line. It is offered while the row draws its Reply, so a row that takes none
+      // - a message's context row, whose thread is replied to in Threads (R9) - takes no `r`.
       id: "tree-reply",
       keys: "r",
       label: `${CONTROL_LABELS.reply} to the focused row`,
@@ -584,7 +658,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
       when: () => {
         const node = focusedRow()?.node;
-        return tree.writer !== undefined && node !== undefined && replyItemOf(node) !== undefined;
+        return (
+          tree.writer !== undefined &&
+          node !== undefined &&
+          replyItemOf(node) !== undefined &&
+          rowElement()?.querySelector('[data-row-act="reply"]') != null
+        );
       },
     },
     {
@@ -606,26 +685,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-cycle",
       keys: "z",
-      label: "Cycle how much of the tree is drawn",
+      label: tree.cycleLabel ?? "Cycle how much of the tree is drawn",
       run: () => {
         tree.onReport("");
         tree.onCycle();
       },
       when: reading,
-    },
-    {
-      // The children are rows of the outline, one group under the issue, which the header
-      // stands for and draws no row of, so the chord that reaches them is the tree's: it puts
-      // the focus on the group's first row and opens their own address, `/children`
-      // (`IssueTree`'s `onChildren`).
-      id: "tree-children",
-      keys: "t h",
-      label: "Move to the issue's children",
-      run: () => {
-        tree.onReport("");
-        tree.onChildren?.();
-      },
-      when: () => tree.onChildren !== undefined,
     },
     {
       // The caret goes into the node's own text where it lives, which is its document's block

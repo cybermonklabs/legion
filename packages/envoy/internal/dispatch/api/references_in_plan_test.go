@@ -14,12 +14,12 @@ import (
 
 // The references read's in statement (refs' linksInQuery) leaves the issue's own nodes out of the
 // nodes that link into them by an anti-join, under each plan-cache mode (explaintest's
-// PlanCacheModes). Over the seed of
-// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks (seedLinkedInto), its plan,
-// read by EXPLAIN (ANALYZE, BUFFERS), holds a join node of join type Anti whose condition names
-// the own relation's columns, x.kind and x.id, and no node whose filter holds
-// `ROW(...) <> ALL ((InitPlan n).col1)`: a test of each link row against an array of the own
-// nodes.
+// PlanCacheModes). Over the large issue of
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks (seedLinkedIntoIssue with 40
+// documents of its own and 500 that link into them), its plan, read by EXPLAIN (ANALYZE, BUFFERS),
+// holds a join node of join type Anti whose condition names the own relation's columns, x.kind and
+// x.id, and no node whose filter holds `ROW(...) <> ALL ((InitPlan n).col1)`: a test of each link
+// row against an array of the own nodes.
 //
 // That test costs link rows × own nodes: Postgres does not hash an array an InitPlan reads, so it
 // compares each link row with the own nodes in turn, here each of 10,000 link rows with the 2,042
@@ -40,13 +40,13 @@ import (
 func TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	seed := seedLinkedInto(t)
+	seed := seedLinkedIntoIssue(t, 40, 500)
 	in := referencesInStatement(t, ctx, seed)
 	for _, mode := range explaintest.PlanCacheModes {
-		t.Logf("the in statement's plan under %s:\n%s", mode, explaintest.ExplainBuffered(t, ctx, seed.store.Pool, in, mode, "text"))
+		t.Logf("the in statement's plan under %s:\n%s", mode, explaintest.ExplainBuffered(t, ctx, seed.served.Pool, in, mode, "text"))
 		var antiJoins int
 		var arrayFilters []string
-		for _, node := range explaintest.Nodes(t, explaintest.ExplainBuffered(t, ctx, seed.store.Pool, in, mode, "json")) {
+		for _, node := range explaintest.Nodes(t, explaintest.ExplainBuffered(t, ctx, seed.served.Pool, in, mode, "json")) {
 			conditions := node.HashCond + " " + node.MergeCond + " " + node.JoinFilter
 			if node.JoinType == "Anti" && ownKind.MatchString(conditions) && ownID.MatchString(conditions) {
 				antiJoins++
@@ -72,23 +72,23 @@ func TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin(t *testi
 // (issueReferencesQueryRequest's X-Dispatch-User: alice) as the server's actingReader resolves
 // it: refs.Closure runs on seed's store through explaintest.RecordedTx, in a transaction it rolls
 // back, and the in statement is the one statement it sent that holds `targets (kind, id)`.
-func referencesInStatement(t *testing.T, ctx context.Context, seed linkedIntoSeed) explaintest.Statement {
+func referencesInStatement(t *testing.T, ctx context.Context, seed linkedIntoIssue) explaintest.Statement {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+seed.issue.Key+"/references", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+seed.key+"/references", nil)
 	request.Header.Set("X-Dispatch-User", "alice")
 	refused := httptest.NewRecorder()
 	who, ok := seed.server.actingReader(refused, request)
 	if !ok {
 		t.Fatalf("resolve the reader of the references request: status=%d body=%s", refused.Code, refused.Body.String())
 	}
-	tx, err := seed.store.Pool.Begin(ctx)
+	tx, err := seed.served.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the references read: %v", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	recorded := &explaintest.RecordedTx{Tx: tx}
-	if _, err := refs.Closure(ctx, recorded, who, seed.issue.Key, ""); err != nil {
-		t.Fatalf("read the references of %s: %v", seed.issue.Key, err)
+	if _, err := refs.Closure(ctx, recorded, who, seed.key, ""); err != nil {
+		t.Fatalf("read the references of %s: %v", seed.key, err)
 	}
 	return recorded.Holding(t, "targets (kind, id)")
 }

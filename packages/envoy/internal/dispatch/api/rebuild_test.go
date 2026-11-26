@@ -38,12 +38,18 @@ func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *
 	if _, err := replaceDocumentText(database, documentService, artifact.ID, "unsettled\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("write unsettled document update: %v", err)
 	}
-	if err := documentService.Evict(context.Background(), artifact.ID); err != nil {
+	// The document's stored history is that of the room it is edited in (documentRoomOf), the room
+	// its update was written in and the one a rebuild would replace.
+	room, _ := documentRoomOf(t, database.Pool, artifact.ID)
+	if err := documentService.Evict(context.Background(), room); err != nil {
 		t.Fatalf("evict healthy document: %v", err)
 	}
 	var before int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifact.ID).Scan(&before); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, room).Scan(&before); err != nil {
 		t.Fatalf("count document updates before rebuild: %v", err)
+	}
+	if before < 1 {
+		t.Fatalf("the document's room holds %d stored updates before the rebuild, want its unsettled update among them", before)
 	}
 
 	path := "/api/v1/artifacts/" + artifact.ID + "/rebuild"
@@ -56,7 +62,7 @@ func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *
 		t.Fatalf("healthy document rebuild: status=%d body=%s, want 409 DOCUMENT_LOADS offering no repair and telling the caller to stop and ask a person", human.Code, human.Body.String())
 	}
 	var after int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifact.ID).Scan(&after); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, room).Scan(&after); err != nil {
 		t.Fatalf("count document updates after refused rebuild: %v", err)
 	}
 	if after != before {
@@ -67,15 +73,26 @@ func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *
 	}
 }
 
-// invalidLoadOnceStore loads a document failNextLoad names once, for a room or a cold read, as a
-// history that does not decode, at the head it stands at.
+// invalidLoadOnceStore loads the room of a document failNextLoad names once, for a room or a cold
+// read, as a history that does not decode, at the head it stands at.
 type invalidLoadOnceStore struct {
 	docs.VersionedStore
-	mu      sync.Mutex
-	invalid map[string]bool
+	database *store.Store
+	mu       sync.Mutex
+	invalid  map[string]bool
 }
 
-func (s *invalidLoadOnceStore) failNextLoad(room string) {
+// newInvalidLoadOnceStore is database's document store, with no load armed to fail.
+func newInvalidLoadOnceStore(database *store.Store) *invalidLoadOnceStore {
+	return &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), database: database, invalid: make(map[string]bool)}
+}
+
+// failNextLoad fails the next load of the room documentID's document is edited in
+// (documentRoomOf), the room a read or a rebuild of the document loads: its issue's room when the
+// issue is converted, the document's own when it is not.
+func (s *invalidLoadOnceStore) failNextLoad(t *testing.T, documentID string) {
+	t.Helper()
+	room, _ := documentRoomOf(t, s.database.Pool, documentID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.invalid[room] = true
@@ -108,7 +125,7 @@ func (s *invalidLoadOnceStore) LoadDocument(ctx context.Context, room string) (d
 	return s.VersionedStore.LoadDocument(ctx, room)
 }
 
-// newBrokenTestServer is a test server whose document store hands a load the failNextLoad names a
+// newBrokenTestServer is a test server whose document store hands the load failNextLoad arms a
 // history that does not decode.
 func newBrokenTestServer(t *testing.T) (http.Handler, *store.Store, *invalidLoadOnceStore) {
 	t.Helper()
@@ -116,7 +133,7 @@ func newBrokenTestServer(t *testing.T) (http.Handler, *store.Store, *invalidLoad
 	handler, database, _ := newTestServer(t, testServerOptions{
 		settle: time.Hour,
 		persistence: func(database *store.Store) docs.VersionedStore {
-			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			broken = newInvalidLoadOnceStore(database)
 			return broken
 		},
 	})
@@ -141,7 +158,7 @@ func TestAHistoryThatCannotLoadReadsAsDocumentUnloadable(t *testing.T) {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, created).Artifact
 	path := "/api/v1/artifacts/" + artifact.ID + "/text"
-	broken.failNextLoad(artifact.ID)
+	broken.failNextLoad(t, artifact.ID)
 	unloadable := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
 	if unloadable.Code != http.StatusConflict || !strings.Contains(unloadable.Body.String(), `"code":"DOCUMENT_UNLOADABLE"`) || !strings.Contains(unloadable.Body.String(), "discards every edit made after that version") || !strings.Contains(unloadable.Body.String(), "A person decides whether to rebuild the document") {
 		t.Fatalf("read a history that cannot load: status=%d body=%s, want 409 DOCUMENT_UNLOADABLE naming what a rebuild discards and that a person decides", unloadable.Code, unloadable.Body.String())
@@ -171,7 +188,7 @@ func TestRebuildArtifactVersionsSuppliedMarkdownButNotTheLatestVersionSource(t *
 		artifact := decodeBody[struct {
 			Artifact model.Artifact `json:"artifact"`
 		}](t, created).Artifact
-		broken.failNextLoad(artifact.ID)
+		broken.failNextLoad(t, artifact.ID)
 		return artifact
 	}
 	requestApproval := func(t *testing.T, artifactID string) {
@@ -246,7 +263,7 @@ func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T
 	}
 	t.Cleanup(restore)
 	handler, database, broken := newBrokenTestServer(t)
-	issue := createArtifactIssue(t, handler)
+	createRoomProject(t, handler, "TEST")
 	for _, c := range []struct {
 		name, version, code string
 		status              int
@@ -255,6 +272,10 @@ func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T
 		{name: "an element this build reads and cannot create", version: "before\n\n:::staged{#staged-1}\nBody.\n:::\n", status: http.StatusOK},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			// The case's document is uploaded to an issue of its own: a rebuild seeds every document
+			// of the room the document is edited in from that document's latest version, so a room
+			// shared with the other case's document would answer for that document's version too.
+			issue, _ := createRoomIssue(t, handler, database, "TEST", "Rebuild "+c.name, "A spec.\n", "")
 			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 				"name": strings.ReplaceAll(c.name, " ", "-") + ".md", "content": "before\n",
 			}, "alice")
@@ -267,7 +288,7 @@ func TestARebuildFromTheLatestVersionAnswersForWhatThatVersionHolds(t *testing.T
 			if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $2 where artifact_id = $1`, artifact.ID, c.version); err != nil {
 				t.Fatalf("store the latest version: %v", err)
 			}
-			broken.failNextLoad(artifact.ID)
+			broken.failNextLoad(t, artifact.ID)
 			rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{}, "alice")
 			if rebuilt.Code != c.status || (c.code != "" && !strings.Contains(rebuilt.Body.String(), `"code":"`+c.code+`"`)) {
 				t.Fatalf("rebuild from the latest version: status=%d body=%s, want %d %s", rebuilt.Code, rebuilt.Body.String(), c.status, c.code)
@@ -295,7 +316,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{
 		settle: time.Hour,
 		persistence: func(database *store.Store) docs.VersionedStore {
-			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			broken = newInvalidLoadOnceStore(database)
 			return broken
 		},
 	})
@@ -311,10 +332,11 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
+	room, _ := documentRoomOf(t, database.Pool, artifact.ID)
 	waitUntil(t, "the closed issue's document room to leave residency after the close", func() bool {
-		return !slices.Contains(documentService.ResidentRooms(), artifact.ID)
+		return !slices.Contains(documentService.ResidentRooms(), room)
 	})
-	broken.failNextLoad(artifact.ID)
+	broken.failNextLoad(t, artifact.ID)
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{"markdown": "changed\n"}, "alice")
 	if rebuilt.Code != http.StatusConflict || !strings.Contains(rebuilt.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("closed issue rebuild: status=%d body=%s, want 409 ISSUE_CLOSED", rebuilt.Code, rebuilt.Body.String())
@@ -341,13 +363,16 @@ func TestSuppliedRebuildThatFailsBeforeItsVersionLeavesTheDocument(t *testing.T)
 	artifact := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, created).Artifact
+	// The history is the stored history of the room the document is edited in (documentRoomOf),
+	// the one a rebuild replaces.
+	room, _ := documentRoomOf(t, database.Pool, artifact.ID)
 	history := func(t *testing.T) string {
 		t.Helper()
 		var rows string
 		if err := database.Pool.QueryRow(context.Background(), `
 			select coalesce(string_agg(version::text || ':' || md5(update), ',' order by version), '')
 			from doc_updates where artifact_id = $1
-		`, artifact.ID).Scan(&rows); err != nil {
+		`, room).Scan(&rows); err != nil {
 			t.Fatalf("read document history: %v", err)
 		}
 		return rows
@@ -365,7 +390,7 @@ func TestSuppliedRebuildThatFailsBeforeItsVersionLeavesTheDocument(t *testing.T)
 		t.Fatalf("make the version write fail: %v", err)
 	}
 
-	broken.failNextLoad(artifact.ID)
+	broken.failNextLoad(t, artifact.ID)
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{"markdown": "changed\n"}, "alice")
 	if rebuilt.Code != http.StatusInternalServerError {
 		t.Fatalf("rebuild whose version fails: status=%d body=%s, want 500", rebuilt.Code, rebuilt.Body.String())

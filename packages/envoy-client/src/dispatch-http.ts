@@ -2,6 +2,7 @@ import { TradeRetryingError } from "@legion/cipher-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,
+  ActorInput,
   Advised,
   Agent,
   ApprovalRequestResponse,
@@ -21,8 +22,11 @@ import type {
   CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
+  CommentNodeAnchorSchema,
   CommentRead,
   CommentWriteResponse,
+  ConstraintInput,
+  ConstraintRead,
   CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
@@ -47,9 +51,11 @@ import type {
   InboxRow,
   Issue,
   IssueCheckResults,
+  IssueConstraints,
   IssueCoverage,
   IssueDetails,
   IssuePriority,
+  IssueProposed,
   IssueRead,
   IssueReferencesAnswer,
   IssueRouteStatus,
@@ -57,20 +63,33 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  LensFinding,
+  LensFindingInput,
+  LensInvocationInput,
+  LensInvoked,
   MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
   MyRepliesResponse,
+  NodeLenses,
+  NodeStateInput,
+  NodeStateWritten,
   OpenAsksResponse,
+  PointerInput,
+  PointerWritten,
   PostHistoryRead,
+  PremortemConvertInput,
+  PremortemReport,
   Priorities,
   Project,
   ProjectPlans,
   RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
+  RiskInput,
+  RiskWritten,
   SearchResponse,
   SearchResultKind,
   SessionAnswersResponse,
@@ -104,6 +123,7 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import type { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
@@ -500,6 +520,35 @@ export type GraphReferencesQuery = ({ readonly to: string } | { readonly from: s
 export interface IssueReadOptions {
   /** `DEFAULT_ISSUE_READ_EVENTS` when absent or undefined. */
   readonly events?: number | "all" | undefined;
+}
+
+/** What a comment read asks of Dispatch beside the comment. */
+export interface CommentReadOptions {
+  /** Sends `?node_anchor=true`, so each comment whose anchor names a node or a block carries
+   *  `node_anchor` (`CommentNodeAnchor`). A Dispatch older than the member ignores the parameter
+   *  and answers none. */
+  readonly nodeAnchors?: boolean;
+}
+
+/** The member `node_anchor` of a comment a read asked with `?node_anchor=true` answers
+ *  (`CommentNodeAnchorSchema` in `@legion/contracts`): the node the comment's anchor names, by
+ *  its store kind and id, with its state; the words the anchor quotes; their zero-based match in
+ *  the node's text, null for a document anchor; and whether those words left the text. */
+export type CommentNodeAnchor = z.output<typeof CommentNodeAnchorSchema>;
+
+/** A comment as a read with `CommentReadOptions.nodeAnchors` answers it. */
+export type WithNodeAnchor<Read> = Read & { readonly node_anchor?: CommentNodeAnchor };
+
+/** `GET /api/v1/comments/{id}`'s answer, its comment read with `CommentReadOptions`. Its replies
+ *  carry no `node_anchor`, since a reply quotes no text. */
+export type CommentReadWithNodeAnchor = CommentRead & {
+  readonly comment: WithNodeAnchor<CommentRead["comment"]>;
+};
+
+/** The query of a comment read asked with `options`: `node_anchor=true` for node anchors, and
+ *  none otherwise. */
+function nodeAnchorQuery(options: CommentReadOptions): { readonly node_anchor: true } | undefined {
+  return options.nodeAnchors === true ? { node_anchor: true } : undefined;
 }
 
 /** The most events one `GET /api/v1/issues/{key}/events` page holds: Dispatch refuses a larger
@@ -2079,8 +2128,11 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
-  async getComment(id: string): Promise<CommentRead> {
-    return this.#json("GET", ["api", "v1", "comments", id]);
+  async getComment(
+    id: string,
+    options: CommentReadOptions = {}
+  ): Promise<CommentReadWithNodeAnchor> {
+    return this.#json("GET", ["api", "v1", "comments", id], undefined, nodeAnchorQuery(options));
   }
 
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
@@ -2113,8 +2165,16 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "comments", id, "history"]);
   }
 
-  async getComments(issue: string): Promise<Comment[]> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
+  async getComments(
+    issue: string,
+    options: CommentReadOptions = {}
+  ): Promise<WithNodeAnchor<Comment>[]> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
+      undefined,
+      nodeAnchorQuery(options)
+    );
   }
 
   /** `POST /api/v1/issues/{key}/handoffs/{phase}`: records `body`, the handoff's exact text, as
@@ -2154,6 +2214,123 @@ export class DispatchClient {
   /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
   async handoff(id: string): Promise<Handoff> {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
+  }
+
+  /** `POST /api/v1/issues/{key}/lenses`: one lens invoked on a node of the issue, with the
+   *  findings it was written with; the answer names the lens's address and each finding's. */
+  async invokeLens(issue: string, input: LensInvocationInput): Promise<LensInvoked> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "lenses"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/findings`: one finding added to the lens `lens`
+   *  addresses, sent whole as the one path segment `{id}` is. */
+  async addLensFinding(issue: string, lens: string, input: LensFindingInput): Promise<LensFinding> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", lens, "findings"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/risks`: one risk under a pre-mortem lens of the issue. */
+  async writeRisk(issue: string, input: RiskInput): Promise<RiskWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "risks"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/constraints`: one constraint under the issue. */
+  async writeConstraint(issue: string, input: ConstraintInput): Promise<ConstraintRead> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "constraints"],
+      input
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/constraints`: the constraints under the issue the caller may see. */
+  async issueConstraints(issue: string): Promise<IssueConstraints> {
+    return this.#json("GET", [
+      "api",
+      "v1",
+      "issues",
+      await this.#resolveIssue(issue),
+      "constraints",
+    ]);
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/pointers`: one pointer tuple out of the node `node`
+   *  addresses, sent whole as the one path segment `{id}` is, appended, retracted or retargeted. */
+  async writePointer(issue: string, node: string, input: PointerInput): Promise<PointerWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "pointers"],
+      input
+    );
+  }
+
+  /** `GET /api/v1/lenses?on=`: the lenses invoked on the node `on` addresses, in the order they
+   *  were invoked, and each chain of triggered lenses they stand in. */
+  async lenses(on: string): Promise<NodeLenses> {
+    return this.#json("GET", ["api", "v1", "lenses"], undefined, { on });
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/state`: the node state of the node `node` addresses,
+   *  sent whole as the one path segment `{id}` is. */
+  async writeNodeState(
+    issue: string,
+    node: string,
+    input: NodeStateInput
+  ): Promise<NodeStateWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "state"],
+      input
+    );
+  }
+
+  /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: the settle of the proposed node `node`
+   *  addresses, sent whole as the one path segment `{id}` is. */
+  async settleNode(issue: string, node: string, input: ActorInput): Promise<NodeStateWritten> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "nodes", node, "settle"],
+      input
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/proposed`: the nodes under the issue at state proposed. */
+  async issueProposed(issue: string): Promise<IssueProposed> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "proposed"]);
+  }
+
+  /** `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert`: the conversion of the
+   *  issue's pre-mortem document `slug` into a lens and its risks, once; with `dry_run`, what it
+   *  would write, writing nothing. */
+  async convertPremortem(
+    issue: string,
+    slug: string,
+    input: PremortemConvertInput
+  ): Promise<PremortemReport> {
+    return this.#json(
+      "POST",
+      [
+        "api",
+        "v1",
+        "issues",
+        await this.#resolveIssue(issue),
+        "artifacts",
+        slug,
+        "premortem-convert",
+      ],
+      input
+    );
   }
 
   /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the

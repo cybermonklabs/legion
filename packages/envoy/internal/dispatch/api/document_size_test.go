@@ -85,7 +85,7 @@ func TestArtifactListsGiveANearCapDocumentsStoredSizeWithoutRenderingIt(t *testi
 	var broken *invalidLoadOnceStore
 	watch := &renderWatch{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+		broken = newInvalidLoadOnceStore(database)
 		service := docs.New(docs.Deps{Store: database, Persistence: broken, Settle: time.Hour})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		watch.API = service
@@ -117,7 +117,7 @@ func TestArtifactListsGiveANearCapDocumentsStoredSizeWithoutRenderingIt(t *testi
 	if err := watch.Quiesce(context.Background()); err != nil {
 		t.Fatalf("close the live documents: %v", err)
 	}
-	broken.failNextLoad(document.ID)
+	broken.failNextLoad(t, document.ID)
 	watch.watch(true)
 
 	find := func(read string, artifacts []model.Artifact, id string) model.Artifact {

@@ -170,7 +170,7 @@ func newCausedDocument(t *testing.T, database *store.Store, name, slug string) (
 		t.Fatalf("begin the index of version 1: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, "")
+	_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, first), causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
@@ -237,8 +237,8 @@ func beginCausedPass(t *testing.T, database *store.Store, document parentDocumen
 		`select closed_at is null from issues where key = $1 for no key update`, document.issue).Scan(&open); err != nil {
 		t.Fatalf("take the document's owner row: %v", err)
 	}
-	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, at,
-		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, "")
+	_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, at),
+		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}

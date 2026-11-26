@@ -203,12 +203,13 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	// The kinds are the registry's own list and not a list written here, so a kind the reader
 	// learns to resolve and the map never learns to count fails this loop the day it is added;
 	// the map's kinds are refstest's copy of its keys, which refs' own test holds to the map.
-	// The reader resolves no node of a supertag or an attribute (keys of refs' registry with no
-	// loader), so the two are the registry's kinds no count is owed for.
+	// The reader resolves no node of a kind the registry carries no loader for (refs'
+	// unresolvedKind: a supertag, an attribute, a result), so those are the registry's kinds no
+	// count is owed for, read off the registry's own answer (refs.ResolvesNodeKind).
 	counted := refstest.BacklinkKinds()
 	resolved := 0
 	for _, kind := range refs.VisibilityKinds() {
-		if kind == "supertag" || kind == "attribute" {
+		if !refs.ResolvesNodeKind(kind) {
 			continue
 		}
 		resolved++
@@ -220,7 +221,7 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 		t.Fatal("the registry declares no kind the reader resolves, so the loop above held nothing")
 	}
 	for _, kind := range counted {
-		if kind == "supertag" || kind == "attribute" || !slices.Contains(refs.VisibilityKinds(), kind) {
+		if !refs.ResolvesNodeKind(kind) || !slices.Contains(refs.VisibilityKinds(), kind) {
 			t.Errorf("the backlink arms map declares %s, which the reader resolves no node of", kind)
 		}
 	}
@@ -394,7 +395,7 @@ func requireADeletedBlockStaysGone(t *testing.T, database *store.Store, artifact
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, won, written, err := refs.IndexBlocks(ctx, tx, artifactID, version, time.Now().UTC(), markdown, blocks, nil, nil, "")
+		_, won, written, _, err := refs.IndexBlocks(ctx, tx, artifactID, refs.OneVersion(artifactID, version, time.Now().UTC()), markdown, blocks, nil, nil, "", refs.TypedFacts{})
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}

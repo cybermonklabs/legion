@@ -5,14 +5,16 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { IssueDetails } from "../../api/types";
-import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import type { Comment, IssueDetails } from "../../api/types";
+import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS, waitInAct } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { AppProviders } from "./slots/stage-fixtures";
 import { nodesInOrder } from "./tree-keys";
+import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * The outline's reads (`useOutlineReads`) called from two places of one page: the body, and a
@@ -48,8 +50,29 @@ function bodyReads(held: Held): typeof useOutlineReadsItself {
   };
 }
 
-/** Each of the outline's six reads, sent once. */
-const SENT_ONCE = { asks: 1, comments: 1, coverage: 1, decisions: 1, messages: 1, results: 1 };
+/** The tree read's answer for an issue that holds `comments` and nothing else, as
+ *  `issue-tree.test.ts` answers a comments read: the issue, and each comment a node under the
+ *  comment it replies to, else under the issue. The outline draws its turns from it. */
+function treeOf(comments: readonly Comment[]): TreeAnswer {
+  const key = issueDetails().key;
+  return treeAnswer(
+    [treeNode(key, "issue", null), ...comments.map((comment) => commentNode(comment))],
+    [],
+    { issue: key }
+  );
+}
+
+/** Each of the outline's six reads, and the tree read the outline draws its turns from, sent
+ *  once. */
+const SENT_ONCE = {
+  asks: 1,
+  comments: 1,
+  coverage: 1,
+  decisions: 1,
+  messages: 1,
+  results: 1,
+  tree: 1,
+};
 
 test("the body and a second caller of the outline's reads send each read once and hold one tree", async () => {
   const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
@@ -59,16 +82,13 @@ test("the body and a second caller of the outline's reads send each read once an
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
   const reads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
-      decisions: [],
-      document: null,
-      open_questions: [],
-    } as never),
+    decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
+    tree: spyOn(api, "getIssueTree").mockResolvedValue(treeOf(TWO_THREADS)),
   };
   const sent = () =>
     Object.fromEntries(Object.entries(reads).map(([name, read]) => [name, read.mock.calls.length]));
@@ -144,30 +164,25 @@ function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
 // The page's first focus waits until every read the rows come from has answered, so it lands
 // once where no read still out draws rows above it (`IssueTree`'s opening). A read that answers
 // with a failure has answered too: waiting for a read to hold data, a failed one held the first
-// focus back for ever. Each of the six reads counts, and so does each document's blocks read:
-// the case leaves one of each out in turn, answers the other, and then fails the one left out.
-test("the outline's reads are settled once each read and each document's blocks have answered, a failure among them", async () => {
-  for (const last of ["messages", "blocks"] as const) {
+// focus back for ever. Each of the six reads counts, and so does the tree read, which every node
+// of the outline comes from: the case leaves one of each out in turn, answers the other, and then
+// fails the one left out.
+test("the outline's reads are settled once each read and the tree read have answered, a failure among them", async () => {
+  for (const last of ["messages", "tree"] as const) {
     const issue = issueDetails();
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     });
     const messages = Promise.withResolvers<never[]>();
-    const blocks = Promise.withResolvers<never>();
+    const tree = Promise.withResolvers<TreeAnswer>();
     const spies = [
-      spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+      spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
       spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
       spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-      spyOn(api, "getIssueDecisions").mockResolvedValue({
-        decisions: [],
-        document: null,
-        open_questions: [],
-      } as never),
+      spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
       spyOn(api, "listIssueMessages").mockReturnValue(messages.promise as never),
       spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
-      spyOn(api, "getArtifactBlocks").mockImplementation(
-        (id: string) => (id === "artifact-spec" ? blocks.promise : Promise.resolve([])) as never
-      ),
+      spyOn(api, "getIssueTree").mockReturnValue(tree.promise),
       spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
       spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
     ];
@@ -176,13 +191,13 @@ test("the outline's reads are settled once each read and each document's blocks 
       const view = renderReads(issue, client, held);
       await waitFor(() => expect(api.listIssueMessages).toHaveBeenCalled());
       // The read that is not the last answers.
-      if (last === "messages") blocks.resolve([] as never);
+      if (last === "messages") tree.resolve(treeOf(TWO_THREADS));
       else messages.resolve([]);
       await waitInAct(20);
       expect(held.second?.readsSettled, `settled with the ${last} read still out`).toBe(false);
       // The last fails.
       if (last === "messages") messages.reject(new Error("the messages' read failed"));
-      else blocks.reject(new Error("the spec's blocks read failed"));
+      else tree.reject(new Error("the tree read failed"));
       await waitFor(() =>
         expect(held.second?.readsSettled, `a failed ${last} read held the reads unsettled`).toBe(
           true

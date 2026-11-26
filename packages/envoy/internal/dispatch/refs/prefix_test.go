@@ -692,3 +692,48 @@ func TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix(t *testing.T) {
 	}
 	requireShortIDAmbiguous(t, tx, "message", Scope{IssueKey: "CORE-1"}, "b3000000")
 }
+
+// An issue born converted keeps its documents' blocks in its room: the room's block index keys
+// each block's row under the room's tree artifact beside the document whose fragment holds it
+// (issue_room_blocks), and records each block's texts under that tree at its document's own
+// version numbers (T12a of this branch's plan). A short block id names a block of the document
+// its reference names, so both resolvers read that document's blocks in its room: in the spec's
+// scope, its latest version and a version it pins each name the one block of the spec that
+// carries the prefix, and not the block of the Verification document's fragment that carries it
+// too, and a prefix two of the spec's blocks carry is ambiguous, as each is on a document that is
+// its own room (TestResolvePrefixReadsTheBlocksOfTheDocumentVersionNamed,
+// TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates).
+func TestResolvePrefixReadsAConvertedDocumentsBlocksInItsRoom(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	spec, specRef, verification, tree, _ := roomFixture(t, tx)
+	treeAt := writeStoredVersion(t, tx, tree, 1, "")
+	specAt := writeStoredVersion(t, tx, spec, 1, "First words.\n\nSecond words.\n\nThird words.")
+	verificationAt := writeStoredVersion(t, tx, verification, 1, "Check.")
+	markdown, blocks := documentOf([]part{
+		{"cafe0001-one", "paragraph", "First words."}, {"cafe0001-two", "paragraph", "Second words."},
+		{"beef0002-one", "paragraph", "Third words."}, {"beef0002-two", "paragraph", "Check."},
+	})
+	for index := range blocks {
+		blocks[index].Document = spec
+	}
+	blocks[3].Document = verification
+	if _, won, _, _, err := IndexBlocks(ctx, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 1, At: specAt}, verification: {Number: 1, At: verificationAt},
+	}, markdown, blocks, nil, nil, "", TypedFacts{}); err != nil || !won {
+		t.Fatalf("index the room: won %t, %v", won, err)
+	}
+
+	for _, scope := range []Scope{{Document: specRef}, {Document: specRef, Version: 1}} {
+		if got := resolvedPrefix(t, tx, "block", scope, "beef0002", Viewer{}); got.ID != "beef0002-one" || got.FirstLine != "Third words." {
+			t.Errorf("the block under beef0002 in %#v = %#v, want the spec's beef0002-one and its text, not the Verification document's block", scope, got)
+		}
+	}
+	_, err := ResolvePrefix(ctx, tx, model.Actor{}, "block", Scope{Document: specRef}, "cafe0001", Viewer{})
+	var ambiguous *ErrPrefixAmbiguous
+	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 ||
+		ambiguous.Candidates[0].ID != "cafe0001-one" || ambiguous.Candidates[1].ID != "cafe0001-two" {
+		t.Fatalf("two of the spec's blocks under cafe0001 = %v, want both listed in id order", err)
+	}
+	requireShortIDAmbiguous(t, tx, "block", Scope{Document: specRef}, "cafe0001")
+}

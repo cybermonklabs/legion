@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reearth/ygo/crdt"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -404,7 +406,7 @@ func TestABrowsersNulLeavesTheDocumentVersionable(t *testing.T) {
 					t.Fatalf("anchor a comment: status=%d body=%s", comment.Code, comment.Body.String())
 				}
 			}
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				test.edit(tree)
 				return nil
@@ -470,7 +472,7 @@ func TestABlockIDHoldingANulIsMintedAgain(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Crafted block id", test.spec)
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children[1].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
 				return nil
@@ -522,7 +524,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 				t.Fatal(err)
 			}
 			pasted.Children[0].Attrs[pmdoc.BlockIDAttr] = id
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children = append(tree.Children, pasted.Children...)
 				return nil
@@ -539,7 +541,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 				t.Fatalf("answer the pasted ask: status=%d body=%s", answered.Code, answered.Body.String())
 			}
 
-			peer = connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer = connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.appendToFirstParagraph(t, " more")
 			peer.barrier(t)
 			peer.closeAndWait(t)
@@ -558,6 +560,73 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The browser editor gives a server attribute no default (proof-editor's writtenDefault), so an
+// ask block it pastes holds each of them as undefined, and y-prosemirror writes every attribute a
+// new node holds into the live document, an undefined one too, which the room reads as null: the
+// pasted block arrives with `state` null although the schema's default for it is `open`. The
+// server writes a server attribute into a block or nobody does, so such
+// a null reads as the block not holding the attribute: the room takes the paste, every read serves
+// the block with none of the server's attributes, and settlement opens its ask and stores a version
+// holding none of them either.
+func TestAnAskBlockPastedWithNullServerAttributesIsTaken(t *testing.T) {
+	t.Parallel()
+	documentService, handler, database := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Pasted ask", "before\n")
+	pasted, err := pmdoc.Parse(":::ask{#pasted urgency=\"med\" multiple=\"false\"}\nWhich one?\n\n- A\n- B\n:::\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributes, _ := pmdoc.BlockTypeAttributes("ask")
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
+	peer.transact(t, func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error {
+		tree, err := pmdoc.ReadInTransaction(txn, fragment)
+		if err != nil {
+			return err
+		}
+		tree.Children = append(tree.Children, pasted.Children...)
+		if err := pmdoc.Update(txn, fragment, tree); err != nil {
+			return err
+		}
+		children := fragment.Children()
+		ask, ok := children[len(children)-1].(*crdt.YXmlElement)
+		if !ok || ask.NodeName != "ask" {
+			return fmt.Errorf("the pasted block is %T, want the ask element", children[len(children)-1])
+		}
+		for _, attribute := range attributes {
+			if attribute.Server {
+				ask.SetAttributeValue(txn, attribute.Name, nil)
+			}
+		}
+		return nil
+	})
+	peer.barrier(t)
+	const opener = `:::ask{#pasted urgency="med" multiple="false"}`
+	artifact := "/api/v1/artifacts/" + issue.PrimaryArtifactID
+	for _, read := range []string{"/text", "/blocks"} {
+		if response := dispatchRequest(t, handler, http.MethodGet, artifact+read, nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("GET %s of the pasted document = %d %s, want 200", read, response.Code, response.Body.String())
+		}
+	}
+	requireLiveText(t, handler, issue.PrimaryArtifactID, opener+"\nWhich one?")
+
+	peer.closeAndWait(t)
+	asks := decodeBody[[]model.Ask](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks", nil, "alice"))
+	if len(asks) != 1 || asks[0].BlockID == nil || *asks[0].BlockID != "pasted" || asks[0].State != "open" {
+		t.Fatalf("after the paste's settlement, asks = %s; want one open ask under %q", describeAsks(asks), "pasted")
+	}
+	requireLiveText(t, handler, issue.PrimaryArtifactID, `#pasted state="open"`)
+	var markdown string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select markdown from artifact_versions where artifact_id = $1 order by number desc limit 1
+	`, issue.PrimaryArtifactID).Scan(&markdown); err != nil {
+		t.Fatalf("read the latest version: %v", err)
+	}
+	if !strings.Contains(markdown, opener+"\n") {
+		t.Fatalf("latest version = %q, want the pasted block with none of the server's attributes", markdown)
+	}
+	requireNoAnswerAttributes(t, "the version the paste's settlement stored", markdown)
 }
 
 func describeAsks(asks []model.Ask) string {
@@ -579,7 +648,7 @@ func TestAnAnchorInABlockWhoseLiveIDHoldsANulIsUnpinned(t *testing.T) {
 	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unsettled NUL id", "before\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children[0].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
@@ -624,7 +693,7 @@ func TestABlockIDHoldingANulIsServedAndVersionedAsAReplacementCharacter(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			documentService, handler, _ := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Unsettled NUL id", test.spec)
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			t.Cleanup(peer.close)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children[test.block].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
@@ -659,7 +728,7 @@ func TestAQuoteMatchesABrowsersNulAsEveryReadServesIt(t *testing.T) {
 	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quote over a NUL", "# Plan\n\nbefore\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children[0].Children[0].Text = "Pl" + nulText + "an"
 		tree.Children[1].Children[0].Text = "bef" + nulText + "ore"

@@ -57,14 +57,16 @@ const (
 // history - its lowest version and its head (a prune's checkpoint ceiling while one stands, as
 // headVersion has it) - and every row past $2, the version the room's instance holds every update
 // through, up to that head. The bounds come back on every row, and on a row of their own with no
-// version when there is nothing past $2.
+// version when there is nothing past $2, beside the room the document's document_rooms row names,
+// null for a document that is its own room.
 const catchUpStatement = `
 	with bounds as (
 		select coalesce(min(version), 0) as low,
-		       coalesce((select ceiling from doc_checkpoints where artifact_id = $1), max(version), 0) as high
+		       coalesce((select ceiling from doc_checkpoints where artifact_id = $1), max(version), 0) as high,
+		       (select moved.room::text from document_rooms moved where moved.artifact_id = $1) as moved
 		from doc_updates where artifact_id = $1
 	)
-	select bounds.low, bounds.high, stored.version, stored.update
+	select bounds.low, bounds.high, bounds.moved, stored.version, stored.update
 	from bounds
 	left join doc_updates stored
 		on stored.artifact_id = $1 and stored.version > $2 and stored.version <= bounds.high
@@ -77,27 +79,30 @@ type storedRow struct {
 }
 
 // readCatchUp is catchUpStatement through q: the lowest stored version and the head (0 for none),
-// and the rows past through in version order.
-func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (low, high int64, rows []storedRow, err error) {
+// the rows past through in version order, and whether room's document moved into its issue's room
+// (document_rooms).
+func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (low, high int64, rows []storedRow, moved bool, err error) {
 	result, err := q.Query(ctx, catchUpStatement, room, through)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 	}
 	defer result.Close()
 	for result.Next() {
 		var version *int64
 		var update []byte
-		if err := result.Scan(&low, &high, &version, &update); err != nil {
-			return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		var to *string
+		if err := result.Scan(&low, &high, &to, &version, &update); err != nil {
+			return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 		}
+		moved = to != nil
 		if version != nil {
 			rows = append(rows, storedRow{version: *version, update: update})
 		}
 	}
 	if err := result.Err(); err != nil {
-		return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 	}
-	return low, high, rows, nil
+	return low, high, rows, moved, nil
 }
 
 // catchUpRoom brings live, room's resident instance, up to the stored head: it reads the stored
@@ -138,14 +143,17 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 		return catchUpGone, nil
 	}
 	through, above := instance.cursor.held()
-	low, high, rows, err := readCatchUp(ctx, q, room, through)
+	low, high, rows, moved, err := readCatchUp(ctx, q, room, through)
 	if s.catchUps.afterRead != nil {
 		s.catchUps.afterRead(room)
 	}
 	if err != nil {
 		return 0, err
 	}
-	if storedHistoryReplaced(through, low, high) {
+	// A room whose document moved into its issue's room takes nothing more (ErrRoomMoved), and is
+	// closed as one whose history was replaced is: its browsers connect again, and their admission
+	// resolves the document to the issue's room.
+	if moved || storedHistoryReplaced(through, low, high) {
 		return catchUpReplaced, nil
 	}
 	versions := make([]int64, 0, len(rows))
@@ -284,7 +292,8 @@ func catchUpRetryBackoff(attempt int) time.Duration {
 }
 
 // catchUpLoadingWait is how often, and catchUpLoadingTimeout for how long, a catch-up scheduled for
-// a room still loading (keepInstance) looks again for ygo to publish it.
+// a room still loading (keepInstance) looks again for ygo to publish it. A join's commit waits for
+// a load of its room under way by the same two (awaitRoomLoad).
 const (
 	catchUpLoadingWait    = 10 * time.Millisecond
 	catchUpLoadingTimeout = 5 * time.Second

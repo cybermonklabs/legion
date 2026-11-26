@@ -103,17 +103,33 @@ cross join lateral (
 ) claim;
 
 -- thread: the thread the comment is in, oldest first - the ask and every reply under it for an ask
--- thread, else the root comment and every reply to it.
+-- thread, else the root comment and every reply to it. The ask's state is the one its node holds,
+-- as every read of an ask shows it (api's askNodeStateOf): the answer_state value that stands on
+-- the node where the row names one, open where the node holds none, and the row's own state where
+-- the row names no node.
 with this as (
     select c.id, c.ask_id, coalesce(c.reply_to, c.id) as root
     from comments c
     where c.id = :'comment'::uuid
 ),
 thread as (
-    select 'ask' as kind, a.id, a.author, a.created_at, a.state = 'resolved' as resolved,
-           null::jsonb as resolved_by, null::timestamptz as resolved_at, a.state
+    select 'ask' as kind, a.id, a.author, a.created_at, node.state = 'resolved' as resolved,
+           null::jsonb as resolved_by, null::timestamptz as resolved_at, node.state
     from this
     join asks a on a.id = this.ask_id
+    cross join lateral (
+        select case when a.node_kind is null then a.state else coalesce((
+            select f.to_id
+            from (
+                select distinct on (t.kind) t.to_id, t.asserted
+                from graph_tuples t
+                where t.from_kind = 'ask' and t.from_id = a.id::text
+                  and t.kind = 'answer_state' and t.to_kind = 'value'
+                order by t.kind, t.seq desc
+            ) f
+            where f.asserted
+        ), 'open') end as state
+    ) node
     union all
     select case when c.id = this.root and this.ask_id is null then 'root' else 'reply' end,
            c.id, c.author, c.created_at, c.resolved, c.resolved_by, c.resolved_at, ''

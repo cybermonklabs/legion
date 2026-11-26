@@ -255,6 +255,58 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 	}
 }
 
+// A document of an issue room is rebuilt in its room (T12b of the issue-tree plan): the
+// room's stored history, the one that does not load, is replaced by one seed holding the rebuilt
+// document's fragment from its latest version and every other document's fragment from its own,
+// nothing is stored under the document's own id, and once the rebuild commits the room loads and
+// each document reads its own text back.
+func TestRebuildingADocumentOfAnIssueRoomReplacesTheRoomsHistory(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	for document, markdown := range map[string]string{room.spec: "The spec words.\n", room.plan: planSeed} {
+		if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $2 where artifact_id = $1`, document, markdown); err != nil {
+			t.Fatalf("store the latest version of %s: %v", document, err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into doc_updates (artifact_id, version, update, content_changed) values ($1, 2, $2, true)
+	`, room.tree, refusedDeleteRangeUpdate(7, 1<<53, 2)); err != nil {
+		t.Fatalf("store the update an earlier release took: %v", err)
+	}
+	service := newSchemaRepairService(database)
+	testcleanup.Add(t, func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown service: %v", err)
+		}
+	})
+	if _, err := service.Text(ctx, room.spec); !errors.Is(err, ErrDocumentUnloadable) {
+		t.Fatalf("read the spec over the room's history: %v, want ErrDocumentUnloadable", err)
+	}
+
+	report, written, err := rebuildDocument(t, service, room.spec, nil)
+	if err != nil {
+		t.Fatalf("rebuild the spec: %v", err)
+	}
+	if report.SourceVersion != 1 || report.RemovedUpdates != 2 || report.Head != 3 || written.Wrote {
+		t.Errorf("rebuild report = %#v (%#v), want source version 1, the room's 2 updates removed, head 3, no version", report, written)
+	}
+	if rows := roomUpdateCount(t, database, room.tree); rows != 1 {
+		t.Errorf("the issue room holds %d stored updates after the rebuild, want its one seed", rows)
+	}
+	if rows := roomUpdateCount(t, database, room.spec); rows != 0 {
+		t.Errorf("the spec's own id holds %d stored updates, want none: its history is the room's", rows)
+	}
+	for document, want := range map[string]string{room.spec: "The spec words.\n", room.plan: planSeed} {
+		if text, err := service.Text(ctx, document); err != nil || text != want {
+			t.Errorf("the text of %s after the rebuild is %q (%v), want %q, its latest version", document, text, err, want)
+		}
+	}
+	if err := service.warmLiveDocument(ctx, room.tree); err != nil {
+		t.Errorf("load the rebuilt issue room: %v", err)
+	}
+}
+
 // A resident room remains live even when no writer holds its advisory lock, so the server registry
 // refuses rebuilding it without changing durable history. The refusal names what a rebuild would
 // discard, names no other repair, and tells the caller to stop and ask a person.

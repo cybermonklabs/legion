@@ -166,7 +166,7 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 }
 
 // Under a deployment that gates more than one step, a parked root keeps a decision for each
-// document a person reviewed: the decisions document and the spec are two references, so the
+// document a person reviewed: the Verification document and the spec are two references, so the
 // newest-per-reference rule the keep follows (record.Store.AddParkedDecision) keeps both rather
 // than letting the second replace the first. The spec step's reference is the one every release
 // before the step list wrote, so a one-step deployment keeps exactly what it kept before.
@@ -180,9 +180,9 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
 		supervisor: sup, project: "legion", now: time.Now}
-	decisions := record.Notice{Kind: "design-approved", Version: 2, Actor: "user:alice", Ref: "dispatch://LEGION-1/artifact/decisions-md"}
+	criteria := record.Notice{Kind: "design-approved", Version: 2, Actor: "user:alice", Ref: "dispatch://LEGION-1/artifact/verification-md"}
 	spec := record.Notice{Kind: "design-approved", Version: 4, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
-	for _, decision := range []record.Notice{decisions, spec} {
+	for _, decision := range []record.Notice{criteria, spec} {
 		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", decision, time.Now()))
 		if err := runner.notice(ctx, row, decision); err != nil {
 			t.Fatalf("relay the approval of %s: %v", decision.Ref, err)
@@ -194,12 +194,12 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 		refs = append(refs, decision.Ref)
 	}
 	slices.Sort(refs)
-	want := []string{"dispatch://LEGION-1/artifact/decisions-md", "dispatch://LEGION-1/spec"}
+	want := []string{"dispatch://LEGION-1/artifact/verification-md", "dispatch://LEGION-1/spec"}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("kept decisions %v, want one of each document: %v", refs, want)
 	}
 	told := parkedDecisions(t, pool)
-	if len(told) != 2 || told[0].Ref != decisions.Ref || told[0].Version != 2 || told[1].Ref != spec.Ref || told[1].Version != 4 {
+	if len(told) != 2 || told[0].Ref != criteria.Ref || told[0].Version != 2 || told[1].Ref != spec.Ref || told[1].Version != 4 {
 		t.Fatalf("parked-decision notices %#v, want one for each document at its own version", told)
 	}
 }

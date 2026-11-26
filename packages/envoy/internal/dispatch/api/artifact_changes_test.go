@@ -1,22 +1,27 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// GET /api/v1/artifacts/{id}/changes answers what changed between two stored versions of one
-// document, read off their markdown with every decision block cut out: whether the cut is the
-// whole change, whether nothing changed at all, each `##` section whose text differs or that
-// moved, named by its heading and occurrence, each run of the text outside every `##` section
-// that differs or moved, named under the heading "" with the place it stands at, and each typed
-// block other than an ask whose text or any attribute differs, named by its id. The daemon reads
-// it to tell the session holding an issue what an approved new version changed, so these tests
-// read the answer as that caller reads the JSON, field by field.
+// GET /api/v1/artifacts/{id}/changes answers what changed between two versions of one
+// document, read off their markdown as the one renderer answers it, with every ask block cut
+// out: whether the cut is the whole change, whether nothing changed at all, each `##` section
+// whose text differs or that moved, named by its heading and occurrence, each run of the text
+// outside every `##` section that differs or moved, named under the heading "" with the place it
+// stands at, and each typed block other than an ask whose text or any attribute differs, named
+// by its id. The daemon reads it to tell the session holding an issue what an approved new
+// version changed, so these tests read the answer as that caller reads the JSON, field by field.
 
 // servedChanges is the change set as a caller decodes the route's JSON.
 type servedChanges struct {
@@ -113,7 +118,7 @@ func uploadVersionsTo(t *testing.T, handler http.Handler, issueKey, name string,
 }
 
 // requireChanges fails t unless the change set names exactly sections and blocks, and is neither
-// decision-only nor unchanged.
+// ask-only (decision_only) nor unchanged.
 func requireChanges(t *testing.T, changes servedChanges, sections []servedSection, blocks []servedBlockRef) {
 	t.Helper()
 	if changes.DecisionOnly || changes.Unchanged {
@@ -210,11 +215,11 @@ func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
 	})
 }
 
-// decisionSpec is a spec with one section of prose and a decision block in a section of its own,
-// the document the two decision tests answer the block of.
+// decisionSpec is a spec with one section of prose and an ask block in a section of its own. The
+// tests of an answered ask answer that block.
 const decisionSpec = "# Plan\n\n## Rollout\n\nThe service ships behind a flag.\n\n## Decisions\n\n" + waveAsk
 
-// answeredDecisionSpec writes decisionSpec into a new issue's spec, has alice answer its decision
+// answeredDecisionSpec writes decisionSpec into a new issue's spec, has alice answer its ask
 // block, and waits for the version settlement writes her answer into: version 2.
 func answeredDecisionSpec(t *testing.T, handler http.Handler) string {
 	t.Helper()
@@ -228,8 +233,8 @@ func answeredDecisionSpec(t *testing.T, handler http.Handler) string {
 	return issue.PrimaryArtifactID
 }
 
-// An answer a person gave to a decision block is the whole difference between the version before
-// it and the version it wrote: the change set is decision-only, and names no section and no block,
+// An answer a person gave to an ask block is the whole difference between the version before
+// it and the version it wrote: the change set is ask-only, and names no section and no block,
 // the section that holds the block included.
 func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
 	t.Parallel()
@@ -245,8 +250,8 @@ func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
 	}
 }
 
-// An answer beside a change to a section's words is no decision-only change: the changed section
-// is named, and neither the decision block nor the section holding it is.
+// An answer beside a change to a section's words is no ask-only change: the changed section
+// is named, and neither the ask block nor the section holding it is.
 func TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
@@ -284,7 +289,7 @@ func sectionedPlan(sections ...string) string {
 	return "# Plan\n\n" + strings.Join(sections, "\n")
 }
 
-// A version that only swaps two sections changes the document, so it is no decision-only change,
+// A version that only swaps two sections changes the document, so it is no ask-only change,
 // and it names exactly one of the two moved: the one the later version holds second, the other
 // keeping its place among the sections both versions hold. The section after them is not named.
 func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
@@ -531,18 +536,18 @@ func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 }
 
 // R2 of dispatch://INFRA-175 sends the session holding the work a task naming what an approved new
-// version changed, read off this change set. decision_only is a change that tells nobody anything
+// version changed, read off this change set. decision_only (ask blocks alone) tells nobody anything
 // of the work, and unchanged is no change at all; neither sends a task. Every other change set
 // must name a section or a block, since one that names neither tells the session the document
 // changed and nothing of where to read. This test drives the route over each kind of pair this
-// tree has met, and holds each to that invariant - exactly one of decision-only, unchanged, and
+// tree has met, and holds each to that invariant - exactly one of ask-only, unchanged, and
 // at least one item named - and to the one of the three its case must be. The store renders every
 // upload, so a version that differs from the one before it in blank lines alone is stored as the
 // same text, and is unchanged as an identical version is.
 func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 	t.Parallel()
 	const (
-		decisionOnly = "decision-only"
+		decisionOnly = "ask-only"
 		unchanged    = "unchanged"
 		named        = "named"
 	)
@@ -627,13 +632,13 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 		namesSome := len(changes.Sections)+len(changes.Blocks) > 0
 		switch {
 		case changes.DecisionOnly && (changes.Unchanged || namesSome), changes.Unchanged && namesSome:
-			t.Fatalf("the change set is more than one of decision-only, unchanged and naming what changed: %+v", changes)
+			t.Fatalf("the change set is more than one of ask-only, unchanged and naming what changed: %+v", changes)
 		case changes.DecisionOnly:
 			return decisionOnly
 		case changes.Unchanged:
 			return unchanged
 		case !namesSome:
-			t.Fatalf("the change set is neither decision-only nor unchanged and names no section and no block, so it says the document changed and nothing of where: %+v", changes)
+			t.Fatalf("the change set is neither ask-only nor unchanged and names no section and no block, so it says the document changed and nothing of where: %+v", changes)
 		}
 		return named
 	}
@@ -645,7 +650,7 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 	}
 	artifactID := uploadVersionsTo(t, handler, createPlainIssue(t, handler, "CHG"), "plan.md", texts...)
 
-	t.Run("an answered decision block", func(t *testing.T) {
+	t.Run("an answered ask block", func(t *testing.T) {
 		if got := state(t, readChanges(t, handler, decided, 1, 2)); got != decisionOnly {
 			t.Fatalf("the change set is %s, want %s", got, decisionOnly)
 		}
@@ -743,4 +748,186 @@ func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
 	if unknown.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, unknown).Code != "ARTIFACT_NOT_FOUND" {
 		t.Fatalf("an id that names no artifact: status=%d body=%s, want 404 ARTIFACT_NOT_FOUND", unknown.Code, unknown.Body.String())
 	}
+}
+
+// The change set reads each of its two versions as the one renderer answers it for the caller
+// (docs.RenderVersion), the text GET …/versions/{number} answers, and never a version's stored
+// markdown past it. The plan of an issue born converted renders each of its versions from the
+// tree, as of the version's time, and the change set of each pair of them is the one
+// compareVersions makes of the two renders.
+//
+// No route reaches a rendered version whose stored markdown is not its render: the render leaves
+// out no node for any reader (docs.RenderAt), the pass that stated the version recorded its
+// version_renders row because its render as of the row's time was its stored markdown byte for
+// byte, and every tuple a later write appends is dated after that time. So the test writes the
+// stored markdown of the plan's version 2 by SQL, as no route can, to tell the two reads apart:
+// the change sets from 1 to 2 and from 2 to 3 are still those of the renders, and those the
+// stored texts make are not. A read of the stored markdown fails here, naming version 2 and the
+// section only its stored text holds.
+//
+// A document no query covers, notes.md, holds no version_renders row: each of its versions answers
+// its stored bytes, and its change set is the one those bytes make, as before. A version that
+// stores no markdown (docs.NoBytes) is compared as the empty text, as the read of the stored
+// column, a null coalesced to the empty string, compared it.
+func TestTheChangeSetReadsEachVersionAsTheOneRendererAnswersIt(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createArtifactIssue(t, handler)
+	plan := uploadVersionsTo(t, handler, issue.Key, "plan.md",
+		"# Plan\n\n## Goal\n\nShip the service.\n",
+		"# Plan\n\n## Goal\n\nShip the service behind a flag.\n\n## Rollout\n\nOne region a day.\n",
+		"# Plan\n\n## Goal\n\nShip the service behind a flag.\n\n## Rollout\n\nTwo regions a day.\n")
+	for number := 1; number <= 3; number++ {
+		if rendering := renderedVersion(t, database, plan, number); rendering.Source != docs.RenderedFromTree {
+			t.Fatalf("version %d of plan.md answers %q from %s, want a render from the tree, or this case proves nothing",
+				number, rendering.Markdown, rendering.Source)
+		}
+	}
+	requireChanges(t, readChanges(t, handler, plan, 1, 2), []servedSection{
+		{Heading: "Goal", Occurrence: 0, Change: "changed"},
+		{Heading: "Rollout", Occurrence: 0, Change: "added"},
+	}, []servedBlockRef{})
+	requireRenderedChanges(t, handler, database, plan, 1, 2)
+	requireRenderedChanges(t, handler, database, plan, 2, 3)
+
+	ctx := context.Background()
+	render := renderedVersion(t, database, plan, 2).Markdown
+	stored := render + "\n## Rollback\n\nRoll back by hand.\n"
+	if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`,
+		plan, 2, stored); err != nil {
+		t.Fatalf("write the stored markdown of version 2 of plan.md: %v", err)
+	}
+	if rendering := renderedVersion(t, database, plan, 2); rendering.Source != docs.RenderedFromTree || rendering.Markdown != render {
+		t.Fatalf("version 2 of plan.md answers %q from %s once its stored markdown is rewritten, want its render %q from the tree",
+			rendering.Markdown, rendering.Source, render)
+	}
+	for _, pair := range [][2]int{{1, 2}, {2, 3}} {
+		readStored, err := compareVersions(storedVersionText(t, database, plan, pair[0]), storedVersionText(t, database, plan, pair[1]))
+		if err != nil {
+			t.Fatalf("compare the stored texts of versions %d and %d: %v", pair[0], pair[1], err)
+		}
+		readRendered, err := compareVersions(renderedVersion(t, database, plan, pair[0]).Markdown, renderedVersion(t, database, plan, pair[1]).Markdown)
+		if err != nil {
+			t.Fatalf("compare the renders of versions %d and %d: %v", pair[0], pair[1], err)
+		}
+		if reflect.DeepEqual(readStored, readRendered) {
+			t.Fatalf("the stored texts of versions %d and %d make the change set their renders make, %+v, so this case proves nothing",
+				pair[0], pair[1], readRendered)
+		}
+		requireRenderedChanges(t, handler, database, plan, pair[0], pair[1])
+	}
+
+	notes := uploadVersionsTo(t, handler, issue.Key, "notes.md",
+		"# Notes\n\nA draft.\n",
+		"# Notes\n\n## Open\n\nOne question.\n",
+		"# Notes\n\n## Open\n\nTwo questions.\n")
+	// An upload no role names renders from the tree too (R15: a version of a document no query
+	// record covers holds a version_renders row with a time and no digest), so each version of
+	// notes.md first renders from the tree. The renderer's other branches answer a version that
+	// holds no row - one written before the cutover - by its stored bytes, so the rows are taken
+	// away by SQL, as c-render-at-version deletes a row and reads the stored markdown answered. No
+	// route stores a document version with no markdown, so version 1's is taken away by SQL too. It
+	// is not the newest version, which the document's settlement reads as a text.
+	for number := 1; number <= 3; number++ {
+		if rendering := renderedVersion(t, database, notes, number); rendering.Source != docs.RenderedFromTree {
+			t.Fatalf("version %d of notes.md answers %q from %s, want a render from the tree (R15)", number, rendering.Markdown, rendering.Source)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from version_renders where artifact_id = $1`, notes); err != nil {
+		t.Fatalf("take the version_renders rows of notes.md away: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = null where artifact_id = $1 and number = 1`, notes); err != nil {
+		t.Fatalf("take the markdown of version 1 of notes.md away: %v", err)
+	}
+	for number, want := range map[int]docs.RenderSource{1: docs.NoBytes, 2: docs.StoredBytes, 3: docs.StoredBytes} {
+		if rendering := renderedVersion(t, database, notes, number); rendering.Source != want {
+			t.Fatalf("version %d of notes.md answers %q from %s, want %s", number, rendering.Markdown, rendering.Source, want)
+		}
+	}
+	requireChanges(t, readChanges(t, handler, notes, 2, 3), []servedSection{
+		{Heading: "Open", Occurrence: 0, Change: "changed"},
+	}, []servedBlockRef{})
+	requireChanges(t, readChanges(t, handler, notes, 1, 2), []servedSection{
+		runBeforeTheFirstSection("added"),
+		{Heading: "Open", Occurrence: 0, Change: "added"},
+	}, []servedBlockRef{})
+	requireRenderedChanges(t, handler, database, notes, 1, 2)
+	requireRenderedChanges(t, handler, database, notes, 2, 3)
+}
+
+// changesReader is who the change set test reads as: alice, as the route's caller and as the
+// reader the renderer answers.
+var changesReader = model.Actor{Kind: "user", ID: "alice"}
+
+// renderedVersion is version number of the document artifactID as the one renderer answers it for
+// changesReader.
+func renderedVersion(t *testing.T, database *store.Store, artifactID string, number int) docs.Rendering {
+	t.Helper()
+	rendering, err := docs.RenderVersion(context.Background(), database.Pool, changesReader, artifactID, number)
+	if err != nil {
+		t.Fatalf("render version %d of %s: %v", number, artifactID, err)
+	}
+	return rendering
+}
+
+// storedVersionText is the stored markdown of version number of the document artifactID, the empty
+// text where it stores none.
+func storedVersionText(t *testing.T, database *store.Store, artifactID string, number int) string {
+	t.Helper()
+	var markdown string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+		t.Fatalf("read the stored markdown of version %d of %s: %v", number, artifactID, err)
+	}
+	return markdown
+}
+
+// requireRenderedChanges fails t unless the change set the route answers changesReader for
+// versions from and to of the document artifactID is the one compareVersions makes of the two
+// versions as the one renderer answers them for that reader. A failure names each of the two
+// versions whose stored markdown is not its render, and the text where the two differ: a change
+// set read off that version's stored markdown differs there.
+func requireRenderedChanges(t *testing.T, handler http.Handler, database *store.Store, artifactID string, from, to int) {
+	t.Helper()
+	var rendered [2]string
+	var apart []string
+	for index, number := range []int{from, to} {
+		rendering := renderedVersion(t, database, artifactID, number)
+		rendered[index] = rendering.Markdown
+		if stored := storedVersionText(t, database, artifactID, number); stored != rendering.Markdown {
+			renderHolds, storedHolds := differingText(rendering.Markdown, stored)
+			apart = append(apart, fmt.Sprintf("version %d stores %q where its render from %s holds %q",
+				number, storedHolds, rendering.Source, renderHolds))
+		}
+	}
+	computed, err := compareVersions(rendered[0], rendered[1])
+	if err != nil {
+		t.Fatalf("compare the renders of versions %d and %d: %v", from, to, err)
+	}
+	computed.ArtifactID, computed.From, computed.To = artifactID, from, to
+	encoded, err := json.Marshal(computed)
+	if err != nil {
+		t.Fatalf("encode the change set of the renders of versions %d and %d: %v", from, to, err)
+	}
+	var want servedChanges
+	if err := json.Unmarshal(encoded, &want); err != nil {
+		t.Fatalf("decode the change set of the renders of versions %d and %d: %v", from, to, err)
+	}
+	if got := readChanges(t, handler, artifactID, from, to); !reflect.DeepEqual(got, want) {
+		t.Errorf("the change set from version %d to %d is %+v, want %+v, the one the two versions make as the renderer answers them (%s)",
+			from, to, got, want, strings.Join(apart, "; "))
+	}
+}
+
+// differingText is what a and b hold where they differ: each with the beginning and the end the
+// two share left off.
+func differingText(a, b string) (string, string) {
+	start := 0
+	for start < len(a) && start < len(b) && a[start] == b[start] {
+		start++
+	}
+	end := 0
+	for end < len(a)-start && end < len(b)-start && a[len(a)-1-end] == b[len(b)-1-end] {
+		end++
+	}
+	return a[start : len(a)-end], b[start : len(b)-end]
 }

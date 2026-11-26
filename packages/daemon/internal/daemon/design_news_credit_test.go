@@ -163,7 +163,7 @@ func TestAStartComputedFromAnUnfinalCreditTellsThePairBeforeItOnceThatCreditIsGi
 }
 
 // Trace (b), a raise past an unfinal credit. Task D1's confirmation credited version 4 of the spec
-// since version 3, and its turn's result has not come. Version 5 changed decision blocks alone
+// since version 3, and its turn's result has not come. Version 5 changed ask blocks alone
 // since version 4, so the reconcile raises the holder's row past that pair and sends nothing. D1 is
 // then retired before its result: its credit goes, and the raise, counted from the version D1 gave
 // the row, reaches nothing. The holder reads as having taken version 3 again, and is owed version 5
@@ -183,7 +183,7 @@ func TestARaisePastAnUnfinalCreditGoesWithThatCredit(t *testing.T) {
 		t.Fatalf("reconcile the tree's news: %v", err)
 	}
 	if took := r.took(); took != 5 {
-		t.Fatalf("the child's holder took version %d after the reconcile, want 5: the raise past a decision-only pair, the case's premise", took)
+		t.Fatalf("the child's holder took version %d after the reconcile, want 5: the raise past an ask-only pair, the case's premise", took)
 	}
 
 	if err := r.store.RetireDelivery(r.ctx, r.claim(), first.ID); err != nil {

@@ -31,9 +31,8 @@ func treeRows(rows ...record.DesignGate) map[record.DesignStep]record.DesignGate
 
 // A tree is gated on the steps the deployment gates and on criteria when its root registered the
 // Verification document beside a deployment that gates spec and not criteria. No other row joins
-// the list: a decisions row under spec alone, a criteria row under `off` and a criteria row under
-// a deployment without spec all leave the deployment's own list, and a deployment that gates
-// criteria already names it once.
+// the list: a criteria row under `off` and a criteria row under a deployment without spec leave
+// the deployment's own list, and a deployment that gates criteria already names it once.
 func TestTreeStepsAddCriteriaOnlyWhereTheRootRegisteredItBesideSpecAlone(t *testing.T) {
 	criteria := treeRows(treeRow(record.DesignStepCriteria, false))
 	for _, tc := range []struct {
@@ -46,17 +45,12 @@ func TestTreeStepsAddCriteriaOnlyWhereTheRootRegisteredItBesideSpecAlone(t *test
 			want: specOnly},
 		{name: "spec alone, a criteria row", deployment: specOnly, rows: criteria,
 			want: []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria}},
-		{name: "spec alone, a decisions row", deployment: specOnly, rows: treeRows(treeRow(record.DesignStepDecisions, false)),
-			want: specOnly},
 		{name: "off, a criteria row kept", deployment: []record.DesignStep{}, rows: criteria, want: []record.DesignStep{}},
-		{name: "decisions and spec, a criteria row",
-			deployment: []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, rows: criteria,
-			want: []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec, record.DesignStepCriteria}},
+		{name: "criteria alone, a criteria row", deployment: []record.DesignStep{record.DesignStepCriteria}, rows: criteria,
+			want: []record.DesignStep{record.DesignStepCriteria}},
 		{name: "criteria and spec, a criteria row",
 			deployment: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, rows: criteria,
 			want: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
-		{name: "decisions alone, a criteria row", deployment: []record.DesignStep{record.DesignStepDecisions}, rows: criteria,
-			want: []record.DesignStep{record.DesignStepDecisions}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := TreeSteps(tc.deployment, tc.rows); !slices.Equal(got, tc.want) {
@@ -67,9 +61,9 @@ func TestTreeStepsAddCriteriaOnlyWhereTheRootRegisteredItBesideSpecAlone(t *test
 
 	// The deployment's list is the configuration every tree reads, so a tree that adds criteria
 	// never writes it into the room the list's own array has left.
-	backing := []record.DesignStep{record.DesignStepSpec, record.DesignStepDecisions}
+	backing := []record.DesignStep{record.DesignStepSpec, record.DesignStepSpec}
 	if got := TreeSteps(backing[:1], criteria); !slices.Equal(got, []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria}) ||
-		backing[1] != record.DesignStepDecisions {
+		backing[1] != record.DesignStepSpec {
 		t.Fatalf("TreeSteps over a list with room = %v, leaving the list's array %v; want the criteria step added and the array as it was", got, backing)
 	}
 }

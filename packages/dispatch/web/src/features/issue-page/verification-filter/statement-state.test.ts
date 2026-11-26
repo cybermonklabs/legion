@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 
-import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../../api/types";
+import type { Artifact, CheckBlock, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
 import { treeRows } from "../tree-fold";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   COMMIT_CHARACTERS,
   namedCommit,
@@ -410,15 +412,19 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     false
   );
   const statement = `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-r1`;
-  const block = (id: string, type: string, serves?: string): ArtifactBlock => ({
-    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type,
-  });
+  // A node of the tree read's answer: a typed block of `document`, at `position` in it.
+  const answered = (
+    id: string,
+    supertag: string,
+    parent: string,
+    document: Artifact,
+    position: number,
+    text: string
+  ): TreeAnswerNode =>
+    treeNode(id, supertag, parent, {
+      document: { artifact_id: document.id, position, slug: document.slug },
+      text,
+    });
   const issue: IssueDetails = {
     advances: [],
     advances_revision: 0,
@@ -478,13 +484,28 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
       ],
       spec_artifact_id: spec.id,
     },
-    documents: [
-      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
-      {
-        artifactId: verification.id,
-        blocks: checks.map((one) => block(one.block_id, "check", statement)),
-      },
-    ],
+    // The tree read's answer: the statement under the issue, and each check under it, which it
+    // serves.
+    tree: treeAnswer(
+      [
+        answered("r1", "requirement", ISSUE_KEY, spec, 0, "The page draws it."),
+        ...checks.map((one, at) =>
+          answered(one.block_id, "check", "r1", verification, at, one.text)
+        ),
+        // Each result under its check, as the read answers it, its observed text read as the
+        // results read reads it.
+        ...checks.flatMap((one) =>
+          (one.results ?? []).map((held) =>
+            treeNode(held.id, "result", one.block_id, {
+              made_at: held.created_at,
+              text: held.observed,
+              ...(held.observed_tree === undefined ? {} : { text_tree: held.observed_tree }),
+            })
+          )
+        ),
+      ],
+      checks.map((one) => treeTuple("serves", one.block_id, "r1"))
+    ),
     issue,
     results: { checks: [...checks], issue: ISSUE_KEY, verification_artifact_id: verification.id },
   });
@@ -492,8 +513,7 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
 
 // The tree read a check's state from `checkState` alone while this body turned it over at the
 // commit the page names, so one check read two states. The regressed check above read Passed on
-// its row and was off the fold's frontier, so its statement arrived folded with the regression
-// inside it, and the filter row counted nothing failing, while this body read it Failed; a fail
+// its row, and the filter row counted nothing failing, while this body read it Failed; a fail
 // that stands at another commit read Failed on the row and in the count, and Out of date here.
 // The tree's node holds the one reading this body draws (`checkStanding`), which is the server's.
 test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
@@ -512,7 +532,7 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
   const tree = issueTree([regressed]);
   expect(placed(tree, "c-one")?.state).toBe("failed");
   expect(bodyStates(tree, [regressed])).toEqual(["failed"]);
-  // The check is open and unanswered, so the fold opens its statement down to it.
+  // Every branch is drawn open (R11), the statement's down to its check.
   const rows = treeRows(tree);
   expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
     expanded: true,

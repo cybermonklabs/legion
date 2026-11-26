@@ -8,10 +8,12 @@ import { nodeEditable } from "./useNodeEditing";
 
 // Which rows of the outline take typing, and so draw the cue that they do: Enter's own rule, a
 // block of one of the issue's documents (`documentOfNode`), on an issue that is open, unless that
-// document's room admitted the page read-only.
+// document's room admitted the page read-only. A decision is a `decision` block of one of those
+// documents - the spec's `## Decisions` part, or the plan - and no decisions document stands
+// beside them.
 
 const ARTIFACTS: ReadonlyMap<string, Artifact> = new Map(
-  ["spec", "verification", "decisions"].map((slug) => [
+  ["spec", "verification", "plan"].map((slug) => [
     slug,
     artifact(`artifact-${slug}`, slug, slug === "spec"),
   ])
@@ -33,7 +35,7 @@ function editable(
 test("a block of one of the issue's documents takes typing: a statement, a check, a decision", () => {
   expect(editable("spec#b-r1", OPEN), "a statement").toBe(true);
   expect(editable("verification#b-c1", OPEN), "a check").toBe(true);
-  expect(editable("decisions#b-d1", OPEN), "a decision").toBe(true);
+  expect(editable("spec#b-d1", OPEN), "a decision").toBe(true);
 });
 
 test("a comment, a message, an ask, a result, a child issue and the issue take no typing", () => {
@@ -52,7 +54,7 @@ test("a block of a document this issue does not hold, such as an issue above's, 
 test("on a closed issue no block takes typing: its documents are read-only", () => {
   expect(editable("spec#b-r1", CLOSED), "a statement").toBe(false);
   expect(editable("verification#b-c1", CLOSED), "a check").toBe(false);
-  expect(editable("decisions#b-d1", CLOSED), "a decision").toBe(false);
+  expect(editable("spec#b-d1", CLOSED), "a decision").toBe(false);
 });
 
 test("a block of a document its room admitted read-only takes no typing, and another document's still does", () => {
@@ -69,7 +71,7 @@ test("a block of a document its room admitted read-only takes no typing, and ano
     "a check of a document its room admitted to write"
   ).toBe(true);
   expect(
-    editable("decisions#b-d1", OPEN, admissions),
+    editable("plan#b-d1", OPEN, admissions),
     "a decision of a document no room has answered for"
   ).toBe(true);
 });

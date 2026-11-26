@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A document's pending authors - every author whose change no committed version lists yet - are
@@ -28,17 +29,26 @@ import (
 // version consumed writes nothing to R. Every move between the two, and every version's read of
 // them, holds that lock, and state.mu for F, so each author is in exactly one of F, R, or one
 // committed version's list.
+//
+// An issue room holds several documents' fragments, and its settlement writes a version of each
+// document whose fragment changed. Its edit's credit names the documents whose fragments the edit
+// changed (inflightCredit.documents), its append writes its R rows under each of them, the tree
+// artifact for the room's own fragment (pendingAuthorsIn), and the room's settlement lists on each
+// document's version that document's rows and credits alone (roomCredit).
 
 // inflightCredit is one browser edit's authors in F: the peers connected while the room applied
 // it, and the latest edit source it names (lastActor, nil when the edit cannot be pinned on one
 // peer). seq is the room's creditSeq when the observer credited it, which orders it against an
 // upload's last read of the room (liveWrite.forkSeq). consumed marks a credit a committed version
-// listed. The fields are guarded by the state.mu of the state whose inflight holds it.
+// listed. documents is, for an issue room, the documents whose fragments the edit changed
+// (drainClassifier), whose versions alone it counts toward, nil for a room that is its own
+// document. The fields are guarded by the state.mu of the state whose inflight holds it.
 type inflightCredit struct {
 	seq       uint64
 	authors   map[string]model.Actor
 	lastActor *model.Actor
 	consumed  bool
+	documents []string
 }
 
 // UpdateCredit is a browser update's in-flight credit as it crosses VersionedStore: the store
@@ -70,20 +80,21 @@ func (credit *UpdateCredit) takeAskAuthors() map[string]model.Actor {
 	return credit.askAuthors
 }
 
-// take is what the update's append writes: the credit's authors and latest edit source, and
-// whether to write them at all, which is false once a committed version listed them. The caller
-// holds the document's advisory lock, so no version can read or consume the credit until the
-// append's transaction ends.
-func (credit *UpdateCredit) take() (authors map[string]model.Actor, lastActor *model.Actor, include bool) {
+// take is what the update's append writes: the credit's authors and latest edit source, whether
+// to write them at all, which is false once a committed version listed them, and the documents of
+// an issue room whose fragments the edit changed (inflightCredit.documents). The caller holds the
+// document's advisory lock, so no version can read or consume the credit until the append's
+// transaction ends.
+func (credit *UpdateCredit) take() (authors map[string]model.Actor, lastActor *model.Actor, include bool, documents []string) {
 	if credit == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	credit.state.mu.Lock()
 	defer credit.state.mu.Unlock()
 	if credit.record.consumed {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
-	return credit.record.authors, credit.record.lastActor, true
+	return credit.record.authors, credit.record.lastActor, true, credit.record.documents
 }
 
 // landed takes the credit out of F once its append has committed, or once the update will never
@@ -223,23 +234,26 @@ type uploadHold struct {
 	hold *roomHold
 }
 
-// capturePendingAuthors reads R in tx, which holds the document's advisory lock, as tx sees it -
-// the rows the table holds and the rows tx has queued (transactionPendingAuthors) - with the
-// document's latest person sender (readLastPerson), and takes whom a version lists
-// (captureAuthors), with the in-flight credits observed through `through`, under room's state
-// lock.
-func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
-	owed, err := transactionPendingAuthors(ctx, tx, room)
+// capturePendingAuthors reads R in tx, which holds the room's advisory lock, as tx sees it - the
+// rows the table holds and the rows tx has queued (transactionPendingAuthors) - with the room's
+// latest person sender (readLastPerson), and takes whom a version of the target's document lists
+// (captureAuthors), with the in-flight credits observed through `through`, under the room's state
+// lock. A document of an issue room reads its own R rows - the ones an update that changed its
+// fragment wrote under it (pendingAuthorsIn) - and takes only the in-flight credits of updates that
+// changed its fragment (inflightCredit.documents): nobody is listed on a version of a document
+// whose fragment no change of theirs touched.
+func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, target liveTarget, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
+	owed, err := transactionPendingAuthors(ctx, tx, target.document)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	durableLatest, err := readLastPerson(ctx, tx, room)
+	durableLatest, err := readLastPerson(ctx, tx, target.room)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	state := s.lockState(room)
-	defer s.unlockState(room, state)
-	return captureAuthors(state, owed, durableLatest, write, actor, through), nil
+	state := s.lockState(target.room)
+	defer s.unlockState(target.room, state)
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, target.document), nil
 }
 
 // everyCredit bounds no in-flight credit: a capture through it takes every credit its room has
@@ -273,6 +287,13 @@ const everyCredit = math.MaxUint64
 // that never loaded the document does. actor, the version's writer, names nobody by itself: an
 // agent writing a named version over someone's edit did not make that edit.
 func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64) authorCapture {
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, "")
+}
+
+// captureDocumentAuthors is captureAuthors for a version of document, a document of an issue room,
+// which takes only the in-flight credits whose update changed its fragment (inflightCredit.documents)
+// or that name no document, a room that is its own document's; "" takes every credit.
+func captureDocumentAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64, document string) authorCapture {
 	capture := authorCapture{
 		state:    state,
 		authors:  make(map[string]model.Actor, len(owed)+1),
@@ -283,6 +304,11 @@ func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest
 		capture.rAuthors = append(capture.rAuthors, author)
 	}
 	capture.inflight = state.unconsumedInflightLocked(through)
+	if document != "" {
+		capture.inflight = slices.DeleteFunc(capture.inflight, func(record *inflightCredit) bool {
+			return record.documents != nil && !slices.Contains(record.documents, document)
+		})
+	}
 	for _, record := range capture.inflight {
 		mergeAuthors(capture.authors, record.authors)
 	}
@@ -389,6 +415,48 @@ func (capture authorCapture) withoutInflight(actor *model.Actor) authorCapture {
 	return capture
 }
 
+// roomAuthors is whom the capture read as the authors of the room's edits no version has listed -
+// the pending authors it read (rAuthors) and its in-flight credits (inflight) - without the
+// calling transaction's own credits or the version's writer, which authors lists beside them: the
+// authors a settlement of the same room state lists, whose person a version taking the room in
+// that settlement's place holds the room's removals as (holdRoomRemovals). The credits are read
+// under the room's state lock, as captureAuthors read them.
+func (capture authorCapture) roomAuthors() []model.Actor {
+	authors := make(map[string]model.Actor, len(capture.rAuthors))
+	for _, author := range capture.rAuthors {
+		mergeAuthor(authors, author)
+	}
+	if len(capture.inflight) > 0 {
+		capture.state.mu.Lock()
+		for _, record := range capture.inflight {
+			mergeAuthors(authors, record.authors)
+		}
+		capture.state.mu.Unlock()
+	}
+	return actorSlice(authors)
+}
+
+// pendingRoomAuthors is the authors of room's edits no version has listed that write's read of the
+// room holds, as a capture of that read lists them (authorCapture.roomAuthors): the pending authors
+// its transaction reads (transactionPendingAuthors) and the in-flight credits observed by the read
+// (liveWrite.forkSeq), none for a fork read from the store. An upload's version lists none of them
+// and clears them all (uploadCapture), so its write reads them first, for the room's removals
+// (holdRoomRemovals).
+func pendingRoomAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite) ([]model.Actor, error) {
+	authors, err := transactionPendingAuthors(ctx, tx, room)
+	if err != nil {
+		return nil, err
+	}
+	if write != nil && !write.cold && write.state != nil {
+		write.state.mu.Lock()
+		for _, record := range write.state.unconsumedInflightLocked(write.forkSeq) {
+			mergeAuthors(authors, record.authors)
+		}
+		write.state.mu.Unlock()
+	}
+	return actorSlice(authors), nil
+}
+
 // uploadCapture is an upload's capture over write: the in-flight credits observed by its read of
 // the room (liveWrite.forkSeq), and the updates the room instance it read held then
 // (liveWrite.forkHold) with the room's updates the write's transaction stored ahead of its own
@@ -484,11 +552,11 @@ func updateOwedStatement(room string, owed owedUpdates) (writeStatement, error) 
 	return settlementPendingStatement([]string{room}, owed.lastActor, owed.credited, true, owed.person, owed.setPerson)
 }
 
-// markSettlementPending records, in tx, that each document of rooms owes a settlement
-// (settlementPendingStatement). It goes through write, so a transaction whose writes are queued
-// runs it in its write phase.
-func markSettlementPending(ctx context.Context, tx pgx.Tx, rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
-	statement, err := settlementPendingStatement(rooms, lastActor, setLastActor, updateMarkedAt, person, setPerson)
+// markSettlementPending records, in tx, that each of documents owes a settlement, keyed by the room
+// it is edited in (settlementPendingStatement). It goes through write, so a transaction whose
+// writes are queued runs it in its write phase.
+func markSettlementPending(ctx context.Context, tx pgx.Tx, documents []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
+	statement, err := settlementPendingStatement(documents, lastActor, setLastActor, updateMarkedAt, person, setPerson)
 	if err != nil {
 		return err
 	}
@@ -520,7 +588,10 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 }
 
 // settlementPendingStatement is the one statement that records, in the transaction that appends a
-// document update, that each document of rooms owes a settlement. With setLastActor it also
+// document update, that each of documents owes a settlement. The row is the room's that the
+// document is edited in (refs.DocumentRoomSQL), the key its settlement clears it by
+// (clearSettlementPending): a document converted into its issue's room owes that room's
+// settlement, and a document that is its own room its own. With setLastActor it also
 // records lastActor as the latest edit source that settlement names on its events, nil for an edit
 // no one peer can be credited with (creditContentChange); without it each row keeps the one it
 // has, and a row it inserts takes the document's closed edit source (doc_closed_edit_sources), the
@@ -544,7 +615,7 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 // many there are. updateMarkedAt is true for a newly appended update and for an owed copy:
 // recording the latest edit source after a write or while closing an issue must not make an old
 // row wait another resumption age.
-func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
+func settlementPendingStatement(documents []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
 	encoded, err := encodeActor(lastActor)
 	if err != nil {
 		return writeStatement{}, fmt.Errorf("encode the document's latest edit source: %w", err)
@@ -560,13 +631,13 @@ func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastA
 			case when $3 then $2::jsonb
 				else (select kept.last_actor from doc_closed_edit_sources kept where kept.artifact_id = owed.id) end,
 			$5::jsonb
-		from unnest($1::uuid[]) as owed(id)
+		from (select distinct ` + refs.DocumentRoomSQL("listed.id") + ` as id from unnest($1::uuid[]) as listed(id)) owed
 		on conflict (artifact_id) do update set
 			last_actor = case when $3 then excluded.last_actor else doc_settlements_pending.last_actor end,
 			marked_at = case when $4 then now() else doc_settlements_pending.marked_at end,
 			last_person = case when $6 then excluded.last_person else doc_settlements_pending.last_person end
 	`,
-		args: []any{rooms, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson},
+		args: []any{documents, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson},
 		what: "record the document's pending settlement",
 	}, nil
 }

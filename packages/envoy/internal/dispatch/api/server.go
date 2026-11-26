@@ -257,6 +257,11 @@ type Deps struct {
 	// a parent's status out of line with its children's (R24) is refused 409
 	// PARENT_STATUS_CONFLICT. The zero value is off.
 	ParentStatusRule ParentStatusRule
+	// IssueTreePageSize is the most nodes one page of GET /api/v1/issues/{key}/tree answers. Zero
+	// keeps issueTreePageSize, and every deployment leaves it zero: no flag, setting or environment
+	// variable reaches it. Only this package's tests set another (testServerOptions), so a case of a
+	// few nodes reads several pages.
+	IssueTreePageSize int
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -505,6 +510,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// betweenNodeRouteReads runs on a write of a node route (PATCH and DELETE of
+	// /api/v1/issues/{key}/nodes/{id}) after each read it makes with no lock held and before that
+	// attempt takes its owner locks (lockNodeRouteOwners), with the attempt's number from 1; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it: it is
+	// how a case commits a move between the read that names the locks and the read under them, to
+	// read that the route starts over and, at each attempt, answers 409 PARENT_CONTENDED.
+	betweenNodeRouteReads func(ctx context.Context, attempt int)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -952,13 +964,24 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // zero value for a row that has none.
 func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
-	if keyedMethod(route.Method) {
+	keyedWrite := keyedMethod(route.Method)
+	if keyedWrite {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
+		// A write made for a run of the command bar: the one reader of its header, inside the
+		// checks below, so a caller they refuse is told that first, and outside the keyed
+		// layer and the upload's spool, so a run it refuses claims no key and costs no body
+		// (withinGoingRun). A refused request whose key already holds an answer still reaches
+		// the keyed layer, which answers it from that key alone and never runs its handler
+		// (answerRefusedRun): so a retry after its run ended reads the write it made, and no
+		// handler runs a write for a run this check did not admit. Inside the keyed layer the
+		// replay would come first by itself, but a refused run would then claim its key, and
+		// the same intent sent again without the header would be answered the key reused.
+		handler = s.withinGoingRun(handler, keyedWrite)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a machine's credential that names no
 		// person claims no idempotency key and costs no body (withinProjectScope,
@@ -1499,7 +1522,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
-		// brokerTokenActor set, since the credential, not the body, named this session.
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1509,10 +1533,10 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// and never from a body). That pair is what R14 calls "a session the server itself
 		// proved theirs", and the store ties the two with an alias_of tuple on the next write
 		// (graphstore.aliases). The act names the session the credential proved, exactly as
-		// actingPerson names the agent that acted for a person, and says it was proved
-		// (SessionProven), as every act naming a session the credential proved does; the actor's
-		// kind and id are left as they were, so every stored author, every event and every reader
-		// keeps the shape it has.
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
 		//
 		// A session named in a request body earns none of this: the branch below, which every
 		// credential that proves no session of its own takes, records the session the caller
@@ -1542,7 +1566,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
-		// Not Proven: the body named this session and the credential proved none.
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
@@ -1903,7 +1928,7 @@ func countExceededError(code, field string, count, limit int) *apiError {
 // blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
 // rule, else the refusal the typed error words, under the code that rule is refused by. A bound
 // broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
-// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding an ask block
 // (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
 // what it holds rather than how long it is. Every route that checks a body calls this one
 // helper, so a route added later cannot word the same refusal differently.
@@ -2088,8 +2113,8 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
 // made before it existed (graphstore.Uncaused): the event's append and the append of what that
 // write stated under it, in one batch, the second naming the event's id as the id sequence left it
-// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
-// it paid for the event alone.
+// (graphstore.LatestEvent), and then the head write of the nodes it stated of (graphstore.QueueHeads).
+// A route that writes as it goes pays one round trip for the three, as it paid for the event alone.
 func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
 	var appended model.Event
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -2097,6 +2122,7 @@ func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.
 			return err
 		}
 		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
 		return nil
 	})
 	return appended, err

@@ -35,6 +35,21 @@ func documentOf(parts []part) (string, []model.ArtifactBlock) {
 	return markdown.String(), blocks
 }
 
+// storedAddress is where the stored document artifactID sits, as docs' addressOfDocument reads a
+// stored row for BlockTargets: its ref_key and its issue.
+func storedAddress(t *testing.T, q Queryer, artifactID string) DocumentAddress {
+	t.Helper()
+	var address DocumentAddress
+	var issue *string
+	if err := q.QueryRow(context.Background(), `select coalesce(ref_key, ''), issue_key from artifacts where id = $1::uuid`, artifactID).Scan(&address.RefKey, &issue); err != nil {
+		t.Fatalf("read the address of document %s: %v", artifactID, err)
+	}
+	if issue != nil {
+		address.IssueKey = *issue
+	}
+	return address
+}
+
 // windowRow is one embeddings window row as its owner's indexer wrote it: the blocks it covers,
 // the text it embeds, the hash of that text and xmin, which any write of the row moves, so an
 // unchanged xmin proves the row was not rewritten.
@@ -101,7 +116,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
+	if _, _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, version, time.Now()), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {

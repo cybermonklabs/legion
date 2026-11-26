@@ -31,6 +31,9 @@ export const SUMMARY_BLOCK_ID = "summary";
  *  issue's open question. */
 export const OPEN_QUESTION_BLOCK_ID = "q-open";
 
+/** The block id of the question whose answer shaped three statements. */
+export const ANSWERED_QUESTION_BLOCK_ID = "q-addresses";
+
 /** How a seeded check's newest result stands, in the words `NODE_STATE_WORDS.check` draws
  *  (`web/src/features/issue-page/page-words.ts`), plus `no-control`: a pass of an after-merge
  *  check that records no negative control, which reads `passed` on the page and draws no gap -
@@ -119,72 +122,103 @@ export function planTaskText(index: number): string {
   return `Task ${index} of the redesign is one step of the build.`;
 }
 
-/** The decisions `decisions.md` holds, in document order, the last one replaced. The kinds are
- *  the server's: a decision reads `person` when its blocks mention an ask and `agent` otherwise,
- *  `unsure` from a paragraph that starts `Unsure:`, and `replaced` from sitting under the section
- *  headed exactly `## Replaced` (`packages/envoy/internal/dispatch/api/decisions.go:25-28`). */
-function seededDecisions(options: { askRef: string; issueKey: string }): {
-  body: string;
-  heading: string;
-  replaced?: boolean;
-}[] {
+/** The block id of decision `index` of a seeded spec's `## Decisions` part. */
+export function decisionBlockId(index: number): string {
+  return `d${index}`;
+}
+
+/** One decision of a seeded spec, with the facts its `decision` block carries as attributes: the
+ *  blocks it shaped (`shaped`), whether it settles the seed's answered ask (`from_ask`), whether
+ *  it is unsure (`uncertainty="high"`) and whether a later one replaced it (`replaced`). */
+interface SeededDecision {
+  readonly body: string;
+  readonly fromAsk?: boolean;
+  readonly heading: string;
+  readonly replaced?: boolean;
+  readonly shaped: readonly string[];
+  readonly unsure?: boolean;
+}
+
+/** The decisions a seeded spec holds, in document order, the last one replaced. Each is the
+ *  planner's `decision` block of the spec's `## Decisions` part, a node of the store, whose facts
+ *  are its block's attributes (`SeededDecision`). Its words name the blocks it shaped or the
+ *  ask it settles; the ask carries its own ties. */
+function seededDecisions(options: { askRef: string; issueKey: string }): SeededDecision[] {
   const block = (index: number) => specBlockRef(options.issueKey, requirementBlockId(index));
   return [
     {
       body: `Chosen so the page makes no request per node. Shapes ${block(1)} and ${block(2)}.`,
       heading: "Draw the tree from one read",
+      shaped: [block(1), block(2)],
     },
     {
-      body: `Decided in ${options.askRef}. Shapes ${block(3)}, ${block(4)} and ${block(5)}.`,
+      body: `Decided in ${options.askRef}.`,
+      fromAsk: true,
       heading: "Keep every address the old page answered",
+      shaped: [],
     },
     {
-      body: "Unsure: a reader who never finds the newest question would change this.",
+      body: "A reader who never finds the newest question would change this.",
       heading: "Fold to the frontier and not to a depth",
+      shaped: [],
+      unsure: true,
     },
     {
       body: "A word and a shape carry every state, so no reader depends on a colour.",
       heading: "Name every state with a word and a shape",
+      shaped: [],
     },
     {
       body: `One panel holds the properties and the conversation. Shapes ${block(4)}.`,
       heading: "Put every remaining property in one panel",
+      shaped: [block(4)],
     },
     {
       body: `A document is a node under the block that cites it. Shapes ${block(5)}.`,
       heading: "Draw a document under the block that cites it",
+      shaped: [block(5)],
     },
     {
       body: `Replaced by the tree above: the rail hid 744 px at 1440 px. Shapes ${block(6)}.`,
       heading: "Keep the metadata rail behind a sideways scroll",
       replaced: true,
+      shaped: [block(6)],
     },
   ];
 }
 
-/** The heading markdown of each decision a document of `count` decisions holds, in document
- *  order. A decision is addressed by its heading block, so this is what resolves its block id. */
-export function decisionHeadings(count: number): string[] {
-  return seededDecisions({ askRef: "", issueKey: "" })
-    .slice(0, count)
-    .map((decision) => `${decision.replaced === true ? "###" : "##"} ${decision.heading}`);
+/** The words that close decision `index`'s block of a seeded spec: the last of its words, which
+ *  hold no line break, so a caret at the block's end stands after them. */
+export function decisionClosingWords(
+  issueKey: string,
+  index: number,
+  answeredAskId: string
+): string {
+  const askRef = `dispatch://${issueKey}/ask/${answeredAskId}`;
+  return seededDecisions({ askRef, issueKey })[index - 1]?.body.split(". ").at(-1) ?? "";
 }
 
-export function decisionsDocument(options: {
+/** The spec's `## Decisions` part holding the first `count` seeded decisions, each a `decision`
+ *  block whose id is `decisionBlockId`, for a seed to append to the spec once `askRef`, the ask
+ *  the second one settles, has been answered. */
+export function decisionsPart(options: {
   askRef: string;
   count: number;
   issueKey: string;
 }): string {
-  const decisions = seededDecisions(options).slice(0, options.count);
-  const sections = decisions
-    .filter((decision) => decision.replaced !== true)
-    .map((decision) => `## ${decision.heading}\n\n${decision.body}`);
-  const replaced = decisions.filter((decision) => decision.replaced === true);
-  if (replaced.length > 0) {
-    const bodies = replaced.map((one) => `### ${one.heading}\n\n${one.body}`).join("\n\n");
-    sections.push(`## Replaced\n\n${bodies}`);
-  }
-  return `${sections.join("\n\n")}\n`;
+  const blocks = seededDecisions(options)
+    .slice(0, options.count)
+    .map((decision, at) => {
+      const attributes = [
+        `#${decisionBlockId(at + 1)}`,
+        ...(decision.shaped.length > 0 ? [`shaped="${decision.shaped.join(" ")}"`] : []),
+        ...(decision.fromAsk === true ? [`from_ask="${options.askRef}"`] : []),
+        ...(decision.unsure === true ? ['uncertainty="high"'] : []),
+        ...(decision.replaced === true ? ['replaced="true"'] : []),
+      ];
+      return `:::decision{${attributes.join(" ")}}\n### ${decision.heading}\n\n${decision.body}\n:::`;
+    });
+  return `## Decisions\n\n${blocks.join("\n\n")}\n`;
 }
 
 function summaryCallout(): string {
@@ -201,7 +235,15 @@ At which width does the identity block condense?
 :::`;
 }
 
-/** The issue's spec: its three sentences, its requirements, and the `ask` block the server
+/** The question the planner adds once it can name the statements the answer shaped. */
+export function answeredQuestionBlock(issueKey: string): string {
+  const shaped = [3, 4, 5].map((index) => specBlockRef(issueKey, requirementBlockId(index)));
+  return `:::ask{#${ANSWERED_QUESTION_BLOCK_ID} urgency="high" shaped="${shaped.join(" ")}"}
+Which addresses must the new page still answer?
+:::`;
+}
+
+/** The issue's initial spec: its three sentences, its requirements, and the `ask` block the server
  *  indexes into an open question two levels below the issue (issue, document, block). */
 export function specDocument(options: {
   openQuestion: boolean;
@@ -278,9 +320,9 @@ export const SPINE_REQUIREMENTS = {
   unexplained: "r-unexplained",
 } as const;
 
-/** The heading of the one decision `seedSpineCases` writes, which is the block the decisions read
- *  answers it under. */
-export const SPINE_DECISION_HEADING = "## Link a requirement the question does not";
+/** The block id of the one decision `seedSpineCases` writes, a `decision` block of the spec's
+ *  `## Decisions` part, which is the block the decisions read answers it under. */
+export const SPINE_DECISION_BLOCK_ID = "d-spine";
 
 /** The block id of the check `seedSpineCases` writes. */
 export const SPINE_CHECK_BLOCK_ID = "c-two";
@@ -308,13 +350,16 @@ The second requirement that same check serves.
 :::
 `;
 
-/** The spine's `decisions.md`: one decision whose block links `shapedElsewhere` while the ask it
- *  names is the answered question a reader would read as that requirement's origin. */
-export function spineDecisionsDocument(issueKey: string, askId: string): string {
+/** The spine's `## Decisions` part: one `decision` block whose `shaped` names `shapedElsewhere`
+ *  while the ask it settles (`from_ask`), which its words name too, is the answered question a
+ *  reader would read as that requirement's origin. */
+export function spineDecisionsPart(issueKey: string, askId: string): string {
+  const shaped = specBlockRef(issueKey, SPINE_REQUIREMENTS.shapedElsewhere);
+  const ask = `dispatch://${issueKey}/ask/${askId}`;
   return (
-    `${SPINE_DECISION_HEADING}\n\n` +
-    `Shapes ${specBlockRef(issueKey, SPINE_REQUIREMENTS.shapedElsewhere)}, while ` +
-    `dispatch://${issueKey}/ask/${askId} is the question that was answered.\n`
+    `## Decisions\n\n:::decision{#${SPINE_DECISION_BLOCK_ID} shaped="${shaped}" from_ask="${ask}"}\n` +
+    "### Link a requirement the question does not\n\n" +
+    `Shapes ${shaped}, while ${ask} is the question that was answered.\n:::\n`
   );
 }
 

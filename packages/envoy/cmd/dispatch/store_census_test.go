@@ -4,6 +4,7 @@
 // against a base its Verification document names, never on its own as a check of main: this
 // file's TestTheStoreCensusReadsZeroDifferences, and the predicate-and-lens read cost of the
 // INFRA-1098 tree's branches (predicate_lens_read_cost_test.go, which only those branches carry).
+// That read cost runs only where LEGION_SCALE_TEST=1 is set.
 // Each builds the server at the commit BASELINE_SHA names (baseBuild, testbaseline.Commit) and
 // compares it with this build, so it needs a checkout that holds that commit, and takes from 2 to
 // 45 minutes on an issue pod. graph_cost_test.go holds the two arms, the clock and the order
@@ -46,7 +47,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -70,11 +70,44 @@ import (
 // share refuses to start (processes.Register).
 const censusSigningKey = "store-census-signing-key"
 
-// censusKinds are the kinds this child moves, as the census names them. Each must carry a
-// population in this run: a census that checked no row of a kind proves nothing about it, so a
-// kind that checks zero rows fails this test with that kind reported. The list is the test's
-// own, so a kind the census stops checking is read by a person before this test agrees with it.
-var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
+// censusKinds are the kinds this child moves, as the census names them, the rank and the text of
+// every block the issue-tree spec's block index states (graphcensus' block_rank and block_text,
+// which the backfill's drain and the reconciliation after it give every block the older build
+// indexed), the size it gives every plan node (graphcensus' block_size, whose row side is every
+// block of a document that owes no index, a block that writes no size among them), the document
+// each block of an issue room is in and who wrote it (room_block and block_author, which the
+// issues this build creates populate: each is born with its documents in its issue room), the
+// documents and versions it makes nodes of (graphcensus' versionProjections), which the older
+// build's issues, specs and project documents populate and the backfill gives their nodes, and
+// the references a document's citations make (artifact_reference, graphcensus' refProjections),
+// which the seeded spec's citations populate. Each must carry a population in this run: a census
+// that checked no row of a kind proves nothing about it, so a kind that checks zero rows fails
+// this test with that kind reported. The list is the test's own, so a kind the census stops
+// checking is read by a person before this test agrees with it.
+var censusKinds = []string{
+	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
+	"person", "session", "role", "page", "artifact", "version", "artifact_reference", "node_search",
+}
+
+// censusUnseededKinds are the census's kinds this run writes no row of, which a store may hold
+// none of, as it may hold no decision (decisionCensusKinds), each named as its register among
+// graphcensus' projections names it: a run of the command bar and its frames (runProjections), an
+// issue's parent and its waits (issueProjections), a component's parent, its dependencies and an
+// issue's components (componentProjections), a check's result and its retraction
+// (resultProjections), a comment's anchor block (anchorProjections), the Keeps the backfill's Keep
+// pass owes a write (graphcensus' CensusOfKeepSums), and the visibility and state of each
+// interaction, lens, finding, risk, constraint and lens kind (visibilityStateProjections), of
+// which the lens catalogue this build's migrations write holds the constraints and the lens kinds.
+// The census must check each and read no difference in it, and no row of one is no refusal. The
+// list is the test's own, as censusKinds is, so a kind the census starts or stops checking fails
+// this test until a person names it in one list or the other.
+var censusUnseededKinds = []string{
+	"interaction", "frame", "issue_parent", "issue_link", "component_parent", "component_depends",
+	"issue_component_member", "check_result", "check_result_retraction", "comment_anchor_block", "keep_shaped_sum",
+	"review_carried_from",
+	"interaction_visibility_state", "lens_visibility_state", "finding_visibility_state",
+	"risk_visibility_state", "constraint_visibility_state", "lens_kind_visibility_state",
+}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
@@ -162,9 +195,12 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	requireTheSizingRunsBeforeTheMigration(t, databaseURL)
 
 	// ───── this build migrates the same database and backfills it ─────
+	// Its boot's run of the backfill is held (DISPATCH_TEST_HOLD_BOOT_BACKFILL), so the rows the older
+	// build wrote, which name no node, are named by this run's own backfill-graph-store alone.
 	_, natsURL := testnats.Start(t)
 	now := startDispatchProcessWith(t, databaseURL, dispatchOptions{
 		NATSURL: natsURL, SigningKey: censusSigningKey,
+		Env: map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
 	now.waitHealthy(t)
 	runBackfill(t, databaseURL)
@@ -213,7 +249,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	})
 
 	// ───── the old read beside the new read ─────
-	compareTheOldReadWithTheNew(t, older, databaseURL, now, seeded)
+	compareTheOldReadWithTheNew(t, ctx, older, databaseURL, now, seeded)
 }
 
 // ───── the database of this run's own ─────────────────────────────────────
@@ -297,14 +333,26 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // baseBuild builds `./cmd/dispatch` at the commit this build is compared with and answers the
 // binary. The commit is the one BASELINE_SHA names (testbaseline.Commit): the fork point with
-// main for a branch that lands on main, the parent's head for a child stacked on it. The source is
-// that commit's own tree, taken out of the repository with `git archive` into a directory of this
-// test's own, so the build is that commit's and not this working copy's. The directory and the
-// binary go when the test ends, so every run extracts and builds again, which is about a minute.
+// main for a branch that lands on main, the parent's head for a child stacked on it, and for a
+// check whose branch builds on branches that have not merged yet, a commit holding every such
+// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). It is baseBuildOf of that commit.
 func baseBuild(t *testing.T) string {
 	t.Helper()
+	return baseBuildOf(t, testbaseline.Commit(t), testbaseline.Variable)
+}
+
+// baseBuildOf builds `./cmd/dispatch` at commit, the commit the environment variable variable
+// names, and answers the binary: baseBuild's commit, or another earlier build a test serves beside
+// it, as TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress serves main's
+// (testbaseline.MainVariable). The source is that commit's own tree, taken out of the repository
+// with `git archive` into a directory of this test's own, so the build is that commit's and not
+// this working copy's. The binary is stamped with that commit as the image build stamps one,
+// `-ldflags "-X main.buildCommit=<commit>"`, so the process registers and reports the build it is
+// (processes.Live reads two unstamped builds as one fleet). The directory and the binary go when
+// the test ends, so every run extracts and builds again, which is about a minute.
+func baseBuildOf(t *testing.T, commit, variable string) string {
+	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := testbaseline.Commit(t)
 	// No socket is bound anywhere under the tree, so the room asked for is the directory the
 	// build runs in rather than the longest path of the archive.
 	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
@@ -336,9 +384,10 @@ func baseBuild(t *testing.T) string {
 		Name:   "envoy-dispatch-base",
 		Dir:    filepath.Join(source, "packages", "envoy"),
 		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
 		Env:    os.Environ(),
 	})
-	t.Logf("the older build is %s, from %s", binary, commit)
+	t.Logf("the older build is %s, from %s, the commit %s names, stamped with that commit", binary, commit, variable)
 	return binary
 }
 
@@ -814,7 +863,10 @@ func addressALongRole(t *testing.T, server *dispatchProcess) {
 // would otherwise move rows the inventory already holds.
 //
 // It waits for the block index to settle the edit and then reads the deletion back: a row of
-// document_blocks is gone and its node stands, held gone.
+// document_blocks is gone and its node stands, held gone. The document is the spec of an issue
+// this build creates, born converted, whose blocks' rows are keyed by its issue room's tree
+// artifact, so they are read through the room as this branch's readers read a document's blocks
+// (refs.DocumentRoomBlocksSQL).
 func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dispatchProcess, databaseURL string) {
 	t.Helper()
 	_, artifact := createCensusIssue(t, server, "CENSUS", "The issue whose block is deleted",
@@ -824,9 +876,9 @@ func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dis
 	var before int
 	var block string
 	if err := conn.QueryRow(ctx, `
-		select (select count(*) from document_blocks where artifact_id = $1::uuid),
-		       (select block_id from document_blocks
-		        where artifact_id = $1::uuid and excerpt like 'The block this run deletes%')
+		select (select count(*) from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+`),
+		       (select d.block_id from document_blocks d
+		        where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.excerpt like 'The block this run deletes%')
 	`, artifact).Scan(&before, &block); err != nil {
 		t.Fatalf("read the blocks of the document the run deletes from: %v", err)
 	}
@@ -839,7 +891,7 @@ func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dis
 	for {
 		var after, gone int
 		if err := conn.QueryRow(ctx, `
-			select (select count(*) from document_blocks where artifact_id = $1::uuid),
+			select (select count(*) from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+`),
 			       (select count(*) from graph_nodes where kind = 'block' and state = 'gone')
 		`, artifact).Scan(&after, &gone); err != nil {
 			t.Fatalf("read the deletion back: %v", err)
@@ -1224,15 +1276,25 @@ func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []pr
 }
 
 // censusBlockTuples is what every block row states: the document it is a block of, and the block
-// or the document that holds it, which document_blocks spells as parent_block_id. A block's node
-// address is its document's ref_key, '#' and its block id, as the insert of document_blocks
-// builds it, so the parent's address is built here the same way.
+// that holds it, which document_blocks spells as parent_block_id, or for a block no block holds
+// its document's top (the issue-tree spec's refs.DocumentTopSQL, the one statement the block
+// index and the census read it by): the issue for a block of an issue's spec, Verification or plan
+// document, and the document's own node for an upload or a project's document. The document is
+// the one refs.BlockDocumentSQL reads, as the block index and the census read it: for a row of an
+// issue room, keyed by the room's tree artifact, the document its issue_room_blocks row names,
+// whose in_document the block states and under whose top it hangs, never the tree; for every
+// other row, the row's own artifact. A block's node address is the ref_key of the row's own
+// artifact (the tree's, for a block of an issue room), '#' and its block id, as the insert of
+// document_blocks builds it, so the parent's address is built here the same way.
 func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
 	t.Helper()
 	rows, err := conn.Query(ctx, `
-		select d.node_kind, d.node_address, a.ref_key,
-		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end
-		from document_blocks d join artifacts a on a.id = d.artifact_id
+		select d.node_kind, d.node_address, document.ref_key,
+		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end,
+		       `+refs.DocumentTopSQL("document")+`
+		from document_blocks d
+		join artifacts a on a.id = d.artifact_id
+		join artifacts document on document.id = `+refs.BlockDocumentSQL("d")+`
 		where d.node_kind is not null and d.node_address is not null
 		order by d.node_address
 	`)
@@ -1242,8 +1304,8 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 	defer rows.Close()
 	var wanted []projectedTuple
 	for rows.Next() {
-		var nodeKind, address, document, parent string
-		if err := rows.Scan(&nodeKind, &address, &document, &parent); err != nil {
+		var nodeKind, address, document, parent, top string
+		if err := rows.Scan(&nodeKind, &address, &document, &parent, &top); err != nil {
 			t.Fatalf("scan a block row: %v", err)
 		}
 		states := func(kind, toKind, toID string) {
@@ -1254,7 +1316,9 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 		}
 		states(refs.TupleInDocument, "artifact", document)
 		if parent == "" {
-			states(graphstore.TuplePartOf, "artifact", document)
+			// The top is written kind:id, and no node kind holds a ':'.
+			topKind, topID, _ := strings.Cut(top, ":")
+			states(graphstore.TuplePartOf, topKind, topID)
 			continue
 		}
 		states(graphstore.TuplePartOf, refs.BlockNodeKind, parent)
@@ -1300,7 +1364,9 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // ───── the census ─────────────────────────────────────────────────────────
 
-// kindCensus is one kind's line of the census report.
+// kindCensus is one kind's line of the census report. A kind held triple by triple (the ties of
+// decisions, readings and asks) prints the store's side as tuples= and its differences as
+// rows_without_a_tuple= and tuples_without_a_row=, read here into the same fields.
 type kindCensus struct {
 	kind               string
 	nodes, rows        int64
@@ -1321,15 +1387,22 @@ func runStoreCensus(t *testing.T, databaseURL string) []kindCensus {
 	var read []kindCensus
 	for _, line := range strings.Split(out, "\n") {
 		fields := censusFields(line)
-		if fields == nil || fields["kind"] == "" || fields["nodes"] == "" {
+		if fields == nil || fields["kind"] == "" {
+			continue
+		}
+		side, rowsMissing, sideMissing := "nodes", "rows_without_a_node", "nodes_without_a_row"
+		if fields["tuples"] != "" {
+			side, rowsMissing, sideMissing = "tuples", "rows_without_a_tuple", "tuples_without_a_row"
+		}
+		if fields[side] == "" {
 			continue
 		}
 		read = append(read, kindCensus{
 			kind:               fields["kind"],
-			nodes:              censusCount(t, fields["nodes"]),
+			nodes:              censusCount(t, fields[side]),
 			rows:               censusCount(t, fields["rows"]),
-			rowsWithoutANode:   censusCount(t, fields["rows_without_a_node"]),
-			nodesWithoutARow:   censusCount(t, fields["nodes_without_a_row"]),
+			rowsWithoutANode:   censusCount(t, fields[rowsMissing]),
+			nodesWithoutARow:   censusCount(t, fields[sideMissing]),
 			addressesPastBound: censusCount(t, fields["addresses_past_bound"]),
 		})
 	}
@@ -1369,7 +1442,8 @@ func censusCount(t *testing.T, text string) int64 {
 
 // requireEveryKindCarriesAPopulation holds the census to a population for every kind this child
 // moves, and to zero differences in both directions. A kind that checked zero rows fails the run
-// and is reported by name: two empty sides agree, and a census that read nothing would pass.
+// and is reported by name: two empty sides agree, and a census that read nothing would pass. A
+// kind of censusUnseededKinds must be checked and read no difference, whatever its population.
 func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	t.Helper()
 	checked := map[string]kindCensus{}
@@ -1393,8 +1467,24 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 				want, kind.rowsWithoutANode, kind.nodesWithoutARow)
 		}
 	}
+	for _, want := range censusUnseededKinds {
+		if _, found := checked[want]; !found {
+			t.Errorf("the census checked no kind %s at all", want)
+		}
+	}
 	for _, kind := range report {
-		if !slices.Contains(censusKinds, kind.kind) {
+		switch {
+		case slices.Contains(censusKinds, kind.kind):
+		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind),
+			slices.Contains(censusUnseededKinds, kind.kind):
+			// The decision tie kinds and graph_edges' answers of them, which this run writes no
+			// decision for, and the other kinds this run writes no row of, each of which a store
+			// may hold none of: no row and no node of one is no refusal, and a difference is.
+			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
+				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
+					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
+			}
+		default:
 			t.Errorf("the census checked kind %s, which this test's list does not hold", kind.kind)
 		}
 	}
@@ -1422,21 +1512,35 @@ func requireTheLongRoleIsCountedPastTheBound(t *testing.T, report []kindCensus) 
 // requireTheSizingRunsBeforeTheMigration runs `envoy-dispatch census --store --sizing` of this
 // build over the database the older build left, before this build has migrated it. R4 takes its
 // readings on such a database, so the growth pass must read only tables that exist before this
-// branch's first migration: the census reads no kind and says the store is absent, the growth
-// pass names the store's tables as not held, and the command exits 0 on the growth pass alone.
+// branch's first migration, and the census reads the store only over a database migrated to this
+// build: the census reads no kind and says the store is absent with the reason, the growth pass
+// names graph_nodes as held exactly where the older build holds it - the fork point with main holds
+// none, a parent that is a store's own release holds its own - and the command exits 0 on the
+// growth pass alone.
 func requireTheSizingRunsBeforeTheMigration(t *testing.T, databaseURL string) {
 	t.Helper()
+	ctx := context.Background()
+	var held bool
+	if err := censusConnect(t, ctx, databaseURL).QueryRow(ctx, `select to_regclass('graph_nodes') is not null`).Scan(&held); err != nil {
+		t.Fatalf("read whether the older build holds graph_nodes: %v", err)
+	}
 	code, out := runDispatchCommand(t, cmdtest.Build(t, "envoy-dispatch"), databaseURL, "census", "--store", "--sizing")
-	t.Logf("census --store --sizing before this build's migrations:\n%s", out)
+	t.Logf("census --store --sizing before this build's migrations (graph_nodes held=%t):\n%s", held, out)
 	if code != 0 {
 		t.Fatalf("census --store --sizing exited %d over the database before this build's migrations, want 0: the growth pass reads only what exists before them", code)
 	}
 	// The command's output comes back with its last line ending in no line feed, so each line is
 	// looked for with one put back.
 	printed := out + "\n"
+	// The growth pass names a table the database does not hold as held=false, and one it holds by
+	// its size.
+	graphNodes := "census: sizing table name=graph_nodes held=false\n"
+	if held {
+		graphNodes = "census: sizing table name=graph_nodes altered="
+	}
 	for _, line := range []string{
 		"census: store absent (",
-		"census: sizing table name=graph_nodes held=false\n",
+		graphNodes,
 		"census: sizing tuples-a-write kind=block_parent_moved ",
 		"census: store absent, sizing ok\n",
 	} {
@@ -1514,15 +1618,34 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // projection equality says nothing about this: both sides can agree and the answer a reader gets
 // still change.
 //
+// decodeRead drops `as_of` from both answers (withoutTheMomentOfTheRead), and the two rules below
+// hold apart the members and elements they name. GET /api/v1/issues/{key}/references, the one read
+// here that answers graph nodes and closure members, answers four fields beside the older build's:
+// each node's state and visibility, and each member's address and kind, which the model marks
+// `required:"false"` for the release before. withoutTheAddedFields removes those four from this
+// build's answer, and one that is missing or holds another value than this build's rule gives
+// fails the run. Every other difference fails, printing both answers.
+//
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
 // answers nothing fails the run by name, and the denominator printed is the reads that compared
 // an answer.
 //
+// Two rules name what this build answers by design and the older build cannot. A member this
+// build adds is named with the read it belongs to and its place in that read's answer (added),
+// and held there to the one value the older build's answer at that place implies
+// (censusAddedMember) before it is taken out of this build's answer: a member the older build
+// answers is compared as every other is, so one whose value changes or that this build stops
+// answering still differs, a named member this build does not answer at a place fails by name,
+// and a member no rule names differs. And the elements of a list answer that only this build
+// writes and that it lists nowhere by design, which the older build lists (unlisted), are taken
+// out of the older build's answer by id, each of which it must list, so this build's listing one
+// still differs.
+//
 // The older build is started again over the migrated database. Its migration runner applies the
 // versions schema_migrations does not record, and this branch's are all recorded by now, so it
 // runs none and reads the schema it finds.
-func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *dispatchProcess, seeded seededRows) {
+func compareTheOldReadWithTheNew(t *testing.T, ctx context.Context, older, databaseURL string, now *dispatchProcess, seeded seededRows) {
 	t.Helper()
 	before := startDispatchProcessWith(t, databaseURL, dispatchOptions{
 		Binary: older, SigningKey: censusSigningKey,
@@ -1533,21 +1656,33 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// blocks, the lists a project page reads, the asks and the inbox. A read of an artifact
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
 	// own comment read is the one here. lists names the fields of an object answer that hold
-	// what the read lists; a read that names none lists its own items, or is one object.
+	// what the read lists; a read that names none lists its own items, or is one object. added
+	// names the members this build adds to the read's answer, and unlisted the elements of its
+	// list answer that only this build writes and lists nowhere: the issue's needs, duplicate_of
+	// and filed_from, a document's room and fragment, and the tree artifacts and decisions queries
+	// of the issues this build creates. issueReferences marks the one read whose answer holds graph
+	// nodes and closure members, the answer withoutTheAddedFields reads.
 	reads := []struct {
-		path  string
-		lists []string
+		path            string
+		lists           []string
+		added           []censusAddedMember
+		unlisted        []string
+		issueReferences bool
 	}{
-		{path: "/api/v1/issues/" + seeded.issue},
+		{path: "/api/v1/issues/" + seeded.issue, added: append([]censusAddedMember{
+			censusNeeds(""), censusNoneYet("duplicate_of"), censusNoneYet("filed_from"),
+		}, censusArtifactMembers("artifacts[].")...)},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
-		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"}},
+		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"},
+			added: censusArtifactMembers("members[].artifact."), issueReferences: true},
 		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
-		{path: "/api/v1/issues?project=" + seeded.project},
-		{path: "/api/v1/artifacts/" + seeded.artifact},
+		{path: "/api/v1/issues?project=" + seeded.project, added: []censusAddedMember{censusNeeds("[].")}},
+		{path: "/api/v1/artifacts/" + seeded.artifact, added: censusArtifactMembers("")},
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/text", lists: []string{"markdown"}},
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/blocks"},
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/references", lists: []string{"outgoing", "referenced_by"}},
-		{path: "/api/v1/projects/" + seeded.project + "/artifacts"},
+		{path: "/api/v1/projects/" + seeded.project + "/artifacts", added: censusArtifactMembers("[]."),
+			unlisted: censusRoomArtifacts(t, ctx, databaseURL, seeded.project)},
 		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}},
 		{path: "/api/v1/inbox"},
 	}
@@ -1555,6 +1690,7 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	for _, read := range reads {
 		was := decodeRead(t, before.call(t, http.MethodGet, read.path, "", http.StatusOK))
 		is := decodeRead(t, now.call(t, http.MethodGet, read.path, "", http.StatusOK))
+		was = withoutTheUnlisted(t, read.path, was, read.unlisted)
 		elements := answerElements(was, read.lists)
 		if elements == 0 {
 			t.Errorf("GET %s answers nothing on the older build, so comparing it with this build's answer compares nothing: the seed must write what it lists",
@@ -1562,17 +1698,182 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		} else {
 			compared++
 		}
+		held := holdTheAddedMembers(t, read.path, was, is, read.added)
+		if read.issueReferences {
+			withoutTheAddedFields(t, read.path, is)
+		}
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
 				read.path, mustEncode(t, was), mustEncode(t, is))
 			continue
 		}
-		t.Logf("GET %s answers field for field on both builds, over %d element(s)", read.path, elements)
+		t.Logf("GET %s answers field for field on both builds, over %d element(s), %d member(s) this build adds held to the value the older build's answer implies and %d element(s) only this build writes left out of the older build's list",
+			read.path, elements, held, len(read.unlisted))
 	}
 	t.Logf("the old read beside the new: %d of %d read(s) compared an answer that holds something, %d of the %d answering differently",
 		compared, len(reads), differing, len(reads))
 	requireADenominator(t, "the old read beside the new read", compared)
+}
+
+// censusAddedMember is one member this build adds to a read's answer, which the older build's
+// answer of that read holds none of. path is where it is: the names from the answer down to the
+// object holding it, joined by '.', a name ending in "[]" standing for each element of the list it
+// names, and a bare "[]" for each element of a list answer. want is the one value it may hold
+// there, as the older build's object at that place implies it.
+type censusAddedMember struct {
+	path string
+	want func(was map[string]any) any
+}
+
+// censusNeeds is the member this build adds to an issue, and to each issue a listing answers, at
+// at (model.Issue's and model.IssueSummary's Needs): the issues it waits on, which blocked_by
+// names too, one relation answered under both spellings.
+func censusNeeds(at string) censusAddedMember {
+	return censusAddedMember{path: at + "needs", want: func(was map[string]any) any { return was["blocked_by"] }}
+}
+
+// censusNoneYet is a member this build adds to an issue that names the far end of a tuple of the
+// issue's node only this build writes (model.Issue's DuplicateOf and FiledFrom), so of an issue
+// the older build wrote, which this run never relates so, it is null.
+func censusNoneYet(path string) censusAddedMember {
+	return censusAddedMember{path: path, want: func(map[string]any) any { return nil }}
+}
+
+// censusArtifactMembers are the members this build adds to a document at at (model.Artifact's
+// Room and Fragment): a document the older build wrote is in no issue room, so it is edited in a
+// room of its own, its own id, and its editor binds that room's own fragment.
+func censusArtifactMembers(at string) []censusAddedMember {
+	return []censusAddedMember{
+		{path: at + "room", want: func(was map[string]any) any { return was["id"] }},
+		{path: at + "fragment", want: func(map[string]any) any { return model.ArtifactFragmentOwn }},
+	}
+}
+
+// holdTheAddedMembers holds each member added names, at each place its path reaches in both
+// answers, to the value its want derives from the older build's object there, and takes it out of
+// this build's answer is, so that the comparison after it reads the rest. A place where the older
+// build's answer holds the member is left to that comparison, a place where this build's answer
+// lacks it fails by name, and a path that reaches no place fails too: a member this build stops
+// adding is read by a person before this test agrees with it. It answers how many it took out.
+func holdTheAddedMembers(t *testing.T, read string, was, is any, added []censusAddedMember) int {
+	t.Helper()
+	held := 0
+	for _, member := range added {
+		places := 0
+		censusPlaces(was, is, strings.Split(member.path, "."), "", func(old, now map[string]any, name, place string) {
+			places++
+			if _, answered := old[name]; answered {
+				return
+			}
+			value, answered := now[name]
+			if !answered {
+				t.Errorf("GET %s answers no member %s on this build, which this build adds to it", read, place)
+				return
+			}
+			if want := member.want(old); !reflect.DeepEqual(value, want) {
+				t.Errorf("GET %s answers %s = %s on this build, want %s, as the older build's answer there implies",
+					read, place, mustEncode(t, value), mustEncode(t, want))
+			}
+			delete(now, name)
+			held++
+		})
+		if places == 0 {
+			t.Errorf("GET %s holds no place for member %s, which this test names as one this build adds to it", read, member.path)
+		}
+	}
+	return held
+}
+
+// censusPlaces calls at with each pair of objects the two answers hold at the names of a path but
+// its last, with that last name and the place it is at, each element of a list named by its
+// index. A place where either answer holds no object, or where the two lists differ in length, is
+// no pair: the comparison reads such a place as a difference already.
+func censusPlaces(was, is any, names []string, place string, at func(was, is map[string]any, name, place string)) {
+	wasObject, wasHeld := was.(map[string]any)
+	isObject, isHeld := is.(map[string]any)
+	name, list := strings.CutSuffix(names[0], "[]")
+	if len(names) == 1 {
+		if wasHeld && isHeld {
+			at(wasObject, isObject, name, place+name)
+		}
+		return
+	}
+	if name != "" {
+		if !wasHeld || !isHeld {
+			return
+		}
+		was, is, place = wasObject[name], isObject[name], place+name
+	}
+	if !list {
+		censusPlaces(was, is, names[1:], place+".", at)
+		return
+	}
+	wasList, _ := was.([]any)
+	isList, _ := is.([]any)
+	if len(wasList) != len(isList) {
+		return
+	}
+	for index := range wasList {
+		censusPlaces(wasList[index], isList[index], names[1:], place+"["+strconv.Itoa(index)+"].", at)
+	}
+}
+
+// censusRoomArtifacts answers the ids of the artifacts of project that are no document: the tree
+// artifact of each issue born converted, which is its room, and its decisions query, a view over
+// its decision nodes (refs.DecisionsQuerySQL). Only this build writes either, and it lists neither
+// among a project's documents (api's listProjectArtifacts), while the older build lists every
+// artifact of the project but an issue's primary document. The issues this build creates are born
+// converted, so the project holds some, and a project that holds none fails the run.
+func censusRoomArtifacts(t *testing.T, ctx context.Context, databaseURL, project string) []string {
+	t.Helper()
+	conn := censusConnect(t, ctx, databaseURL)
+	rows, err := conn.Query(ctx, `
+		select a.id::text from artifacts a
+		where a.project_key = $1 and (a.kind = 'tree' or `+refs.DecisionsQuerySQL("a")+`)
+		order by a.id
+	`, project)
+	if err != nil {
+		t.Fatalf("read the artifacts of %s that are no document: %v", project, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the artifacts of %s that are no document: %v", project, err)
+	}
+	requireADenominator(t, "the artifacts of "+project+" that are no document, which only this build writes", len(ids))
+	return ids
+}
+
+// withoutTheUnlisted answers the older build's list answer was without the elements whose id is
+// one of unlisted, and fails the run for an id it does not list. This build's answer is compared
+// with what is left, so an element only one of the two lists, an unlisted one this build lists
+// among them, still differs.
+func withoutTheUnlisted(t *testing.T, read string, was any, unlisted []string) any {
+	t.Helper()
+	if len(unlisted) == 0 {
+		return was
+	}
+	left := map[string]bool{}
+	for _, id := range unlisted {
+		left[id] = true
+	}
+	listed, _ := was.([]any)
+	kept := make([]any, 0, len(listed))
+	for _, element := range listed {
+		object, _ := element.(map[string]any)
+		if id, _ := object["id"].(string); left[id] {
+			delete(left, id)
+			continue
+		}
+		kept = append(kept, element)
+	}
+	for _, id := range unlisted {
+		if left[id] {
+			t.Errorf("GET %s lists no element %s on the older build, which this test leaves out of that answer as an artifact only this build writes and lists nowhere",
+				read, id)
+		}
+	}
+	return kept
 }
 
 // answerElements counts what one read's answer holds: the items of a list answer, and an object
@@ -1617,7 +1918,9 @@ func decodeRead(t *testing.T, body []byte) any {
 
 // withoutTheMomentOfTheRead drops `as_of` wherever an answer carries it. It is the clock of the
 // read and no answer about the data: two reads of one database a millisecond apart carry
-// different ones, and nothing of this child moves it. Every other field is compared.
+// different ones, and nothing of this child moves it. Every other field is compared, but the
+// members holdTheAddedMembers takes out and the four that withoutTheAddedFields removes from this
+// build's answer.
 func withoutTheMomentOfTheRead(answer any) any {
 	switch held := answer.(type) {
 	case map[string]any:
@@ -1645,30 +1948,118 @@ func mustEncode(t *testing.T, answer any) string {
 	return string(encoded)
 }
 
-// ───── running a subcommand of a build ────────────────────────────────────
-
-// runDispatchCommand runs one subcommand of a build against databaseURL, in a home of its own and
-// with nothing of the caller's environment, and answers its exit code and its whole output.
-func runDispatchCommand(t *testing.T, binary, databaseURL string, args ...string) (int, string) {
+// withoutTheAddedFields removes from answer, this build's decoded answer to path, GET
+// /api/v1/issues/{key}/references (model.IssueReferences), the four fields this build adds beside
+// the older build's answer, and no field of those names elsewhere: the state and the visibility
+// of the node of each item of links and of linked_from (model.ReferenceLink, model.GraphNode), and
+// the address and the kind of each item of members (model.ReferenceMember). It logs how many of
+// each it removed. Each must be present and hold the value this build's rule gives: one absent or
+// holding another, a list or an item of another shape, and a member whose document node the answer
+// does not hold each fail the run, naming the place and what was found there.
+//
+// The rule is the census rows': every node this read answers over them is live and reaches the
+// project (graphstore.StateLive, graphstore.VisibilityProject), since the census moves the state of
+// none of those nodes and reserves none for its author. A member is what refs.Closure makes of the
+// document node a link out reaches, which links lists too: its address is that node's ref and its
+// kind that node's kind, artifact (getIssueReferences). So a member is held to the artifact node
+// of the answer whose id is its artifact's id. The census moves no document's address to a lens,
+// so a member of kind lens, or of no such node, is another value.
+func withoutTheAddedFields(t *testing.T, path string, answer any) {
 	t.Helper()
-	home := t.TempDir()
-	cmd := exec.Command(binary, args...)
-	cmd.Dir = home
-	cmd.Env = []string{
-		"HOME=" + home,
-		"XDG_CONFIG_HOME=" + home,
-		"XDG_DATA_HOME=" + home,
-		"DATABASE_URL=" + databaseURL,
-		"DISPATCH_NATS_DISABLED=1",
+	read := "GET " + path + ": this build's answer"
+	references, isObject := answer.(map[string]any)
+	if !isObject {
+		t.Errorf("%s is %s, not an object", read, mustEncode(t, answer))
+		return
 	}
-	sort.Strings(cmd.Env)
-	out, err := cmd.CombinedOutput()
-	code := 0
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		code = exit.ExitCode()
-	} else if err != nil {
-		t.Fatalf("run %s %s: %v\n%s", filepath.Base(binary), strings.Join(args, " "), err, out)
+	// object answers value, found at place, as an object, and fails the run where it is not one.
+	object := func(place string, value any) (map[string]any, bool) {
+		held, isObject := value.(map[string]any)
+		if !isObject {
+			t.Errorf("%s: %s holds %s, not an object", read, place, mustEncode(t, value))
+		}
+		return held, isObject
 	}
-	return code, strings.TrimRight(string(out), "\n")
+	// list answers the items of the answer's list name, and fails the run where it holds none.
+	list := func(name string) []any {
+		value, found := references[name]
+		items, isList := value.([]any)
+		switch {
+		case !found:
+			t.Errorf("%s holds no %q", read, name)
+		case !isList:
+			t.Errorf("%s: %s holds %s, not a list", read, name, mustEncode(t, value))
+		}
+		return items
+	}
+	removed := map[string]int{}
+	// take deletes field from the object at place, counted, and answers what it held; one the
+	// object does not hold fails the run.
+	take := func(place string, from map[string]any, field string) (any, bool) {
+		value, held := from[field]
+		if !held {
+			t.Errorf("%s: %s holds no %q", read, place, field)
+			return nil, false
+		}
+		delete(from, field)
+		removed[field]++
+		return value, true
+	}
+	// hold takes field from the object at place, and fails the run unless it held want.
+	hold := func(place string, from map[string]any, field, want string) {
+		if value, held := take(place, from, field); held && value != want {
+			t.Errorf("%s: %s.%s holds %s, where this build's rule gives %q", read, place, field, mustEncode(t, value), want)
+		}
+	}
+	// documents is each artifact node of links and linked_from, by its id: its place and its ref.
+	type artifactNode struct {
+		place string
+		ref   any
+	}
+	documents := map[string]artifactNode{}
+	for _, name := range []string{"links", "linked_from"} {
+		for i, item := range list(name) {
+			at := fmt.Sprintf("%s[%d]", name, i)
+			link, isObject := object(at, item)
+			if !isObject {
+				continue
+			}
+			place := at + ".node"
+			node, isObject := object(place, link["node"])
+			if !isObject {
+				continue
+			}
+			hold(place, node, "state", graphstore.StateLive)
+			hold(place, node, "visibility", graphstore.VisibilityProject)
+			if id, named := node["id"].(string); named && node["kind"] == graphstore.KindArtifact {
+				documents[id] = artifactNode{place, node["ref"]}
+			}
+		}
+	}
+	for i, item := range list("members") {
+		place := fmt.Sprintf("members[%d]", i)
+		member, isObject := object(place, item)
+		if !isObject {
+			continue
+		}
+		artifact, _ := member["artifact"].(map[string]any)
+		id, _ := artifact["id"].(string)
+		document, found := documents[id]
+		if !found {
+			t.Errorf("%s: %s stands for the document %s, and the answer holds no artifact node of that id, so its address and its kind have no node to be held to",
+				read, place, mustEncode(t, artifact["id"]))
+			take(place, member, "address")
+			take(place, member, "kind")
+			continue
+		}
+		address, _ := document.ref.(string)
+		if !strings.HasPrefix(address, "dispatch://") {
+			t.Errorf("%s: %s, the node %s stands for, holds the ref %s, which is no dispatch:// address",
+				read, document.place, place, mustEncode(t, document.ref))
+		}
+		hold(place, member, "address", address)
+		hold(place, member, "kind", graphstore.KindArtifact)
+	}
+	t.Logf("GET %s: removed from this build's answer %d \"state\" and %d \"visibility\" field(s) of the nodes of links and linked_from, and %d \"address\" and %d \"kind\" field(s) of members",
+		path, removed["state"], removed["visibility"], removed["address"], removed["kind"])
 }

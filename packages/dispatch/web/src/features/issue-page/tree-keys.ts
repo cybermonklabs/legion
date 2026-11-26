@@ -1,5 +1,5 @@
 import type { TreeNode } from "./issue-tree";
-import type { DrawnRow, OpenedBranches } from "./tree-fold";
+import type { DrawnRow } from "./tree-fold";
 
 /**
  * What the tree's keyboard asks of the model. Pure, over the tree `issue-tree.ts` builds and the
@@ -9,12 +9,13 @@ import type { DrawnRow, OpenedBranches } from "./tree-fold";
 
 /** What tells two rows apart: the path from the root down to the node the row draws. A node
  *  drawn under two requirements is two rows, and so is every row below each of them, which is
- *  why the whole path and not the direct parent is the key: the focus, the body, the pin and
- *  the tree's one tab stop belong to the row rather than to the node they are on, and two rows
- *  sharing a key would move together. */
+ *  why the whole path and not the direct parent is the key: the focus, the editing and the
+ *  tree's one tab stop belong to the row rather than to the node they are on, and two rows
+ *  sharing a key would move together. The row that pages a node's children is keyed by that
+ *  node's path, marked as the page's. */
 export function rowKeyOf(row: DrawnRow): string {
-  const path = [...row.trail, row.kind === "deeper" ? row.of.id : row.node.id].join(">");
-  return row.kind === "deeper" ? `deeper:${path}` : path;
+  const path = [...row.trail, row.kind === "page" ? row.of.id : row.node.id].join(">");
+  return row.kind === "page" ? `page:${path}` : path;
 }
 
 /** Every node of `root` in reading order, the root first: the order the rows are drawn in, and
@@ -50,10 +51,10 @@ function withoutVersion(reference: string): string {
 
 /**
  * The decision behind the node `id`: the first decision of the tree, in reading order, that
- * names that node among its chips. A decision names every spec block it links
- * (`tree-drafts.ts`'s `addDecisions`), and that link is the only edge the model holds between a
- * decision and what it shaped until pull request 2797 lands its `shaped` edge; the day it does,
- * this reads that edge instead and the key does not change.
+ * names that node among its chips. A decision names every node its `shaped` edge reaches, the
+ * decisions read's links (`tree-drafts.ts`'s `addDecisions`), which is the one edge the model
+ * holds between a decision and what it shaped. An agent's decision is a node of its own; a
+ * person's is the answered ask itself, whose node carries those chips.
  *
  * A check no decision names reaches back through the chain it sits in (R10): the decision
  * behind a requirement it is drawn under, which is the decision that informed what the check
@@ -71,7 +72,8 @@ export function decisionBehind(root: TreeNode, id: string): TreeNode | undefined
     );
     return order.find(
       (one) =>
-        one.type === "decision" && one.chips.some((chip) => addresses.has(withoutVersion(chip.ref)))
+        (one.type === "decision" || (one.type === "ask" && one.state === "answered")) &&
+        one.chips.some((chip) => addresses.has(withoutVersion(chip.ref)))
     );
   };
   const own = naming(node);
@@ -83,13 +85,4 @@ export function decisionBehind(root: TreeNode, id: string): TreeNode | undefined
     if (behind !== undefined) return behind;
   }
   return undefined;
-}
-
-/** Every branch of `root` opened, which is the whole tree drawn: the last state of the key that
- *  cycles how much of it is on screen. Nothing is folded shut in it, since this state is the
- *  whole tree; the reader's own folds are held apart from it and come back when the cycle
- *  does. */
-export function everythingOpened(root: TreeNode): OpenedBranches {
-  const ids = nodesInOrder(root).map((node) => node.id);
-  return { branches: new Set(ids), closed: new Set(), deeper: new Set(ids) };
 }

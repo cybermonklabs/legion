@@ -1,6 +1,10 @@
 package refs
 
-import "context"
+import (
+	"context"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
 
 // Pending is what one transaction's write phase writes and no read of it can answer yet
 // (INFRA-636: a route decides everything in its read phase and sends every statement at Commit).
@@ -22,10 +26,24 @@ type Pending interface {
 	// PendingArtifact is the uuid and the dispatch:// address (ArtifactRef) of the artifacts row
 	// of reference key refKey this transaction writes, false when it writes none.
 	PendingArtifact(refKey string) (id, ref string, ok bool)
+	// PendingDocument is the address registered for the artifacts row of uuid id this
+	// transaction writes (DocumentAddress: its ref_key, issue, project and band among the rest),
+	// false when it writes none.
+	PendingDocument(id string) (DocumentAddress, bool)
+	// PendingRoom is the id of the issue room the document of ref_key refKey is edited in where
+	// this transaction writes the document's artifacts row and the document_rooms row joining it
+	// to that room, false otherwise: no read of the transaction sees those rows before its write
+	// phase. The room's own artifacts row is one the transaction writes too (PendingDocument) or
+	// one the store holds.
+	PendingRoom(refKey string) (string, bool)
 	// PendingMarkdown is the markdown of the latest version of document artifactID as this
 	// transaction leaves it: the version it has queued, false when it has queued none and the
 	// stored version is the latest (docs.latestVersion answers from the same entry).
 	PendingMarkdown(artifactID string) (string, bool)
+	// PendingAuthors is the authors of version number of document artifactID where that is the
+	// version this transaction has queued and not written, in the order its row will store them,
+	// false for any other version, which the stored row answers for.
+	PendingAuthors(artifactID string, number int) ([]model.Actor, bool)
 	// PendingBlockAsks is every question block's ask of document artifactID whose row this
 	// transaction writes, as that row will stand (docs.loadAskBlocks reads the same entries).
 	PendingBlockAsks(artifactID string) []PendingBlockAsk

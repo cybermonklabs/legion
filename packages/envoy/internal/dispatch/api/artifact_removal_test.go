@@ -203,8 +203,8 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 // names, so the census reads past them. document_search_backfill.artifact_id is the search fill's
 // keyset cursor (migration 20261101182501): a position in the fill, the highest document id the
 // pass has covered, and not a record of that document. A removal leaves it where it is, because
-// the boot's fill reads that one row every time and the keyset goes on from an id whether or not
-// a document still has it (dispatch://INFRA-4018).
+// the fill a process of the release before runs at each boot reads that one row every time and
+// the keyset goes on from an id whether or not a document still has it (#4224).
 var censusExempt = []artifactColumn{{table: "document_search_backfill", column: "artifact_id"}}
 
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
@@ -545,7 +545,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// document's lock, taken here as the transaction-level form of the session lock that
 		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
 		// written and not committed. Such a writer takes no owner lock, so the issue's owner lock the
-		// removal holds does not order it: the room's lock is what does.
+		// removal holds does not order it: the room's lock is what does. The document plays no
+		// role of its converted issue, so it is a room of its own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the append in flight: %v", err)
@@ -644,7 +646,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed.
+		// that existed. The document plays no role of its converted issue, so it is a room of its
+		// own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
 		}
@@ -703,6 +707,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's owner lock", func(waiting func(string) int) bool {
 			return waiting(store.OwnerLockStatement) == 1
 		})
+		// The document plays no role of its converted issue, so the settlement that versions it is
+		// its own room's (requireOwnRoom).
+		requireOwnRoom(t, document)
 		documents.SettleNow(document.ID)
 		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's owner lock behind the removal", func(waiting func(string) int) bool {
 			return waiting(store.OwnerLockStatement) == 2
@@ -809,7 +816,9 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made.
+	// the document was made. The document plays no role of its converted issue, so it is a room of
+	// its own (requireOwnRoom).
+	requireOwnRoom(t, document)
 	for _, process := range []struct {
 		what    string
 		service *docs.Service
@@ -899,6 +908,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
+	requireOwnRoom(t, untouched)
 	testwait.Until(t, fmt.Sprintf("the third process to hold a room of %s, whose room the removal must close (the rooms it holds)", untouched.ID),
 		func() ([]string, bool) {
 			rooms := third.ResidentRooms()
@@ -921,6 +931,17 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
 }
 
+// requireOwnRoom fails unless the document's read names it a room of its own: its own id as its
+// room and that room's own fragment, as every document of an issue is but the issue's spec,
+// Verification document and plan, which join a converted issue's room (R5 of this branch's spec).
+func requireOwnRoom(t *testing.T, document model.Artifact) {
+	t.Helper()
+	if document.Room != document.ID || document.Fragment != model.ArtifactFragmentOwn {
+		t.Fatalf("%s (%s) reads room %q fragment %q, want a room of its own: room %s and fragment %s",
+			document.Name, document.ID, document.Room, document.Fragment, document.ID, model.ArtifactFragmentOwn)
+	}
+}
+
 // documentAppendCount is how many stored appends the database holds of a document's room. After
 // the document's removal it is zero: the rows went with the row they are keyed by, and an append
 // a room left open over that row made afterwards could not be stored at all.
@@ -934,22 +955,21 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 	return appends
 }
 
-// Removing the document the search fill's cursor names leaves the fill's progress row as it was,
-// and the boot's fill still runs after it (dispatch://INFRA-4018). document_search_backfill holds
-// one row (migration 20261101182501), whose artifact_id is the keyset cursor: the highest document
-// id the pass has covered, and no row of that document's. A removal that deleted it where the
-// cursor equals the removed id left the table empty, and store.FillDocumentSearch, which the boot
-// runs before the server serves (cmd/dispatch/main.go), then failed its read of the row, so no
-// process could start again.
+// Removing the document the search fill's cursor names leaves the fill's progress row as it was
+// (#4224). document_search_backfill holds one row (migration 20261101182501), whose
+// artifact_id is the keyset cursor: the highest document id the pass has covered, and no row of
+// that document's. A removal that deleted it where the cursor equals the removed id left the table
+// empty, and the fill, which the boot of a process of the release before runs before it serves,
+// then failed its read of the row, so no such process could start again. This build runs no fill
+// (R17 of the issue-tree spec), and a rollback reaches the release before, which does.
 //
 // The cursor is set rather than reached by a pass, since which document a pass ends on is the
 // order of random ids: a finished pass names its last document, and a running one the last
 // document of the batch it committed. Both states are cases here, each on a database of its own.
-// Each reads the row, runs the census while the cursor still holds the removed id, and then runs
-// the fill; the row and the fill report with Errorf, so a failure of the first still reports the
-// last. The census is the removal's own (assertNoRowNamesTheDocument), and it holds every other
-// row to naming the document no more: only the cursor, which censusExempt says is a position in
-// the fill, may keep the removed id.
+// Each reads the row and runs the census while the cursor still holds the removed id; the row
+// reports with Errorf, so a failure of it still reports the census. The census is the removal's
+// own (assertNoRowNamesTheDocument), and it holds every other row to naming the document no more:
+// only the cursor, which censusExempt says is a position in the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -980,9 +1000,6 @@ func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *
 					rows, cursor, done, document.ID, pass.done)
 			}
 			assertNoRowNamesTheDocument(t, database, document.ID)
-			if _, err := database.FillDocumentSearch(ctx); err != nil {
-				t.Errorf("the boot's fill after the removal of the document its cursor names: %v", err)
-			}
 		})
 	}
 }

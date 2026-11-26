@@ -23,6 +23,10 @@ func TestDocumentEditsAddressBlocksByID(t *testing.T) {
 	handler := newTestHandler(t)
 	const ask = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Block edits", "# Title\n\n"+ask+"\nContext ends with no drift.\n\n1. only\n")
+	// The asks member of the text an agent reads holds an ask block's state from its ask, which
+	// the settlement of the spec opens. So the edits wait for it, and the read after them shows
+	// the ask open wherever its block moved, its markdown carrying no state.
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "decision", "Which transport?")
 	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
 	var listID string
 	for _, block := range blocks {
@@ -43,11 +47,9 @@ func TestDocumentEditsAddressBlocksByID(t *testing.T) {
 	if edited.Code != http.StatusOK || !strings.Contains(edited.Body.String(), `"applied":2`) {
 		t.Fatalf("block edits: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	text := decodeBody[struct {
-		Markdown string `json:"markdown"`
-	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice"))
-	if want := "# Title\n\nContext ends with no drift.\n\n" + ask; text.Markdown != want {
-		t.Fatalf("after block edits = %q, want %q", text.Markdown, want)
+	const served = ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n"
+	if text, want := agentText(t, handler, issue.PrimaryArtifactID), "# Title\n\nContext ends with no drift.\n\n"+served+"\nasks:\n#decision state=\"open\"\n"; text != want {
+		t.Fatalf("after block edits = %q, want %q", text, want)
 	}
 
 	for _, test := range []struct {

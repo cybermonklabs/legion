@@ -80,8 +80,11 @@ func TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation(t *testing
 	if indexedBlocks, _ := readIndexedBlocks(t, database, notes.ID); len(indexedBlocks) != 0 {
 		t.Fatalf("the write recorded %d block nodes, want none", len(indexedBlocks))
 	}
-	if edge := mentionOf(t, handler, target); edge.Node.Kind != "artifact" || edge.Node.ID != notes.ID {
-		t.Fatalf("before the block-index reconciliation the mention of %s comes from %#v, want the document itself", target, edge.Node)
+	// The document is a fragment of its issue's room, whose references are keyed by the room's tree
+	// artifact until the block index names the block holding each (docs.IndexDocumentReferences).
+	room, _ := documentRoomOf(t, database.Pool, notes.ID)
+	if edge := mentionOf(t, handler, target); edge.Node.Kind != "artifact" || edge.Node.ID != room {
+		t.Fatalf("before the block-index reconciliation the mention of %s comes from %#v, want the room the document is edited in, %s", target, edge.Node, room)
 	}
 
 	tick, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil)

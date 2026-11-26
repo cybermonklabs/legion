@@ -20,9 +20,11 @@
 # corpus holds one block more than `docs.deferBlockIndexBlocks`, the bound above which a write
 # leaves the block index to the block-index reconciliation, so the whole corpus is owed an index
 # when the window closes. The corpus is written while this driver holds the reconciliation's own
-# lease, so no tick runs inside the measured window, and the two rates it prints - what that
-# window wrote and what the loop then drained, each as documents and blocks a minute, each over
-# the window named on its own line - are measured over one corpus.
+# lease and the reference forms drain's (lib.sh's hold_index_leases), so neither runs inside the
+# measured window, and the drain's is kept until the loop's drain is read, so what is read is the
+# reconciliation's own work. The two rates it prints - what that window wrote and what the loop
+# then drained, each as documents and blocks a minute, each over the window named on its own line
+# - are measured over one corpus.
 #
 # One gate holds the loop, the backlog (the c-growth block of this change's verification document):
 # the loop must drain documents no slower than documents a write defers arrive, counted over the
@@ -153,10 +155,12 @@ readonly script_dir
 readonly census_source="$script_dir/../../../envoy/internal/pgmigrate/census.go"
 # The reconciliation this driver measures, each figure read from the Go source that declares it,
 # as the limit above is: the bound above which a document write leaves its block index to the
-# reconciliation, the batch one tick of that reconciliation reads, the lease it runs under, and
-# the first key every loop lease is taken with.
+# reconciliation, the batch one tick of that reconciliation reads, the lease it runs under, the
+# reference forms drain's lease, and the first key every loop lease is taken with, the last three
+# held to the leases lib.sh's hold_index_leases takes.
 readonly defer_source="$script_dir/../../../envoy/internal/dispatch/docs/reference_excerpts.go"
 readonly loop_source="$script_dir/../../../envoy/internal/dispatch/docs/block_index.go"
+readonly forms_source="$script_dir/../../../envoy/internal/dispatch/docs/refs_forms.go"
 readonly lease_source="$script_dir/../../../envoy/internal/dispatch/duty/exclusive.go"
 # The Google Cloud project and the Cloud SQL instance production's Dispatch runs on, both required
 # above because this repository is public and names neither, and the metric its disk use is
@@ -175,11 +179,7 @@ readonly metadata_token_url="http://metadata.google.internal/computeMetadata/v1/
 # The corpus the reconciliation is measured over: documents enough for one tick to carry the whole
 # batch, so the drain measured is one pass's and not a queue of passes a wait apart.
 readonly drain_documents=8
-# How long the session holding the block-index lease sleeps, the polls this driver waits for that
-# lease (a fifth of a second apart) and the seconds it waits for the loop to drain the corpus. The
-# sleep is a hang guard alone: release_block_index interrupts it as soon as the window closes.
-readonly lease_seconds=1800
-readonly lease_polls=1500
+# The seconds this driver waits for the loop to drain the corpus.
 readonly drain_wait=600
 # The slope of production's daily series, read by awk out of the "<epoch> <timestamp> <bytes>"
 # lines the pages above are reduced to. It prints the least-squares slope over the whole window
@@ -251,10 +251,9 @@ readonly work
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
-lease_pid=""
 cleanup() {
   local code=$?
-  release_block_index
+  drop_index_leases
   if [[ -n "$key" ]]; then
     send PATCH "/api/v1/issues/$key" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
@@ -404,42 +403,6 @@ declared() {
 # 0122's trigger leaves null for a write that deferred its blocks.
 owed() {
   query "$1" "$2" 'select count(*) from document_block_versions where version is null'
-}
-
-# hold_block_index SECTION: takes the block-index pass's own lease, so that no tick of the server's
-# runs inside the window this driver measures: duty.Exclusive takes this lease before every pass
-# and skips the pass where another session holds it. It is costHoldBlockIndex (graph_cost_test.go)
-# in shell. The lease is a session lock, so a psql of this driver's holds it until
-# release_block_index interrupts that session's sleep, which gives the lease back at once.
-hold_block_index() {
-  local polls=0
-  : >"$work/lease"
-  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
-select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
-\\warn the $lease_name lease is held
-select pg_sleep($lease_seconds);
-SQL
-  lease_pid=$!
-  until grep -q "the $lease_name lease is held" "$work/lease"; do
-    polls=$((polls + 1))
-    [[ "$polls" -le "$lease_polls" ]] ||
-      fail "$1" "hold the $lease_name lease" \
-        "it was not given up inside $((lease_polls / 5))s: $(head -c 300 "$work/lease")"
-    kill -0 "$lease_pid" 2>/dev/null ||
-      fail "$1" "hold the $lease_name lease" "psql stopped: $(head -c 300 "$work/lease")"
-    sleep 0.2
-  done
-  pass "$1" "this driver holds the $lease_name lease, so no tick runs inside the measured window"
-}
-
-# release_block_index gives that lease back: SIGINT makes psql cancel its sleep and read the end of
-# its own input, which closes the session and frees the lock there and then. A kill of the sleeping
-# psql would instead leave the backend holding the lease until its sleep returned.
-release_block_index() {
-  [[ -n "$lease_pid" ]] || return 0
-  kill -INT "$lease_pid" 2>/dev/null || true
-  wait "$lease_pid" 2>/dev/null || true
-  lease_pid=""
 }
 
 # a_minute COUNT SECONDS: COUNT a minute, at two decimals, as every rate this driver prints.
@@ -675,15 +638,21 @@ reconcile_seconds="$answer"
 declared C10 "read the block index's lease" "$loop_source" \
   's/^const BlockIndexLease = "\(.*\)"$/\1/p'
 lease_name="$answer"
+declared C10 "read the forms drain's lease" "$forms_source" \
+  's/^const RefsFormsLease = "\(.*\)"$/\1/p'
+forms_lease_name="$answer"
 declared C10 "read the first key of a loop lease" "$lease_source" \
   's/^const leaseNamespace int32 = \(0x[0-9A-Fa-f]*\)$/\1/p'
 lease_namespace=$(( answer ))
+[[ "$lease_namespace" == "$index_lease_namespace" && "$lease_name $forms_lease_name" == "${index_leases[*]}" ]] ||
+  fail C10 "lib.sh holds the leases the Go source declares" \
+    "the source declares the key $lease_namespace and the leases $lease_name and $forms_lease_name, where lib.sh's hold_index_leases takes $index_lease_namespace and ${index_leases[*]}"
 [[ "$drain_documents" -le "$document_batch" ]] ||
   fail C10 "one tick carries the whole corpus" \
     "this driver writes $drain_documents documents and one tick reads $document_batch"
 pass C10 "a write defers above $defer_blocks block(s); one tick reads $document_batch document(s) under the $lease_name lease"
 
-hold_block_index C10
+hold_index_leases C10
 owed C10 "count the documents owed an index before the corpus"
 owed_before="$answer"
 
@@ -745,14 +714,17 @@ backlog_oldest="$(sed -n 's/^census: sizing backlog oldest_owed_at=\([^ ]*\) .*$
     "the report reads oldest_owed_at=none while $backlog_owed document(s) are owed"
 pass C11 "the report owes $backlog_owed document(s), the oldest since $backlog_oldest"
 
-# C12: the drain. The lease goes back, the loop takes it, and the window measured is the loop's
-# own, as cmd/dispatch's writeCostTick measures a tick. The window opens at the first poll that
-# finds a document settled, so what the loop settled before that poll is outside it: the window
-# holds the documents still owed at that poll and no others. Every figure read off it - each rate,
-# the seconds a document and the gate - therefore counts those documents ($drained) and not the
-# whole corpus, which would charge the window for work done before it opened. The wait before it
-# is the reconciliation's interval and no part of its rate.
-release_block_index
+# C12: the drain. The block-index lease goes back alone, the loop takes it, and the window measured
+# is the loop's own, as cmd/dispatch's writeCostTick measures a tick: the forms drain's lease is
+# kept until the loop's blocks are counted, since that drain indexes a document through the block
+# index's own index and could otherwise index the corpus before the loop and leave the window a
+# loop with no work. The window opens at the first poll that finds a document settled, so what the
+# loop settled before that poll is outside it: the window holds the documents still owed at that
+# poll and no others. Every figure read off it - each rate, the seconds a document and the gate -
+# therefore counts those documents ($drained) and not the whole corpus, which would charge the
+# window for work done before it opened. The wait before it is the reconciliation's interval and
+# no part of its rate.
+give_index_lease C12 "$lease_name"
 released="$(date +%s.%N)"
 drain_started=""
 drain_finished=""
@@ -771,7 +743,7 @@ while :; do
   fi
   awk -v from="$released" -v to="$now" -v limit="$drain_wait" 'BEGIN { exit !(to - from <= limit) }' ||
     fail C12 "the loop drains the corpus" \
-      "$((left - owed_before)) document(s) of the corpus were still owed an index ${drain_wait}s after the lease was given back"
+      "$((left - owed_before)) document(s) of the corpus were still owed an index ${drain_wait}s after the block-index lease was given back"
   sleep 0.2
 done
 [[ -n "$drain_started" ]] ||
@@ -782,6 +754,7 @@ query C12 "count the blocks the loop wrote" \
   "select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id
      where a.issue_key = '$key' and a.name like 'sizing-drain-%'"
 drain_blocks="$answer"
+give_index_lease C12 "$forms_lease_name"
 [[ "$drain_blocks" -gt "$((defer_blocks * drain_documents))" ]] ||
   fail C12 "the corpus is past the deferral bound" \
     "the loop indexed $drain_blocks block(s) over $drain_documents document(s), which is not more than $defer_blocks each"
@@ -793,8 +766,8 @@ blocks_each=$((drain_blocks / drain_documents))
     "the loop indexed $drain_blocks block(s) over $drain_documents copies of one document, which no one count a document divides"
 drained_blocks=$((blocks_each * drained))
 drain_rate="$(a_minute "$drained" "$drain_seconds")"
-pass C12 "the window wrote $drain_documents document(s) and $drain_blocks block(s) over the ${write_seconds}s it held the lease: $(a_minute "$drain_documents" "$write_seconds") documents a minute, $(a_minute "$drain_blocks" "$write_seconds") blocks a minute"
-pass C12 "the loop drained $drained of those document(s), $drained_blocks block(s), over the ${drain_seconds}s from the first poll that found one settled to its last: $drain_rate documents a minute, $(a_minute "$drained_blocks" "$drain_seconds") blocks a minute (the $((drain_documents - drained)) it settled before that poll are outside the window; it began $(since "$released" "$drain_started")s after the lease went back, which is the reconciliation's interval and no part of this rate)"
+pass C12 "the window wrote $drain_documents document(s) and $drain_blocks block(s) over the ${write_seconds}s it held the leases: $(a_minute "$drain_documents" "$write_seconds") documents a minute, $(a_minute "$drain_blocks" "$write_seconds") blocks a minute"
+pass C12 "the loop drained $drained of those document(s), $drained_blocks block(s), over the ${drain_seconds}s from the first poll that found one settled to its last: $drain_rate documents a minute, $(a_minute "$drained_blocks" "$drain_seconds") blocks a minute (the $((drain_documents - drained)) it settled before that poll are outside the window; it began $(since "$released" "$drain_started")s after the block-index lease went back, which is the reconciliation's interval and no part of this rate)"
 # The two rates above are not held to each other, and this line says why rather than leaving a
 # reader to work it out: a write past the bound defers the block index precisely so it does not
 # pay for it, so the loop spends on each document what that write did not, and a window of such

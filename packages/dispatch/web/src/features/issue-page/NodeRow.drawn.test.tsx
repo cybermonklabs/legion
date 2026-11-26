@@ -16,12 +16,21 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { Actor, Agent, DisplayTree, IssueChild, ReferenceTarget } from "../../api/types";
+import { conversationTreeKey } from "../../api/queries";
+import type {
+  Actor,
+  Agent,
+  Decision,
+  DisplayTree,
+  IssueChild,
+  ReferenceTarget,
+} from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
-import { actorLabelText } from "../refs/AgentName";
+import { actorLabelText, useAgentText } from "../refs/AgentName";
+import { agentsQuery } from "../refs/agent-registry";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import * as markdownEngine from "../refs/markdown-engine";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -34,15 +43,18 @@ import {
 } from "../refs/reference-names";
 import { measureNearWords } from "./clamp-fixtures";
 import {
+  AGENT,
   artifact,
-  DECISIONS_DOCUMENT,
   decision,
   decisionsRead,
   issueDetails,
   KEY,
+  SPEC_DOCUMENT,
+  SPEC_SLUG,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
 import {
+  buildIssueTree,
   FIRST_LINE_LIMIT,
   type IssueTreeReads,
   type NodeChip,
@@ -50,6 +62,7 @@ import {
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
+import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -62,6 +75,9 @@ import {
   CONTROL_LABELS,
   DECLARED_WORDS,
   type GapKind,
+  GLYPH_NAMES,
+  GLYPH_TOKENS,
+  isReader,
   NODE_TYPE_NAMES,
   type NodeType,
   PRESET_NAMES,
@@ -70,20 +86,19 @@ import {
 import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
-import { treeContext } from "./tree-drafts";
+import { blockNodeId, treeContext } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
-import { treeDocumentIds, useIssueTree } from "./useIssueTree";
+import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { useIssueTree } from "./useIssueTree";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
- * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
- * R34, and the architect's ruling 1 on R1).
+ * What one row of the tree draws, read as a reader reads it (R1, R6, R9, R11 and R34).
  *
  * The row is rendered on its own rather than through `IssueTree`, because what these rows are
  * about is the words and the shapes one node draws: the tree's fold, its keys and its placements
- * are read in `IssueTree.test.tsx` and `issue-tree.test.ts`. Where a row is cut is read from the
- * browser's own layout, which no DOM of a unit test lays out, so the cut is read by the browser
- * suite's c-row.
+ * are read in `IssueTree.test.tsx`, `tree-fold.test.ts` and `issue-tree.test.ts`. A row of the
+ * outline draws its words whole, which the browser suite's c-row-face reads in a laid-out page.
  */
 
 function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
@@ -151,7 +166,7 @@ function Named({
   );
 }
 
-/** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
+/** One row, drawn as the outline draws every row, with what it holds on its face;
  *  `author` is who made it, as the tree names them (`AgentText.author`); `answerer` the person
  *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any;
  *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
@@ -164,7 +179,6 @@ function renderRow(
   {
     answerer,
     author = NOBODY_RECORDED,
-    body = true,
     editable,
     expanded,
     focused = false,
@@ -174,7 +188,6 @@ function renderRow(
   }: {
     answerer?: string;
     author?: Author;
-    body?: boolean;
     editable?: boolean;
     expanded?: boolean;
     focused?: boolean;
@@ -194,7 +207,6 @@ function renderRow(
               <NodeRow
                 {...(answerer === undefined ? {} : { answerer })}
                 author={author}
-                body={body}
                 context={false}
                 {...(editable === undefined ? {} : { editable })}
                 {...(expanded === undefined ? {} : { expanded })}
@@ -204,10 +216,8 @@ function renderRow(
                 level={1}
                 node={node}
                 onFocus={() => {}}
-                onPin={() => {}}
                 onToggle={() => {}}
                 ownAnswer={false}
-                pinned={false}
                 rowKey="row"
                 tabStop={false}
               />
@@ -239,20 +249,20 @@ beforeAll(async () => {
 
 // R9: a node whose author the model holds says who made it by a name and a shape, never by
 // colour alone and never by an id, and two authors of different kinds never share a shape.
-// Ruling 5: a node the model holds no author for draws none on its row, and its opened body
-// says so. Ruling 6: an agent is named by its role's word, and its opened body gives its whole
-// title.
+// Ruling 5: a node the model holds no author for draws none in its row's margin, and its row
+// says so under its words. Ruling 6: an agent is named by its role's word, and its row gives
+// its whole title under its words, whatever the focus (R11).
 test("an author is drawn by a name and a shape of its own kind", () => {
-  // A comment, which a person and an agent both write: a decision's body draws Keep and
+  // A comment, which a person and an agent both write: a decision's face draws Keep and
   // Change, which are writes, and this row is about the words and the shape alone.
-  const drawn = (author: Author, body = true) => {
-    const view = renderRow(node({ id: "comment-1", type: "comment" }), { author, body });
+  const drawn = (author: Author) => {
+    const view = renderRow(node({ id: "comment-1", type: "comment" }), { author });
     try {
       const shown = view.container.querySelector("[data-node-author]");
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
-        body: shown === null ? null : shown.closest("[data-node-body]") !== null,
         chrome: shown === null ? null : shown.querySelector("[data-page-chrome]") !== null,
+        face: shown === null ? null : shown.closest("[data-node-body]") !== null,
         margin: shown === null ? null : shown.closest("[data-node-margin]") !== null,
         name: shape?.getAttribute("aria-label") ?? null,
         role: shape?.getAttribute("role") ?? null,
@@ -269,8 +279,8 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   // shape carries its own accessible name: a reader who cannot see it still hears what kind of
   // author it stands for.
   expect(drawn({ kind: "person", name: "alice", reader: false })).toEqual({
-    body: false,
     chrome: false,
+    face: false,
     margin: true,
     name: "Written by a person",
     role: "img",
@@ -279,8 +289,8 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     token: "author-person",
   });
   expect(drawn({ kind: "agent", name: "Planner", reader: false })).toEqual({
-    body: false,
     chrome: false,
+    face: false,
     margin: true,
     name: "Written by an agent",
     role: "img",
@@ -288,8 +298,8 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     title: null,
     token: "author-agent",
   });
-  // An agent whose session's title says more than its role is named by the role's word on the
-  // row, and the opened body gives the whole title; a row that is not open gives none.
+  // An agent whose session's title says more than its role is named by the role's word in the
+  // margin, and the row gives the whole title under its words.
   const architect: Author = {
     kind: "agent",
     name: "Legion architect · CORE-1",
@@ -300,20 +310,147 @@ test("an author is drawn by a name and a shape of its own kind", () => {
     text: "architect",
     title: "Legion architect · CORE-1",
   });
-  expect(drawn(architect, false)).toMatchObject({ margin: true, text: "architect", title: null });
-  // Where the model holds no author the row draws none, and its opened body says so in the
-  // page's own words, which are marked as the page's rather than as somebody's name, with a
-  // shape neither other kind draws.
-  expect(drawn(NOBODY_RECORDED, false)).toMatchObject({ margin: null, text: null });
+  // Where the model holds no author the margin draws none, and the row says so under its words
+  // in the page's own words, which are marked as the page's rather than as somebody's name, with
+  // a shape neither other kind draws.
   expect(drawn(NOBODY_RECORDED)).toEqual({
-    body: true,
     chrome: true,
+    face: true,
     margin: false,
     name: "Written by an author nobody recorded",
     role: "img",
     text: "Author unknown",
     title: null,
     token: "author-unknown",
+  });
+});
+
+/** One row of the tree as `ConversationRows` draws it: the node as the tree model built it, its
+ *  author named by the page's one rule for naming one (`AgentText.author`). */
+function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <NodeRow
+      author={{
+        kind: authorKind(drawn.author),
+        name: agentText.author(drawn.author),
+        reader: isReader(drawn.author, undefined),
+      }}
+      context={false}
+      focused={false}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      rowKey="row"
+      tabStop={false}
+    />
+  );
+}
+
+// R9: an agent's decision is drawn with who decided it as the decisions read's entry for it
+// records (`DecisionEntry.decided_by`), which the read's `decisions` member does not carry. The
+// session that wrote it is named by the title the page's sessions read gives it, as any agent's
+// is: its role's word on the row and its whole title in the opened body. A session no registry
+// lists any longer is named by the title it stamped on what it wrote, which the entry carries
+// (`decided_by.title`), in the same two places. A decision whose entry names nobody draws no
+// author on its row, and its opened body says "Author unknown". Each decision is a node of the
+// tree read, a `decision` block of the spec, whose `decision` names no decider, so the decider is
+// its entry's.
+test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
+  const title = "Legion architect · CORE-1";
+  const storedTitle = "Legion planner · CORE-1";
+  const named = decision("d-named");
+  const unnamed = decision("d-unnamed");
+  const stored = decision("d-stored");
+  const read = decisionsRead([named, unnamed, stored]);
+  const root = buildIssueTree({
+    decisions: {
+      ...read,
+      entries: (read.entries ?? []).map((entry) => {
+        if (entry.ref === unnamed.ref) return { ...entry, decided_by: null };
+        if (entry.ref !== stored.ref) return entry;
+        return {
+          ...entry,
+          decided_by: { id: "session-gone", kind: "session", title: storedTitle },
+        };
+      }),
+    },
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [named, unnamed, stored].map((made, position) =>
+        treeNode(made.block_id, "decision", KEY, {
+          decision: { ref: made.ref, waiting_review: true },
+          document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+          text: made.heading,
+        })
+      )
+    ),
+  });
+  const registered: Agent = {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: AGENT.id,
+    state: "live",
+    title,
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(agentsQuery().queryKey, [registered]);
+  const drawn = (made: Decision) => {
+    const id = blockNodeId(SPEC_SLUG, made.block_id);
+    const shown = root.children.find((child) => child.id === id);
+    if (shown === undefined) throw new Error(`the tree draws no decision ${id}`);
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <TreeRow node={shown} />
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      const text = (selector: string) =>
+        view.container.querySelector(selector)?.textContent ?? null;
+      return {
+        face: text("[data-node-body] [data-node-author]"),
+        kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
+        row: text("[data-node-margin] [data-node-author]"),
+        title: text("[data-node-author-title]"),
+        type: view.container.querySelector("[data-node-row]")?.getAttribute("data-node-type"),
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn(named)).toEqual({
+    face: null,
+    kind: "agent",
+    row: "architect",
+    title,
+    type: "decision",
+  });
+  expect(drawn(unnamed)).toEqual({
+    face: CONTROL_LABELS.unknown_author,
+    kind: "unknown",
+    row: null,
+    title: null,
+    type: "decision",
+  });
+  expect(drawn(stored)).toEqual({
+    face: null,
+    kind: "agent",
+    row: "planner",
+    title: storedTitle,
+    type: "decision",
   });
 });
 
@@ -369,7 +506,7 @@ test("a deleted comment's row draws the deleted line, its actor named as the pag
       const where = `${name}${folded ? ", folded" : ""}`;
       const view = renderRow(
         deletedTurn(by, folded ? { held: 1 } : {}),
-        folded ? { body: false, expanded: false, folded: 1 } : { body: false }
+        folded ? { expanded: false, folded: 1 } : {}
       );
       try {
         const words = view.container.querySelector(
@@ -391,8 +528,8 @@ test("a deleted comment's row draws the deleted line, its actor named as the pag
 
 // R2 of dispatch://INFRA-1523: a message its author edited says ` · edited` after its time, as
 // its byline does on every surface (`EditedMark`). The row says it at its right, outside its
-// words, so no cut of the words takes it: an agent's words cut at six lines, or a folded
-// branch's one line. A message nobody edited says nothing of an edit.
+// words, so no cut of the words takes it: a folded branch's one line. A message nobody edited
+// says nothing of an edit.
 test("an edited message's row says edited after its time, whole or folded, outside its words", () => {
   const at = `${new Date().getFullYear()}-11-05T12:00:00Z`;
   const planner: Author = { kind: "agent", name: "Planner", reader: false };
@@ -406,7 +543,7 @@ test("an edited message's row says edited after its time, whole or folded, outsi
         text: "Ship it.",
         type: "message",
       }),
-      { author: planner, body: false, ...(folded ? { expanded: false, folded: 1 } : {}) }
+      { author: planner, ...(folded ? { expanded: false, folded: 1 } : {}) }
     );
   for (const folded of [false, true]) {
     const view = drawn("2026-11-05T13:00:00Z", folded);
@@ -446,7 +583,7 @@ test("a parent line draws a deleted parent as its deleted line, and an edited on
         text: "Stand the harness up.",
         type: "plan_task",
       }),
-      { body: false }
+      {}
     );
   const deleted = under({
     deletedAt: DELETED_AT,
@@ -529,7 +666,7 @@ test("a row's deleted line and edited mark are the page's own words, and the act
   for (const folded of [false, true]) {
     const view = renderRow(
       deletedTurn(alice, folded ? { held: 1 } : {}),
-      folded ? { body: false, expanded: false, folded: 1 } : { body: false }
+      folded ? { expanded: false, folded: 1 } : {}
     );
     try {
       const words = view.container.querySelector(
@@ -547,7 +684,7 @@ test("a row's deleted line and edited mark are the page's own words, and the act
       id: "m-1",
       type: "message",
     }),
-    { author: { kind: "person", name: "alice", reader: false }, body: false }
+    { author: { kind: "person", name: "alice", reader: false } }
   );
   try {
     shown.edited = chrome(edited.container.querySelector("[data-node-edited]"));
@@ -557,9 +694,7 @@ test("a row's deleted line and edited mark are the page's own words, and the act
   const under = (line: ParentLine) =>
     renderRow(
       node({ id: "plan-md#b-t1", parentLine: line, text: "Stand it up.", type: "plan_task" }),
-      {
-        body: false,
-      }
+      {}
     );
   const deletedParent = under({
     deletedAt: DELETED_AT,
@@ -607,7 +742,7 @@ test("a row's deleted line and edited mark are the page's own words, and the act
   ];
   const chips = renderRow(
     node({ chips: markedChips, id: "comment-9", text: "Read these.", type: "comment" }),
-    { body: false, published: publishedChips(markedChips) }
+    { published: publishedChips(markedChips) }
   );
   try {
     const [deletedChip, editedChip] = [...chips.container.querySelectorAll("[data-chip-name]")];
@@ -731,39 +866,107 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
   });
 });
 
-// R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
-// line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
-// whole, and keeps the count of what the fold still hides after them.
-test("a folded branch draws its first line and its count, and its focus its words", () => {
+// R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or
+// the decision it reads - so its row draws its kind as one tag, its word and a shape no other
+// kind draws; and it is always an agent's words, so its bullet and its tag take an agent's quiet
+// grey, never the colour of the question or the decision it reads, and it never reads as the
+// person's decision itself.
+test("a reading row draws its own word and shape, in an agent's grey", () => {
+  const drawn = (type: NodeType) => {
+    const view = renderRow(node({ id: `spec#b-${type}`, text: "Keep the rail.", type }));
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        agentBullet: dot?.classList.contains(pageKindBullet.agent) ?? null,
+        agentTag: tag?.classList.contains(pageKindTag.agent) ?? null,
+        shape: tag?.querySelector("svg path")?.getAttribute("d") ?? null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  const reading = drawn("reading");
+  expect(reading).toMatchObject({
+    agentBullet: true,
+    agentTag: true,
+    tag: NODE_TYPE_NAMES.reading,
+    token: "reading",
+  });
+  // The negative controls: the question and the decision a reading reads draw their own colours,
+  // and no other shape the page draws - a kind's, a state's or an author's - is the reading's.
+  for (const type of ["ask", "decision"] as const) {
+    expect(drawn(type), `the ${type} drew an agent's grey`).toMatchObject({
+      agentBullet: false,
+      agentTag: false,
+    });
+  }
+  const shapes = Object.keys(GLYPH_NAMES)
+    .filter((token) => token !== GLYPH_TOKENS.types.reading)
+    .map((token) => {
+      const view = render(<NodeGlyph token={token} />);
+      try {
+        return view.container.querySelector("path")?.getAttribute("d") ?? null;
+      } finally {
+        view.unmount();
+      }
+    });
+  expect(shapes.length).toBeGreaterThan(0);
+  expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
+});
+
+// R21: a kind is told by its word and a shape of its own, never by colour alone, so every type
+// token draws a shape no other token draws, and none draws the dash a token with no shape falls
+// back to. `NodeGlyph.tsx` has no test file of its own, so its shapes are read here, drawn.
+test("every type token has its own glyph path and none falls back", () => {
+  const shapeOf = (token: string) => {
+    const view = render(<NodeGlyph token={token} />);
+    try {
+      return view.container.querySelector("path")?.getAttribute("d") ?? null;
+    } finally {
+      view.unmount();
+    }
+  };
+  const fallback = shapeOf("a token with no shape");
+  const types: readonly string[] = Object.values(GLYPH_TOKENS.types);
+  const shapes = new Map(Object.keys(GLYPH_NAMES).map((token) => [token, shapeOf(token)]));
+  expect(
+    types.filter((token) => shapes.get(token) === fallback),
+    "a type token drew the fallback"
+  ).toEqual([]);
+  expect(
+    types.filter((token) =>
+      [...shapes].some(([other, shape]) => other !== token && shape === shapes.get(token))
+    ),
+    "a type token drew a shape another token draws"
+  ).toEqual([]);
+});
+
+// R11: a node the reader folded is the one place a row draws one line of its node: the first
+// line, cut at its first sentence end, and how many nodes it holds, whatever the focus - the
+// focus changes no row's text.
+test("a folded branch draws its first line and its count, focused or not", () => {
   const text = "The page draws the whole issue in one reading. Nothing is lost on the way.";
   const folded = node({ held: 3, id: "comment-1", text, type: "comment" });
-  const shut = renderRow(folded, { body: false, expanded: false, folded: 3 });
-  try {
-    // A line that is a whole sentence ends on the sentence's own mark, with no ellipsis after it.
-    expect(shut.container.querySelector("[data-node-first-line]")?.textContent).toBe(
-      "The page draws the whole issue in one reading."
-    );
-    expect(shut.container.querySelector("[data-node-count]")?.textContent).toBe(
-      `3 ${CONTROL_LABELS.folded_rows}`
-    );
-    expect(shut.container.querySelector("[data-node-words]")).toBeNull();
-    // The bullet is the branch's fold control, named by what pressing it does.
-    expect(shut.getByRole("button", { name: CONTROL_LABELS.unfold })).toBeDefined();
-  } finally {
-    shut.unmount();
-  }
-  const focused = renderRow(folded, { body: true, expanded: false, folded: 3 });
-  try {
-    expect(focused.container.querySelector("[data-node-first-line]")).toBeNull();
-    expect(
-      focused.container.querySelector("[data-node-words] [data-author-text]")?.textContent
-    ).toBe(text);
-    expect(
-      focused.container.querySelector("[data-node-words] [data-node-count]")?.textContent,
-      "a focused folded branch no longer says how many rows it hides"
-    ).toBe(`3 ${CONTROL_LABELS.folded_rows}`);
-  } finally {
-    focused.unmount();
+  for (const focused of [false, true]) {
+    const shut = renderRow(folded, { expanded: false, focused, folded: 3 });
+    try {
+      // A line that is a whole sentence ends on the sentence's own mark, with no ellipsis after
+      // it.
+      expect(shut.container.querySelector("[data-node-first-line]")?.textContent).toBe(
+        "The page draws the whole issue in one reading."
+      );
+      expect(shut.container.querySelector("[data-node-count]")?.textContent).toBe(
+        `3 ${CONTROL_LABELS.folded_rows}`
+      );
+      expect(shut.container.querySelector("[data-node-words]")).toBeNull();
+      // The bullet is the branch's fold control, named by what pressing it does.
+      expect(shut.getByRole("button", { name: CONTROL_LABELS.unfold })).toBeDefined();
+    } finally {
+      shut.unmount();
+    }
   }
 });
 
@@ -797,7 +1000,6 @@ test("a folded branch's line reads a reference as its target's name, and as its 
   const text = `Read ${address} before the rows. Then the rest.`;
   const folded = node({ held: 1, id: "comment-1", text, tree: readingOf(text), type: "comment" });
   const shut = renderRow(folded, {
-    body: false,
     expanded: false,
     folded: 1,
     published: publishedNames(new Map(), { asked: [address] }),
@@ -829,7 +1031,6 @@ test("a folded branch's line is cut again over a name that lands after it is dra
   expect(sentence(name).length).toBeGreaterThan(FIRST_LINE_LIMIT);
   const folded = node({ held: 1, id: "comment-1", text, tree: readingOf(text), type: "comment" });
   const shut = renderRow(folded, {
-    body: false,
     expanded: false,
     folded: 1,
     published: publishedNames(new Map(), { asked: [address] }),
@@ -872,7 +1073,7 @@ test("a numbered step keeps its number in a chip and in a folded line", async ()
   ];
   const view = renderRow(
     node({ chips, id: "plan-md#b-t2", text: "Draw the rows.", type: "plan_task" }),
-    { body: false, published: publishedChips(chips) }
+    { published: publishedChips(chips) }
   );
   try {
     await waitFor(() =>
@@ -886,7 +1087,7 @@ test("a numbered step keeps its number in a chip and in a folded line", async ()
   const text = "1. Stand the harness up. Run it.";
   const shut = renderRow(
     node({ held: 1, id: "plan-md#b-t1", text, tree: readingOf(text), type: "plan_task" }),
-    { body: false, expanded: false, folded: 1 }
+    { expanded: false, folded: 1 }
   );
   try {
     await waitFor(() =>
@@ -927,7 +1128,7 @@ test("a plain line beside a chip reads the chip's target by the name a link read
       text: "Draw the rows.",
       type: "plan_task",
     }),
-    { body: false, published: publishedChips([chip]) }
+    { published: publishedChips([chip]) }
   );
   try {
     await waitFor(() => {
@@ -973,7 +1174,7 @@ test("a two-paragraph block reads alike in a plain line and a link, and its chip
       text: "Draw the rows.",
       type: "plan_task",
     }),
-    { body: false, published: { ...targetNaming(reads), asked: new Set([block]) } }
+    { published: { ...targetNaming(reads), asked: new Set([block]) } }
   );
   // The link to the block, which reads the block itself, as every rendered body's does.
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -1032,10 +1233,12 @@ test("a two-paragraph block reads alike in a plain line and a link, and its chip
 test("a whole document reads alike in a plain line and a link, and by the page's word in every chip", async () => {
   const spec = `dispatch://${KEY}/spec`;
   const notes = `dispatch://${KEY}/artifact/notes-md`;
-  const decisions = `dispatch://${KEY}/artifact/${DECISIONS_DOCUMENT.slug}`;
+  const decisions = `dispatch://${KEY}/artifact/decisions-md`;
   const title = "Draw one ordered body";
   const notesFile = { ...artifact("artifact-notes", "notes-md"), name: "notes.md" };
-  const decisionsFile = { ...DECISIONS_DOCUMENT, name: "decisions.md" };
+  // A decisions document an earlier release stored plays no part of the issue: it is another
+  // document, named by the page's word for one.
+  const decisionsFile = { ...artifact("artifact-decisions", "decisions-md"), name: "decisions.md" };
   const issue = issueDetails();
   const held = (issue.artifacts ?? []).filter((one) => one.id !== decisionsFile.id);
   const reads = {
@@ -1065,7 +1268,6 @@ test("a whole document reads alike in a plain line and a link, and by the page's
       type: "plan_task",
     }),
     {
-      body: false,
       published: { ...targetNaming(reads), asked: new Set([spec, notes, decisions]) },
     }
   );
@@ -1092,7 +1294,7 @@ test("a whole document reads alike in a plain line and a link, and by the page's
       </MemoryRouter>
     </QueryClientProvider>
   );
-  const pageWords = [PRESET_NAMES.spec, NODE_TYPE_NAMES.document, PRESET_NAMES.decisions];
+  const pageWords = [PRESET_NAMES.spec, NODE_TYPE_NAMES.document, NODE_TYPE_NAMES.document];
   const inWords = (reference: string) =>
     view.container.querySelector(`[data-node-words] a[data-row-reference="${reference}"]`)
       ?.textContent;
@@ -1151,13 +1353,13 @@ test("another issue's spec reads alike in a line the page feeds, a line's own re
   });
   reads.setQueryData(["decisions", KEY], decisionsRead([made]));
   for (const queryKey of [
-    ["asks", KEY],
+    ["asks", KEY, "thread"],
     ["comments", KEY],
     ["issue-messages", KEY],
   ]) {
     reads.setQueryData(queryKey, []);
   }
-  for (const id of treeDocumentIds(issue)) reads.setQueryData(["artifact", id, "blocks"], []);
+  reads.setQueryData(conversationTreeKey(KEY), treeAnswer([]));
   // The names read names the spec by its file name and the issue by its title.
   const getReferenceTargets = spyOn(api, "getReferenceTargets").mockImplementation(
     async (refs) => ({
@@ -1177,7 +1379,9 @@ test("another issue's spec reads alike in a line the page feeds, a line's own re
   });
   const page = renderHook(() => useIssueTree(issue), {
     wrapper: ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={reads}>{children}</QueryClientProvider>
+      <QueryClientProvider client={reads}>
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
     ),
   });
   const drawn: RenderResult[] = [];
@@ -1199,8 +1403,8 @@ test("another issue's spec reads alike in a line the page feeds, a line's own re
       type: "plan_task",
     });
     // The row under the page's names, and the same row under none, whose line reads its own.
-    const fed = renderRow(row, { body: false, published });
-    const own = renderRow(row, { body: false });
+    const fed = renderRow(row, { published });
+    const own = renderRow(row);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const body = render(
       <QueryClientProvider client={queryClient}>
@@ -1253,7 +1457,7 @@ test("before the page's read answers, a chip names another issue's spec as a doc
       type: "plan_task",
     }),
     // The page has asked for both, and its read has not answered.
-    { body: false, published: publishedNames(new Map(), { asked: [other, own] }) }
+    { published: publishedNames(new Map(), { asked: [other, own] }) }
   );
   try {
     await waitFor(() => {
@@ -1295,7 +1499,7 @@ test("a parent line is its parent's projected first line, a reference in it read
       text: "Draw the rows.",
       type: "plan_task",
     }),
-    { body: false, published: publishedNames(new Map([[address, "The rows hold"]])) }
+    { published: publishedNames(new Map([[address, "The rows hold"]])) }
   );
   try {
     await waitFor(() =>
@@ -1312,8 +1516,7 @@ test("a parent line is its parent's projected first line, a reference in it read
       parentLine: { id: "ask-1", text: "", type: "ask" },
       text: "Keep one reading.",
       type: "comment",
-    }),
-    { body: false }
+    })
   );
   try {
     expect(
@@ -1363,7 +1566,7 @@ test("an answered ask draws the answer in its own row, word for word", () => {
       paragraphs
     );
     expect(words?.textContent).toBe(paragraphs.join(""));
-    // The option the person chose is marked in the ask's own list, and the body adds what an
+    // The option the person chose is marked in the ask's own list, and the row adds what an
     // option says beside its name.
     expect(
       [...view.container.querySelectorAll("[data-node-option]")].map((one) => [
@@ -1438,7 +1641,7 @@ test("an answer drawn through the renderer reads word for word, its text and its
 test("a decision the model marks unsure says so in one word", () => {
   const unsure = (marked: boolean) => {
     const view = renderRow(
-      node({ id: "decisions-md#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
+      node({ id: "spec#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
     );
     try {
       return view.container.querySelector("[data-node-unsure]")?.textContent ?? null;
@@ -1450,7 +1653,7 @@ test("a decision the model marks unsure says so in one word", () => {
   expect(unsure(false)).toBeNull();
 });
 
-/** The few words a row draws for `gap`, and the sentence its body draws under them. */
+/** The few words a row draws for `gap`, and the sentence its face draws under them. */
 function drawnGap(drawn: TreeNode): { chip: string | undefined; line: string | undefined } {
   const view = renderRow(drawn);
   try {
@@ -1486,6 +1689,18 @@ test("a plan task nobody asked for says so, in words", () => {
   });
 });
 
+// While a document of the issue is still being indexed no statement is drawn as lacking a check:
+// its face draws, where its gaps are, that document's line in the server's own words, and its row
+// draws no gap.
+test("a statement whose coverage waits on a document still being indexed draws its line and no gap", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  expect(
+    drawnGap(
+      node({ coverageNotes: [owed], id: "spec-md#b-r1", statement: true, type: "requirement" })
+    )
+  ).toEqual({ chip: undefined, line: owed });
+});
+
 /** One row the way the tree draws it: unfocused until a focus lands inside it, and then the
  *  focused row, so a test reads what that focus does to the page. */
 function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
@@ -1493,17 +1708,14 @@ function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
   return (
     <NodeRow
       author={NOBODY_RECORDED}
-      body
       context={false}
       focused={focused}
       isClosed={false}
       level={1}
       node={drawn}
       onFocus={() => setFocused(true)}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={false}
-      pinned={false}
       rowKey="row"
       tabStop={false}
     />
@@ -1593,7 +1805,7 @@ const MARKED_DRAWN = {
 // paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
-    id: "decisions-md#b-d1",
+    id: "spec#b-d1",
     text: MARKED,
     tree: displayTree(MARKED),
     type: "decision",
@@ -1604,7 +1816,7 @@ test("a decision whose text holds bold draws no literal asterisks", () => {
   } finally {
     view.unmount();
   }
-  const folded = renderRow({ ...decision, held: 1 }, { body: false, expanded: false, folded: 1 });
+  const folded = renderRow({ ...decision, held: 1 }, { expanded: false, folded: 1 });
   try {
     expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(
       "Store the notices"
@@ -1736,7 +1948,7 @@ test("out of the tab order, a focused row's code block and table keep their tab 
   const drawn = (focused: boolean) => {
     const view = renderRow(
       node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" }),
-      { body: false, focused }
+      { focused }
     );
     try {
       return ["pre", "table"].map((block) => {
@@ -1767,15 +1979,15 @@ test("out of the tab order, a focused row's code block and table keep their tab 
   }
 });
 
-// Part G's R4, the tester's F20: a decision's text holds the source of a typed block its section
-// quotes, and the row draws the block's words but none of its source lines, whether it draws the
-// text from the page's parse or from its reading.
+// Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
+// own block, and the row draws the block's words but none of its source lines, whether it draws
+// the text from the page's parse or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
     const view = renderRow(
       node({
-        id: "decisions-md#b-d1",
+        id: "spec#b-d1",
         text,
         type: "decision",
         ...(tree === undefined ? {} : { tree }),
@@ -1833,8 +2045,8 @@ test("a chip names its target by its first words and never by an address", async
     },
   ];
   const view = renderRow(
-    node({ chips, id: "decisions-md#b-d1", text: "Keep one reading.", type: "decision" }),
-    { body: false, published: publishedChips(chips) }
+    node({ chips, id: "spec#b-d1", text: "Keep one reading.", type: "decision" }),
+    { published: publishedChips(chips) }
   );
   try {
     const drawn = () => [...view.container.querySelectorAll("[data-node-chip]")];
@@ -1878,11 +2090,11 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   const view = renderRow(
     node({
       chips: [ambiguous],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
-    { body: false, published: publishedChips([ambiguous]) }
+    { published: publishedChips([ambiguous]) }
   );
   try {
     const chip = view.container.querySelector("[data-node-chip]");
@@ -1919,7 +2131,6 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
     },
   ];
   const view = renderRow(node({ chips, id: "comment-9", text: "Read these.", type: "comment" }), {
-    body: false,
     published: publishedChips(chips),
   });
   try {
@@ -1964,7 +2175,6 @@ test("a deleted post's chip cut right after Deleted by keeps the deleted line's 
     },
   ];
   const view = renderRow(node({ chips, id: "comment-9", text: "Read these.", type: "comment" }), {
-    body: false,
     published: publishedChips(chips),
   });
   try {
@@ -1996,7 +2206,7 @@ const AGENT_CHIP: NodeChip = {
 };
 
 /** The live session `AGENT_CHIP` names, as the registry lists it. */
-const AGENT = { roles: [], session_id: AGENT_SESSION, title: "Planner" } as unknown as Agent;
+const PLANNER = { roles: [], session_id: AGENT_SESSION, title: "Planner" } as unknown as Agent;
 
 /** The address a reference to a person is written as: no page shows one (R5). */
 const PERSON_REFERENCE = "dispatch://person/alice@example.com";
@@ -2013,7 +2223,7 @@ test("a chip naming a person draws its words with no link, beside an agent's chi
       text: "Keep one reading.",
       type: "decision",
     }),
-    { body: false, parties: { login: "alice@example.com", session: AGENT } }
+    { parties: { login: "alice@example.com", session: PLANNER } }
   );
   try {
     await waitFor(() =>
@@ -2046,7 +2256,7 @@ test("a parent line naming a person draws its words with no link, beside an agen
       text: "Keep one reading.",
       type: "comment",
     }),
-    { body: false, parties: { session: AGENT } }
+    { parties: { session: PLANNER } }
   );
   try {
     const parent = view.container.querySelector("[data-node-parent-line]");
@@ -2085,7 +2295,7 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   });
   // The reads the page's writer makes (`outline-writer.tsx`), answered before it mounts.
   for (const key of [
-    ["asks", KEY],
+    ["asks", KEY, "thread"],
     ["comments", KEY],
     ["issue-messages", KEY],
   ]) {
@@ -2430,18 +2640,14 @@ test("a role in words whose read sent no reading reads as its token and links to
 });
 
 /** Lays every element out `height` px tall for the rows drawn until the answer is called: no
- *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
- *  (`clamp-measurer.ts`'s `measureClamp`). An element's words run `height` px, or what `words`
- *  gives for it. */
-function layOut(
-  height: number,
-  words: (element: HTMLElement) => number = () => height
-): () => void {
+ *  DOM of a unit test lays anything out, and a cut, where one were drawn, reads the words' own
+ *  boxes (`clamp-measurer.ts`'s `measureClamp`). */
+function layOut(height: number): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get(this: HTMLElement) {
-      return words(this);
+      return height;
     },
   });
   // On Element, which owns the method, for the reason the press case above gives.
@@ -2455,232 +2661,35 @@ function layOut(
   };
 }
 
-// Ruling 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut text, so
-// it is drawn only while the words are cut. A row whose body is open draws its words whole, and
-// no control that would open what is already open. The count is written with its thousands
-// separator. The page measures only the words of rows near the viewport, so each
-// row's words are brought near and measured before the row is read.
-test("more is drawn on a cut row and never beside words a body draws whole", async () => {
+// R11: a row of the outline draws its node's words whole, with no limit of lines: an agent's
+// message and statement as much as a person's words, focused or not, and no row draws
+// "more · N words". The page would measure the words of rows near the viewport, so each row's
+// words are brought near and measured before the row is read.
+test("a row draws its words whole, an agent's as much as a person's, and never more", async () => {
   const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
-  const long = node({ id: "message-1", text, type: "message" });
   const planner: Author = { kind: "agent", name: "Planner", reader: false };
-  // 3,000 words over 400 lines of 24 px: six lines are drawn and 394 of 400 parts are held back.
+  const person: Author = { kind: "person", name: "bob", reader: false };
+  // 3,000 words over 400 lines of 24 px, which the six-line cut held back 394 lines of.
   const restore = layOut(9600);
   const near = installIntersectionObserver();
   try {
-    const cut = renderRow(long, { author: planner, body: false });
-    try {
-      await measureNearWords(near);
-      expect(cut.container.querySelector("[data-node-more]")?.textContent).toBe(
-        `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
-      );
-      expect(cut.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-        "144px"
-      );
-    } finally {
-      cut.unmount();
-    }
-    const open = renderRow(long, { author: planner, body: true });
-    try {
-      await measureNearWords(near);
-      expect(
-        open.container.querySelector("[data-node-more]"),
-        "a row whose body is open still draws more"
-      ).toBeNull();
-      expect(open.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-        ""
-      );
-    } finally {
-      open.unmount();
-    }
-    // Ruling 6: a statement is an agent's words as much as its comment is, and is cut the same;
-    // a person's words never are.
-    const statement = renderRow(node({ id: "spec#b-r1", text, type: "requirement" }), {
-      body: false,
-    });
-    try {
-      await measureNearWords(near);
-      expect(statement.container.querySelector("[data-node-more]")).not.toBeNull();
-    } finally {
-      statement.unmount();
-    }
-    const person = renderRow(node({ id: "comment-1", text, type: "comment" }), {
-      author: { kind: "person", name: "bob", reader: false },
-      body: false,
-    });
-    try {
-      await measureNearWords(near);
-      expect(person.container.querySelector("[data-node-more]")).toBeNull();
-    } finally {
-      person.unmount();
-    }
-  } finally {
-    near.restore();
-    restore();
-  }
-});
-
-/** 3,000 words, which run 400 lines of 24 px where they are drawn whole. */
-const LONG_WORDS = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
-
-/**
- * What a row in view draws in the commit that draws it from `next`, before the page is painted:
- * the row is drawn from `first` and measured as its coming near measures it, then, if `relaidOut`
- * is given, laid out again by it and measured again as it stands in view, and then drawn from
- * `next` with every animation frame held, so none runs. `words` is how tall the browser lays a
- * row's words out (`layOut`). `cutBefore` is whether the row was cut before `next` was drawn.
- */
-async function redrawnInView({
-  first,
-  next,
-  relaidOut,
-  words,
-}: {
-  readonly first: TreeNode;
-  readonly next: TreeNode;
-  readonly relaidOut?: () => void;
-  readonly words: (element: HTMLElement) => number;
-}): Promise<{ cutBefore: boolean; maxHeight: string | undefined; more: string | undefined }> {
-  const restore = layOut(9600, words);
-  const near = installIntersectionObserver();
-  try {
-    const row = renderRow(first, { body: false });
-    try {
-      await measureNearWords(near);
-      if (relaidOut !== undefined) {
-        relaidOut();
-        await measureNearWords(near);
+    for (const [drawn, author] of [
+      [node({ id: "message-1", text, type: "message" }), planner],
+      [node({ id: "spec#b-r1", text, type: "requirement" }), planner],
+      [node({ id: "comment-1", text, type: "comment" }), person],
+    ] as const) {
+      for (const focused of [false, true]) {
+        const view = renderRow(drawn, { author, focused });
+        try {
+          await measureNearWords(near);
+          const words = view.container.querySelector<HTMLElement>("[data-node-words]");
+          expect(view.container.querySelector("[data-node-more]"), drawn.id).toBeNull();
+          expect(words?.style.maxHeight, drawn.id).toBe("");
+          expect(words?.textContent?.endsWith("word3000"), drawn.id).toBe(true);
+        } finally {
+          view.unmount();
+        }
       }
-      const cutBefore = row.container.querySelector("[data-node-more]") !== null;
-      const frames: FrameRequestCallback[] = [];
-      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-        frames.push(callback);
-        return frames.length;
-      });
-      try {
-        await act(async () => {
-          row.redraw(next);
-        });
-        return {
-          cutBefore,
-          maxHeight: row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight,
-          more: row.container.querySelector("[data-node-more]")?.textContent ?? undefined,
-        };
-      } finally {
-        frame.mockRestore();
-      }
-    } finally {
-      row.unmount();
-    }
-  } finally {
-    near.restore();
-    restore();
-  }
-}
-
-// Decision 263: a row in view is cut before the page paints it, also where its words arrive
-// after the row. A statement is drawn from its document's blocks before the coverage read
-// brings its words, so its row mounts in view with none: the mount measures it whole, and the
-// batch its coming near starts holds it in view at that length. The commit that brings its words
-// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
-// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
-// whole for the 59 frames recorded after.
-test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
-  const statement = { id: "spec#b-r1", type: "requirement" } as const;
-  const drawn = await redrawnInView({
-    first: node({ ...statement, text: "" }),
-    next: node({ ...statement, text: LONG_WORDS, tree: displayTree(LONG_WORDS) }),
-    // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
-    words: (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600),
-  });
-  expect(drawn.cutBefore, "a row with no words was cut").toBe(false);
-  expect(drawn.more, "the words that arrived were drawn whole in view").toBe(
-    `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
-  );
-  expect(drawn.maxHeight).toBe("144px");
-});
-
-// Decision 261: a row in view keeps its length unless it draws other words. A new comment on the
-// issue adds an address to the names read, which then reads under a key of its own, so every
-// block row drawn from that read takes a new reading of the same words (`tree-drafts.ts`'s
-// `treeOf`). A row measured whole, whose words then run past the cut, as a narrower width runs
-// them, is held whole in view by the batch that measures it again; a new reading of the same
-// words draws nothing new, so the row stays whole, with no animation frame run.
-test("a row held whole in view stays whole when a later read draws the same words anew", async () => {
-  const statement = { id: "spec#b-r1", text: LONG_WORDS, type: "requirement" } as const;
-  // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
-  // gives each block a new id, so the later read's answer is a copy of the first.
-  const reading = displayTree(LONG_WORDS);
-  // Five lines of 24 px where the row is first measured, which six lines hold whole.
-  let run = 120;
-  const drawn = await redrawnInView({
-    first: node({ ...statement, tree: reading }),
-    next: node({ ...statement, tree: structuredClone(reading) }),
-    // The words now run 400 lines, and the batch holds the row in view at its length.
-    relaidOut: () => {
-      run = 9600;
-    },
-    words: () => run,
-  });
-  expect(drawn.cutBefore, "the batch cut a row in view").toBe(false);
-  expect(drawn.more, "a new reading of the same words cut the row held whole in view").toBe(
-    undefined
-  );
-  expect(drawn.maxHeight).toBe("");
-});
-
-// issue page decision 350 and G's clamp: a reference in a row's words takes its name after the
-// row was first drawn and measured - the page's batched read answers last - and its name can run
-// the words longer or shorter than the words its author wrote. The row measures its cut again,
-// as it does for words of another value (`useClamp`), in the commit the name lands in, before the
-// page is painted: a row measured whole in view whose words the name runs past six lines is drawn
-// cut with "more" under it, rather than run past its room under the length measured for the
-// words written. With no animation frame run, only that commit's own measure can cut it.
-test("a row whose reference takes its name after it is measured is measured again", async () => {
-  const address = "dispatch://CORE-1/spec#b-r1";
-  const text = `${LONG_WORDS} Read ${address} first.`;
-  const said = node({ id: "message-1", text, tree: readingOf(text), type: "message" });
-  const planner: Author = { kind: "agent", name: "Planner", reader: false };
-  // The words with the address as written lay out five lines of 24 px, which six lines hold
-  // whole; with its name in its place they lay out 400.
-  const restore = layOut(9600, (element) =>
-    (element.textContent ?? "").includes("Draw the rows") ? 9600 : 120
-  );
-  const near = installIntersectionObserver();
-  try {
-    const row = renderRow(said, {
-      author: planner,
-      body: false,
-      published: publishedNames(new Map(), { asked: [address] }),
-    });
-    try {
-      await measureNearWords(near);
-      const words = () => row.container.querySelector<HTMLElement>("[data-node-words]");
-      expect(words()?.textContent, "the address was not drawn as written").toContain(address);
-      expect(
-        row.container.querySelector("[data-node-more]"),
-        "the words written were cut"
-      ).toBeNull();
-      const frames: FrameRequestCallback[] = [];
-      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-        frames.push(callback);
-        return frames.length;
-      });
-      try {
-        await act(async () => {
-          row.publish(publishedNames(new Map([[address, "Draw the rows"]])));
-        });
-        expect(words()?.textContent).toContain("Read Draw the rows first.");
-        expect(
-          row.container.querySelector("[data-node-more]")?.textContent,
-          "the row was not measured again when the name ran its words past six lines"
-        ).toContain(CONTROL_LABELS.read_more);
-        expect(words()?.style.maxHeight).toBe("144px");
-      } finally {
-        frame.mockRestore();
-      }
-    } finally {
-      row.unmount();
     }
   } finally {
     near.restore();
@@ -2689,10 +2698,8 @@ test("a row whose reference takes its name after it is measured is measured agai
 });
 
 // R16: an open question's options are the choices of its answer. A press on one leaves the
-// focus where it is - a row that took the focus on mousedown would open its body, whose
-// options' own words push every option below one that has them down, and the press would end on
-// another option - and only a question that waits on the reader draws them in the waiting
-// colour.
+// focus where it is until the press ends, so it ends on the option it went down on, and only a
+// question that waits on the reader draws them in the waiting colour.
 test("an option's press keeps the focus, and only a waiting question's are in the waiting colour", async () => {
   const user = userEvent.setup();
   const picked: string[] = [];
@@ -2812,24 +2819,21 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
   }
 });
 
-/** One row the way the conversation's rows draw it: closed until it takes the focus, open from
- *  then on, under the page's writer. */
-function RowOpenedByFocus({ drawn }: { drawn: TreeNode }): ReactNode {
+/** One row the way the conversation's rows draw it: not focused until it takes the focus, under
+ *  the page's writer. */
+function RowFocusedOnFocus({ drawn }: { drawn: TreeNode }): ReactNode {
   const [focused, setFocused] = useState(false);
   return (
     <NodeRow
       author={{ kind: "agent", name: "Planner", reader: false }}
-      body={focused}
       context={false}
       focused={focused}
       isClosed={false}
       level={1}
       node={drawn}
       onFocus={() => setFocused(true)}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={false}
-      pinned={false}
       rowKey="row"
       tabStop
       tabStops
@@ -2838,15 +2842,15 @@ function RowOpenedByFocus({ drawn }: { drawn: TreeNode }): ReactNode {
 }
 
 // Decision 120: a control a reader can see acts on its first press. An option drawn on a row
-// that is not open yet is picked by that press, and the same press opens the row: the reader
-// never presses twice.
-test("a press on an option of a closed row picks it and opens the row in one", async () => {
+// that does not hold the focus is picked by that press, and the same press moves the focus to
+// the row: the reader never presses twice.
+test("a press on an option of an unfocused row picks it and focuses the row in one", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],
@@ -2867,25 +2871,25 @@ test("a press on an option of a closed row picks it and opens the row in one", a
       <MemoryRouter>
         <NoTooltips>
           <OutlineWriterProvider issueKey="CORE-1">
-            <RowOpenedByFocus drawn={asked} />
+            <RowFocusedOnFocus drawn={asked} />
           </OutlineWriterProvider>
         </NoTooltips>
       </MemoryRouter>
     </QueryClientProvider>
   );
   try {
-    expect(view.container.querySelector("[data-node-body]")).toBeNull();
+    const row = view.container.querySelector<HTMLElement>("[data-node-row]");
+    expect(row?.contains(document.activeElement)).toBe(false);
     const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
-    if (option === null) throw new Error("the closed row draws no option to press");
+    if (option === null) throw new Error("the unfocused row draws no option to press");
     await user.click(option);
     await waitFor(() => {
       expect(
         view.container.querySelector('[data-pick-option="1024 px"]')?.getAttribute("aria-pressed")
       ).toBe("true");
-      expect(
-        view.container.querySelector("[data-node-body]"),
-        "the press picked the option and left the row closed"
-      ).not.toBeNull();
+      expect(document.activeElement, "the press picked the option and left the row unfocused").toBe(
+        row
+      );
     });
   } finally {
     view.unmount();
@@ -2893,7 +2897,8 @@ test("a press on an option of a closed row picks it and opens the row in one", a
 });
 
 // Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
-// and its key is the row's tag, a link to the child's own page; it names no author and no time.
+// and its key is the row's tag, which opens the child in the children's section above the outline
+// (R9, R14) and links nowhere itself; it names no author and no time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
   const child: IssueChild = {
     active_at: "2026-11-05T12:00:00Z",
@@ -2905,9 +2910,7 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     subtree_total: 0,
     title: "Draw the children in the outline",
   };
-  const view = renderRow(node({ child, id: "CORE-2", text: child.title, type: "child_issue" }), {
-    body: false,
-  });
+  const view = renderRow(node({ child, id: "CORE-2", text: child.title, type: "child_issue" }));
   try {
     expect(view.container.querySelector("[data-node-words] [data-author-text]")?.textContent).toBe(
       child.title
@@ -2915,7 +2918,8 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
     const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
     expect(tag?.textContent).toBe("CORE-2");
-    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(tag?.querySelector("button[data-child-key]")?.textContent).toBe("CORE-2");
+    expect(tag?.querySelector("a"), "the child's tag is a link").toBeNull();
     expect(view.container.querySelector("[data-node-author]")).toBeNull();
     expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {
@@ -2923,20 +2927,26 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
   }
 });
 
-/** The writer's acts the focused row draws for `drawn` (`[data-row-act]`), with the page's writer
- *  above it or with none, and whether it draws Copy reference (`[data-row-copy]`); `ownAnswer`
- *  says the answer an ask carries is the reader's own. The writer's reads are answered before it
- *  mounts, under the keys the tree reads them by, so it makes no request. */
-function focusedControls(
+/** The writer's acts a row draws for `drawn` (`[data-row-act]`), with the page's writer above it
+ *  or with none, and whether it draws Copy reference (`[data-row-copy]`). The row holds no focus:
+ *  its acts are drawn whatever the focus (R11). `ownAnswer` says the answer an ask carries is the
+ *  reader's own, `reader` that the reader wrote the node, and `context` that the view draws the
+ *  row as context. The writer's reads are answered before it mounts, under the keys the tree
+ *  reads them by, so it makes no request. */
+function rowControls(
   drawn: TreeNode,
   withWriter: boolean,
-  ownAnswer = false
+  {
+    context = false,
+    ownAnswer = false,
+    reader = false,
+  }: { context?: boolean; ownAnswer?: boolean; reader?: boolean } = {}
 ): { acts: string[]; copy: boolean } {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],
@@ -2945,18 +2955,15 @@ function focusedControls(
   }
   const row = (
     <NodeRow
-      author={{ kind: "person", name: "bob", reader: false }}
-      body={false}
-      context={false}
-      focused
+      author={{ kind: "person", name: "bob", reader }}
+      context={context}
+      focused={false}
       isClosed={false}
       level={1}
       node={drawn}
       onFocus={() => {}}
-      onPin={() => {}}
       onToggle={() => {}}
       ownAnswer={ownAnswer}
-      pinned={false}
       rowKey="row"
       tabStop
     />
@@ -2986,16 +2993,20 @@ function focusedControls(
   }
 }
 
-/** The writer's acts the focused row draws for `drawn` (`focusedControls`). */
-function focusedActs(drawn: TreeNode, withWriter: boolean, ownAnswer = false): string[] {
-  return focusedControls(drawn, withWriter, ownAnswer).acts;
+/** The writer's acts a row draws for `drawn` (`rowControls`). */
+function rowActs(
+  drawn: TreeNode,
+  withWriter: boolean,
+  options?: Parameters<typeof rowControls>[2]
+): string[] {
+  return rowControls(drawn, withWriter, options).acts;
 }
 
-// Part G's R7: the focused row draws Reply on a comment, a message and an ask in any state, and
-// Answer on an open question; a statement of the issue's documents draws Reply too, for a comment
-// anchored to it (part L's R11, which reads it by its node id `<slug>#b-<block id>`); a check and
-// a decision draw none, since today's model holds no reply to them; and with no writer above it
-// the row draws no act at all.
+// R7 and R11: every row, focused or not, draws Reply on a comment, a message and an ask
+// in any state, and Answer on an open question; a statement of the issue's documents draws Reply
+// too, for a comment anchored to it (part L's R11, which reads it by its node id
+// `<slug>#b-<block id>`); a check and a decision draw none, since today's model holds no reply to
+// them; and with no writer above it the row draws no act at all.
 test("Reply is drawn on each node that takes one, Answer on an open question, and no action without a writer", () => {
   const by = { id: "bob", kind: "user" };
   const turn = (type: "ask" | "comment" | "message", id: string, state?: TreeNode["state"]) =>
@@ -3006,11 +3017,11 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
       ...(state === undefined ? {} : { state }),
       type,
     });
-  expect(focusedActs(turn("comment", "comment-1"), true)).toEqual(["reply"]);
-  expect(focusedActs(turn("message", "message-1"), true)).toEqual(["reply"]);
-  expect(focusedActs(turn("ask", "ask-1", "answered"), true)).toEqual(["reply"]);
-  expect(focusedActs(turn("ask", "ask-2", "resolved"), true)).toEqual(["reply"]);
-  expect(focusedActs(turn("ask", "ask-3", "open"), true)).toEqual(["answer", "reply"]);
+  expect(rowActs(turn("comment", "comment-1"), true)).toEqual(["reply"]);
+  expect(rowActs(turn("message", "message-1"), true)).toEqual(["reply"]);
+  expect(rowActs(turn("ask", "ask-1", "answered"), true)).toEqual(["reply"]);
+  expect(rowActs(turn("ask", "ask-2", "resolved"), true)).toEqual(["reply"]);
+  expect(rowActs(turn("ask", "ask-3", "open"), true)).toEqual(["answer", "reply"]);
   const block = (type: NodeType, id: string) =>
     node({ author: by, id, reference: `dispatch://CORE-1/spec#b-${id}`, type });
   const statement = node({
@@ -3019,11 +3030,36 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
     statement: true,
     type: "requirement",
   });
-  expect(focusedActs(statement, true)).toEqual(["reply"]);
-  expect(focusedActs(block("check", "c1"), true)).toEqual([]);
-  expect(focusedActs(block("decision", "d1"), true)).toEqual([]);
-  expect(focusedActs(turn("ask", "ask-4", "open"), false)).toEqual([]);
-  expect(focusedActs(turn("comment", "comment-2"), false)).toEqual([]);
+  expect(rowActs(statement, true)).toEqual(["reply"]);
+  expect(rowActs(block("check", "c1"), true)).toEqual([]);
+  expect(rowActs(block("decision", "d1"), true)).toEqual([]);
+  expect(rowActs(turn("ask", "ask-4", "open"), false)).toEqual([]);
+  expect(rowActs(turn("comment", "comment-2"), false)).toEqual([]);
+});
+
+// R11: the reader's own comment carries Edit beside its Reply, and a comment of anyone else's
+// none; a message's context row - a message under which a node it produced stands, which
+// Conversation draws as context (R9) - carries no Reply, since its thread is replied to in
+// Threads, while a message drawn as no context keeps it.
+test("the reader's own comment carries Edit, and a message's context row no Reply", () => {
+  const by = { id: "bob", kind: "user" };
+  const comment = node({
+    author: by,
+    id: "comment-1",
+    reference: "dispatch://CORE-1/comment/comment-1",
+    type: "comment",
+  });
+  expect(rowActs(comment, true, { reader: true })).toEqual(["reply", "edit"]);
+  expect(rowActs(comment, true)).toEqual(["reply"]);
+  const thread = node({
+    author: by,
+    children: [node({ id: "spec#b-r9", type: "requirement" })],
+    id: "message-1",
+    reference: "dispatch://CORE-1/message/message-1",
+    type: "message",
+  });
+  expect(rowActs(thread, true, { context: true })).toEqual([]);
+  expect(rowActs(thread, true)).toEqual(["reply"]);
 });
 
 // Part G's R7: Change answer is drawn on an answered question whose answer is the reader's own,
@@ -3036,14 +3072,14 @@ test("Change answer is drawn on an answered question the reader answered, and on
     state: "answered",
     type: "ask",
   });
-  expect(focusedActs(answered, true, true)).toEqual(["change-answer", "reply"]);
-  expect(focusedActs(answered, true, false)).toEqual(["reply"]);
-  expect(focusedActs(answered, false, true)).toEqual([]);
+  expect(rowActs(answered, true, { ownAnswer: true })).toEqual(["change-answer", "reply"]);
+  expect(rowActs(answered, true)).toEqual(["reply"]);
+  expect(rowActs(answered, false, { ownAnswer: true })).toEqual([]);
 });
 
-// Part G's R6: the focused row offers Copy reference on a node that has an address, with a
-// writer above it or with none, since it writes nothing; a node with no address draws none.
-test("Copy reference is drawn on a focused node with an address, and on none without", () => {
+// R6: a row offers Copy reference on a node that has an address, with a writer above it
+// or with none, since it writes nothing; a node with no address draws none.
+test("Copy reference is drawn on a node with an address, and on none without", () => {
   const comment = (reference?: string) =>
     node({
       author: { id: "bob", kind: "user" },
@@ -3051,22 +3087,22 @@ test("Copy reference is drawn on a focused node with an address, and on none wit
       ...(reference === undefined ? {} : { reference }),
       type: "comment",
     });
-  expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), true).copy).toBe(true);
-  expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), false).copy).toBe(true);
-  expect(focusedControls(comment(), true).copy).toBe(false);
+  expect(rowControls(comment("dispatch://CORE-1/comment/comment-1"), true).copy).toBe(true);
+  expect(rowControls(comment("dispatch://CORE-1/comment/comment-1"), false).copy).toBe(true);
+  expect(rowControls(comment(), true).copy).toBe(false);
 });
 
 // R3 of dispatch://INFRA-1523: Dispatch takes no reply to a comment or a message its author
-// deleted (409 `POST_DELETED`), so its focused row draws no Reply. Copy reference still stands,
-// since it writes nothing.
-test("a deleted comment's or message's focused row draws no Reply, and still Copy reference", () => {
+// deleted (409 `POST_DELETED`), so its row draws no Reply. Copy reference still stands, since it
+// writes nothing.
+test("a deleted comment's or message's row draws no Reply, and still Copy reference", () => {
   for (const type of ["comment", "message"] as const) {
     const deleted = deletedTurn(UNTITLED, {
       id: `${type}-1`,
       reference: `dispatch://CORE-1/${type}/${type}-1`,
       type,
     });
-    expect(focusedControls(deleted, true), type).toEqual({ acts: [], copy: true });
+    expect(rowControls(deleted, true), type).toEqual({ acts: [], copy: true });
   }
 });
 
@@ -3080,7 +3116,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
     },
   });
   for (const key of [
-    ["asks", "CORE-1"],
+    ["asks", "CORE-1", "thread"],
     ["comments", "CORE-1"],
     ["issue-messages", "CORE-1"],
     ["agents"],

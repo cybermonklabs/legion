@@ -53,11 +53,9 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 		steps []record.DesignStep
 		line  string
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
-			"Design gate steps: `decisions`, `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"two steps", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
 		{"root-issues", config.DesignGateRootIssues.Steps(),
 			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
-		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
 		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		for _, tc := range []struct {

@@ -13,7 +13,7 @@ type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
  * climbs to the head as it stores, `comment_create.go`'s `threadHeadOf`); a message thread is a
  * message and its replies. A person is a user. A comment under an ask names the ask (`ask_id`),
  * where that climb stops, so an ask's thread is every comment naming it. The outline draws each
- * question as a node and no approval request (`tree-drafts.ts`'s `addAsks`): a comment under a
+ * question as a node and no approval request (`tree-nodes.ts`' `draftAsk`): a comment under a
  * question is in that node's thread, so it is none of these, and neither is a reply whose thread
  * opens under one; the comments under an approval request are a thread of their own, and these
  * where no person wrote in it. `asks` - the asks read - is what tells the two apart; a caller

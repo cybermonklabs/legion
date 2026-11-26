@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,6 +276,15 @@ func TestANodeCannotMoveProject(t *testing.T) {
 	writeNode(t, ctx, database, unnamed)
 	requireProjectRow(t, ctx, database, node.Kind, node.ID, "CORE", nil)
 	requireStatedOnce(t, ctx, database, node.Kind, node.ID, AttributeProject, "CORE")
+}
+
+// The arm over refs answers a document's mention whose far end is past the store's bound on an
+// address, of which no tuple is stated (store.ReferenceNotStated), and that bound is
+// MaxAddressBytes, which package store writes out as text because this package imports it.
+func TestTheArmOverRefsTakesTheStoresAddressBound(t *testing.T) {
+	if bound := "octet_length(r.to_id) > " + strconv.Itoa(MaxAddressBytes) + "\n"; !strings.Contains(store.ReferenceNotStated, bound) {
+		t.Fatalf("the arm over refs bounds a far end otherwise than the store's %d bytes:\n%s", MaxAddressBytes, store.ReferenceNotStated)
+	}
 }
 
 // TestArtifactRefKeyIsTheTriggers holds ArtifactRefKey to the address the artifacts_ref_key trigger

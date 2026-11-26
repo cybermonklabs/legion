@@ -622,7 +622,7 @@ func TestASocketsPreloadIsServedOnlyWhileTheHistoryHasNotMoved(t *testing.T) {
 	closeDocumentRoom(t, service, artifactID)
 	preload := func(t *testing.T) []byte {
 		t.Helper()
-		_, loaded, err := service.loadTree(context.Background(), artifactID)
+		_, loaded, err := service.loadTree(context.Background(), artifactID, []string{fragmentName})
 		if err != nil || loaded == nil || len(loaded.Update) == 0 {
 			t.Fatalf("load cold document: loaded=%v err=%v, want its durable history", loaded, err)
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -87,8 +88,24 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	spec := insertScopeDocument(t, tx, "ACME-1", "spec", true)
 	notes := insertScopeDocument(t, tx, "ACME-1", "notes", false)
 	project, _ := createReferenceArtifact(t, tx, "", "ACME", "handbook")
+	// An issue room: the plan is edited in it, and its block q2 is a fragment block of the plan,
+	// whose ask the room's settlement keys by the room's tree artifact (AskBlockDocumentSQL).
+	plan := insertScopeDocument(t, tx, "ACME-1", "plan", false)
+	room := insertScopeRow(t, tx, "the issue's tree", `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('ACME-1', 'ACME', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`)
+	if _, err := tx.Exec(ctx, `insert into document_rooms (artifact_id, room) values ($1, $2)`, plan, room); err != nil {
+		t.Fatalf("put the plan in the issue's room: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($1, 'q2', $2)`,
+		room, plan); err != nil {
+		t.Fatalf("place the plan's block in the room: %v", err)
+	}
 
 	blockAsk := insertScopeBlockAsk(t, tx, "ACME-1", notes, "q1")
+	roomBlockAsk := insertScopeBlockAsk(t, tx, "ACME-1", room, "q2")
 	anchoredAsk := insertScopeAsk(t, tx, "ACME-1", "anchor", notes)
 	issueAsk := insertScopeAsk(t, tx, "ACME-1", "", nil)
 	projectAsk := insertScopeAsk(t, tx, nil, "artifact_id", project)
@@ -144,7 +161,10 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"the spec's version", Target{"artifact", spec}, spec},
 		{"another document's version", Target{"artifact", notes}, notes},
 		{"a project document's version", Target{"artifact", project}, project},
+		{"a version of a document edited in an issue room", Target{"artifact", plan}, plan},
+		{"the issue room's tree's version", Target{"artifact", room}, room},
 		{"a block ask", Target{"ask", blockAsk}, notes},
+		{"a block ask of an issue room's fragment", Target{"ask", roomBlockAsk}, plan},
 		{"an anchored ask", Target{"ask", anchoredAsk}, notes},
 		{"an issue ask", Target{"ask", issueAsk}, spec},
 		{"a project document's ask", Target{"ask", projectAsk}, project},
@@ -160,7 +180,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"an issue message", Target{"message", issueMessage}, spec},
 		{"a direct message", Target{"message", directMessage}, ""},
 	}
-	want := map[string][]Target{spec: {}, notes: {}, project: {}}
+	want := map[string][]Target{spec: {}, notes: {}, project: {}, plan: {}, room: {}}
 	for _, shape := range shapes {
 		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
 		if err != nil {
@@ -325,15 +345,18 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 }
 
 // A document's question map is the question blocks its latest version declares: a block settlement
-// made a row for, a copied block under the ask it was copied from, a block in a quote, and a block
-// after a closed code fence; never a block not settled yet, one whose copied_from names no ask, an
-// id an older version alone declares, a `#` inside an attribute's value, or a directive inside
-// fenced code - backticks or tildes, in a quote, a fence a shorter run or the other character does
-// not close, one nothing closes - even one whose copied_from names an ask that exists. An id is
-// read as pmdoc reads a block's `#id` shortcut, to the first character such an id cannot hold, so
-// a block whose id holds one no bare `#id` in prose can name (`q:1`) is mapped under the whole id
-// its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
-// address, which for a question of a project document is that document's and not an issue's.
+// made a row for, a copied block under the ask it was copied from, a block in a quote, a block
+// after a closed code fence, and a footnote's later block, four columns in; never a block not
+// settled yet, one whose copied_from names no ask, an id an older version alone declares, a `#`
+// inside an attribute's value, a directive inside fenced code - backticks or tildes, in a quote,
+// opened on a footnote's label line, one whose label holds an escaped bracket among them, a fence a
+// shorter run or the other character does not close, one nothing closes - a directive in indented
+// code, or a line of the front matter the document opens with, even one whose copied_from names an
+// ask that exists. An id is read as pmdoc reads a block's `#id` shortcut, to the first character
+// such an id cannot hold, so a block whose id holds one no bare `#id` in prose can name (`q:1`) is
+// mapped under the whole id its row carries. Each maps to the reference text.Extract reads from
+// that ask's dispatch:// address, which for a question of a project document is that document's
+// and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -365,7 +388,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	// - the browser editor's parser ends the value at the escaped quote and reads the whole line
 	// as a paragraph, so the document service refuses it by name rather than storing an ask no
 	// browser draws (packages/envoy/internal/dispatch/pmdoc, "A typed block's attributes").
-	insertScopeVersion(t, tx, spec, 2, "# Spec\n\n"+
+	insertScopeVersion(t, tx, spec, 2, "---\ntitle: Spec\n"+copiedFrom("fronted", source)+"--- \n\n# Spec\n\n"+
 		`:::ask{#q1 urgency="med" answer="see #fake and &quot;#q9&quot;" state="answered"}`+"\nWhich?\n:::\n\n"+
 		`:::ask{#q2 state="open" copied_from="`+source+`" copied_from_document="dispatch://ACME-1/artifact/record"}`+"\nWhich?\n:::\n\n"+
 		"> :::ask{#quoted}\n> Which?\n> :::\n\n"+
@@ -376,18 +399,23 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"~~~md\n```\n"+copiedFrom("tilde", source)+"~~~\n\n"+
 		"> ```\n> "+copiedFrom("quotedfence", source)+"> ```\n\n"+
 		"````\n```\n"+copiedFrom("longer", source)+"````\n\n"+
+		"Footnoted.[^n]\n\n[^n]: ```\n    "+copiedFrom("footnoted", source)+"    ```\n\n"+
 		copiedFrom("after", source)+"Which?\n:::\n\n"+
+		"Escaped.[^a\\]b]\n\n[^a\\]b]: ```\n    "+copiedFrom("escaped", source)+"    ```\n\n"+
+		"    "+copiedFrom("noteblock", source)+"    Which?\n    :::\n\n"+
+		"Indented.\n\n    "+copiedFrom("indented", source)+"    Which?\n    :::\n\n"+
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")
 
 	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, "")[0] }
 	for doc, want := range map[string]map[string]text.Ref{
 		spec: {
-			"q1":     issueAsk(q1),
-			"q2":     issueAsk(source),
-			"quoted": issueAsk(quoted),
-			"q:1":    issueAsk(colon),
-			"after":  issueAsk(source),
+			"q1":        issueAsk(q1),
+			"q2":        issueAsk(source),
+			"quoted":    issueAsk(quoted),
+			"q:1":       issueAsk(colon),
+			"after":     issueAsk(source),
+			"noteblock": issueAsk(source),
 		},
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
@@ -432,5 +460,84 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("question map of the spec = %#v; want %#v", got, want)
+	}
+}
+
+// questionBlocks reads an ask block only where pmdoc's parser opens one, and each case holds its
+// want to pmdoc.Parse of its markdown too. A backslash in a footnote's label escapes the `]` after
+// it, as the renderer writes a label that holds one (pmdoc's escapeFootnoteLabel), so a block or a
+// fence written on that label's line opens there, and the definition's later blocks stand four
+// columns in, as the renderer writes them. A label of a form feed is a label: goldmark's white
+// space is the space, the tab and the line endings alone. A line four columns or more past its
+// containers opens no block: it is indented code. A later line of a paragraph there, an inline
+// code span's among them, can open no block either, but pmdoc refuses such a line in a write, so
+// no version holds one. After a front-matter opener that no line closes, no typed block opens at
+// the document's level (pmdoc's frontmatterAttempt).
+func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
+	for _, test := range []struct {
+		name, markdown string
+		want           []string
+	}{
+		{
+			name:     "a block opened on the line of a footnote label that holds an escaped bracket",
+			markdown: "See.[^a\\]b]\n\n[^a\\]b]: :::ask{#noted}\n    Which?\n    :::\n",
+			want:     []string{"noted"},
+		},
+		{
+			name:     "a fence opened on the line of a footnote label that holds an escaped bracket",
+			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    :::ask{#fenced}\n    ```\n\n:::ask{#after}\nWhich?\n:::\n",
+			want:     []string{"after"},
+		},
+		{
+			name:     "a later block of a footnote four columns in, after a fence the label's line opened",
+			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    code\n    ```\n\n    :::ask{#later}\n    Which?\n    :::\n",
+			want:     []string{"later"},
+		},
+		{
+			name:     "a later block of a footnote four columns in",
+			markdown: "See.[^n]\n\n[^n]: Note.\n\n    :::ask{#plain}\n    Which?\n    :::\n",
+			want:     []string{"plain"},
+		},
+		{
+			name:     "a block opened on the line of a footnote label that holds only a form feed",
+			markdown: "See.[^\f]\n\n[^\f]: :::ask{#x}\n    Which?\n    :::\n",
+			want:     []string{"x"},
+		},
+		{
+			name:     "a line of indented code",
+			markdown: "Intro.\n\n    :::ask{#indented}\n    Which?\n    :::\n",
+		},
+		{
+			name:     "a line four columns past a quote's marker or a list item's",
+			markdown: ">     :::ask{#quoted}\n\n-     :::ask{#listed}\n",
+		},
+		{
+			name:     "a line after a front-matter opener that no line closes",
+			markdown: "---\n:::ask{#unclosed}\nWhich?\n:::\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := pmdoc.Parse(test.markdown)
+			if err != nil {
+				t.Fatalf("pmdoc refuses the markdown: %v", err)
+			}
+			var parsed []string
+			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+				if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" {
+					parsed = append(parsed, id)
+				}
+				return true
+			})
+			if !slices.Equal(parsed, test.want) {
+				t.Fatalf("pmdoc reads the ask blocks %q, want %q", parsed, test.want)
+			}
+			var scanned []string
+			for _, block := range questionBlocks(test.markdown) {
+				scanned = append(scanned, block.id)
+			}
+			if !slices.Equal(scanned, test.want) {
+				t.Errorf("questionBlocks reads the ask blocks %q, want %q as pmdoc reads them", scanned, test.want)
+			}
+		})
 	}
 }

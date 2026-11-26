@@ -1087,23 +1087,7 @@ const rules: Record<string, Rule> = {
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
   },
-  "the first upload of an issue's decisions document refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", role: "decisions", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  // A server built before document roles sends the decisions document with no role, and names it
-  // by its slug alone.
-  "the first upload of a decisions document with no role refreshes the issue's decisions": {
-    event: event("artifact.created", {
-      artifact: { id: "artifact-4", name: "decisions.md", slug: "decisions-md" },
-    }),
-    refreshes: ["decisions", "summary", "detail"],
-    spares: ["projects", "inbox", "docSummary"],
-  },
-  "the upload of another document of the issue leaves the issue's decisions alone": {
+  "the upload of a document of the issue leaves the issue's decisions alone": {
     event: event("artifact.created", {
       artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
     }),
@@ -1702,6 +1686,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
   ]);
   const child = event("result.recorded", {
@@ -1716,6 +1702,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1736,6 +1724,8 @@ test("a retracted result refreshes the results of the check's issue and of the r
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);

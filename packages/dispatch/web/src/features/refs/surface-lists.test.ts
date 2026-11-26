@@ -290,7 +290,7 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
   },
   {
     field: "heading",
-    what: "A decision's heading: the words its writer put above the passage. The server sends no tree beside it; its tree is the first heading of the decision's `text_tree` (`decisionHeadingTree`).",
+    what: "A decision's heading: an ask's question, else the words of the first block of the decision's own content that holds any. The server sends no tree beside it; its tree is that block of the decision's `text_tree`, or the `text_tree` of an ask's entry, which holds the question (`decisionHeadingTree`).",
     tree: {
       file: "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       written: "headingTree",
@@ -2200,6 +2200,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   },
   {
     file: `${FEATURES}/issue-page/NodeRow.tsx`,
+    holds:
+      "the page's own word for an answer, the label of a node's answer line (`CONTROL_LABELS`)",
+    written: "CONTROL_LABELS.answer",
+  },
+  {
+    file: `${FEATURES}/issue-page/NodeRow.tsx`,
     holds: "whether the reader picked this option: a boolean, drawn nowhere",
     written: "picks.includes(option.label)",
   },
@@ -2210,14 +2216,14 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "title",
   },
   {
+    file: `${FEATURES}/issue-page/useTreeKeymap.ts`,
+    holds: "the page's own word for an answer, in the label of the answer key (`CONTROL_LABELS`)",
+    written: "CONTROL_LABELS.answer",
+  },
+  {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,
     holds: "the assignee badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
-  },
-  {
-    file: `${FEATURES}/issue/DecisionsPanel.tsx`,
-    holds: "a tree's words joined to match an anchor quote against, drawn nowhere",
-    written: "current.text",
   },
   {
     file: `${FEATURES}/issue/PriorityControl.tsx`,
@@ -2228,6 +2234,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/issue/RelatedItems.tsx`,
     holds: "the server's own words for why no related-item check was made",
     written: "notMadeText(check.reason, title, check.searchQuery)",
+  },
+  {
+    file: `${FEATURES}/issue/decision-text.ts`,
+    holds: "a tree's words joined to match an anchor quote against, drawn nowhere",
+    written: "current.text",
   },
   {
     file: `${FEATURES}/issue/event-description.ts`,

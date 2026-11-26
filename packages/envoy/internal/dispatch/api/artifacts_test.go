@@ -580,7 +580,7 @@ func TestDocumentRoutesResolveUnambiguousFilenameAliases(t *testing.T) {
 
 func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "plan.md", "content": "# Plan\n",
@@ -606,7 +606,7 @@ func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
 // which route lists them all.
 func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, _ := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
 	names := []string{"prediction-P1.md"}
 	for index := range 10 {

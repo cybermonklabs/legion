@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -28,6 +29,38 @@ const (
 	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
 	codeInternal              = "INTERNAL"
 )
+
+// codeNegativeControlRequired is the 400 recordCheckResult answers a pass of a before_merge check
+// whose input carries an empty negative_control, or one of whitespace alone: a passing
+// before_merge result states the negative control that would have caught its failure.
+const codeNegativeControlRequired = "NEGATIVE_CONTROL_REQUIRED"
+
+// codeAnsweredAskKept refuses a write by a caller who is no person (docs.CallerIsPerson) that would
+// change, move or remove a person's decision (R32, docs.PersonDecisionOf): a document edit or an
+// upload that takes an answered ask's block or a decision a person decided out of its document,
+// retypes it or changes its words (docs.ErrAnsweredAskKept), a move or a delete of one through the
+// node routes, and its state set overtaken or live through the state route, or on an answered
+// ask's own node proposed too (refusePersonDecisionState).
+const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
+
+// codeDecisionsAreNodes refuses an upload or a create of a decisions document on an issue
+// (decisionsAreNodes): a decision is a `decision` block of the spec. It stays for good.
+const codeDecisionsAreNodes = "DECISIONS_ARE_NODES"
+
+// codeDecisionsQuery refuses an upload or an edit of an issue's decisions query node
+// (decisionsQueryRefusal), whose versions render the issue's decisions and which no fragment of
+// any room holds; docs refuses a socket on it with the same code (refs.DecisionsQuerySQL).
+const codeDecisionsQuery = "DECISIONS_QUERY"
+
+// codeNodeInOtherIssue refuses a document write addressed through one issue that names a node of
+// another issue, naming the node's own issue (refuseNodesOfOtherIssues, D3 of
+// the issue-tree plan).
+const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
+
+// codeRequirementBelongsToAncestor refuses a document write that adds a requirement node to an
+// issue that is a view on its ancestor's spec, naming that ancestor (docs.ViewOf,
+// docs.ErrRequirementBelongsToAncestor).
+const codeRequirementBelongsToAncestor = "REQUIREMENT_BELONGS_TO_ANCESTOR"
 
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
@@ -235,6 +268,16 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 		return
 	}
+	var answeredAskKept *docs.ErrAnsweredAskKept
+	if errors.As(err, &answeredAskKept) {
+		writeError(w, codeAnsweredAskKept, http.StatusConflict, answeredAskKept.Error())
+		return
+	}
+	var belongsToAncestor *docs.ErrRequirementBelongsToAncestor
+	if errors.As(err, &belongsToAncestor) {
+		writeError(w, codeRequirementBelongsToAncestor, http.StatusConflict, belongsToAncestor.Error())
+		return
+	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock
 	if errors.As(err, &invalidAskBlock) {
 		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
@@ -243,6 +286,55 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var invalidCICheck *docs.ErrInvalidCICheck
 	if errors.As(err, &invalidCICheck) {
 		writeError(w, "INVALID_CI_CHECK", http.StatusBadRequest, invalidCICheck.Error())
+		return
+	}
+	// A write that states a node's state or visibility at a value that attribute does not take.
+	// The message is the refusal's own, which names the attribute, the value and the values it
+	// takes, whatever the route wrapped it in, as DOC_NEWER_CONTENT's is.
+	if message, refused := refusalWords[*graphstore.InvalidAttributeValueError](err, graphstore.ErrInvalidAttributeValue); refused {
+		writeError(w, "INVALID_ATTRIBUTE_VALUE", http.StatusBadRequest, message)
+		return
+	}
+	// A node reserved for its author asked for on a credential that proves none
+	// (graphstore.VisibilityFor). The going POST refuses such an asker before it reaches here,
+	// with its own GOING_ASKER_NAMES_NOBODY; both decide by graphstore.ProvesAuthor.
+	if errors.Is(err, graphstore.ErrAuthorNamesNobody) {
+		writeError(w, "AUTHOR_NAMES_NOBODY", http.StatusForbidden, graphstore.ErrAuthorNamesNobody.Error())
+		return
+	}
+	// A node reserved for its author whose kind takes no such node (graphstore's AdmitAuthorOnly):
+	// the refusal's own words name the kind, so a comment asked for `author` reads as one.
+	if message, refused := refusalWords[*graphstore.VisibilityNotAdmittedError](err, graphstore.ErrVisibilityNotAdmitted); refused {
+		writeError(w, "VISIBILITY_NOT_ADMITTED", http.StatusBadRequest, message)
+		return
+	}
+	// A node of a type the store holds no supertag row of (graphstore's queueSupertagCheck): the
+	// refusal's own words name each type, and nothing of the write was stored.
+	if message, refused := refusalWords[*graphstore.SupertagNotHeldError](err, graphstore.ErrSupertagNotHeld); refused {
+		writeError(w, "SUPERTAG_NOT_HELD", http.StatusConflict, message)
+		return
+	}
+	// A pointer tuple at a node its type rule does not allow (graphstore's pointerRules): the
+	// refusal's own words name the tuple kind, the far end's kind and the kinds the rule allows.
+	if message, refused := refusalWords[*graphstore.InvalidPointerError](err, graphstore.ErrInvalidPointer); refused {
+		writeError(w, codeInvalidPointer, http.StatusBadRequest, message)
+		return
+	}
+	// A node every reader may see placed under or on one reserved for its author (graphstore's
+	// pointerCheck): the words name both nodes by address, and nothing was stored.
+	if message, refused := widerThanParentWords(err); refused {
+		writeError(w, codeVisibilityWiderThanParent, http.StatusBadRequest, message)
+		return
+	}
+	// A second has_kind of a lens, or a pre-mortem's retargeted away from pre-mortem: one body
+	// for each, whatever hangs under the lens.
+	if message, refused := refusalWords[*graphstore.PointerAlreadyAssertedError](err, graphstore.ErrPointerAlreadyAsserted); refused {
+		writeError(w, "POINTER_ALREADY_ASSERTED", http.StatusConflict, message)
+		return
+	}
+	// A retarget of a pointer the node does not hold answers as a pointer that does not exist.
+	if errors.Is(err, graphstore.ErrPointerNotHeld) {
+		writeError(w, "NOT_FOUND", http.StatusNotFound, graphstore.ErrPointerNotHeld.Error())
 		return
 	}
 	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
@@ -304,12 +396,38 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
 		return
 	}
+	// A write the document service refused under the document owner's lock because the document
+	// is retired (docs.RetiredDocumentError): a write api did not test the row for itself - a
+	// comment's mark, an ask block, a named version, a rebuild - is refused as an edit or an upload
+	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, naming the latest
+	// version the document service read, or 409 DECISIONS_ARE_NODES for an issue's decisions
+	// document, not 500.
+	var retired *docs.RetiredDocumentError
+	if errors.As(err, &retired) {
+		artifact := model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, retired.Name, func() (int, error) { return retired.LatestVersion, nil }))
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
 	slog.Error("dispatch: API handler failed", "error", err)
+}
+
+// refusalWords is whether err is the store's refusal sentinel and, where it is, the words a
+// caller reads: those of the typed refusal T err carries, which name what was refused, or the
+// sentinel's own where it carries none, whatever the route wrapped the refusal in.
+func refusalWords[T error](err, sentinel error) (string, bool) {
+	if !errors.Is(err, sentinel) {
+		return "", false
+	}
+	var refusal T
+	if errors.As(err, &refusal) {
+		return refusal.Error(), true
+	}
+	return sentinel.Error(), true
 }
 
 // errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:

@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -386,6 +387,151 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 		if !owed(issue) {
 			t.Errorf("after the second run the document of %s is not owed a block index", issue)
 		}
+	}
+}
+
+// The backfill marks owed, on every run, each document no pass of this build's rule has stated at
+// its version: its document_block_versions row holds no mark of this rule or a higher one, and its
+// stated_version is not its version or its stated_rule is below refs.BlockIndexMarkingRule, a null
+// on either side counted as not equal (refs.UnstatedBlockIndexSQL). store_version says nothing of
+// it, since a build of an earlier rule writes store_version for every version it indexes and
+// states none of this rule's facts of its blocks.
+//
+// Five documents, each row in one state: one no pass of this rule stated, whose store_version
+// stands at its version as a build of an earlier rule leaves it; one stated behind its version;
+// one stated at its version by a pass of the rule before this one; one stated at its version by a
+// pass of this rule; and one already marked, by a mark of this rule (store_owed_rule). The marking
+// (markStaleDocuments) marks exactly the first three, the marked one keeps its mark's time, and a
+// second run marks nothing new. The block pass then names the node of a block of the marked
+// document, which marks that document again (writeBlockBatch), and the mark keeps its time.
+func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank) values
+			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed issue CORE-1: %v", err)
+	}
+	markedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	states := []struct {
+		name                      string
+		version, storeVersion     int
+		statedVersion, statedRule *int
+		owedAt                    *time.Time
+		marks                     bool
+	}{
+		{name: "no pass of this rule stated", version: 3, storeVersion: 3, marks: true},
+		{name: "stated behind its version", version: 3, storeVersion: 2, statedVersion: new(2), statedRule: new(refs.BlockIndexMarkingRule), marks: true},
+		{name: "stated at its version by the rule before", version: 3, storeVersion: 3, statedVersion: new(3), statedRule: new(refs.BlockIndexMarkingRule - 1), marks: true},
+		{name: "stated at its version by this rule", version: 3, storeVersion: 3, statedVersion: new(3), statedRule: new(refs.BlockIndexMarkingRule)},
+		{name: "already marked", version: 3, storeVersion: 2, owedAt: &markedAt},
+	}
+	documents := make([]string, len(states))
+	named := map[string]string{}
+	var marked string
+	for index, state := range states {
+		var id, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, fmt.Sprintf("state-%d", index)).Scan(&id, &refKey); err != nil {
+			t.Fatalf("create the document %s: %v", state.name, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, store_owed_at, store_owed_rule)
+			values ($1::uuid, $2, $3, $4, $5, $6, $7)
+		`, id, state.version, state.storeVersion, state.statedVersion, state.statedRule, state.owedAt, refs.BlockIndexMarkingRule); err != nil {
+			t.Fatalf("write the row of the document %s: %v", state.name, err)
+		}
+		documents[index], named[id] = id, state.name
+		if state.owedAt != nil {
+			marked = refKey
+		}
+	}
+	// marks reads each document's mark, by its state's name.
+	marks := func() map[string]*time.Time {
+		t.Helper()
+		held := map[string]*time.Time{}
+		for _, id := range documents {
+			var owedAt *time.Time
+			if err := database.Pool.QueryRow(ctx, `
+				select store_owed_at from document_block_versions where artifact_id = $1::uuid
+			`, id).Scan(&owedAt); err != nil {
+				t.Fatalf("read the mark of the document %s: %v", named[id], err)
+			}
+			held[named[id]] = owedAt
+		}
+		return held
+	}
+	names := func(ids []string) []string {
+		held := make([]string, len(ids))
+		for index, id := range ids {
+			held[index] = named[id]
+		}
+		slices.Sort(held)
+		return held
+	}
+
+	first, err := markStaleDocuments(ctx, database, refs.BlockIndexMarkingRule)
+	if err != nil {
+		t.Fatalf("run the marking: %v", err)
+	}
+	var want []string
+	for _, state := range states {
+		if state.marks {
+			want = append(want, state.name)
+		}
+	}
+	slices.Sort(want)
+	if got := names(first); !slices.Equal(got, want) {
+		t.Errorf("the marking marked %q, want exactly %q", got, want)
+	}
+	afterFirst := marks()
+	for _, state := range states {
+		owedAt := afterFirst[state.name]
+		switch {
+		case state.marks && owedAt == nil:
+			t.Errorf("after the marking the document %s holds no mark, want it marked: no pass of this rule has stated its version", state.name)
+		case state.owedAt != nil && (owedAt == nil || !owedAt.Equal(*state.owedAt)):
+			t.Errorf("after the marking the document %s is marked at %v, want the mark it held, %s", state.name, owedAt, state.owedAt)
+		case !state.marks && state.owedAt == nil && owedAt != nil:
+			t.Errorf("after the marking the document %s is marked at %s, want no mark: a pass of this rule stated it at its version", state.name, owedAt)
+		}
+	}
+
+	second, err := markStaleDocuments(ctx, database, refs.BlockIndexMarkingRule)
+	if err != nil {
+		t.Fatalf("run the marking a second time: %v", err)
+	}
+	if len(second) != 0 {
+		t.Errorf("the second run of the marking marked %q, want nothing new", names(second))
+	}
+	for name, owedAt := range marks() {
+		if was := afterFirst[name]; (was == nil) != (owedAt == nil) || was != nil && !was.Equal(*owedAt) {
+			t.Errorf("the second run of the marking moved the mark of the document %s from %v to %v", name, was, owedAt)
+		}
+	}
+
+	// A block of the marked document whose row names no node: the block pass names it and marks
+	// the document, which keeps the mark it holds.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+		select a.id, 'b1', a.ref_key || '#b1', 'paragraph', '', 'A block.', 3, now() from artifacts a where a.ref_key = $1
+	`, marked); err != nil {
+		t.Fatalf("write a block of the marked document: %v", err)
+	}
+	blocks, err := backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
+	if err != nil {
+		t.Fatalf("run the block pass: %v", err)
+	}
+	if blocks.Rows != 1 || blocks.Owed != 1 {
+		t.Errorf("the block pass reports %#v, want the one block written and its one document marked", blocks)
+	}
+	if owedAt := marks()["already marked"]; owedAt == nil || !owedAt.Equal(markedAt) {
+		t.Errorf("after the block pass named a block of the marked document its mark is at %v, want the mark it held, %s", owedAt, markedAt)
 	}
 }
 

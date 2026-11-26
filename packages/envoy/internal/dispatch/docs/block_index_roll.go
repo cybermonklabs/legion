@@ -87,17 +87,20 @@ var readEventPage = `
 // markVersionedDocuments marks owed a block index, with this build's own mark of its marking rule
 // $2 (refs.BlockIndexMarkingRule, the rule the Service carries), every document of $1, the
 // documents the events after the cursor name (readEventPage), that holds no such mark of $2 or a
-// higher rule yet and whose blocks this build's store last stated at a version other than the one
-// the document stands at, and answers how many it marked.
+// higher rule yet and that no pass of this build's rule has stated at the version the document
+// stands at, and answers how many it marked.
 //
-// A document is marked where store_version, the version whose blocks this build's index pass last
-// stated in the store (refs' BlockIndexing.queueStand, its one writer), is not the document's
-// version, a null on either side included. The release before this one moves version and never
-// store_version, so a document it indexed after this build's store stated it is marked, and so is
-// one it created, whose store_version is null, and one whose version a write owes an index still
-// (null): whatever that version drops, moves or rewords, which may leave no row naming no node,
-// this build's pass over it states. A document this build wrote and indexed stands at the
-// store_version that pass wrote, and is not marked again.
+// A document is marked where its stated_version is not its version or its stated_rule is below
+// this build's rule, a null on either side counted as not equal (refs.UnstatedBlockIndexSQL):
+// the record a pass of this rule writes beside store_version (refs' BlockIndexing.queueStand), and
+// which no other build writes. store_version alone no longer says it: a build of an earlier rule
+// of the block index writes store_version for each version it indexes and states none of this
+// rule's facts of its blocks. The release before this one moves version and writes neither, so a
+// document it indexed after this build stated it is marked, and so is one it created, one a build
+// of an earlier rule indexed itself, and one whose version a write owes an index still (null):
+// whatever that version drops, moves or rewords, which may leave no row naming no node, this
+// build's pass over it states. A document this build wrote and indexed stands stated at its
+// version by this rule, and is not marked again.
 //
 // The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
 // store_owed_at, which the release before this one neither reads nor clears, with the rule that
@@ -118,7 +121,7 @@ var markVersionedDocuments = `
 		select b.artifact_id from document_block_versions b
 		where b.artifact_id = any($1::uuid[])
 		  and ` + refs.OwedMarkAbsent("b", "$2::integer") + `
-		  and not coalesce(b.store_version = b.version, false)
+		  and ` + refs.UnstatedBlockIndexSQL("$2::integer") + `
 		order by b.artifact_id
 		for no key update of b
 	),
@@ -130,9 +133,15 @@ var markVersionedDocuments = `
 	)
 	select count(*) from marked`
 
+// MarkVersionedDocumentsStatement is the tick's mark (markVersionedDocuments) for a caller outside
+// this package that runs it as readEventsAfterCursor runs it, binding the documents as $1 and the
+// marking rule as $2: api's TestAnOwedDocumentIsNamedByTheReads, which reads the documents it
+// marks named owed by the coverage and tree reads. It is the one text, not a copy of it.
+var MarkVersionedDocumentsStatement = markVersionedDocuments
+
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
-// that this build's store has not stated at its version (markVersionedDocuments), gives every
+// that no pass of this build's rule has stated at its version (markVersionedDocuments), gives every
 // comment they name whose row names no node its node and its tuples (refs.CommentWrite), records
 // in the cursor's row whether this build owes the object pass, and counts in tick what it read,
 // marked and wrote, and whether another build serves.
@@ -193,7 +202,7 @@ var markVersionedDocuments = `
 // the revision fence takes a document's document_block_versions row before any node it writes
 // (the fifth invariant on api's markInboxReadThreads), and a settlement takes its document's row
 // and then the node of the session that follows an ask it opens (lockSettlementFence,
-// followsByEvent): a tick that wrote a comment's author's node first and then waited for that
+// causedByEvent): a tick that wrote a comment's author's node first and then waited for that
 // document's row would hold what the settlement waits for, while the settlement held what the
 // tick waits for. A tick that fails moves nothing and the next reads the same events again; a
 // document already marked keeps its mark and its time. A document marked here is listed by the
@@ -348,15 +357,18 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 // objectPassBatches bounds the batches one tick's object pass writes across the four kinds, so a
 // first deploy's whole backlog never holds the block-index lease in one tick: a pass that stops
 // with rows left leaves its debt and makes the tick full, and the next one runs blockIndexStep
-// later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick. Rows no
-// pass can write - a refused party, a node held in another project, live or gone - spend none of
-// it and open no transaction: each pass leaves them before it writes a batch, and reads them
-// again, two index reads for each 200 of them (graphcensus's writeObjectKind).
+// later. It is two bounds of that size: at most objectPassBatches batches that write a node, at
+// the backfill's batch size of 200 the nodes of up to 800 rows a tick, and at most as many more
+// whose rows are owed only the name of a node the store already holds (graphcensus's
+// objectBudget). Rows no pass can write - a refused party, a node held in another project, live
+// or gone - spend neither and open no transaction: each pass leaves them before it writes a
+// batch, and reads them again, two index reads for each 200 of them (graphcensus's
+// writeObjectKind).
 const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
 // transaction of its own (graphcensus's StateOrphanedGone); a tick that reads more leaves its debt
-// and is full.
+// and is full. It does not bound the stale lenses the tick states gone after the sweep.
 const orphanedNodesSwept = 20
 
 // objectPassInterval is the longest a process of this build goes without finishing the object
@@ -383,8 +395,9 @@ type objectPassDebt struct {
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
 // the object pass (readEventsAfterCursor's debt), it writes the node of every issue, document, ask
 // and message whose row names none, through the backfill's object pass (graphcensus's
-// WriteOwedObjectNodes), and states gone the node of every document a build before this one
-// removed (graphcensus's OrphanedDocumentNodes and StateOrphanedGone). It counts both in tick, and
+// WriteOwedObjectNodes), states gone the node of every document a build before this one removed
+// (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then states every stale lens
+// gone with everything under it (graphcensus's StateStaleLensesGone). It counts each in tick, and
 // answers whether it stopped with work left.
 //
 // The release before this one writes those four kinds' rows with no node, as it writes a
@@ -398,19 +411,33 @@ type objectPassDebt struct {
 // document node with no row behind it can mean nothing else: every writer of this build writes a
 // node in the transaction that writes its row, and the pass writes one only for a row that stands
 // under the owner locks it takes. The sweep states such a node gone as this build's own removal of
-// the document states it (api's removeArtifact), under the removal's own event, so the store keeps
-// every statement it held and the history of a removed document is one whichever build served the
-// removal; a node whose row a create of this build commits meanwhile is left, since the sweep
-// reads under its lock of the node whether a row stands.
+// the document states it (api's removeArtifact), under the removal's own event, and nothing beneath
+// it, so the store keeps every statement it held and the history of a removed document is one
+// whichever build served the removal; a node whose row a create of this build commits meanwhile is
+// left, since the sweep reads under its lock of the node whether a row stands. The lenses on such a
+// document are stale, and the stale sweep below takes them gone.
+//
+// Then, in one transaction of its own, it states gone every lens whose recorded row no longer
+// stands at its document's address, each with its whole part_of subtree (graphcensus's
+// StateStaleLensesGone), whatever the state of the node at that address: a build before this one
+// removes a document and states nothing, or states its node gone and nothing beneath it, or makes a
+// new document at the address, and none of them takes a lens gone, while every read answers such a
+// lens as gone already (refs.StaleSQL). So no lens a removal by an earlier build left stale stays
+// live in the store.
 //
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
 // and each gone statement in its own, owner lock first too, so it holds no lock of the event
-// read's while it takes them. It writes at most objectPassBatches batches and states at most
-// orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
-// nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
-// that finishes clears, so no row is left without its node and no node without its row. A node
-// the sweep leaves is logged with the reason.
+// read's while it takes them. Its pass writes at most objectPassBatches batches of each of its two
+// budgets and its sweep states at most orphanedNodesSwept orphaned document nodes gone a tick; no
+// bound covers the stale lenses, each of which goes gone with its whole subtree in the one
+// transaction the stale sweep takes however many there are. A kind that fails holds back neither
+// the other kinds nor the sweep. A pass that fails, or stops with work left, leaves the debt, which
+// only a pass that finishes clears, so no row is left without its node, no node without its row
+// and no stale lens live. A node the sweep leaves is logged with the reason.
+//
+// The pass and the sweep stay for good: a rollback to any earlier release, and a write an older
+// build makes in any later roll, still reach them.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, debt objectPassDebt) (more bool, err error) {
 	if !debt.owed {
 		return false, nil
@@ -436,6 +463,11 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 		default:
 			tick.OrphansGone++
 		}
+	}
+	if staleLensesGone, err := graphcensus.StateStaleLensesGone(ctx, s.store); err != nil {
+		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))
+	} else {
+		tick.StaleLensesGone = staleLensesGone
 	}
 	switch err := errors.Join(failed...); {
 	case err != nil:

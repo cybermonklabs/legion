@@ -54,10 +54,10 @@ import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
+  AGENT,
   answeredAsk,
   ask,
   closing,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
   decisionsRead,
@@ -66,8 +66,10 @@ import {
   KEY,
   node,
   openAsk,
+  personDecision,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
@@ -97,16 +99,27 @@ const FOOT_CONTROL = { name: (name: string) => name.endsWith(DECISIONS_WORDS.age
 const STORED = "Keep the rail.\n\n  It is 56 px wide -  no wider.\n";
 
 const KEPT: DecisionKeep = {
-  artifact_id: DECISIONS_DOCUMENT.id,
+  artifact_id: SPEC_DOCUMENT.id,
   block_id: "kept",
   changed_version: 1,
   kept_at: "2026-11-15T09:00:00Z",
   kept_by: READER,
 };
 
+/** The agent's write-up of the person's answer: a `reading` block of the spec, which the tree
+ *  draws under the answered ask it reads (`tree-read/tree-nodes.ts`'s `draftReading`). */
+const READING = node({
+  author: AGENT,
+  id: `${SPEC_DOCUMENT.slug}#b-reading`,
+  reference: specRef("reading"),
+  text: "The reader wants the rail kept.",
+  type: "reading",
+});
+
 /** One issue that holds an entry of every part: an open question, two decisions a statement
- *  rests on that wait, one the reader kept, an answered ask with the agent's write-up of it
- *  under it, a declined ask, and two decisions no statement rests on. */
+ *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
+ *  with the agent's reading of it under it, a declined ask, and two decisions no statement
+ *  rests on. */
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
@@ -132,7 +145,7 @@ function wholeIssue(): {
         "a-answered",
         { at: "2026-11-14T09:00:00Z", selected: ["Changes needed"], text: STORED },
         {
-          children: [decisionNode("reading", { text: "The reader wants the rail kept." })],
+          children: [READING],
           options: [{ label: "Works" }, { label: "Changes needed" }],
           text: "Does the built page work for you?",
         }
@@ -145,7 +158,7 @@ function wholeIssue(): {
       decisionNode("replaced"),
     ],
     made: [
-      decision("reading", { asks: ["a-answered"], kind: "person", waiting_review: false }),
+      personDecision("a-answered"),
       decision("first", {
         changed_at: "2026-11-10T12:00:00Z",
         links: [shaped(specRef("s1"))],
@@ -221,11 +234,11 @@ interface BodyProps {
 }
 
 /** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
- *  words in the decisions document (`DecisionActions.tsx`). */
+ *  words in the spec, whose `decision` block it is (`DecisionActions.tsx`). */
 function changeOf(block: string, at: string, body: string): Comment {
   return {
     anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
+      artifact_id: SPEC_DOCUMENT.id,
       block_id: null,
       mark_id: `mark-${block}`,
       orphaned: false,
@@ -240,18 +253,16 @@ function changeOf(block: string, at: string, body: string): Comment {
   } as Comment;
 }
 
-/** The decisions document the decisions read of `made` stands for: its title, then each
- *  decision's heading and words as `made` orders them, the replaced ones after the rest and a
- *  level down under `## Replaced`, which is where the server's section rule finds each
- *  (`decision-review.ts`'s `decisionHeadings`). A Change's send reads it to say which place of
- *  its quote is the decision's own (`DecisionActions.tsx`, decision 92). */
-function decisionsText(made: readonly Decision[]): string {
-  const section = (level: string) => (row: Decision) => `${level} ${row.heading}\n\n${row.text}`;
-  const replaced = made.filter((row) => row.replaced);
+/** The spec the decisions read of `made` stands for: its title, then its `## Decisions` part
+ *  holding each agent's decision's own `decision` block as `made` orders them, a replaced one's
+ *  included, where the server's quote rule finds each (`decision-review.ts`'s `changeAnchor`). A
+ *  Change's send reads it to say which place of its quote is the decision's own
+ *  (`DecisionActions.tsx`). */
+function specText(made: readonly Decision[]): string {
   return [
-    `# Decisions of ${KEY}`,
-    ...made.filter((row) => !row.replaced).map(section("##")),
-    ...(replaced.length === 0 ? [] : ["## Replaced", ...replaced.map(section("###"))]),
+    `# Spec of ${KEY}`,
+    "## Decisions",
+    ...made.filter((row) => row.kind === "agent").map((row) => row.text.trimEnd()),
   ].join("\n\n");
 }
 
@@ -326,11 +337,8 @@ function renderBody(
   const answered = answeredAgo === undefined ? undefined : { updatedAt: Date.now() - answeredAgo };
   // The reads the page's tree is built from, under the keys it reads them by.
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made), answered);
-  if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
+  if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
   client.setQueryData(["comments", KEY], comments, answered);
-  // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
-  // placed by its quote alone, and no case makes a request for them.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], [], answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -412,10 +420,10 @@ function words(element: Element | null | undefined): string | null {
 }
 
 /** What the body says of each read that stands refused, in the page's words, by which a reader
- *  tells the two reads' lines apart. */
+ *  tells the two reads' lines apart, each by the seam's word for its read. */
 const REFUSED_READ_WORDS = {
   asks: STATE_LINES.asks_unreadable,
-  decisions: STATE_LINES.issue_decisions_unreadable,
+  "issue-decisions": STATE_LINES.issue_decisions_unreadable,
 } as const;
 
 /** The page's line for a failed read that the body draws for `read`, found by what it says, as
@@ -730,20 +738,20 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   );
   try {
     const failed = renderBody({ children: [statement("s1")], made: null }, {}, { stage: true });
-    await waitFor(() => expect(failedLine(failed, "decisions")).not.toBeNull());
-    expect(words(retryOf(failed, "decisions"))).toBe("Retry");
+    await waitFor(() => expect(failedLine(failed, "issue-decisions")).not.toBeNull());
+    expect(words(retryOf(failed, "issue-decisions"))).toBe("Retry");
     expect(failedLine(failed, "asks")).toBeNull();
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
     const tree = failed.getByRole("tree", { name: CONTROL_LABELS.tree });
-    expect(tree.contains(retryOf(failed, "decisions"))).toBe(false);
+    expect(tree.contains(retryOf(failed, "issue-decisions"))).toBe(false);
     await act(async () => chordFocus(tree));
-    expect(document.activeElement).toBe(retryOf(failed, "decisions"));
+    expect(document.activeElement).toBe(retryOf(failed, "issue-decisions"));
 
-    await retryRefusedAgain(failed, "decisions", (run) => refused.mockReturnValue(run), user);
+    await retryRefusedAgain(failed, "issue-decisions", (run) => refused.mockReturnValue(run), user);
     refused.mockResolvedValue(decisionsRead(made));
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(failedLine(failed, "decisions")).toBeNull());
+    await waitFor(() => expect(failedLine(failed, "issue-decisions")).toBeNull());
     expect(failed.client.getQueryData(["decisions", KEY])).toBeDefined();
     expect(refused).toHaveBeenCalledTimes(3);
     // The line is gone and the tree the page builds from that read does not hold its decision
@@ -759,12 +767,12 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // The asks read is refused the same way: its line in place of the questions it would give,
   // no line that the issue holds nothing, and the tree's focus, which `t d` gives it from
   // outside the view, on its Retry where no row is drawn.
-  const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const refusedAsks = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     const failed = renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
     await waitFor(() => expect(failedLine(failed, "asks")).not.toBeNull());
     expect(words(retryOf(failed, "asks"))).toBe("Retry");
-    expect(failedLine(failed, "decisions")).toBeNull();
+    expect(failedLine(failed, "issue-decisions")).toBeNull();
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
     await act(async () => chordFocus(failed.getByRole("tree", { name: CONTROL_LABELS.tree })));
@@ -813,7 +821,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // read's answer brings the question with it, drawn in the one render, the focus goes from the
   // busy Retry to the question's row, and the foot's control takes it at no point on the way.
   const asksOut = Promise.withResolvers<never>();
-  const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const asksRead = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise);
   try {
     const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
     expect(footControlOf(early)).not.toBeNull();
@@ -835,7 +843,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     asksRead.mockResolvedValue([]);
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
+      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY, "thread"])).toEqual([])
     );
     await waitFor(() => expect(document.activeElement).toBe(footControlOf(opened)));
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
@@ -865,7 +873,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
         // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
-        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY, "thread"] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);
@@ -891,16 +899,16 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // to the next refused read's Retry, and from the last one to the tree, never to the page's
   // body.
   const decisionsRefused = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"));
-  const asksRefused = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  const asksRefused = spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
   try {
     const both = renderBody(
       { asks: null, children: [statement("s1")], made: null },
       {},
       { stage: true }
     );
-    await waitFor(() => expect(retryOf(both, "decisions")).not.toBeNull());
+    await waitFor(() => expect(retryOf(both, "issue-decisions")).not.toBeNull());
     await waitFor(() => expect(retryOf(both, "asks")).not.toBeNull());
-    const retry = retryOf(both, "decisions");
+    const retry = retryOf(both, "issue-decisions");
     await act(async () => retry?.focus());
     expect(document.activeElement).toBe(retry);
     const decisionsAnswer = Promise.withResolvers<IssueDecisions>();
@@ -909,10 +917,10 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
       void both.client.refetchQueries({ queryKey: ["decisions", KEY] });
     });
     await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
-    expect(retryOf(both, "decisions")).toBe(retry);
+    expect(retryOf(both, "issue-decisions")).toBe(retry);
     expect(document.activeElement).toBe(retry);
     await act(async () => decisionsAnswer.resolve(decisionsRead([])));
-    await waitFor(() => expect(failedLine(both, "decisions")).toBeNull());
+    await waitFor(() => expect(failedLine(both, "issue-decisions")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(retryOf(both, "asks")));
     asksRefused.mockResolvedValue([]);
     await act(async () => {
@@ -934,15 +942,15 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
 // comes back a second or so later. Where the list draws no row, the focus the tree holds then
 // goes to that read's Retry once its line is drawn, for each of the two reads.
 test("a read refused after the tree took the focus gives that focus to its Retry", async () => {
-  for (const read of ["decisions", "asks"] as const) {
+  for (const read of ["issue-decisions", "asks"] as const) {
     const answer = Promise.withResolvers<never>();
     const spy =
-      read === "decisions"
+      read === "issue-decisions"
         ? spyOn(api, "getIssueDecisions").mockReturnValue(answer.promise)
-        : spyOn(api, "listIssueAsks").mockReturnValue(answer.promise);
+        : spyOn(api, "listIssueAskThreads").mockReturnValue(answer.promise);
     try {
       const view =
-        read === "decisions"
+        read === "issue-decisions"
           ? renderBody({ children: [statement("s1")], made: null }, {}, { stage: true })
           : renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
       const tree = view.getByRole("tree", { name: CONTROL_LABELS.tree });
@@ -957,7 +965,7 @@ test("a read refused after the tree took the focus gives that focus to its Retry
       // Where the focus is, by name: a Retry by the read its line is for.
       const focusIs = () => {
         const active = document.activeElement;
-        const line = (["decisions", "asks"] as const).find(
+        const line = (["issue-decisions", "asks"] as const).find(
           (each) => active !== null && active === retryOf(view, each)
         );
         if (line !== undefined) return `the ${line} Retry`;
@@ -980,14 +988,14 @@ test("a read refused after the tree took the focus gives that focus to its Retry
 // refused after that draws a new alert. So for each of the two reads.
 test("a refused read's run that ends with no new refusal draws no new alert, and one refused again does", async () => {
   const user = userEvent.setup();
-  for (const read of ["decisions", "asks"] as const) {
+  for (const read of ["issue-decisions", "asks"] as const) {
     const spy =
-      read === "decisions"
+      read === "issue-decisions"
         ? spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"))
-        : spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+        : spyOn(api, "listIssueAskThreads").mockRejectedValue(new Error("refused"));
     try {
       const view =
-        read === "decisions"
+        read === "issue-decisions"
           ? renderBody({ children: [statement("s1")], made: null }, {}, { stage: true })
           : renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
       await waitFor(() => expect(retryOf(view, read)).not.toBeNull());
@@ -999,10 +1007,11 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
 
       // Enter on the Retry starts a run, which is held and then cancelled, under the key the
       // page reads the read by.
+      const queryKey = read === "issue-decisions" ? ["decisions", KEY] : ["asks", KEY];
       spy.mockReturnValue(Promise.withResolvers<never>().promise);
       await user.keyboard("{Enter}");
       await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
-      await act(async () => view.client.cancelQueries({ queryKey: [read, KEY] }));
+      await act(async () => view.client.cancelQueries({ queryKey }));
       await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
       expect(retryOf(view, read), "the cancelled run drew a new Retry").toBe(retry);
       expect(
@@ -1144,11 +1153,7 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
     // The Keep is of the words this row drew: the block and the sum of its text.
-    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([
-      DECISIONS_DOCUMENT.id,
-      "second",
-      "sha256:second",
-    ]);
+    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([SPEC_DOCUMENT.id, "second", "sha256:second"]);
 
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
     expect(rowsOfPart(view, "yours")).toEqual([D("second"), D("kept"), "a-answered", "a-declined"]);
@@ -1320,7 +1325,7 @@ test("an entry that moves to another part by no act of the reader keeps the focu
 test("the view opened after the app's staleTime asks no read again, its rows' Keep and Change included", async () => {
   const names = [
     "getIssueDecisions",
-    "listIssueAsks",
+    "listIssueAskThreads",
     "listComments",
     "getArtifactBlocks",
   ] as const;
@@ -1335,7 +1340,12 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
     await act(() => nextFrame());
     expect(
       Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls.length]))
-    ).toEqual({ getArtifactBlocks: 0, getIssueDecisions: 0, listComments: 0, listIssueAsks: 0 });
+    ).toEqual({
+      getArtifactBlocks: 0,
+      getIssueDecisions: 0,
+      listComments: 0,
+      listIssueAskThreads: 0,
+    });
     view.unmount();
   } finally {
     for (const read of reads) read.mockRestore();
@@ -1498,7 +1508,7 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   );
 
   // The agent's write-up of the answer is drawn nowhere in the filter.
-  expect(view.container.querySelector(`[data-node-id="${D("reading")}"]`)).toBeNull();
+  expect(view.container.querySelector(`[data-node-id="${READING.id}"]`)).toBeNull();
   expect(view.queryByText("The reader wants the rail kept.")).toBeNull();
 });
 
@@ -2252,15 +2262,15 @@ test("each press of the count of what waits goes to the next thing that waits", 
 // the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
 // its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
-  // The send reads the decisions document's text to say which place of the quote in it is the
-  // decision's own, and the reading of that text is the page's engine's, which must be loaded.
+  // The send reads the spec's text to say which place of the quote in it is the decision's own,
+  // and the reading of that text is the page's engine's, which must be loaded.
   await warmMarkdownRenderer();
   const user = userEvent.setup();
   const whole = wholeIssue();
   const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
   const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
   const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
-  const markdown = decisionsText(whole.made);
+  const markdown = specText(whole.made);
   const text = spyOn(api, "getArtifactText").mockImplementation(
     async (): Promise<ArtifactText> => ({
       markdown,
@@ -2278,13 +2288,13 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the decisions document, at the
-    // first place they stand there: the heading above them ends with no full stop, so the quote
-    // starts nowhere before them.
+    // The comment is anchored to the decision's own words in the spec, at the first place they
+    // stand there: no words before the decision's block hold them, so the quote starts nowhere
+    // before it.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: DECISIONS_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
+        anchor: { artifact: SPEC_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);

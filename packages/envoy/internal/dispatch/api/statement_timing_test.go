@@ -47,7 +47,9 @@ const (
 //     and reported whole beside it, for the reason given where that pair is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
-//     listArtifactAsksQueryOpen, whose texts this release does not edit at all - their gain is
+//     listArtifactAsksQueryOpen. This release edits the two ask statements only to read each
+//     ask's answer state off its node (askNodeAnswerColumn), and listArtifactAsksQueryOpen also to
+//     pick its open asks by that state (askNodeStateOf); their gain is
 //     asks_issue_key (20261101182426) and messages_issue_roots (20261101182433), and for the
 //     artifact list the drop of asks_open_artifact (20261101182440), whose before side needs
 //     that index present. No one schema holds both sides of those, so each is measured alone,

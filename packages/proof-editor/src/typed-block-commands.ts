@@ -2,8 +2,8 @@ import { blockPointersProblem } from '@legion/contracts';
 import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/model';
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 
-import { blockPointerRefusal, findBlock } from './block-pointers.js';
-import { creatable, creatableValue, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
+import { askReferenceProblem, blockPointerRefusal, findBlock, otherIssueRefusal, parentProblem } from './block-pointers.js';
+import { creatable, creatableValue, minutesValueProblem, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
 import { BLOCK_ID_ATTR, blockIdOf } from './editor/schema/block-ids.js';
 
 export type TypedBlockAttributeValue = string | boolean | readonly string[];
@@ -66,6 +66,16 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
     case 'timestamp':
       if (typeof value !== 'string') throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be a string`);
       return;
+    case 'minutes': {
+      const problem = typeof value === 'string' ? minutesValueProblem(value) : 'must be a duration in minutes';
+      if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
+      return;
+    }
+    case 'ask': {
+      const problem = typeof value === 'string' ? askReferenceProblem(value) : 'must be an ask reference';
+      if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
+      return;
+    }
     case 'bool':
       if (typeof value !== 'boolean') throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be a boolean`);
       return;
@@ -83,7 +93,7 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
         throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be an array of block references`);
       }
-      const problem = blockPointersProblem(value as readonly string[]);
+      const problem = blockPointersProblem(value as readonly string[], attribute.items) ?? parentProblem(name, value as readonly string[]);
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
     }
   }
@@ -115,7 +125,9 @@ function selectedParagraph(state: EditorState): LocatedBlock | null {
   return null;
 }
 
-/** Dispatches `tr`, or throws `blockPointerRefusal`'s refusal of the block it leaves, unchanged. */
+/** Dispatches `tr`, or throws the refusal of the block it leaves, unchanged: a `block[]` pointer
+ *  at a block of the document whose type the attribute does not allow (`blockPointerRefusal`), or
+ *  something of another issue than the document's (`otherIssueRefusal`). */
 function dispatchUnlessRefused(
   context: TypedBlockCommandContext,
   tr: Transaction,
@@ -123,7 +135,8 @@ function dispatchUnlessRefused(
   prior: ProseMirrorNode | null,
   attrs: Readonly<Record<string, unknown>>,
 ): void {
-  const refusal = blockPointerRefusal(tr.doc, type, prior, attrs, context.documentRef);
+  const refusal = blockPointerRefusal(tr.doc, type, prior, attrs, context.documentRef)
+    ?? otherIssueRefusal(type, attrs, context.documentRef);
   if (refusal !== undefined) throw new Error(refusal);
   context.dispatch(tr);
 }
@@ -207,7 +220,9 @@ export function createTypedBlockCommands(context: TypedBlockCommandContext): Typ
     },
     blockMenuItems() {
       const state = context.getState();
-      const types = schema.types.filter((type) => creatable(schema.version, type));
+      // A type naming parents stands only at the end of one of them, never where the selection
+      // is, so the menu offers it nowhere.
+      const types = schema.types.filter((type) => creatable(schema.version, type) && (type.parents?.length ?? 0) === 0);
       const items: TypedBlockMenuItem[] = types.map((type) => ({
         label: `Insert ${type.name.slice(0, 1).toUpperCase()}${type.name.slice(1)}`,
         run: () => insert(context, schema, type.name),

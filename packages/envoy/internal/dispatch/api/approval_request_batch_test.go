@@ -120,11 +120,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most twenty-four round trips,
+// One approval request on a document with no request open costs at most twenty-three round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
 // is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the fourteen after them are the transaction
+// request's transaction opens (approvalCoverage); the thirteen after them are the transaction
 // itself, and all but two of those are reads: this route's writes are queued and sent as one
 // batch before the commit, which is what holds its transaction id to its database work
 // (INFRA-636). The last two store the display trees of the texts it wrote, after the commit. In
@@ -133,8 +133,10 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  3. the issue's spec and whether it has a plan (issueCoverage);
-//  4. the spec's settled version, to read its text at (docs.Text, through requirementBlocksIn);
+//  3. a batch of 2: the issue's spec and whether it has a plan, and whether the issue is a view on
+//     the spec of an issue above it (issueCoverage's readCoverageSpecAndView, docs.QueueViewOf);
+//  4. the room the spec is edited in and its stored state's stamp, one statement, to read its text
+//     at (docs.Text's documentReadRoom, through requirementBlocksIn);
 //  5. begin, that text read's read-only snapshot;
 //  6. the document's stored snapshot;
 //  7. the updates after it;
@@ -149,33 +151,37 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     transaction id, and the read is a statement of its own because a statement's snapshot is
 //     taken before it waits;
 //  13. the document's settled version number (settledVersionNumber);
-//  14. a batch of 2: the approval before the write - the latest review and the open request
-//     (attachApproval, queueApprovals);
+//  14. a batch of 3: the approval before the write - the latest review and the open request
+//     (attachApproval's queueApprovals) - and the transaction's now(), which dates the new ask's
+//     node and is the default its row's created_at takes (requestArtifactApproval);
 //  15. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
 //  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
 //     every read of that person shares), read over the owner before the ask's row is queued;
-//  17. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
-//  18. the latest approved review the request carries (docs.LatestApprovedReview);
-//  19. the question's references as they stand, which the replacement is planned against
+//  17. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
+//     id is drawn in the process (openApprovalAsk) and its time was read in 14, so neither costs
+//     a round trip;
+//  18. the question's references as they stand, which the replacement is planned against
 //     (queueNewAskReferences, through refs.PlanReplace);
-//  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  21. a batch of 19: the whole write phase, sent back to back - the ask's node, in its
+//  20. a batch of 21: the whole write phase, sent back to back - the ask's node, in its
 //     document's project, which costs no read of its own since the document was read with its
-//     project, in the three statements of the store's node write (graphstore.QueueNodes: the
-//     insert, the check that no node moves project, and the move), the ask row, its block state
-//     and the part rows of its question and options, the references and the row the ask owes the
-//     grammar's re-index queue, deleted with them (refs.Replacement.Queue, INFRA-869), the
-//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the base
-//     attributes the node write stated - its visibility, its state and its project - appended
-//     under that event (graphstore.QueueCaused), the author's follow and the session node it
-//     records, caused by that ask.opened, in one statement (asks.QueueFollowAuthor), and the
-//     approval as the request leaves it;
-//  22. commit;
-//  23. the display trees of the texts the ask.opened event carries - its question and both option
+//     project, and its author's (graphstore.AskFacts), in the four statements of the store's
+//     node write (graphstore.QueueNodes: the read of the supertags the nodes are typed by, the
+//     insert, the check that no node moves project, and the move), the ask row naming its node,
+//     its block state and the part rows of its question and options, the references and the row
+//     the ask owes the grammar's re-index queue, deleted with them (refs.Replacement.Queue), the
+//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the ask's
+//     authored_by and the base attributes the node write stated - its visibility, its state and
+//     its project - appended under that event (graphstore.QueueCaused), the author's follow, its
+//     follower row marked for the ask's node in one statement, and its followed_by stated under
+//     that ask.opened in the statement after it (asks.PlanFollowNewAsk, which reads nothing for an
+//     ask this request creates), and the approval as the request leaves it;
+//  21. commit;
+//  22. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
-//  24. the display tree of the question the request wrote, stored by the route itself, which the
+//  23. the display tree of the question the request wrote, stored by the route itself, which the
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
@@ -186,11 +192,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // ever ask for that document, and the read is not made. A request whose summary writes a `#`
 // pays it once for the two of them.
 //
-// The transaction takes its transaction id at the first statement of 21 and gives it up at 22;
+// The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -215,8 +221,8 @@ func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the twenty-four go.
-	const ceiling = 24
+	// says where the twenty-three go.
+	const ceiling = 23
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

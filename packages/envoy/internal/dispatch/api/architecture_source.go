@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -211,7 +212,9 @@ func (s *server) checkArchitectureSource(ctx context.Context, owner, name, branc
 // deleteArchitectureSource removes the source and, in the same transaction, the model it
 // projected: its components (by the components foreign key's cascade), their dependency
 // edges (graph_edges loses their component arms with them) and the times recorded for them
-// (component_facts). Every other source's components stay, and snapshots stay as history.
+// (component_facts). Each of those components' nodes is stated gone, with its part_of and
+// depends_on retracted (R9 of the issue-tree spec). Every other source's components stay, and
+// snapshots stay as history.
 func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -234,15 +237,39 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer tx.Rollback(r.Context())
-	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
-		delete from architecture_sources where project_key = $1 and repo = $2
-		returning `+architecture.SourceColumns,
-		key, repo))
-	if err != nil {
+	// The source's row first, which every writer of its components' nodes takes first, then the
+	// node of each component its delete takes with it, stated gone (architecture.RetireComponents),
+	// before the rows that named them go.
+	var sourceID int64
+	if err := tx.QueryRow(r.Context(), `
+		select id from architecture_sources where project_key = $1 and repo = $2 for update
+	`, key, repo).Scan(&sourceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeSourceNotFound(w, key, repo)
 			return
 		}
+		s.writeHandlerError(w, err)
+		return
+	}
+	rows, err := tx.Query(r.Context(), `select id from components where project_key = $1 and source_id = $2 order by id`, key, sourceID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	removed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := architecture.RetireComponents(r.Context(), tx, key, removed, actor, time.Now().UTC()); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
+		delete from architecture_sources where project_key = $1 and id = $2
+		returning `+architecture.SourceColumns,
+		key, sourceID))
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

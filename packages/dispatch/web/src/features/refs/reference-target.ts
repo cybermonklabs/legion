@@ -117,7 +117,7 @@ export function useNewIssuePageFreshness(): typeof EVENT_FRESH | undefined {
 /**
  * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
  * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
+ * back to 0 only when the read is reset or made afresh, never with an answer - so a
  * failure it counts came after the read last held an answer.
  *
  * The read's status is not the rule, for two reasons. A read that holds an answer and whose

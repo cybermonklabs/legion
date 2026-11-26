@@ -1,5 +1,5 @@
-// spec_writer_test.go holds the behavior tests of R1 of INFRA-4764: on an issue Legion runs, a
-// version of the spec or the Verification document from a writer who is no person and no
+// spec_writer_test.go holds the behavior tests of R1 of the spec-writer spec: on an issue Legion
+// runs, a version of the spec or the Verification document from a writer who is no person and no
 // architect of the issue, or of an issue above it, is refused with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT on every route that writes one (spec_writer.go). Its rig
 // (specWriterServer, specWriterRig) builds a project of its own for each run, and uses only routes
@@ -2041,20 +2041,23 @@ func TestSpecWriteChangesNothingAfterTheLabelGoes(t *testing.T) {
 
 // TestSpecWriteChecksEachCopyOfAResolvedAsk: a resolution and a retraction write a block ask's
 // state into its document and into each copy, so the check reads each copy, and an ask edit,
-// which settles no copy, reads its source alone. C's tester's plan.md, no document the check
-// holds, holds two block asks of its own: a person copies the first into C's spec and the second
-// into C's notes.md, another plain document. C's tester's resolution and retraction of the first
-// are refused with no version of either document, and its edit of the first is taken. Its
-// resolution of the second, whose copy is in notes.md alone, is taken. (Its edit of its own block
-// ask in C's spec is the inventory's row.)
+// which settles no copy, reads its source alone. C's tester's draft.md, a plain document the
+// check does not hold, holds two block asks of its own: a person copies the first into C's spec and
+// the second into C's notes.md, another plain document. C's tester's resolution and retraction of
+// the first are refused with no version of either document, and its edit of the first is taken.
+// Its resolution of the second, whose copy is in notes.md alone, is taken. (Its edit of its own
+// block ask in C's spec is the inventory's row.) The source is a plain document and not C's
+// plan.md: an issue born converted holds its plan in the issue's room beside its spec, where a
+// block written into the spec is the spec's own and no copy, so only a document in a room of its
+// own can be copied into the spec.
 func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	spec := rig.c.documents["spec.md"].id
-	copied, noted := specWriterBlockID(rig.c.name, "plan.md", "copied-tester"), specWriterBlockID(rig.c.name, "plan.md", "noted-tester")
-	plan := decodeBody[uploadedArtifact](t, rig.requireTaken(t, "C's tester's upload of "+rig.c.key+"'s plan.md", http.StatusCreated,
+	copied, noted := specWriterBlockID(rig.c.name, "draft.md", "copied-tester"), specWriterBlockID(rig.c.name, "draft.md", "noted-tester")
+	draft := decodeBody[uploadedArtifact](t, rig.requireTaken(t, "C's tester's upload of "+rig.c.key+"'s draft.md", http.StatusCreated,
 		func(t *testing.T) *httptest.ResponseRecorder {
-			return rig.upload(t, rig.cTester, rig.c, "plan.md", "The plan of the child issue.\n\n"+specWriterAsk(copied)+"\n"+specWriterAsk(noted))
+			return rig.upload(t, rig.cTester, rig.c, "draft.md", "The draft of the child issue.\n\n"+specWriterAsk(copied)+"\n"+specWriterAsk(noted))
 		})).Artifact.ID
 	rig.awaitAsks(t, rig.c, []string{copied, noted})
 	rig.requireVersionWritten(t, "a person's copy of "+copied+" into "+rig.c.key+"'s spec", http.StatusOK, spec, true,
@@ -2064,8 +2067,12 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 			})
 		})
 	notes := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.c.key, "notes.md", "The notes of the child issue.\n\n"+specWriterAsk(noted)).Artifact.ID
-	awaitDocumentText(t, rig.handler, spec, "the copy of "+copied, contains(`copied_from="`+rig.asks[copied]+`"`), nil)
-	awaitDocumentText(t, rig.handler, notes, "the copy of "+noted, contains(`copied_from="`+rig.asks[noted]+`"`), nil)
+	// The text routes serve a copy's source in the asks member and not on its block
+	// (docs.TextWithAsks); the latest version carries it on the block.
+	for document, block := range map[string]string{spec: copied, notes: noted} {
+		awaitTextShows(t, rig.handler, document, "the copy of "+block, contains(`copied_from="`+rig.asks[block]+`"`), nil)
+		awaitVersionText(t, rig.handler, document, "the copy of "+block, contains(`copied_from="`+rig.asks[block]+`"`))
+	}
 	rig.quiet(t)
 
 	resolve := func(ask, kind string) func(t *testing.T) *httptest.ResponseRecorder {
@@ -2075,7 +2082,7 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 	}
 	for _, kind := range []string{"resolved", "retracted"} {
 		rig.requireRefused(t, specWriteAttempt{
-			what:    fmt.Sprintf("C's tester's resolution (%s) of its block ask %s in plan.md, copied into %s's spec", kind, copied, rig.c.key),
+			what:    fmt.Sprintf("C's tester's resolution (%s) of its block ask %s in draft.md, copied into %s's spec", kind, copied, rig.c.key),
 			send:    resolve(rig.asks[copied], kind),
 			refusal: rig.refusalOn(rig.c, "spec.md", rig.cTester),
 		})
@@ -2083,11 +2090,11 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 			t.Errorf("the refused resolution (%s) left the ask %s %s, want it open", kind, rig.asks[copied], state)
 		}
 	}
-	rig.requireVersionWritten(t, "C's tester's edit of its block ask "+copied+" in plan.md, copied into "+rig.c.key+"'s spec", http.StatusOK, plan, true,
+	rig.requireVersionWritten(t, "C's tester's edit of its block ask "+copied+" in draft.md, copied into "+rig.c.key+"'s spec", http.StatusOK, draft, true,
 		func(t *testing.T) *httptest.ResponseRecorder {
-			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/asks/"+rig.asks[copied], map[string]any{"question": "Which way does the plan go now?"})
+			return rig.send(t, rig.cTester, http.MethodPatch, "/api/v1/asks/"+rig.asks[copied], map[string]any{"question": "Which way does the draft go now?"})
 		})
-	rig.requireVersionWritten(t, "C's tester's resolution of its block ask "+noted+" in plan.md, copied into notes.md alone", http.StatusOK, notes, true,
+	rig.requireVersionWritten(t, "C's tester's resolution of its block ask "+noted+" in draft.md, copied into notes.md alone", http.StatusOK, notes, true,
 		resolve(rig.asks[noted], "resolved"))
 	if state := rig.askState(t, rig.asks[noted]); state != "resolved" {
 		t.Errorf("C's tester's resolution left the ask %s %s, want it resolved", rig.asks[noted], state)
@@ -2470,7 +2477,7 @@ func (rig *specWriterRig) requireRefusedWith(t *testing.T, status int, code stri
 // versionsOf is how many versions the document id holds.
 func (rig *specWriterRig) versionsOf(t *testing.T, id string) int {
 	t.Helper()
-	return specVersionCount(t, rig.database, id)
+	return uploadedVersionCount(t, rig.database, id)
 }
 
 // commentState is a comment's row as it is stored: whether it is resolved, and, for a suggestion,

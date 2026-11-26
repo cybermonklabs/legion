@@ -56,6 +56,13 @@
     "head": "Read"
   },
   {
+    "name": "a lens address crossing the cut of a line",
+    "text": "Found in dispatch://lens/7c1e0000-0000-4000-8000-000000000002 today",
+    "limit": 30,
+    "ellipsis": "…",
+    "head": "Found in…"
+  },
+  {
     "name": "a bare key crossing the cut",
     "text": "Ship CORE-1234 today",
     "limit": 12,

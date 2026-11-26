@@ -3,6 +3,7 @@ import type {
   Artifact,
   AskResolutionWithTrees,
   Decision,
+  DecisionEntry,
   DecisionLink,
   IssueDecisions,
   IssueDetails,
@@ -17,14 +18,14 @@ import type { DecisionsAsk } from "./decisions-parts";
  * (`decisions-parts.test.ts`, `DecisionsFilterBody.drawn.test.tsx`).
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
- * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
+ * an agent's decision a `decision` block of the spec, a person's decision the answered ask
+ * itself, named by the ask's own address, and an ask its own id, so a tie resolves through the
  * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a
  * rule written here.
  */
 
 export const KEY = "CORE-1";
 export const SPEC_SLUG = "spec";
-export const DECISIONS_SLUG = "decisions-md";
 
 /** Who is reading, whose own words read as theirs (R34). */
 export const READER = "alice";
@@ -56,16 +57,22 @@ export function artifact(id: string, slug: string, primary = false): Artifact {
   };
 }
 
-/** The issue's decisions document, which a Keep is written against. */
+/** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
+ *  written against and a Change is anchored in. */
+export const SPEC_DOCUMENT = artifact("artifact-spec", SPEC_SLUG, true);
+
+/** The slug of a decisions document an earlier release stored, and that document: what the
+ *  Decisions and Spec views' cases of decisions as sections of it read (parts Q and J). */
+export const DECISIONS_SLUG = "decisions-md";
 export const DECISIONS_DOCUMENT = artifact("artifact-decisions", DECISIONS_SLUG);
 
-/** The issue, with its spec and its decisions document, which is all the addressing rule reads
+/** The issue, with its spec and no decisions document, which is all the addressing rule reads
  *  of it. */
 export function issueDetails(): IssueDetails {
   return {
     advances: [],
     advances_revision: 0,
-    artifacts: [artifact("artifact-spec", SPEC_SLUG, true), DECISIONS_DOCUMENT],
+    artifacts: [SPEC_DOCUMENT],
     assignee: null,
     blocked_by: [],
     children: [],
@@ -74,7 +81,7 @@ export function issueDetails(): IssueDetails {
     components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
     created_at: "2026-11-05T00:00:00Z",
     created_by: READER_ACTOR,
-    decisions_artifact_id: DECISIONS_DOCUMENT.id,
+    decisions_artifact_id: "",
     design_gates: [],
     external_links: [],
     holder_state: null,
@@ -86,7 +93,7 @@ export function issueDetails(): IssueDetails {
     open_asks: [],
     parent: null,
     plan_artifact_id: "",
-    primary_artifact_id: "artifact-spec",
+    primary_artifact_id: SPEC_DOCUMENT.id,
     priority: null,
     progress: { children: null, tasks: null },
     project: "CORE",
@@ -129,12 +136,11 @@ export function issueTree(children: readonly TreeNode[]): TreeNode {
   return node({ children: [...children], id: KEY, type: "issue" });
 }
 
-/** The address of one block of the issue's spec. */
+/** The address of one block of the issue's spec: a statement, or an agent's decision. */
 export const specRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
 
-/** The address of one decision, which is one block of the issue's decisions document. */
-export const decisionRef = (block: string) =>
-  `dispatch://${KEY}/artifact/${DECISIONS_SLUG}#b-${block}`;
+/** The address of one ask of the issue, which is a person's decision once it is answered. */
+export const askRef = (id: string) => `dispatch://${KEY}/ask/${id}`;
 
 /** One statement of the spec, by its block id. */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
@@ -153,7 +159,7 @@ export function ask(id: string, partial: Partial<TreeNode> = {}): TreeNode {
     at: "2026-11-10T08:00:00Z",
     author: AGENT,
     id,
-    reference: `dispatch://${KEY}/ask/${id}`,
+    reference: askRef(id),
     text: `Question ${id}?`,
     type: "ask",
     ...partial,
@@ -191,11 +197,11 @@ export function closing(
   return { id, resolution: { actor: READER_ACTOR, reason: "", ...resolution } };
 }
 
-/** One decision of the decisions document as the tree draws it. */
+/** One agent's decision, a `decision` block of the spec, as the tree draws it. */
 export function decisionNode(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
-    id: `${DECISIONS_SLUG}#b-${block}`,
-    reference: decisionRef(block),
+    id: `${SPEC_SLUG}#b-${block}`,
+    reference: specRef(block),
     text: `The decision ${block}.`,
     type: "decision",
     ...partial,
@@ -203,9 +209,11 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** One `shaped` tie, as today's read carries it: a link from a block of the decision to the
- *  node `ref` names. */
+ *  node `ref` names. Its `changed_since_tie` says the opposite of `stale`, so a reader of the
+ *  wrong fact draws the wrong state. */
 export function shaped(ref: string, stale = false): DecisionLink {
   return {
+    changed_since_tie: !stale,
     created_at: "2026-11-10T00:00:00Z",
     created_version: 1,
     from_block: "d",
@@ -224,7 +232,7 @@ export function shaped(ref: string, stale = false): DecisionLink {
   };
 }
 
-/** One decision of the decisions document, as the decisions read answers it: an agent's, which
+/** One agent's decision, a `decision` block of the spec, as the decisions read answers it: it
  *  waits for review unless the case says otherwise. */
 export function decision(block: string, partial: Partial<Decision> = {}): Decision {
   return {
@@ -232,13 +240,13 @@ export function decision(block: string, partial: Partial<Decision> = {}): Decisi
     block_id: block,
     changed_at: "2026-11-10T12:00:00Z",
     changed_version: 1,
-    heading: `The decision ${block}`,
+    heading: `The decision ${block}.`,
     kept: null,
     kind: "agent",
     links: [],
-    ref: decisionRef(block),
+    ref: specRef(block),
     replaced: false,
-    text: `The decision ${block}.`,
+    text: `:::decision{#${block}}\nThe decision ${block}.\n:::\n`,
     text_sha256: `sha256:${block}`,
     unsure: false,
     waiting_review: true,
@@ -246,14 +254,80 @@ export function decision(block: string, partial: Partial<Decision> = {}): Decisi
   };
 }
 
-/** The decisions read over `made`, which names the decisions document they are blocks of by its
- *  `dispatch://` address, as the server's read does (`api/decisions.go`); a Change's anchor names
- *  the same document by its id, which the issue's documents tie to the address
- *  (`decisionsDocumentId`). */
+/** A person's decision, as the decisions read answers it: the answered ask `id` itself, named by
+ *  the ask's own address, whose words are its question; it never waits for review. */
+export function personDecision(id: string, partial: Partial<Decision> = {}): Decision {
+  return decision("", {
+    asks: [id],
+    heading: `Question ${id}?`,
+    kind: "person",
+    ref: askRef(id),
+    text: `Question ${id}?`,
+    text_sha256: `sha256:${id}`,
+    waiting_review: false,
+    ...partial,
+  });
+}
+
+/** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
+ *  agent's decision by the spec's block node that holds it, with the asks its `from_ask`
+ *  settles, a person's by the ask's own node, and each member the node holds none of null. */
+export function entryOf(row: Decision): DecisionEntry {
+  const person = row.kind === "person";
+  const block = `${SPEC_DOCUMENT.ref_key}#${row.block_id}`;
+  return {
+    answer: null,
+    answer_state: person ? "answered" : null,
+    answered_at: null,
+    answered_by: null,
+    changed_at: row.changed_at,
+    changed_version: row.changed_version,
+    decided_by: person ? { id: READER, kind: "user" } : { id: AGENT.id, kind: "session" },
+    declined: false,
+    declined_note: null,
+    document: person
+      ? null
+      : {
+          artifact_id: SPEC_DOCUMENT.id,
+          block,
+          block_id: row.block_id,
+          ref: `dispatch://${KEY}/spec`,
+        },
+    from_ask: person ? [] : (row.asks ?? []),
+    kept: row.kept,
+    kept_by: row.kept?.kept_by ?? null,
+    kept_text_sum: row.kept === null ? null : row.text_sha256,
+    kind: row.kind,
+    multiple: null,
+    node: person ? { id: row.asks?.[0] ?? "", kind: "ask" } : { id: block, kind: "block" },
+    options: null,
+    question: person ? row.heading : null,
+    readings: [],
+    ref: row.ref,
+    replaced: row.replaced,
+    resolution: null,
+    selected: null,
+    shaped: row.links,
+    text: row.text,
+    text_sha256: row.text_sha256,
+    ...(row.text_tree === undefined ? {} : { text_tree: row.text_tree }),
+    uncertainty: row.unsure ? "high" : null,
+    uncertainty_reason: null,
+    urgency: null,
+    waiting_review: row.waiting_review,
+  };
+}
+
+/** The decisions read over `made`, as this build's server answers it (`api/decisions.go`): an
+ *  entry for each, which is all a reader of this build reads of it, so the old `decisions` member
+ *  holds none of them, and no decisions document, which is retired. A Change's anchor names the
+ *  spec by its id, which the issue's documents tie to the decision's address
+ *  (`decisionDocumentId`). */
 export function decisionsRead(made: readonly Decision[]): IssueDecisions {
   return {
-    decisions: [...made],
-    document: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}`,
+    decisions: [],
+    document: null,
+    entries: made.map(entryOf),
     open_questions: [],
   };
 }

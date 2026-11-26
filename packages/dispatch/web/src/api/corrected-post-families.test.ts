@@ -22,6 +22,8 @@ import {
 } from "../__tests__/correction-feed";
 import { graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { treeAnswer, treeNode } from "../features/issue-page/tree-read/tree-fixtures";
+import { outlineQuery, type TreeAnswer } from "../features/issue-page/tree-read/tree-read";
 import { useMarginItems } from "../features/margin/useMarginItems";
 import { replyRow } from "../features/threads/replies-fixture";
 import { ApiError, ambiguousItems, api } from "./client";
@@ -1076,6 +1078,36 @@ const ROWS: readonly WriteRow[] = [
     key: ["search", "deploy", {}],
     kind: "comment",
   },
+  // The issue page's tree read (Graph's): the post as a comment node, its words its text and their
+  // tree; a reply under it, which carries the head of those words as its parent's first line; and
+  // another comment under the issue, with words of its own.
+  {
+    answer: treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode(POST, "comment", "CORE-1", { text: OLD_WORDS, text_tree: WORDS_TREE }),
+      treeNode(OTHER, "comment", POST, { text: "Agreed." }),
+    ]),
+    copies: (answer) => [marksAt(answer, "nodes", 1)],
+    family: "issue-tree",
+    key: ["issue-tree", "CORE-1"],
+    kind: "comment",
+  },
+  // Conversation's read, under the tree's key: the post as a message node, and a block written in
+  // it, a node of its own under the post, whose id is the post's with the block's.
+  {
+    answer: treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode(POST, "message", "CORE-1", { text: OLD_WORDS, text_tree: WORDS_TREE }),
+      {
+        ...treeNode("b1", "block", POST, { text: OLD_WORDS, text_tree: WORDS_TREE }),
+        id: `message/${POST}#b1`,
+      },
+    ]),
+    copies: (answer) => [marksAt(answer, "nodes", 1), marksAt(answer, "nodes", 2)],
+    family: "issue-tree",
+    key: outlineQuery("CORE-1", "conversation").queryKey,
+    kind: "message",
+  },
 ];
 
 test("every family a correction writes has a row that proves the write", () => {
@@ -1155,6 +1187,38 @@ test("a delete empties the name of an issue's references row whose node is the p
       kind
     ).toEqual({ ...DELETION, name: "" });
     expect(rows?.[1], kind).toEqual(read()[list]?.[1]);
+  }
+});
+
+// The tree read holds a comment as a node of its answer, named by the post's own kind and id: an
+// edit writes its time on that node, and a delete its mark with no text and no tree, and either
+// leaves every other node the very one the cache held, another comment's among them.
+test("an edit and a delete of a comment held as a node of a tree answer each change that node and no other", () => {
+  const key = ["issue-tree", "CORE-1"];
+  const tree = () =>
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode(POST, "comment", "CORE-1", { text: OLD_WORDS, text_tree: WORDS_TREE }),
+      treeNode(OTHER, "comment", "CORE-1", { text: "Agreed." }),
+    ]);
+  for (const edited of [true, false]) {
+    const name = edited ? "the edit" : "the delete";
+    const client = new QueryClient();
+    client.setQueryData(key, tree());
+    const held = client.getQueryData<TreeAnswer>(key)?.nodes ?? [];
+    markCorrectedPost(client, correction("comment", POST, edited));
+    const nodes = client.getQueryData<TreeAnswer>(key)?.nodes ?? [];
+    expect(
+      nodes.filter((node, place) => node !== held[place]).map((node) => node.id),
+      name
+    ).toEqual([POST]);
+    const post = tree().nodes?.[1];
+    // Read as the cache holds it, with the marks the generated node type does not name.
+    expect<unknown>(nodes[1], name).toEqual(
+      edited
+        ? { ...post, edited_at: EDITED_AT }
+        : { ...post, ...DELETION, text: "", text_tree: undefined }
+    );
   }
 });
 

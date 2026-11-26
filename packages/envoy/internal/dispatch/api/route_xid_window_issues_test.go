@@ -97,7 +97,9 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	},
 	// A create naming a repository writes it in the issue row's insert and reads or locks no other
 	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
-	// and reference index, all of the harness's size, and its write advice.
+	// and reference index, all of the harness's size, and its write advice. Its spec's
+	// version_renders row goes in the queued batch with its record's digest owed, which the fill
+	// after the COMMIT records in a transaction of its own (R15, docs' fillOwedDigests).
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
 		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,

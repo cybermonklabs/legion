@@ -2,8 +2,14 @@ package graphcensus
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -150,6 +156,76 @@ func TestAnEventOwesTheObjectPassOnlyWhileItLeavesARowAndItsNodeApart(t *testing
 			requireObjectPassOwed(t, database, before, after, false, "once the object pass cured it")
 		})
 	}
+}
+
+// A row whose node the store holds but whose row names it nowhere is owed its name alone, and its
+// batch costs a transaction, the owner locks and a write of each node all the same, so the object
+// pass bounds such batches by a budget of their own, as many batches as its budget of nodes: the
+// first pass after this build deploys over a build that names no node on its row reads every issue
+// and document of the deployment as such a row. Over two batches of issues owed their name alone
+// and, after them, one issue owed its node, a pass of one batch names the first batch, leaves the
+// second for the next run, still writes the owed issue's node, and answers More, in two
+// transactions; the next pass names the batch left, in one, and answers no More.
+//
+// Its control is a batch owed names alone spending no budget: the first pass then names both
+// batches, in three transactions, and answers no More.
+func TestRowsOwedTheirNameAloneSpendANamingBudgetOfTheirOwn(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	named := 2 * backfillBatch
+	nodes := make([]graphstore.Node, named)
+	for index := range nodes {
+		nodes[index] = graphstore.IssueNode(fmt.Sprintf("NAME-%d", index+1), "NAME", alice, time.Now().UTC())
+	}
+	executeStatements(t, database, `
+		insert into projects (key, name, default_assignee) values ('NAME', 'Named', 'alice'), ('OWED', 'Owed', 'alice')
+	`)
+	// Each issue of NAME holds its node and names it nowhere, as a build that names no node on its
+	// row writes them, and OWED-1, whose key sorts after theirs, holds none, as the release before
+	// writes it.
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			select 'NAME-' || n, 'NAME', n, 'Named', '{"kind":"user","id":"alice"}'::jsonb, 'U' from generate_series(1, $1::integer) n
+			union all
+			select 'OWED-1', 'OWED', 1, 'Owed', '{"kind":"user","id":"alice"}'::jsonb, 'U'
+		`, named)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the issues owed their name alone and the issue owed its node: %v", err)
+	}
+	begins := &beginCounter{}
+	traced := storetest.TracedStore(t, database, begins)
+	for run, want := range []struct {
+		rows         int64
+		more         bool
+		transactions int64
+		named        int
+	}{
+		{rows: 1, more: true, transactions: 2, named: backfillBatch},
+		{rows: 0, more: false, transactions: 1, named: named},
+	} {
+		begins.count.Store(0)
+		pass, err := WriteOwedObjectNodes(ctx, traced, 1)
+		if err != nil || pass.Rows != want.rows || pass.More != want.more {
+			t.Fatalf("pass %d of one batch answered %+v (%v), want %d row(s) and More %t", run+1, pass, err, want.rows, want.more)
+		}
+		if opened := begins.count.Load(); opened != want.transactions {
+			t.Errorf("pass %d opened %d transaction(s), want %d: one a batch of each budget at most", run+1, opened, want.transactions)
+		}
+		var rows int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from issues where project_key = 'NAME' and node_kind is not null`).Scan(&rows); err != nil || rows != want.named {
+			t.Errorf("after pass %d %d issue(s) of NAME name their node (%v), want %d", run+1, rows, err, want.named)
+		}
+		if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindIssue, "OWED-1"); err != nil || !held {
+			t.Errorf("after pass %d the store holds no node of OWED-1 (held %t, %v): the names held back the node behind them", run+1, held, err)
+		}
+	}
+	requireComplete(t, ctx, database, "after the two passes")
 }
 
 // executeStatements runs statements on the pool, as one implicit transaction, failing the test

@@ -41,9 +41,14 @@ const Wait = 30 * time.Second
 // writer under the revision fence (R23) adds after it, the document's document_block_versions row
 // and the projection rows it reads again under those two locks, `for update`, before it writes
 // anything (graphcensus's heldBlockRows, heldBlockRefRows); the node rows; the tuple append; the
-// projection rows a writer writes; and the project of an event. RequireTheStoreLockOrder holds the
-// order a writer takes them in to the invariants on api/inbox_read.go's markInboxReadThreads, not
-// to one sequence of these steps.
+// projection rows a writer writes; the head rows (issue_head_nodes, graphstore.QueueHeads), the last
+// rows a write takes; and the project of an event. RequireTheStoreLockOrder holds the order a writer
+// takes them in to the invariants on api/inbox_read.go's markInboxReadThreads, not to one sequence
+// of these steps.
+//
+// A hold holds the rows of its own step alone: a hold written through the store's writer writes no
+// head row (a fixture's write phase of QueueWrite, not graphstore.Write), and a head row is held by
+// a hold of StepHead, so a writer queued behind a hold queued at that hold's step and no other.
 const (
 	StepOwner      = "the owner's lock"
 	StepFence      = "the revision fence's document_block_versions row"
@@ -51,13 +56,19 @@ const (
 	StepNode       = "the node rows"
 	StepTuple      = "the tuple append"
 	StepProjection = "the projection rows"
+	StepHead       = "the head rows"
 	StepEvent      = "the project of the event"
 )
 
 // fencedSteps are the steps whose rows the revision fence guards: a writer under it takes the
 // document's document_block_versions row before it reads a projection row again under it, or
-// writes a node, a tuple or a projection row.
-var fencedSteps = []string{StepHeld, StepNode, StepTuple, StepProjection}
+// writes a node, a tuple, a projection row or a head row.
+var fencedSteps = []string{StepHeld, StepNode, StepTuple, StepProjection, StepHead}
+
+// headAfter are the steps whose rows a writer takes before its head rows: every row of its write
+// but the owner's lock, which comes first anyway, and the project of an event, which the backfill's
+// writers take none of.
+var headAfter = []string{StepFence, StepHeld, StepNode, StepTuple, StepProjection}
 
 // Hold is one row of a step of the store's lock order, held in a transaction of its own while a
 // writer runs, and what the test expects of the writer while it waits behind it.
@@ -179,6 +190,9 @@ func RequireStoppedAt(t testing.TB, ctx context.Context, database *store.Store, 
 //   - the revision fence's row (R23) after the owner's lock, which the rule before says, and
 //     before the rows it guards (fencedSteps);
 //   - a node's row before the projection row whose foreign key names it (Hold.Names);
+//   - the head rows after every row of the write's other steps but the owner's lock and the
+//     event (headAfter): its fence row, the rows it reads again under the fence, its node rows,
+//     its tuples and its projection rows;
 //   - the project of the event last;
 //   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
 //     locks in ascending owner key and fence rows in document id order, the order every writer of
@@ -229,6 +243,8 @@ func RequireTheStoreLockOrder(t testing.TB, run string, holds, queued []*Hold) {
 				before(hold, other, "the owner's lock comes first")
 			case hold.Step == StepFence && slices.Contains(fencedSteps, other.Step):
 				before(hold, other, "the revision fence's row comes before the rows it guards")
+			case other.Step == StepHead && slices.Contains(headAfter, hold.Step):
+				before(hold, other, "the head rows come last, after every node row, tuple and projection row of the write")
 			case other.Step == StepEvent:
 				before(hold, other, "the project of the event comes last")
 			}

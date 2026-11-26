@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -52,6 +53,14 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 //
+// No arm holds its nodes to the types the store holds, as queueNodes does (queueSupertagCheck):
+// the arms are spliced into their caller's one statement - the publisher's record of a batch
+// above all - and a refusal decided before that statement runs has no statement of its own to run
+// in, while one decided inside it would end the record of a batch already sent. Every node an arm
+// writes is a person, a session, a role or a page (Authored, SessionRecorded, Reached, asks'
+// Follow and the publisher's own), each of a supertag the store seeds (20261109051232) and no
+// migration removes, so no arm writes a node of a type the store does not hold.
+//
 // A node's or a tuple's SourceEvent may be LatestEvent, for a record whose event its write phase
 // appends right before this statement: every cause column is read through causeOf.
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
@@ -71,8 +80,19 @@ func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) 
 }
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
-// it makes, or marks it for the cause that comes later.
+// it makes, or marks it for the cause that comes later. A node, a value tuple or a claim stating
+// a state or a visibility at a value that attribute does not take is refused before any arm is
+// built (checkBaseValues), and so is a node reserved for its author whose kind takes no such node
+// (CheckVisibilityAdmitted), so the caller's statement never runs it; so is a relation or a claim
+// whose kind the pointer type rules hold (pointerRules): an arm reads none of the nodes such a
+// rule names, so that relation is appended through Write or Caused alone (refusePointersInArms).
 func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, Uncaused, error) {
+	if err := checkBaseValues(nodes, tuples, claims); err != nil {
+		return "", nil, Uncaused{}, err
+	}
+	if err := refusePointersInArms(tuples, claims); err != nil {
+		return "", nil, Uncaused{}, err
+	}
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
 		return "", nil, Uncaused{}, nil
@@ -176,6 +196,7 @@ func nodeArm(first int, states bool) string {
 	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
 	       project_key, string_to_array(parties, ' ')
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
+	where ` + KeptHeadRows + `
 	order by kind, id
 	on conflict (kind, id) do nothing
 	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
@@ -193,7 +214,7 @@ graph_node_attributes as (
 		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
 		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
 		as attribute(kind, value)
-	where attribute.value is not null
+	where attribute.value is not null and ` + KeptHeadRows + `
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
 }
@@ -319,7 +340,7 @@ graph_claims_written as (
 		)) over (partition by stated.position) as restated
 		from graph_claims_stated stated
 	) stated
-	where not stated.restated` + where + `
+	where not stated.restated and ` + KeptHeadRows + where + `
 	order by position, step` + relationRepeatKey + `
 )`
 }
@@ -363,13 +384,15 @@ func nodeArrays(first int) string {
 // where is a condition the rows are read under, or empty for none: a tuple arm of WriteArms
 // passes nodesWrittenFirst.
 func tupleInsert(first int, where string) string {
+	condition := KeptHeadRows
 	if where != "" {
-		where = "\n\twhere " + where
+		condition += " and " + where
 	}
 	return `insert into graph_tuples (` + tupleWriteColumns + `)
 	select ` + tupleSelect + `
 	from unnest(` + tupleArrays(first) + `)
-		with ordinality as tuple(` + tupleWriteColumns + `, position)` + where + `
+		with ordinality as tuple(` + tupleWriteColumns + `, position)
+	where ` + condition + `
 	order by position`
 }
 
@@ -433,11 +456,11 @@ func nodeParams(nodes []Node) ([]any, error) {
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
 		if err != nil {
-			return nil, fmt.Errorf("encode attributes of node %s/%s: %w", node.Kind, node.ID, err)
+			return nil, fmt.Errorf("encode attributes of a %s node: %w", node.Kind, err)
 		}
 		madeBy, err := writers.encode(node.MadeBy)
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
+			return nil, fmt.Errorf("encode writer of a %s node: %w", node.Kind, errWriterNotEncoded)
 		}
 		kinds[index], ids[index] = node.Kind, node.ID
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
@@ -473,7 +496,7 @@ func tupleParamsOf(count int, nth func(index int) Tuple) ([]any, error) {
 		tuple := nth(index)
 		who, err := writers.encode(tuple.Who)
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
+			return nil, fmt.Errorf("encode writer of a %s tuple from a %s node: %w", tuple.Kind, tuple.FromKind, errWriterNotEncoded)
 		}
 		fromKinds[index], fromIDs[index], kinds[index] = tuple.FromKind, tuple.FromID, tuple.Kind
 		toKinds[index], toIDs[index], ats[index] = tuple.ToKind, tuple.ToID, tuple.At
@@ -497,7 +520,7 @@ func claimParams(claims []Claim) ([]any, error) {
 	for index, claim := range claims {
 		who, err := writers.encode(claim.Who)
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", claim.Kind, claim.FromID, err)
+			return nil, fmt.Errorf("encode writer of a %s claim from a %s node: %w", claim.Kind, claim.FromKind, errWriterNotEncoded)
 		}
 		fromKinds[index], fromIDs[index], kinds[index] = claim.FromKind, claim.FromID, claim.Kind
 		toKinds[index], toIDs[index], ats[index] = claim.ToKind, claim.ToID, claim.At
@@ -505,6 +528,11 @@ func claimParams(claims []Claim) ([]any, error) {
 	}
 	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents}, nil
 }
+
+// errWriterNotEncoded stands for a writer that json.Marshal refused. An Actor's Recorded form
+// holds strings alone, so the refusal cannot happen today. The error names no writer, because a
+// writer's id can be a person's email and a writer error reaches the index pass's log lines.
+var errWriterNotEncoded = errors.New("the writer does not encode as JSON")
 
 // writerEncoder encodes the writer each row of a write binds, as the row records it: Recorded
 // drops the request's credential, which no row ever holds. A run of rows with one writer shares

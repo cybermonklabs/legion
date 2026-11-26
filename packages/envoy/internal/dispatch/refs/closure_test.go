@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -175,11 +176,29 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 	return got
 }
 
+// documentMember is the member the references read answers for the document stored at refKey,
+// read through q, reached at depth 1 through via: kind artifact at the document's own address
+// (ArtifactRef).
+func documentMember(t *testing.T, q Queryer, refKey string, via model.ReferenceVia) Member {
+	t.Helper()
+	var issue, session *string
+	var project, slug, kind string
+	var primary bool
+	if err := q.QueryRow(context.Background(), `
+		select issue_key, coalesce(project_key, ''), session_id, slug, kind, is_primary from artifacts where ref_key = $1
+	`, refKey).Scan(&issue, &project, &session, &slug, &kind, &primary); err != nil {
+		t.Fatalf("read the document at %s: %v", refKey, err)
+	}
+	return Member{Kind: graphstore.KindArtifact, Address: ArtifactRef(issue, project, session, slug, kind, primary),
+		RefKey: refKey, Depth: 1, Via: via}
+}
+
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
 // via: a block its document still holds reaches that document, one no version holds reaches
 // nothing, and the documents of the chain past its first, which main's walk answered at depths
-// two to ten, are no member. It reads as somebody who proves no author, and no node of this data
-// is reserved for one, so the predicates it binds leave every member main answered.
+// two to ten, are no member. No document of this data moved, so each member is the document of
+// kind artifact at its own address. It reads as somebody who proves no author, and no node of
+// this data is reserved for one, so the predicates it binds leave every row main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
@@ -219,7 +238,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), closureArgs("CORE-1", model.Actor{})...).Scan(&raw); err != nil {
 		t.Fatalf("explain the out statement: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)
@@ -290,11 +309,12 @@ func lineDiff(got, want []string) string {
 	return fmt.Sprintf("%d missing [%s], %d unexpected [%s]", len(missing), first(missing), len(unexpected), first(unexpected))
 }
 
-// memberLines is each member as "<ref_key> depth <depth> via <kind> <id>", sorted.
+// memberLines is each member as "<ref_key> <kind> <address> depth <depth> via <kind> <id>",
+// sorted.
 func memberLines(members []Member) []string {
 	lines := make([]string, len(members))
 	for index, member := range members {
-		lines[index] = fmt.Sprintf("%s depth %d via %s %s", member.RefKey, member.Depth, member.Via.Kind, member.Via.ID)
+		lines[index] = fmt.Sprintf("%s %s %s depth %d via %s %s", member.RefKey, member.Kind, member.Address, member.Depth, member.Via.Kind, member.Via.ID)
 	}
 	slices.Sort(lines)
 	return lines
@@ -318,35 +338,6 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 	return strings.Join(problems, "; "), got
 }
 
-// writeOutsideStoreNodes writes n session nodes into graph_nodes, each live and visible to its
-// project, and one value of each into graph_tuples, none of which any read of these tests
-// reaches, and analyzes both tables. Every read of the graph binds the visibility registry's
-// predicates (visibility.go), each a probe of graph_nodes by its key, and graph_edges' own tuple
-// arm reads graph_tuples by its far end, so both are tables the statements read, and a test that
-// holds every table its statements read to a real size holds these two to one too. A value is no
-// relation, so no arm of graph_edges answers one.
-func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
-		select 'session', 'outside-session-' || i, 'session', 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write %d outside nodes into graph_nodes: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
-		select 'session', 'outside-session-' || i, 'name', 'value', 'Outside session ' || i, now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write a value of each of %d outside nodes into graph_tuples: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, "analyze graph_nodes, graph_tuples"); err != nil {
-		t.Fatalf("analyze graph_nodes and graph_tuples: %v", err)
-	}
-}
-
 // The references read reads one hop in each direction, keyed by the issue and its own content,
 // however large the graph beyond them. On a graph of the size and shape of INFRA-1098's closure
 // (newOneHopFixture), Closure answers under the route's 2 s bound: its links hold the 25
@@ -365,9 +356,7 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // are at most 20 times the issue's own content, its links out and in and the rows of both fields;
 // and every table is read through an index by its first key column, artifacts by ref_key, id or
 // the issue's key. Every table a statement reads holds oneHopMinimumRows or more, so the planner
-// plans the default settings on tables of a real size; graph_nodes, which each visibility
-// predicate of the statements probes by its key, is filled to that size with nodes no read of the
-// test reaches (writeOutsideStoreNodes).
+// plans the default settings on tables of a real size.
 //
 // The control runs main's statement on the same fixture under the same bound: it must end at the
 // bound (SQLSTATE 57014) or read ten times the rows of plan nodes the out statement reads, which
@@ -375,7 +364,6 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	fixture := newOneHopFixture(t, true)
-	writeOutsideStoreNodes(t, fixture.database.Pool, oneHopMinimumRows)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
 	bound := sizes.out + sizes.in + sizes.held
@@ -526,13 +514,14 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 }
 
 // mainsDepthOneMembers is main's rows of depth 1 for issueKey, as the members they make, by
-// ref_key.
+// ref_key: no document a fixture compares on moved, so each is the document of kind artifact at
+// its own address (documentMember).
 func mainsDepthOneMembers(t *testing.T, database *store.Store, issueKey string) []Member {
 	t.Helper()
 	members := []Member{}
 	for _, row := range closureStatementRows(t, database, mainClosureQuery, issueKey) {
 		if row.depth == 1 {
-			members = append(members, Member{RefKey: row.refKey, Depth: 1, Via: model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}})
+			members = append(members, documentMember(t, database.Pool, row.refKey, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
 		}
 	}
 	sort.Slice(members, func(left, right int) bool { return members[left].RefKey < members[right].RefKey })

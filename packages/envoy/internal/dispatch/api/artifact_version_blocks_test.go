@@ -85,12 +85,14 @@ func TestAVersionReadCarriesThatVersionsBlocks(t *testing.T) {
 // The blocks of a version index the markdown its answer carries. A version an earlier renderer
 // stored can render otherwise today; its answer then carries the rendering the blocks were read
 // from, and the digest and size of that text, so a reader slicing the markdown at a block's range
-// reads that block.
+// reads that block. The document is one whose versions answer their stored bytes, a document of
+// no query's band (docs' queryOfBand): a version of an issue's plan renders from the issue's tree,
+// so it holds no stored rendering of an earlier renderer to read.
 func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createArtifactIssue(t, handler)
-	plan := createIssueDocument(t, handler, issue.Key, "plan.md", "Intro.\n\n:::plan_task{#a steps=\"implementer\"}\nBody.\n:::\n")
+	plan := createIssueDocument(t, handler, issue.Key, "notes.md", "Intro.\n\n:::plan_task{#a steps=\"implementer\"}\nBody.\n:::\n")
 	// The stored text as a renderer that kept the blank lines between blocks would have written it.
 	stored := "Intro.\n\n\n\n:::plan_task{#a steps=\"implementer\"}\nBody.\n:::\n"
 	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1`, plan.ID, stored); err != nil {

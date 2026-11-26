@@ -1080,6 +1080,19 @@ build of ./internal/dispatch/api compiles that package too. Its testdata is not
 here, for the reason this filter's header gives: a dependency's testdata is read
 by that package's own tests, which run in a job of their own.
 
+## envoy_go_race_api: The dispatch command one test runs under Bun
+
+TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under
+bun (runDispatchCLI, internal/dispatch/api/decision_entries_test.go): the frozen
+install the job's steps make, and the files that command loads: its entry,
+packages/envoy-client/bin/dispatch.ts, envoy-client's sources and broker-client's,
+which they import, and the contracts modules its bundle loads, which
+`.github/scripts/check-ts-filters.sh write` lists file by file (ci_ts_programs.py's
+BUNDLES and LISTED rows for this filter), as dispatch_two_builds_go lists them. Not
+packages/envoy-client/** and packages/contracts/** whole: a changelog fragment, a
+test or a README of those packages is no file the command loads, and this is the
+slowest Dispatch race job.
+
 ## envoy_go_claim_model: The mention sender's claim model's own job
 
 The mention sender's claim model's own job: `go test -run` of its two tests in
@@ -2617,13 +2630,13 @@ before a PR claimed it. Its product code is still race-instrumented wherever a r
 compiles it, since envoy-go-race-docs imports pmdoc; what went is the second, race-built run
 of pmdoc's own tests.
 
-No job of this lane installs Bun: pmdoc's tests, which shell out to the generated TypeScript
-fixtures under internal/dispatch/pmdoc/gen and refuse to run without bun in CI
-(render_readback_test.go), were the only ones here that needed it, and they run in envoy-go's
-unit step now, while the "Check pmdoc fixtures are up to date" step that keeps those fixtures
-current is envoy-go-build's. delivery's, the bus's, natscred's and the auth service's NATS
-runs in the test process (internal/testnats), so no job here needs a container runtime of its
-own.
+Of this lane's jobs, envoy-go-race-api alone installs Bun: the API's
+TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under it. pmdoc's
+tests, which shell out to the generated TypeScript fixtures under internal/dispatch/pmdoc/gen
+and refuse to run without bun in CI (render_readback_test.go), run in envoy-go's unit step,
+while the "Check pmdoc fixtures are up to date" step that keeps those fixtures current is
+envoy-go-build's. delivery's, the bus's, natscred's and the auth service's NATS runs in the test
+process (internal/testnats), so no job here needs a container runtime of its own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
@@ -2649,9 +2662,9 @@ the slowest package of the race lane - 1773 s of the 1842 s the first step of en
 spent on main at 14d907b6 (job 123461966609) - and sharing a 30-minute step with the other
 five groups left it no headroom: that step died on go test's own deadline at job 123503246603.
 Its own filter is the closure of this one package, not packages/envoy/**, so a change
-elsewhere in the module does not start this job. No Bun: no test file here runs it, and no
-job of this lane installs it. It runs under -race because a read that walks a live document
-without its lock races the room's peers, which no ordinary run shows
+elsewhere in the module does not start this job. No Bun: no test file here runs it. It runs
+under -race because a read that walks a live document without its lock races the room's
+peers, which no ordinary run shows
 (`packages/envoy/internal/dispatch/docs/live_read_race_test.go#TestReadsOfALiveDocumentRunBesideItsPeers`,
 LEGION-499).
 

@@ -1,0 +1,94 @@
+kind: Added
+body: |-
+  A Dispatch node now has one of five states: live, proposed, settled, overtaken or gone. The store
+  refuses any other state. A lens, a finding, a risk and a constraint can be kept for their author,
+  and a run of the command bar always is: such a node answers its author and no other reader, at
+  every read, count and excerpt. The store refuses `author` visibility on every other kind. The
+  author is the person a credential proves, else a session, only where its recorded actor is proven
+  (`proven: true`, which a broker-issued token's session carries), else a pod's workload, the
+  session a pod's request body names included. A session only a request body names, with no
+  workload, proves no author. A node written under or on a node kept for its author takes that
+  node's visibility when the write names none, and `project` there is refused with
+  `400 VISIBILITY_WIDER_THAN_PARENT`, naming both nodes.
+
+  Dispatch adds a lens (`POST /api/v1/issues/{key}/lenses`), its findings, a risk, a constraint and
+  the pointers between them (`prevented_by` from a risk to the checks that prevent it,
+  `constrained_by` from a block to its constraints). A risk's `prevented_by` may point at a check of
+  any issue of the risk's project, and a check of another project, or a check of a retired
+  document, is refused with `400 INVALID_POINTER`, naming the check. When a block goes, its
+  `constrained_by` pointers and the `prevented_by` pointers at it are retracted, and when a document
+  is retired, the `prevented_by` pointers at its checks are retracted. The backfill retracts the
+  `prevented_by` pointers that a process of the release before left at a check that is gone or at a
+  check of a retired document. A lens's `triggered_by` may point only at a lens invoked before it:
+  one to the lens itself or to a lens invoked at the same time or later is refused with
+  `400 INVALID_POINTER`, naming both lenses, so no trigger closes a cycle.
+  `GET /api/v1/lenses?on=<address>` reads the lenses invoked on a node in invocation order,
+  the order of each lens's first `part_of`, which a move does not change, and a trigger walks at
+  most 50 lenses down a chain: the lenses past that cut start no chain of their own. A lens on a
+  block that a version removes, on a retired document or on a block of one stays live, and its
+  `on` names that node at the last version of its document that held it,
+  `dispatch://KEY/artifact/<slug>#b-<id>@v<N>` or `dispatch://KEY/artifact/<slug>@v<N>`:
+  `GET /api/v1/references?to=` the lens answers that node as its `parent` with `N` as its
+  `parent_version`, and `GET /api/v1/lenses?on=` that address reads the lenses on it. A lens on a
+  block of a comment or on a part of an ask that a later edit removes stays live the same way, and
+  its `on` names the block at the last revision of its item that held it,
+  `dispatch://KEY/comment/<id>#b-<id>@v<N>` or `dispatch://KEY/ask/<id>#b-<id>@v<N>`, in the same
+  three reads. The lens kinds are a catalogue that two migrations seed with 22 kinds, ten and then
+  twelve more, and `envoy-dispatch lens-kind-add` is its one writer. A `dispatch://` reference names
+  a node of these kinds by its own id: `dispatch://lens/<uuid>`, `dispatch://lens/<uuid>#b-<id>`
+  for a finding, `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`,
+  `dispatch://interaction/<uuid>` and `dispatch://lens_kind/<slug>`. The reference reads answer such
+  an address where they answered `400 INVALID_REFERENCE`, and the text reader reads one in text as a
+  reference.
+
+  `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
+  /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
+  `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
+  node. Any other move of a node into or out of proposed or settled takes the same rule: any other
+  caller is refused with `403 STATE_NOT_PERMITTED`, so the shared agent token makes no such move.
+  A state write or settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and
+  writes nothing, naming the ask whose node holds the question's state (the block's own ask or
+  the source ask for a copy) or saying no ask holds it yet.
+  Only a person takes a lens, a finding, a risk or a constraint to gone, and the node takes every
+  node that stands under it, at every depth, with it, those the person may not see included. Any
+  other caller, the node's own author included, is refused with `403 STATE_NOT_PERMITTED`, naming
+  the node; an agent marks a node it wrote overtaken instead. A lens on a document, or on a block of
+  one, records the id of the row at the document's address as `artifact_id` - for a block, the
+  address its own id names - wherever a write places it, a move included; once that row no longer
+  stands at the document's address - the document was removed, by whatever build, or another
+  document took its address - the lens and everything under it read as gone: `404 NOT_FOUND` by
+  address, absent from every list and count, and every write on them refused with
+  `409 NODE_GONE`. A lens write on a document removed while the write waited is refused with
+  `409 NODE_GONE`, naming the document. `DELETE /api/v1/artifacts/{id}` takes every lens on the
+  document it removes to gone in its own transaction, with everything that stands under each, and
+  the block-index tick takes every other such lens gone. A write on a gone node is refused with
+  `409 NODE_GONE`, naming the node, and the gone of a lens, a finding, a risk or a constraint is
+  final. The command bar's catalogue leaves out
+  `dispatch_state`, as it leaves out
+  `dispatch_settle`. A requirement's coverage counts no proposed check or plan task.
+  `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
+  gone, and each entry and each reading carries its node's `state`.
+
+  A run of the command bar is now an interaction node, read only by the credential that asked it,
+  and readable for one hour, as in the release before. Then the sweep states its node gone and
+  removes its rows, and the node, its words and its frames stay in the store.
+  A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
+  that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
+  follow or an unfollow of an ask, an edit of an ask's, a comment's or an issue message's words, and
+  the delete of a comment or an issue message included. A write
+  sent again under the `Idempotency-Key` of a write already committed is answered that answer even
+  after its run has ended, and the key's comparison includes the run header. A removed document's
+  node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same
+  title is not listed under the old run.
+  A gone run reads as one nobody asked at its address and through its stream, and no edge names
+  it. The node of a run holds its `source`, `going_requests`. After the rollout, run
+  `envoy-dispatch backfill-graph-store`, which gives each run recorded before this release its node.
+
+  `envoy-dispatch premortem-convert` and
+  `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a
+  lens with one risk for risk 0 and for each numbered risk, each with `prevented_by` pointers to the
+  checks that a map names, in one transaction. The conversion first retires the document and moves
+  its address to the lens it is about to write: the document leaves its issue's document list,
+  takes no new text, and holds one `document.retired` event whose reason names the lens, and its
+  old address answers that lens on `GET /api/v1/references?to=` and in the reference closure of any
+  issue that cites it. Then it writes the lens, its risks and their `prevented_by` pointers.

@@ -11,7 +11,7 @@ import { api } from "../../api/client";
 import type { Ask, AskRead, Comment } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBlockCard } from "./AskBlockCard";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -37,7 +37,9 @@ const schema = new Schema({
         invalid: { default: undefined },
         multiple: { default: false },
         selected: { default: undefined },
-        state: { default: "open" },
+        // A server attribute has no default in the editor's schema: a block the server wrote no
+        // state into holds none.
+        state: { default: undefined },
         urgency: { default: "med" },
       },
       content: "paragraph+ bullet_list?",
@@ -182,6 +184,7 @@ function renderCard({
   owner,
   readOnly = false,
   rowResolution = false,
+  served,
   thread = threadRead(indexed),
 }: {
   ask?: Ask;
@@ -193,6 +196,8 @@ function renderCard({
   readOnly?: boolean;
   /** Render as a closed issue's current document does. */
   rowResolution?: boolean;
+  /** The server's read of the ask the block shows (`servedAskOf`). */
+  served?: ServedAsk;
   /** What `GET /asks/{id}` answers for the block's ask. */
   thread?: AskRead;
 }) {
@@ -218,6 +223,7 @@ function renderCard({
           owner={owner}
           readOnly={readOnly}
           rowResolution={rowResolution}
+          served={served}
         />
       </QueryClientProvider>
     </MemoryRouter>
@@ -441,6 +447,88 @@ test("a block with an ask of its own names no source, whatever its attributes ho
   });
   try {
     expect(card.header.queryByText(/Copied from/)).not.toBeInTheDocument();
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a copy reads its source's state and answer from the server's read of the source ask, not from its own attributes", () => {
+  // The copy's block holds none of the answer: it is on the source ask alone, which the issue's
+  // asks list carries under the same block id on another document.
+  const source: Ask = {
+    ...answeredAsk,
+    block_artifact: { id: "artifact-plan", primary: false, slug: "plan" },
+    id: "ask-source",
+  };
+  const served = servedAskOf([source], "artifact-copy", "b-1");
+  expect(served).toEqual({ ask: source, copiedFrom: "dispatch://CORE-1/artifact/plan" });
+  const card = renderCard({ indexed: false, node: askNode({ state: "open" }), served });
+  try {
+    expect(card.header.getByText(/Copied from/).textContent).toBe(
+      "Copied from CORE-1 plan, answered there"
+    );
+    expect(card.section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+      "Ship it after the fix lands."
+    );
+    expect(getAsk).not.toHaveBeenCalled();
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a read-only block reads who answered, when and what from the server, whatever its attributes hold", () => {
+  const card = renderCard({
+    node: askNode({ state: "open" }),
+    readOnly: true,
+    served: servedAskOf([answeredAsk], "artifact-1", "b-1"),
+  });
+  try {
+    expect(card.header.getByText("Answered by bob")).toBeInTheDocument();
+    // The server's selection ticks Ship and leaves Hold, which the block's attributes never held.
+    expect(card.recordRows().map(([selected]) => selected)).toEqual(["true", "false"]);
+    expect(card.section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+      "Ship it after the fix lands."
+    );
+  } finally {
+    card.unmount();
+  }
+});
+
+test("the frame stamps the state the server reads, so an answered block's source list stays folded under the caret", () => {
+  // The block records no answer and no state, which the shell stamps as open; the document's
+  // styles show the source list in an open block the caret is in, so the card stamps the
+  // server's read over it.
+  const card = renderCard({
+    ask: answeredAsk,
+    node: askNode({}),
+    served: servedAskOf([answeredAsk], "artifact-1", "b-1"),
+  });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("answered");
+  } finally {
+    card.unmount();
+  }
+});
+
+test("without the server's read the frame stamps the state the block records", () => {
+  const card = renderCard({ indexed: false, node: askNode({ state: "resolved" }), readOnly: true });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("resolved");
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a block that records no state reads as open where no server read is given", () => {
+  // Settlement takes the state off a live block once the answer is held on the ask's node alone,
+  // and the editor gives the attribute no default: a block with no ask row and no read of one
+  // shows the open ask it was written as.
+  const card = renderCard({ indexed: false, node: askNode({}), readOnly: true });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("open");
+    expect(card.header.queryByText("Closed")).not.toBeInTheDocument();
+    expect(card.header.queryByText("Resolved")).not.toBeInTheDocument();
+    expect(card.header.queryByText(/^Answered by/)).not.toBeInTheDocument();
   } finally {
     card.unmount();
   }

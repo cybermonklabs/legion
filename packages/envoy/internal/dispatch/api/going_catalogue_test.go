@@ -23,14 +23,16 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Four are not, the two review routes and the two routes
-// of the proven-sessions setting, and their rows say why.
+// operation the bar cannot yet propose. Seven are not, the two review routes, the settle of a
+// proposed node, the write of a node's state, the pre-mortem conversion and the two routes of the
+// proven-sessions setting, and their rows say why.
 // TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
 // named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
+	"DELETE /api/v1/issues/{key}/nodes/{id}",
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 	"DELETE /api/v1/me/agent-tokens/{id}",
 	"DELETE /api/v1/me/asks/{id}/snooze",
@@ -44,6 +46,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/projects/{key}/proven-sessions",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
+	"PATCH /api/v1/issues/{key}/nodes/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
@@ -71,7 +74,23 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/credential-requests/{id}/dismiss",
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
+	// The pre-mortem conversion dispatch_premortem_convert performs: it retires a document once,
+	// turning it into a lens and its risks (spec requirement r-premortem-nodes), so the
+	// loop that proposes operations on the graph must never propose it, and goingToolRoutes gives
+	// it no row for that reason, as it gives dispatch_review's routes none. Keep it here; never
+	// give it a row.
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
+	// The settle dispatch_settle performs: a settle written by a person's credential records that
+	// the person settled a proposal, which is the person's own call
+	// (spec requirement r-proposed), so goingToolRoutes gives it no row for the reason
+	// it gives the review routes none. Keep it here; never give it a row.
+	"POST /api/v1/issues/{key}/nodes/{id}/settle",
+	// The write of a node's state dispatch_state performs: it moves a node out of settled, undoing
+	// a settle, and into gone, which is final, and a person's credential passes the settle's caller
+	// rule for both (spec requirement r-proposed), so goingToolRoutes gives it no row for
+	// the reason it gives the settle none. Keep it here; never give it a row.
+	"POST /api/v1/issues/{key}/nodes/{id}/state",
 	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
 	"POST /api/v1/issues/{key}/results/dry-run",
 	"POST /api/v1/machine-logins/{id}/revoke",
@@ -418,6 +437,50 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 			t.Fatalf("the caller sent %d request(s) for a call no row takes", len(doer.requests))
 		}
 	})
+}
+
+// TestAGoingCallerNamesItsRunOnEveryWriteItMakes: a caller acting for a run sends the run in
+// contracts.GoingRunHeader on every request Do makes, whichever row the action takes, so the
+// server can name each node the write changes as changed by that run. A caller acting for no run
+// sends no such header.
+func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
+	t.Parallel()
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatalf("build the catalogue: %v", err)
+	}
+	const run = "01234567-89ab-4cde-8f01-23456789abcd"
+	doer := &countingDoer{}
+	caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Run: run, Doer: doer}
+	for _, call := range []struct {
+		action    string
+		arguments map[string]any
+	}{
+		{"dispatch_issue", map[string]any{"project": "ACME", "title": "A new issue"}},
+		{"dispatch_claim", map[string]any{"issue": "ACME-1042", "release": true}},
+		{"dispatch_follow", map[string]any{"ask": "01234567-0000-4000-8000-000000000001", "action": "follow"}},
+	} {
+		if _, err := caller.Do(context.Background(), call.action, call.arguments); err != nil {
+			t.Fatalf("perform %s: %v", call.action, err)
+		}
+	}
+	if len(doer.requests) != 3 {
+		t.Fatalf("the caller sent %d request(s), want one for each of its 3 actions", len(doer.requests))
+	}
+	for _, sent := range doer.requests {
+		if named := sent.Header.Values(contracts.GoingRunHeader); len(named) != 1 || named[0] != run {
+			t.Errorf("the caller's %s %s names the run %v in %s, want %s once", sent.Method, sent.URL.Path, named, contracts.GoingRunHeader, run)
+		}
+	}
+
+	doer = &countingDoer{}
+	caller = GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+	if _, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "ACME", "title": "A new issue"}); err != nil {
+		t.Fatalf("perform dispatch_issue for no run: %v", err)
+	}
+	if named := doer.requests[0].Header.Values(contracts.GoingRunHeader); len(named) != 0 {
+		t.Fatalf("a caller acting for no run sent %s %v, want none", contracts.GoingRunHeader, named)
+	}
 }
 
 // TestAGoingRelationOutsideBothEdgeFamiliesFails: a catalogue entry names the relations its

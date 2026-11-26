@@ -1599,7 +1599,7 @@ test("a block card marks its post's edit, and a block of a deleted post says the
         : commentRead({ id })
     )
   );
-  const blockNode = (block: string, editedAt: string | undefined) => ({
+  const blockNode = (block: string, editedAt: string | undefined): GraphReferences => ({
     edges: [],
     node: {
       ...graphNodeFields(),
@@ -1607,7 +1607,7 @@ test("a block card marks its post's edit, and a block of a deleted post says the
       edited_at: editedAt,
       id: `comment/${comment}#${block}`,
       issue_key: "CORE-1",
-      kind: "block",
+      kind: "block" as const,
       made_by: [{ id: "alice", kind: "user" } as const],
       parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
       project: "CORE",

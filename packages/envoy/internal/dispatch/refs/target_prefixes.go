@@ -255,13 +255,14 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor,
 }
 
 // blockShortIDCandidates reads into found, under each of ids, the blocks of its document that
-// its prefix names, in block id order, as blockPrefixCandidates reads them for one id. Without
-// pinned, every id is of the latest indexed version of its document, whose blocks
-// document_blocks holds. With pinned, every id is of the version that its reference pins, whose
-// blocks are the ids that document_block_texts records a text of at or before that version, the
-// latest of those texts each, and none at all unless a block-aware build indexed that version.
-// A block who may not see is none of them, at its node's id, the document's ref_key, '#' and the
-// block id, whichever version names it.
+// its prefix names, in block id order, as blockPrefixCandidates reads them for one id: where the
+// block index keeps them, in the room the document is edited in (DocumentRoomBlocksSQL,
+// DocumentRoomTextsSQL). Without pinned, every id is of the latest indexed version of its
+// document, whose blocks document_blocks holds. With pinned, every id is of the version that its
+// reference pins, whose blocks are the ids that document_block_texts records a text of at or
+// before that version, the latest of those texts each, and none at all unless a block-aware build
+// indexed that version. A block who may not see is none of them, at its node's id, the room's
+// ref_key, '#' and the block id, whichever version names it.
 func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, pinned bool, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
@@ -279,7 +280,7 @@ func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, id
 		cross join lateral (
 			select d.block_id, d.excerpt
 			from document_blocks d
-			where d.artifact_id = a.id and starts_with(lower(d.block_id), p.prefix)` +
+			where ` + DocumentRoomBlocksSQL("d", "a.id") + ` and starts_with(lower(d.block_id), p.prefix)` +
 			args.andVisible(who, "block", `d.node_id`) + `
 			order by d.block_id limit ` + prefixLimit + `
 		) d
@@ -298,11 +299,11 @@ func blockShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, id
 				from (
 					select distinct on (b.block_id) b.block_id, b.text
 					from document_block_texts b
-					where b.artifact_id = a.id and b.version <= p.pin and starts_with(lower(b.block_id), p.prefix)
+					where ` + DocumentRoomTextsSQL("b", "a.id") + ` and b.version <= p.pin and starts_with(lower(b.block_id), p.prefix)
 					order by b.block_id, b.version desc
 				) t
 				where t.text is not null` +
-			args.andVisible(who, "block", `a.ref_key || '#' || t.block_id`) + `
+			args.andVisible(who, "block", documentRoomBlockAddressSQL("a.id", "t.block_id")) + `
 				order by t.block_id limit ` + prefixLimit + `
 			) t
 			where exists (select 1 from document_indexed_versions i where i.artifact_id = a.id and i.version = p.pin)

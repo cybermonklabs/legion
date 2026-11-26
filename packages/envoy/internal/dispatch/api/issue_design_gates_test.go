@@ -157,19 +157,18 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
-	// The deployment serving DGATE gates all three steps, and its rows say nothing of holding
-	// their tree, so the rows below turn on the record alone; the rows at the end are the ones
-	// that move this list or give that answer.
-	publishGatedSteps(t, handler, "DGATE", []string{model.GatedStepDecisions, model.GatedStepCriteria, model.GatedStepSpec})
+	// The deployment serving DGATE gates both steps, and its rows say nothing of holding their
+	// tree, so the rows below turn on the record alone; the rows at the end are the ones that move
+	// this list or give that answer.
+	publishGatedSteps(t, handler, "DGATE", []string{model.GatedStepCriteria, model.GatedStepSpec})
 	spec := "# Design\n\nThe design, as approved.\n"
 
 	t.Run("a publish replaces the issue's whole set", func(t *testing.T) {
 		issue := createAdviceIssue(t, handler, "DGATE", "Replaced set", &spec)
-		decisions := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "decisions.md", "# Decisions\n\nOne.\n")
 		criteria := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 
 		both := []issueDesignGate{
-			{Step: model.GatedStepDecisions, ArtifactID: decisions.Artifact.ID},
+			{Step: model.GatedStepCriteria, ArtifactID: criteria.Artifact.ID},
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		}
 		publishDesignGates(t, handler, issue.Key, both)
@@ -178,7 +177,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 
 		// The daemon publishes the issue's whole set, so a publish that names the Verification
-		// document alone is the set the issue has: the two rows above are gone, not merged with.
+		// document alone is the set the issue has: the spec's row above is gone, not merged with.
 		criteriaOnly := []issueDesignGate{{Step: model.GatedStepCriteria, ArtifactID: criteria.Artifact.ID}}
 		publishDesignGates(t, handler, issue.Key, criteriaOnly)
 		if got := recordedDesignGates(t, handler, issue.Key); !slices.Equal(got, criteriaOnly) {
@@ -288,14 +287,14 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			t.Fatalf("%s, whose gates record nothing, reads design_gates %#v, want []: a missing list would say the read never asked", issue.Key, none)
 		}
 
-		decisions := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "decisions.md", "# Decisions\n\nOne.\n")
+		criteria := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
-			{Step: model.GatedStepDecisions, ArtifactID: decisions.Artifact.ID},
+			{Step: model.GatedStepCriteria, ArtifactID: criteria.Artifact.ID},
 		})
 		// Published spec first, read back in the order a gate runs the steps.
 		want := []issueDesignGate{
-			{Step: model.GatedStepDecisions, ArtifactID: decisions.Artifact.ID},
+			{Step: model.GatedStepCriteria, ArtifactID: criteria.Artifact.ID},
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		}
 		if got := recordedDesignGates(t, handler, issue.Key); !slices.Equal(got, want) {
@@ -665,7 +664,10 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 		{{Step: model.GatedStepSpec, ArtifactID: "artifact-b"}},
 	}
 	for round := range 20 {
-		publishDesignGates(t, handler, issue, []issueDesignGate{{Step: model.GatedStepDecisions, ArtifactID: "artifact-z"}})
+		publishDesignGates(t, handler, issue, []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: "artifact-z"},
+			{Step: model.GatedStepSpec, ArtifactID: "artifact-z"},
+		})
 		codes := make([]int, 2)
 		answers := make([][]issueDesignGate, 2)
 		var start, done sync.WaitGroup
@@ -695,5 +697,66 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 				t.Errorf("round %d: publish %d of %v answered %v, want the set it stored", round+1, index, set, answers[index])
 			}
 		}
+	}
+}
+
+// The design_gates rows of the retired `decisions` step stay, and this build ignores them. A row
+// of that step, written beside a `spec` row as a
+// daemon of the release before stored it, is in neither the issue's gates nor the
+// superseded-approval advice, which name the `spec` step alone, and no read deletes it. The
+// project's stored list of that step alone reads as [spec], so the spec gate still names its
+// clause. A publish of a set holding the step, which a daemon of the release before still sends,
+// is taken: the step is dropped, and that publish's own rule takes the issue's row of it away.
+func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	createAdviceProject(t, handler, "DROW")
+	if _, err := database.Pool.Exec(ctx, `update projects set gated_steps = array['decisions'] where key = 'DROW'`); err != nil {
+		t.Fatalf("store the project's list as the release before published it: %v", err)
+	}
+	spec := "# Design\n\nThe design, as approved.\n"
+	issue := createWorkingIssue(t, handler, "DROW", "Gated before the release", &spec)
+	publishDesignGates(t, handler, issue.Key, []issueDesignGate{{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID}})
+	if _, err := database.Pool.Exec(ctx, `insert into design_gates (issue, step, artifact_id) values ($1, 'decisions', $2)`,
+		issue.Key, issue.PrimaryArtifactID); err != nil {
+		t.Fatalf("store a row of the decisions step as the release before wrote it: %v", err)
+	}
+	decisionsRows := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from design_gates where issue = $1 and step = 'decisions'`, issue.Key).Scan(&count); err != nil {
+			t.Fatalf("count the decisions rows: %v", err)
+		}
+		return count
+	}
+
+	specOnly := []issueDesignGate{{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID}}
+	if got := recordedDesignGates(t, handler, issue.Key); !slices.Equal(got, specOnly) {
+		t.Fatalf("%s records %#v beside a row of the decisions step, want the spec's row alone %#v", issue.Key, got, specOnly)
+	}
+	approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
+	superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the gate had not seen.", approved)
+	if want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}; !slices.Equal(superseded.DesignGates, want) {
+		t.Fatalf("the superseded-approval advice names %#v, want %#v: the spec step alone, on a list of the decisions step alone read as [spec]",
+			superseded.DesignGates, want)
+	}
+	if rows := decisionsRows(); rows != 1 {
+		t.Fatalf("%s holds %d rows of the decisions step after the reads, want the one stored: no read deletes it", issue.Key, rows)
+	}
+	projects := decodeBody[[]model.Project](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects", nil, "alice"))
+	for _, project := range projects {
+		if project.Key == "DROW" && !slices.Equal(project.GatedSteps, []string{model.GatedStepSpec}) {
+			t.Fatalf("the project list reads DROW's stored [decisions] as %v, want [spec]", project.GatedSteps)
+		}
+	}
+
+	published := publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+		{Step: "decisions", ArtifactID: issue.PrimaryArtifactID},
+		{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
+	})
+	if !slices.Equal(published.Gates, specOnly) || decisionsRows() != 0 {
+		t.Fatalf("a publish holding the decisions step answered %#v and left %d rows of it, want %#v and none",
+			published.Gates, decisionsRows(), specOnly)
 	}
 }

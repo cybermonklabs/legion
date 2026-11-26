@@ -110,11 +110,18 @@ func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testi
 	}
 }
 
-// A document that holds no markdown version is owed a block index all the same - rebuild-refs
-// marks every document, and a tick passes over one with no version to index - so no version
-// dates its debt. It is dated by its own creation, which is when it started being owed. Dating
-// it by nothing would leave it counted in the backlog and invisible in the age, which is the
-// one row whose age an operator most needs: no tick will ever settle it.
+// A document that holds no markdown version is owed a block index until a tick reaches it -
+// rebuild-refs marks every document - and no version dates that debt. The backlog dates it by
+// the document's own creation, which is when it started being owed (refs.OwedBlockIndexDebts, the
+// one text both the tick's logged figure and `census --store --sizing` read). Dating it by nothing
+// would leave it counted in the backlog and invisible in the age.
+//
+// What the tick then does with it is this branch's rule (R16), and why this test no longer finds
+// the document owed after the tick: once the owner-locked re-read finds no markdown version, one
+// statement clears the document's marks and states it at version 0 (indexOwedDocument), where a
+// tick of the release before passed over it and left it owed for ever. After the tick the
+// document is stated at version 0 by this build's rule, owed by nothing, and the backlog holds no
+// debt of it to date.
 func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
@@ -135,13 +142,47 @@ func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("mark every document owed a block index: %v", err)
 	}
+	debts := func() (int, *time.Time) {
+		t.Helper()
+		var count int
+		var oldest *time.Time
+		if err := database.Pool.QueryRow(ctx, `select count(*), min(owed.owed_at) from (`+refs.OwedBlockIndexDebts+`) owed`,
+			service.markingRule).Scan(&count, &oldest); err != nil {
+			t.Fatalf("read the block-index debts: %v", err)
+		}
+		return count, oldest
+	}
+
+	if count, oldest := debts(); count != 1 || oldest == nil || !oldest.Equal(made) {
+		t.Fatalf("before a tick the backlog holds %d debt(s), the oldest dated %v, want the version-less document's one, dated by its own creation %s",
+			count, oldest, made)
+	}
 
 	tick := reconcileBlockIndex(t, service, "")
-	if tick.Documents != 0 || tick.OwedDocuments != 1 {
-		t.Fatalf("tick = %#v, want the version-less document still owed and nothing indexed", tick)
+	if tick.Documents != 0 || tick.OwedDocuments != 0 || !tick.OldestOwedDocumentAt.IsZero() {
+		t.Fatalf("tick = %#v, want nothing indexed, nothing owed and no debt dated: the tick states a document with no markdown version at version 0", tick)
 	}
-	if !tick.OldestOwedDocumentAt.Equal(made) {
-		t.Fatalf("the oldest owed document is dated %s, want the document's own creation %s",
-			tick.OldestOwedDocumentAt.UTC(), made)
+	var version, statedVersion, statedRule *int
+	var owedAt *time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		select version, stated_version, stated_rule, store_owed_at from document_block_versions where artifact_id = $1::uuid
+	`, artifactID).Scan(&version, &statedVersion, &statedRule, &owedAt); err != nil {
+		t.Fatalf("read the block index row of %s: %v", artifactID, err)
 	}
+	if version == nil || *version != 0 || statedVersion == nil || *statedVersion != 0 ||
+		statedRule == nil || *statedRule != service.markingRule || owedAt != nil {
+		t.Errorf("after the tick the version-less document's row reads version %v, stated_version %v, stated_rule %v and mark %v; want it stated at version 0 by marking rule %d and owed by nothing",
+			ptrText(version), ptrText(statedVersion), ptrText(statedRule), owedAt, service.markingRule)
+	}
+	if count, _ := debts(); count != 0 {
+		t.Errorf("after the tick the backlog holds %d debt(s), want none", count)
+	}
+}
+
+// ptrText writes an optional integer for a failure message, `null` where it holds none.
+func ptrText(value *int) string {
+	if value == nil {
+		return "null"
+	}
+	return fmt.Sprint(*value)
 }

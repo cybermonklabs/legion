@@ -824,7 +824,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2176`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2310`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
@@ -960,7 +960,7 @@ Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
-with no decision blocks, three or more session writes without a human response (with stronger
+with no ask blocks, three or more session writes without a human response (with stronger
 wording from six), a write while the issue is still in triage, and up to two still-open asks owned
 by the session. Ask replies do not trigger the write-cadence pointer and suppress an open-ask
 pointer when replying to that ask; a status-setting issue update does not trigger the triage
@@ -1506,7 +1506,7 @@ arguments and asks Dispatch nothing.
 `dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
 parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
-name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
+name (the document's latest, `approval.latest_version`) holds an ask block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown
 and the owner's asks (the issue's for an issue document, since the artifact route refuses those),
 and judges each block by its `state` on every line of the version that opens it, so a line quoting

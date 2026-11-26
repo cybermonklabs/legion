@@ -42,6 +42,7 @@ import (
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
 // ask the create left without a node.
 func TestEveryCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	ctx := context.Background()
 	fixture := seedEveryKind(t, rig)
@@ -333,11 +334,25 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions":   {succeeds: true, body: map[string]any{"summary": "The spec, named."}},
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions": {succeeds: true, body: map[string]any{"summary": "The project document, named by its slug."}},
 
-	"POST /api/v1/issues/{key}/claim":                                      noObject,
-	"POST /api/v1/issues/{key}/results":                                    noObject,
-	"POST /api/v1/issues/{key}/results/dry-run":                            noObject,
-	"POST /api/v1/issues/{key}/handoffs/{phase}":                           noObject,
-	"POST /api/v1/results/{id}/retract":                                    noObject,
+	"POST /api/v1/issues/{key}/claim":            noObject,
+	"POST /api/v1/issues/{key}/results":          noObject,
+	"POST /api/v1/issues/{key}/results/dry-run":  noObject,
+	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
+	"POST /api/v1/results/{id}/retract":          noObject,
+	// The reasoning nodes, a node's state, a node's move and the pre-mortem conversion:
+	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
+	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each
+	// is called with the empty body and refused.
+	"POST /api/v1/issues/{key}/lenses":                                     noObject,
+	"POST /api/v1/issues/{key}/risks":                                      noObject,
+	"POST /api/v1/issues/{key}/constraints":                                noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/findings":                        noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/pointers":                        noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
+	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
+	"PATCH /api/v1/issues/{key}/nodes/{id}":                                noObject,
+	"DELETE /api/v1/issues/{key}/nodes/{id}":                               noObject,
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert":         noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                noObject,
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 noObject,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -51,11 +52,11 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 // graph_backfill_horizon are created by 20261118115645 and altered by 20261120122600 in the same
 // release, before any build writes a row of them, so no existing row is rewritten for them;
 // document_blocks, block_refs and comments are altered by 20261109022248,
-// server_build_announcements by 20261115051200 and document_block_versions by 20261116221539 and
-// 20261120122600. A pending migration that writes rows of any of them once it is above the limit
-// may write them only with bounded writes, the one write of such a table the migration census
-// admits (pgmigrate.BoundedWriteRows); the sizing names that rule beside such a table and refuses
-// nothing for it (writeBoundedWrites).
+// server_build_announcements by 20261115051200 and document_block_versions by 20261116221539,
+// 20261120122600 and 20261120130000. A pending migration that writes rows of any of them once it
+// is above the limit may write them only with bounded writes, the one write of such a table the
+// migration census admits (pgmigrate.BoundedWriteRows); the sizing names that rule beside such a
+// table and refuses nothing for it (writeBoundedWrites).
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -89,12 +90,13 @@ type TableSize struct {
 }
 
 // StoreTableGrowth is one of the two store tables projected forward: what it holds now, how
-// many rows a day the kinds above put in it, the bytes a row it is measured at and where that
-// figure came from, and the size it reaches in a year.
+// many rows a day the kinds above put in it, the rows the backfills still owe it once, the bytes a
+// row it is measured at and where that figure came from, and the size it reaches in a year.
 type StoreTableGrowth struct {
 	Name            string
 	Bytes, Rows     int64
 	RowsADay        float64
+	BackfillRows    int64
 	BytesARow       int64
 	BytesARowSource string
 	YearBytes       int64
@@ -108,12 +110,13 @@ type StoreTableGrowth struct {
 // migration census (pgmigrate.Census) holds every pending migration to that rule, which is the
 // gate. The report names the rule beside each such table (writeBoundedWrites).
 type SizingReport struct {
-	Limit   int64
-	Events  []EventRate
-	Tables  []TableSize
-	Kinds   []StoreKind
-	Growth  []StoreTableGrowth
-	Backlog BlockIndexBacklog
+	Limit     int64
+	Events    []EventRate
+	Tables    []TableSize
+	Kinds     []StoreKind
+	Backfills []StoreBackfill
+	Growth    []StoreTableGrowth
+	Backlog   BlockIndexBacklog
 }
 
 // readSizing reads the growth pass in the census's own snapshot: the write rate by kind over
@@ -158,19 +161,51 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 			report.Kinds[index].Share = report.Kinds[index].TuplesADay / tuplesADay
 		}
 	}
+	// The version backfill writes its rows once, beside the rate: a node and six tuples for every
+	// version a build before the version nodes stored (backfillVersions, graphstore.VersionFacts).
+	owed, err := versionBackfillOwed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	values, tops, err := unstatedBlocksOwed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	report.Backfills = []StoreBackfill{{
+		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6, Owed: owed,
+		Driver: "artifact_versions whose version node the store does not hold: the node, its visibility, its state and" +
+			" its document's project or parties, its part_of its document, and its number and created_at values",
+	}, {
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 5, Owed: values,
+		Driver: "document_blocks rows of each document the backfill's marking marks (markStaleDocuments): each block's rank," +
+			" text, placement, text_parent and text_rank",
+	}, {
+		Name: "block_top", MovedBy: movedWithBlocks, Tuples: 2, Owed: tops,
+		Driver: "document_blocks rows of an issue's spec, Verification or plan document the marking marks, each at its" +
+			" document's top (parent_block_id null; every row of such a document where the column does not exist): the" +
+			" retraction of its part_of to the document and its part_of to the issue",
+	}}
+	var backfillTuples, backfillNodes int64
+	for _, backfill := range report.Backfills {
+		backfillTuples += backfill.Owed * int64(backfill.Tuples)
+		backfillNodes += backfill.Owed * int64(backfill.Nodes)
+	}
 	for _, growth := range []struct {
-		name     string
-		rowsADay float64
-	}{{"graph_tuples", tuplesADay}, {"graph_nodes", nodesADay}} {
+		name         string
+		rowsADay     float64
+		backfillRows int64
+	}{{"graph_tuples", tuplesADay, backfillTuples}, {"graph_nodes", nodesADay, backfillNodes}} {
 		size, measured := sizes[growth.name]
 		if !measured {
 			return nil, fmt.Errorf("the sizing projects %s, which branchTables does not name", growth.name)
 		}
 		projected := StoreTableGrowth{
 			Name: growth.name, Bytes: size.Bytes, Rows: size.Rows, RowsADay: growth.rowsADay,
+			BackfillRows: growth.backfillRows,
 		}
 		projected.BytesARow, projected.BytesARowSource = bytesARow(size)
-		projected.YearBytes = size.Bytes + int64(growth.rowsADay*sizingYearDays)*projected.BytesARow
+		projected.YearBytes = size.Bytes +
+			(int64(growth.rowsADay*sizingYearDays)+growth.backfillRows)*projected.BytesARow
 		projected.Past = projected.YearBytes >= report.Limit
 		report.Growth = append(report.Growth, projected)
 	}
@@ -282,8 +317,17 @@ func (s *SizingReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: sizing share kind=%s moved_by=%s writes_in_window=%d share_of_tuples=%.4f%s\n",
 			kind.Name, kind.MovedBy, kind.Writes, kind.Share, note)
 	}
+	// What a backfill writes once, beside the rates: a line of its own, so the lines above keep
+	// the fields a driver reads them by.
+	for _, backfill := range s.Backfills {
+		fmt.Fprintf(w, "census: sizing backfill kind=%s moved_by=%s owed_rows=%d nodes_a_row=%d tuples_a_row=%d"+
+			" nodes=%d tuples=%d driver=%s\n",
+			backfill.Name, backfill.MovedBy, backfill.Owed, backfill.Nodes, backfill.Tuples,
+			backfill.Owed*int64(backfill.Nodes), backfill.Owed*int64(backfill.Tuples), backfill.Driver)
+	}
 	for _, growth := range s.Growth {
 		fmt.Fprintf(w, "census: sizing rows-a-day table=%s rows_a_day=%.2f\n", growth.Name, growth.RowsADay)
+		fmt.Fprintf(w, "census: sizing backfill-rows table=%s rows=%d\n", growth.Name, growth.BackfillRows)
 		fmt.Fprintf(w, "census: sizing bytes-a-row table=%s bytes_a_row=%d source=%s\n",
 			growth.Name, growth.BytesARow, growth.BytesARowSource)
 		fmt.Fprintf(w, "census: sizing year table=%s bytes_now=%d bytes_at_a_year=%d limit_bytes=%d verdict=%s\n",

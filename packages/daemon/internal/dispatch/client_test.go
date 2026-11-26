@@ -108,6 +108,63 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}
 }
 
+// TestTheDaemonReadsNeedsAndFallsBackToBlockedBy is c-one-dependency's daemon half
+// (R10 of the issue-tree spec): a Dispatch of this release answers an issue's waits as needs beside
+// blocked_by, and one of the release before answers blocked_by alone, which a new daemon can meet.
+// The issue read and the listing each decode an answer holding needs and one holding blocked_by
+// alone to the same targets, and an answer whose two members name different issues is read by
+// needs.
+func TestTheDaemonReadsNeedsAndFallsBackToBlockedBy(t *testing.T) {
+	answers := map[string]map[string]any{
+		"LEGION-10": {"needs": []string{"LEGION-2", "OTHER-3"}, "blocked_by": []string{"LEGION-2", "OTHER-3"}},
+		"LEGION-11": {"blocked_by": []string{"LEGION-2", "OTHER-3"}},
+		"LEGION-12": {"needs": []string{"LEGION-2", "OTHER-3"}},
+		"LEGION-13": {"needs": []string{"LEGION-2", "OTHER-3"}, "blocked_by": []string{"LEGION-9"}},
+	}
+	keys := []string{"LEGION-10", "LEGION-11", "LEGION-12", "LEGION-13"}
+	answer := func(key string) map[string]any {
+		body := map[string]any{"key": key, "project": "LEGION", "title": key, "status": "todo", "rank": key}
+		for member, value := range answers[key] {
+			body[member] = value
+		}
+		return body
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.URL.Path == "/api/v1/issues" {
+			listed := make([]map[string]any, 0, len(keys))
+			for _, key := range keys {
+				listed = append(listed, answer(key))
+			}
+			writeJSON(t, w, listed)
+			return
+		}
+		writeJSON(t, w, answer(strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")))
+	}))
+	defer server.Close()
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	want := []string{"LEGION-2", "OTHER-3"}
+	listed, err := client.ListIssues(context.Background(), "LEGION", nil)
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	if len(listed) != len(keys) {
+		t.Fatalf("listed %d issues, want %d", len(listed), len(keys))
+	}
+	for index, key := range keys {
+		issue, err := client.GetIssue(context.Background(), key)
+		if err != nil {
+			t.Fatalf("get %s: %v", key, err)
+		}
+		if !slices.Equal(issue.BlockedBy, want) {
+			t.Errorf("the issue read of %s, answering %v, reads waits %v, want %v", key, answers[key], issue.BlockedBy, want)
+		}
+		if listed[index].Key != key || !slices.Equal(listed[index].BlockedBy, want) {
+			t.Errorf("the listing's row %s, answering %v, reads waits %v, want %v", listed[index].Key, answers[key], listed[index].BlockedBy, want)
+		}
+	}
+}
+
 // An issue's resolved repository is Dispatch's to compute (its own, else its nearest ancestor's,
 // else the project's default); the list and the detail carry it, and null reads as none.
 func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {

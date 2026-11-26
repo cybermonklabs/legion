@@ -1746,7 +1746,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		// The settle delay is an hour, so no settlement runs between two steps of the call: the test
 		// runs each one itself. The browser's edit inside the close margin is settled into a version
 		// while the issue is closed, which the reopen's follow then moves the approval request to.
-		peer := connectBrowserPeer(t, documents, spec)
+		peer := connectBrowserPeer(t, handler, documents, spec)
 		closeIssueThroughPatch(t, handler, database, named)
 		stored := storedUpdateCount(t, database, spec)
 		peer.edit(t, replaceFirstParagraph("Context", "Context, edited in the margin"))

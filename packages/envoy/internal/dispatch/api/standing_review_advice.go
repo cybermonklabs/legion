@@ -34,10 +34,8 @@ type standingReview struct {
 	// own carry sentence rather than anything the person wrote.
 	Reason string `json:"reason,omitempty"`
 	// CarriedFromVersion is set exactly when the review is one Dispatch carried forward to this
-	// version rather than one the person gave on it, and is the version the carry's reason
-	// names: the version the person reviewed, or, where a carry followed a carry, the version
-	// the carry before it named. It is omitted from every other review, which is what says the
-	// person reviewed this version himself.
+	// version rather than one the person gave on it. It is the source the review read answers,
+	// including for a carry of a carry. It is omitted from every other review.
 	CarriedFromVersion int `json:"carried_from_version,omitempty"`
 }
 
@@ -45,69 +43,115 @@ type standingReview struct {
 // characters so a cut never splits one.
 const standingReviewReasonLimit = 500
 
-// standingReviewAdvice is the review the issue's specification already carries when a question
-// is opened on it, or nil when it carries none and whenever the read failed: the question is
-// written either way, so this reports nothing rather than refusing the write. ledger is the
-// question's own, whose queued writes - a version the anchor's snapshot queued, a review that
-// version's carry queued - the table holds only once Commit has run them, so the specification
-// is read as the question's write leaves it.
+// standingSpecRead is what the standing review is decided on, read before a write phase: the
+// issue's primary document, "" where it has none; its newest review as the table holds it; and its
+// newest version, nil where it has none or where no review the rule could name stands
+// (standingSpecReview).
+type standingSpecRead struct {
+	artifactID string
+	stored     *model.ArtifactReview
+	latest     *int
+}
+
+// standingReviewAdvice reads, in the question's read phase, what the review the issue's
+// specification already carries is decided on (readStandingSpec), as the question's write leaves
+// the document: the version the anchor's snapshot queued of it is its newest
+// (docs.Ledger.PendingVersionNumber), since the write phase writes every version it queues. The
+// review that version's carry writes, which the write phase keeps or drops as only it decides (a
+// restore's carry), is set over the stored one once Commit has returned, with no statement
+// (standingSpecRead.asWritten). A failed read reports no review: the question is written either
+// way, so this reports nothing rather than refusing the write.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write
 // it describes. It writes nothing, so the savepoint is always rolled back, which also restores
 // the statement_timeout it set.
-func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) *standingReview {
+func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) standingSpecRead {
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "standing_review")
 	if !ok {
-		return nil
+		return standingSpecRead{}
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	review, err := standingSpecReview(ctx, adviceTx, ledger, issueKey)
+	read, err := readStandingSpec(ctx, adviceTx, ledger, issueKey)
 	if err != nil {
 		s.logAdviceError(route, issueKey, "standing_review", err)
-		return nil
+		return standingSpecRead{}
 	}
-	return review
+	return read
 }
 
-// standingSpecReview is standingReviewAdvice's rule, over whatever queryer the caller holds: the
-// newest review of the issue's primary document (docs.NewestReview, which adds no read of
-// artifact_reviews to this module), reported when all three of these hold - the review is
-// pinned to the document's newest version, its kind is a person's, and its actor is a person
-// with no agent named beside it. An issue with no primary document, a document with no version
-// and a document nobody has reviewed each report nothing, as does a review of an older version,
-// a plan review, and a review an agent wrote under a person's scope.
-//
-// ledger, nil for a reader outside any write, holds what the caller's transaction has queued and
-// not yet written: a review it queued is newer than every stored one
-// (docs.Ledger.PendingReview), and a version it queued is the document's newest
-// (docs.Ledger.PendingVersionNumber), so each answers for the table where it is there.
-func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, issueKey string) (*standingReview, error) {
-	var artifactID string
+// standingSpecReview is the review the issue's specification carries as the tables hold it, for a
+// reader outside any write: readStandingSpec's reads, and the rule over them
+// (standingSpecRead.asWritten).
+func standingSpecReview(ctx context.Context, q queryer, issueKey string) (*standingReview, error) {
+	read, err := readStandingSpec(ctx, q, nil, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	return read.asWritten(nil), nil
+}
+
+// readStandingSpec reads, over whatever queryer the caller holds, the issue's primary document,
+// its newest review (docs.NewestReview, which adds no read of artifact_reviews to this module) and
+// its newest version. ledger, nil for a reader outside any write, holds what the caller's
+// transaction has queued and not yet written: a version it queued is the document's newest
+// (docs.Ledger.PendingVersionNumber), and a review it queued (docs.Ledger.PendingReview) is one the
+// rule may name, so the version is read for it. The review is read before the version: an issue
+// nobody has reviewed, and one whose newest review is a plan review or an agent's, is answered
+// without asking for the version number at all, and those are most issues.
+func readStandingSpec(ctx context.Context, q queryer, ledger *docs.Ledger, issueKey string) (standingSpecRead, error) {
+	var read standingSpecRead
 	if err := q.QueryRow(ctx, `
 		select id::text from artifacts where issue_key = $1 and is_primary and kind = 'doc'
-	`, issueKey).Scan(&artifactID); err != nil {
+	`, issueKey).Scan(&read.artifactID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+			return standingSpecRead{}, nil
 		}
-		return nil, fmt.Errorf("read the issue's primary document: %w", err)
+		return standingSpecRead{}, fmt.Errorf("read the issue's primary document: %w", err)
 	}
-	// The review is read before the version: an issue nobody has reviewed, and one whose newest
-	// review is a plan review or an agent's, is answered without asking for the version number
-	// at all, and those are most issues.
-	review, err := newestSpecReview(ctx, q, ledger, artifactID)
+	review, err := docs.NewestReview(ctx, q, read.artifactID)
 	if err != nil {
-		return nil, fmt.Errorf("read the document's newest review: %w", err)
+		return standingSpecRead{}, fmt.Errorf("read the document's newest review: %w", err)
 	}
-	if review == nil || review.Kind != docs.ReviewKindPerson {
-		return nil, nil
+	read.stored = review
+	if _, carried := ledger.PendingReview(read.artifactID); !carried && !personsReview(review) {
+		return read, nil
 	}
-	if review.Actor.Kind != "user" || review.Actor.Act != nil {
-		return nil, nil
+	if number, queued := ledger.PendingVersionNumber(read.artifactID); queued {
+		read.latest = &number
+		return read, nil
 	}
-	latest, err := newestSpecVersion(ctx, q, ledger, artifactID)
-	if err != nil || latest == nil || review.Version != *latest {
-		return nil, err
+	if read.latest, err = latestVersionNumber(ctx, q, read.artifactID); err != nil {
+		return standingSpecRead{}, err
+	}
+	return read, nil
+}
+
+// personsReview reports whether review is a person's own: of a person's kind, by a person with no
+// agent named beside them. A plan review, and a review an agent wrote under a person's scope, are
+// not.
+func personsReview(review *model.ArtifactReview) bool {
+	return review != nil && review.Kind == docs.ReviewKindPerson && review.Actor.Kind == "user" && review.Actor.Act == nil
+}
+
+// asWritten is the review the issue's specification carries as the write left it, once Commit has
+// returned, or nil when it carries none: the newest review - the one the transaction wrote
+// (docs.Ledger.WrittenReview), newer than every stored one, where the write phase kept it, else the
+// stored one the read phase read - reported when all three of these hold: the review is pinned to
+// the document's newest version, its kind is a person's, and its actor is a person with no agent
+// named beside it. An issue with no primary document, a document with no version and a document
+// nobody has reviewed each report nothing, as does a review of an older version, a plan review, and
+// a review an agent wrote under a person's scope. It runs no statement.
+func (read standingSpecRead) asWritten(ledger *docs.Ledger) *standingReview {
+	if read.artifactID == "" {
+		return nil
+	}
+	review := read.stored
+	if written, wrote := ledger.WrittenReview(read.artifactID); wrote {
+		review = &written
+	}
+	if !personsReview(review) || read.latest == nil || review.Version != *read.latest {
+		return nil
 	}
 	standing := &standingReview{
 		By:      review.Actor.ID,
@@ -118,33 +162,12 @@ func standingSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, iss
 	// A carried review's stored reason is Dispatch's own carry sentence rather than anything
 	// the person wrote, so the carry is reported and the sentence is not: a reader that printed
 	// it would quote Dispatch back to the sender as the reviewer's words.
-	if review.Reason != nil {
-		if from, carried := docs.CarriedFromVersion(*review.Reason); carried {
-			standing.CarriedFromVersion = from
-		} else {
-			standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
-		}
+	if review.CarriedFromVersion != nil {
+		standing.CarriedFromVersion = *review.CarriedFromVersion
+	} else if review.Reason != nil {
+		standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
 	}
-	return standing, nil
-}
-
-// newestSpecReview is the newest review of artifactID as the caller's queued writes leave it: the
-// review its transaction queued where it queued one, else the newest stored one.
-func newestSpecReview(ctx context.Context, q queryer, ledger *docs.Ledger, artifactID string) (*model.ArtifactReview, error) {
-	if review, queued := ledger.PendingReview(artifactID); queued {
-		return &review, nil
-	}
-	return docs.NewestReview(ctx, q, artifactID)
-}
-
-// newestSpecVersion is the newest version of artifactID as the caller's queued writes leave it:
-// the version its transaction queued where it queued one, else the newest stored one, nil when
-// the document has none.
-func newestSpecVersion(ctx context.Context, q queryer, ledger *docs.Ledger, artifactID string) (*int, error) {
-	if number, queued := ledger.PendingVersionNumber(artifactID); queued {
-		return &number, nil
-	}
-	return latestVersionNumber(ctx, q, artifactID)
+	return standing
 }
 
 // firstCharacters is text cut to the first count characters, whole: a cut between two bytes of

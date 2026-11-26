@@ -52,7 +52,7 @@ func pendingNewsOf(t *testing.T, machine *supervise.Machine) record.DeliveryNews
 // row records the opening as owed; the reconcile queues no news-only start beside the task it has
 // not taken. So the task, sent at the turn's end, is the one delivery of the opening: it leads with
 // the opened sentence, and its confirmation clears the opening with the version it told. A later
-// version that Dispatch carries approved, which changes decision blocks alone, then sends nothing:
+// version that Dispatch carries approved, which changes ask blocks alone, then sends nothing:
 // the reconcile raises what the reviewer took.
 func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testing.T) {
 	t.Parallel()
@@ -127,7 +127,7 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 	}
 	endTurn(r.ctx, t, reviewer, token)
 
-	// A version that changes decision blocks alone, which Dispatch carries approved, sends nothing.
+	// A version that changes ask blocks alone, which Dispatch carries approved, sends nothing.
 	mark, before = r.lastRowID(), len(conn.Prompts())
 	r.dispatchEvent(intake.DispatchArtifactApproved, 5)
 	r.dispatchEvent(intake.DispatchArtifactVersion, 5)
@@ -136,12 +136,12 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 	}
 	r.run(ofKind(record.OutboxKindRoleMessage))
 	if addressed := r.seenSince(mark, addressedTo(pathRoot, claim.RoleReviewer, token)); len(addressed) != 0 {
-		t.Fatalf("outbox rows addressed to the reviewer after a carried decision-only version = %+v, want none", addressed)
+		t.Fatalf("outbox rows addressed to the reviewer after a carried ask-only version = %+v, want none", addressed)
 	}
 	if prompted := promptsAfter(conn, before); len(prompted) != 0 {
-		t.Fatalf("the reviewer's prompts after a carried decision-only version = %+v, want none", prompted)
+		t.Fatalf("the reviewer's prompts after a carried ask-only version = %+v, want none", prompted)
 	}
-	r.wantTold("after the carried decision-only version", pathRoot, record.AudienceHolder, 5, false)
+	r.wantTold("after the carried ask-only version", pathRoot, record.AudienceHolder, 5, false)
 }
 
 // A holder item an architect's task carries is told only while that architect holds the member's

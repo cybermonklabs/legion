@@ -678,6 +678,50 @@ func parseOldestEventWriter(text *string) (uint64, error) {
 	return oldest, nil
 }
 
+// oldestEventWriterHolderSQL answers who holds the oldest transaction of this database that can
+// hold an event id not yet final - a backend among the event writers (eventWritersSQL), or a
+// prepared transaction of this database, the two the writer arm of oldestEventWriterSQL reads -
+// by the transaction id it holds: its backend's pid, 0 for a prepared transaction, and when it
+// began, a backend's pg_stat_activity.xact_start or a prepared transaction's prepared time. No row
+// where no such transaction is open.
+const oldestEventWriterHolderSQL = `
+	with next as (
+		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
+	)
+	select pid, began from (
+		select w.transactionid::text::numeric as x, w.pid,
+			(select a.xact_start from pg_stat_activity a where a.pid = w.pid) as began
+		from (` + eventWritersSQL + `) w
+		union all
+		select transaction::text::numeric, 0, prepared from pg_prepared_xacts where database = current_database()
+	) held, next
+	order by ` + xidWidenedSQL + `
+	limit 1
+`
+
+// ErrNoEventWriter is OldestEventWriter's answer where no transaction of this database holds a
+// write lock on events.
+var ErrNoEventWriter = errors.New("no transaction of this database holds a write lock on events")
+
+// OldestEventWriter names the oldest transaction that can hold an event id not yet final, the one
+// WriterFloor waits on (oldestEventWriterHolderSQL): pid, its backend, 0 for a prepared transaction, as
+// StallHolderSQL reports one, and since, when its transaction began. since is the zero time where
+// Postgres shows this role no xact_start of that backend, as it shows none of another role's
+// backend to a role without pg_read_all_stats. It answers ErrNoEventWriter where none is open.
+func OldestEventWriter(ctx context.Context, q Queryer) (pid int32, since time.Time, err error) {
+	var began *time.Time
+	if err := q.QueryRow(ctx, oldestEventWriterHolderSQL).Scan(&pid, &began); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, time.Time{}, ErrNoEventWriter
+		}
+		return 0, time.Time{}, fmt.Errorf("read the oldest writer of the event log: %w", err)
+	}
+	if began != nil {
+		since = *began
+	}
+	return pid, since, nil
+}
+
 // WriterFloor answers the highest id at or below which no event can still be open, read from the
 // marks given, the newest first, and from H: the Newest of the first mark older than every
 // transaction that holds a write lock on events in this database now (oldestEventWriterSQL), or H

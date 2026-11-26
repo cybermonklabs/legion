@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -2081,6 +2082,58 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_RECONCILE_AT_START=true: ReconcileAtStart true, want only 1 to set it")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HOLD_DECISIONS_STEP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}); !boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=1: HoldDecisionsStep false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "true"}); boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=true: HoldDecisionsStep true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HOLD_BLOCK_INDEX": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX unset: HoldBlockIndex true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BLOCK_INDEX": "1"}); !boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX=1: HoldBlockIndex false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BLOCK_INDEX": "true"}); boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX=true: HoldBlockIndex true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_BLOCK_INDEX": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HOLD_BOOT_BACKFILL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HoldBootBackfill {
+				t.Error("DISPATCH_TEST_HOLD_BOOT_BACKFILL unset: HoldBootBackfill true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"}); !boot.HoldBootBackfill {
+				t.Error("DISPATCH_TEST_HOLD_BOOT_BACKFILL=1: HoldBootBackfill false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "true"}); boot.HoldBootBackfill {
+				t.Error("DISPATCH_TEST_HOLD_BOOT_BACKFILL=true: HoldBootBackfill true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.BootBackfillHorizonWait != 0 || bootBackfillHorizonBound(boot) != graphcensus.BackfillHorizonWaitBound {
+				t.Errorf("DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT unset: BootBackfillHorizonWait = %v and the boot's bound %v, want 0 and graphcensus.BackfillHorizonWaitBound's %v",
+					boot.BootBackfillHorizonWait, bootBackfillHorizonBound(boot), graphcensus.BackfillHorizonWaitBound)
+			}
+			const short = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                      "1",
+				"DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT": short.String(),
+			})
+			if boot.BootBackfillHorizonWait != short || bootBackfillHorizonBound(boot) != short {
+				t.Errorf("DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT: BootBackfillHorizonWait = %v and the boot's bound %v, want %v", boot.BootBackfillHorizonWait, bootBackfillHorizonBound(boot), short)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {

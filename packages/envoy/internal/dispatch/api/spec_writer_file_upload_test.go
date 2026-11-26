@@ -15,10 +15,11 @@ import (
 // Verification document takes its first verification.md only from a person or an architect of
 // its tree (R1), whatever Content-Type the upload's file part carries. A multipart upload whose
 // file part is text/plain is stored as a file (artifactKind), which takes the slug verification-md
-// and no role, and documentPlays reads such a row as the issue's Verification document by that
-// slug: the issue answers it as its verification_artifact_id, and the architect's later upload of
-// verification.md is refused ARTIFACT_KIND_MISMATCH. So C's tester's file upload is refused with
-// 403 DOCUMENT_WRITER_NOT_ARCHITECT like its markdown upload, and writes nothing.
+// and no role. documentPlays reads no file as a role document, so the issue would not answer it as
+// its verification_artifact_id, but the file holds the name and the slug the Verification document
+// needs: the architect's later upload of verification.md would be refused ARTIFACT_KIND_MISMATCH.
+// So C's tester's file upload is refused with 403 DOCUMENT_WRITER_NOT_ARCHITECT like its markdown
+// upload (specWriterDocumentName), and writes nothing.
 func TestSpecWriteRefusesAWorkersFirstVerificationUploadedAsAFile(t *testing.T) {
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{noVerification: true})

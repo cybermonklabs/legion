@@ -109,6 +109,9 @@ export interface KeptWrite {
    *  such field, and `load` is the one place that converts a missing one (`KeptEntry`), so
    *  nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
+  /** The issue the write changes (`WriteBase.issue`), or `null` for none. An entry written before
+   *  the field existed holds none, and a reload names the issue of its request's path instead. */
+  readonly issue?: string | null;
   /** Whether the write goes under its key (`Write.keyed`), as its press registered it, which
    *  the indicator reads for what its Retry does. Every write kept here holds the field, which
    *  this release is the first to write; `load` is the one place that reads an entry an older
@@ -165,6 +168,7 @@ type KeptEntry = Omit<KeptWrite, "carried" | "keyed"> & {
 const keptEntryShape = shape.record({
   carried: shape.optional(shape.nullable(shape.oneOf(...WRITE_METHODS))),
   detail: shape.unknown,
+  issue: shape.optional(shape.nullable(shape.string)),
   key: shape.string,
   keyed: shape.optional(shape.boolean),
   kind: shape.string,

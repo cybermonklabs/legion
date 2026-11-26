@@ -370,31 +370,114 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
 // refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
-// re-recorded rather than raised.
+// re-recorded rather than raised. It was re-recorded again when the store's write path
+// (graphstore.QueueWrite) began reading the types of the nodes it writes (queueSupertagCheck),
+// which refs.CommentWrite.Queue now sends first, renumbering the statements after it, while its
+// node move and its append changed in whitespace alone: that read writes nothing and refuses a
+// comment write only where the store holds no live supertag row of comment, person or session,
+// rows migration 20261109051232 seeds, so it too moves no row in or out of what a pass owes.
 //
 // It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
 // `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
 // node's cause: the statement reads the same event id, only through events' primary key, so it
 // moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
-// text of LatestEventID the statements give the digest recorded before.
+// text of LatestEventID the statements give the digest recorded before. Rule 2's digest was
+// re-recorded for the same reason: with the old text its statements give the one it recorded
+// before.
 //
 // It was re-recorded once more when the digest came to fold each statement's whitespace and to
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
-// statement moved a row in or out of what a pass owes.
+// statement moved a row in or out of what a pass owes. Rule 2's was re-recorded with it, the
+// fence of rule 2 writing stated_version and stated_rule beside store_version. The digest of rule
+// 1 recorded then on this change, 2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb,
+// holds that change and the supertag read above together: the statements are the folded ones with
+// that read added before the node write of refs.CommentWrite.Queue, and nothing else.
 //
 // A change of words that keeps every statement's rows keeps the rule, and records its digest in
 // place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
 // once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
-// #5491, and from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
-// before the hint below, whose statements also read the project columns above: the backfill's
-// block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
-// materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
-// and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot
-// walks a seed with the word and without it, under both plan-cache modes, and holds the two to the
-// same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
-// the other reads rule 1's cursors, horizons and marks as its own rightly.
+// #5491, from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
+// before the hint below, whose statements also read the project columns above, and from the
+// digest above on this change, whose statements also hold the supertag read: the backfill's block
+// selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`,
+// a planner hint that runs them once per batch, which changes the statement's plan and not its
+// rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a
+// seed with the word and without it, under both plan-cache modes, and holds the two to the same
+// rows).
+// The documents a pass of rule 1 marks are the same, so a build of either text beside the other
+// reads rule 1's cursors, horizons and marks as its own rightly. The digest below holds the word
+// and the supertag read together: the statements are the ones of the digest above with the word
+// added, which are #4173's branch's with the word,
+// c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3, with the supertag read added,
+// and nothing else.
+//
+// Rule 2's statements are this branch's: a pass records the rule and the version it stated a
+// document by (stated_rule, stated_version), and the backfill and the tick mark a document no
+// pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
+// of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already
+// standing. Rule 1's entry is the sibling branch's, as it records it.
+//
+// Rule 2's digest moved twice by changes of words that keep every statement's rows, from
+// 58b60662b0ca419685451c8ed20174f7a39235aec9f59e5e889ec071642a03d4. The head projection
+// (graphstore.QueueHeads) moved the statements refs.CommentWrite.Queue sends: the node insert, the
+// node update and the tuple append each carry graphstore's KeptHeadRows,
+// `(select set_config('dispatch.head_rows', 'kept', true)) is not null`, in the WHERE of the rows
+// they write, which is true of every row, since set_config answers the value it sets, so each
+// writes the rows it wrote before; and the write sends one statement more, the head rows of the
+// comment's node, which writes issue_head_nodes alone. Neither marks a document, writes another
+// comment or moves the revision fence. And #4790's `caused as materialized (` in
+// graphcensus.BlockRowsStatement, above, changes its plan and not its rows. With the word taken
+// out the statements give 12211e11e636debb9207fa401899ed8f2b0b773b78fec3e24718a19f725ecd04, and with
+// the head projection's predicates and statement taken out as well, the digest recorded before.
+//
+// It moved a third time, from 3ddf78835ff68e4647d98580cbd6b7ff370c1369234f8eb0996b9bee56a064b1,
+// when the head rows came to hold what the tree read's comment page reads: the head-rows statement
+// that refs.CommentWrite.Queue sends (graphstore.QueueHeads) reads each comment's row and each
+// comment block's row and text beside the node, and writes those columns of issue_head_nodes, and it
+// claims the rows kept as the other statements do. It still writes issue_head_nodes alone, so it
+// marks no document, writes no other comment and moves no revision fence; no other marking
+// statement changed with it.
+//
+// It moved a fourth time, from 876f8ff389464b286100702428b8fb5218b74f78f43e0345e549f82f1cf553cb,
+// when the head rows came to hold a comment's marks beside what its page reads (main's #3512: when
+// its author last edited it, and when and by whom it was deleted): the same head-rows statement
+// reads the comment's edited_at, deleted_at and deleted_by for the comment and for each of its
+// blocks, and writes them into three more columns of issue_head_nodes. It still writes
+// issue_head_nodes alone; no other marking statement changed with it.
+//
+// It moved a fifth time, from 349ad57c4983da437d4904a67c55aad25864f849b28ae1b86998c179d3fcd005,
+// when the head mark triggers of the conversation tables came to fire inside the statement that
+// writes the row rather than at the commit: the update that names each comment's node on its row,
+// which refs.CommentWrite.Queue sends after the node write, carries graphstore's KeptHeadRows in its
+// WHERE as the node write's statements do, which is true of every row, so it names the nodes it
+// named before. It still marks no document, writes no other comment and moves no revision fence; no
+// other marking statement changed with it, and with the predicate taken out the statements give the
+// digest recorded before.
+//
+// It moved a sixth time, from ff98e8c680479fa8b9b29a1ff1f44c48b723dcfa7eab0f97bcb36decbbfd8226,
+// when a reply came to hang under the comment it answers (migration 20261125120200): the head-rows
+// statement refs.CommentWrite.Queue sends (graphstore.QueueHeads) reads each comment's answers and
+// writes it into item_answers of issue_head_nodes, where it read replies_to_block into
+// item_replies_to_block. It still writes issue_head_nodes alone, so it marks no document, writes no
+// other comment and moves no revision fence; no other marking statement changed with it. That gave
+// a71166ac04cd753133df88c8440da5aeefa862f43c632eb7985d9db812cff4b6, which was not recorded here.
+//
+// It moved a seventh time, from that digest, when the block index's pass came to leave the
+// conflict arm off the tuples of the nodes its own insert made (graphstore.ArmlessFresh, T13f of
+// this issue's plan): the mark a node write leaves on a row it makes (graphstore's nodeMarks)
+// carries markInserted beside the base attributes it states, so the node write of
+// refs.CommentWrite.Queue leaves -(mark*32 + attributes), the attributes of a node it makes 16
+// higher, where it left -(mark*16 + attributes), and its tuple append reads the mark back at that
+// span. A mark stands only between the node write and the append of one write, which moves every
+// marked row onto its cause, and markInserted is no base attribute, so the append states the same
+// base attributes and settles the same rows (graphstore's
+// TestAnUncausedWriteStatesEachAttributesOwnValue); the comment write is no armless write, so each
+// tuple it appends keeps its arm. No statement marks another document, writes another comment or
+// moves the revision fence, and with the span and markMade as they stood the statements give the
+// digest above.
 var markingStatementDigests = map[int]string{
-	1: "c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3",
+	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
+	2: "5fe827ac4c3788c61e635b0282b137dfe061098aa58959e401ebe93e8d1fea57",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

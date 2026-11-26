@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -59,26 +60,37 @@ with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys
                   ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 `
 
+// searchTermDocument is true of the artifacts row aliased alias while it is a document the counts
+// hold the words of: a doc, and no issue's decisions query (refs.DecisionsQuerySQL), whose versions
+// render a view over decision nodes and whose row is in no list of its issue's documents. An
+// issue's tree artifact is no doc. Both write versions, and neither is an item: the issue holds
+// its spec and its other documents.
+func searchTermDocument(alias string) string {
+	return `(` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
+}
+
 // searchTermItemsSQL selects the search vector of every searchable item of the project
 // {project} stands for, one row per item, each kind scoped exactly as searchKeywordLegsSQL scopes
-// it: an issue, each doc artifact's row in document_search (the vector of the version search
-// reads), a comment or an ask by its issue's project or else its document's, a message by its
-// issue's.
+// it: an issue, each document's latest version that holds markdown (documentLatestVersionSQL;
+// searchTermDocument), a comment or an ask by its issue's project or else its document's, a
+// message by its issue's.
 //
-// The document arm reads document_search (migration 20261101182447) where it read each
-// artifact's latest version through a lateral join over artifact_versions, for two reasons.
-// Search's own document arm reads that table, so counting any other vector would give the check
-// a df for words search cannot find; and the queue's document rows are written from
-// document_search too (migration 20261101182522), so a step pass and a full build hold one
-// definition of a document's words. The two readings differ only for a document whose latest
-// version carries no markdown, which document_search does not hold and the lateral read as a
-// null vector.
-const searchTermItemsSQL = `
+// A document's vector is the one document_search held of it (migration 20261101182447), read
+// off the document's latest version rather than off that table, which this build reads no row of
+// (R17 of the issue-tree spec): one probe of artifact_versions' unique key a document,
+// which a count of every item reads anyway. It is the vector the queue's document rows are written
+// from (migration 20261101182522's document_search_term_queue, which fires from 20261101182454's
+// trigger inside the version's own write), so a step pass and a full build hold one definition of
+// a document's words; and it is the vector search ranks a document by (searchDocumentKeywordLeg),
+// whose words search finds through the blocks that hold them (node_search). The two differ only
+// where a word stands in a version no block of the document holds yet, a version the block index
+// has still to reach.
+var searchTermItemsSQL = `
 select i.search from issues i where i.project_key = {project}
 union all
-select d.search from document_search d
-  join artifacts a on a.id = d.artifact_id
- where a.kind = 'doc' and a.project_key = {project}
+select v.search from artifacts a
+  join lateral (` + documentLatestVersionSQL("a") + `) v on true
+ where ` + searchTermDocument("a") + ` and a.project_key = {project}
 union all
 select c.search from comments c
   left join issues i on i.key = c.issue_key
@@ -120,10 +132,10 @@ from search_term_totals where project_key = $1 for update`
 
 // searchTermQueueProjectSQL is the project the item of a queue row q belongs to, read exactly as
 // searchTermItemsSQL reads an item's: an issue's and a message's from its issue, a comment's and
-// an ask's from its issue else its document, a document's from its artifact, which must be a doc
-// as that statement's arm requires. Each owner is a scalar subquery on a primary key, so the
-// rows the queue holds bound what a pass reads: a pass with an empty queue reads no item at all,
-// which is R1.
+// an ask's from its issue else its document, a document's from its artifact, which must be a
+// document the counts hold (searchTermDocument) as that statement's arm requires. Each owner is a
+// scalar subquery on a primary key, so the rows the queue holds bound what a pass reads: a pass
+// with an empty queue reads no item at all, which is R1.
 //
 // A row whose owner is gone names no project. No pass can tell whose counts held that item, so
 // searchTermQueueSweep drops the row, and the counts it was to correct stay as they are: a
@@ -132,9 +144,9 @@ from search_term_totals where project_key = $1 for update`
 // project's snapshot is what asks for one - `update search_term_totals set snapshot = null where
 // project_key = $1`, after which the next pass counts every item of that project again. No
 // production code path deletes an issue or an artifact, so no row reaches this sweep today.
-const searchTermQueueProjectSQL = `coalesce(
+var searchTermQueueProjectSQL = `coalesce(
            (select i.project_key from issues i where i.key = q.issue_key),
-           (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or a.kind = 'doc')))`
+           (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or ` + searchTermDocument("a") + `)))`
 
 // searchTermQueueItemKeySQL names the item a queue row is about, which is what a pass groups its
 // rows by: a comment, an ask and a message are their own id, an issue is its key, and a document
@@ -149,13 +161,13 @@ const searchTermQueueItemKeySQL = `coalesce(item_id::text, issue_key, artifact_i
 // subtract that item's words and count one item fewer.
 //
 // Parameters: $1 the project key.
-const searchTermQueuedItemSQL = `
+var searchTermQueuedItemSQL = `
     select i.search, true as present from issues i
      where it.kind = 'issue' and i.key = it.issue_key and i.project_key = $1
     union all
-    select d.search, true from document_search d
-      join artifacts a on a.id = d.artifact_id
-     where it.kind = 'document' and d.artifact_id = it.artifact_id and a.kind = 'doc' and a.project_key = $1
+    select v.search, true from artifacts a
+      join lateral (` + documentLatestVersionSQL("a") + `) v on true
+     where it.kind = 'document' and a.id = it.artifact_id and ` + searchTermDocument("a") + ` and a.project_key = $1
     union all
     select c.search, true from comments c
       left join issues i on i.key = c.issue_key
@@ -194,7 +206,7 @@ const searchTermQueuedItemSQL = `
 // behind are the writes of the moment the pass ran.
 //
 // Parameters: $1 the project key.
-const searchTermStatsStep = `
+var searchTermStatsStep = `
 with snapshot as materialized (
   select pg_current_snapshot() as taken, statement_timestamp() as at
 ),
@@ -283,12 +295,14 @@ returning t.items`
 
 // searchTermQueueSweep drops the queued changes no pass can apply: a row whose owner names no
 // project, which is an item whose issue or artifact has been deleted, and a document row for an
-// artifact that is no doc, which no project's counts ever held - migration 20261101182454 puts
-// no kind filter on document_search, deliberately, because every reader of it joins artifacts.
+// artifact the counts hold no words of (searchTermDocument) - an issue's tree, which is no doc, and
+// its decisions query - which no project's counts ever held: migration 20261101182454 puts no kind
+// filter on document_search, deliberately, because every reader of it joins artifacts, and
+// migration 20261101182522 queues every write of that table.
 // A row is read only once its writer's transaction has committed, and that writer could not
 // have written an item whose owner it could not see, so a row naming no project here names none
 // later either.
-const searchTermQueueSweep = `delete from search_term_queue q where ` + searchTermQueueProjectSQL + ` is null`
+var searchTermQueueSweep = `delete from search_term_queue q where ` + searchTermQueueProjectSQL + ` is null`
 
 // searchTermRefresh is what one project's refresh did: the project's item count (the picker's N),
 // the mode it ran in, and how many items it applied - the queued items for a step, every item of
@@ -497,14 +511,14 @@ type relatedTerms struct {
 // no totals row; the caller probes those. Otherwise it is ndoc less the excluded owner's items
 // the refresh counted: those holding the lexeme that existed at refreshed_at (created at or
 // before it, the moment of the last pass that changed the project's counts), and of a document
-// the latest version created by then, which is the version document_search held for the refresh
-// to count. Issues, comments, asks and messages keep no history, so their current vector stands
-// in for the one counted; a word one gained since is subtracted though it was not counted, which
-// only lowers df (never below zero). A df lowered to zero is not taken as final
-// (pickRelatedTerms probes it): an own item whose transaction began before the pass's snapshot
-// and committed after it is subtracted though the stored count never held it - the pass leaves
-// that item's queued change for its successor, while refreshed_at has already moved past the
-// item's creation - and an item written since may hold a word only the source held then.
+// the latest version created by then, which is the version the refresh counted of it
+// (documentLatestVersionSQL). Issues, comments, asks and messages keep no history, so their
+// current vector stands in for the one counted; a word one gained since is subtracted though it
+// was not counted, which only lowers df (never below zero). A df lowered to zero is not taken as
+// final (pickRelatedTerms probes it): an own item whose transaction began before the pass's
+// snapshot and committed after it is subtracted though the stored count never held it - the pass
+// leaves that item's queued change for its successor, while refreshed_at has already moved past
+// the item's creation - and an item written since may hold a word only the source held then.
 //
 // A surface costs a to_tsvector per distinct word, so only the title's words are read for one:
 // they are what a reader recognises (Suggestions.SearchQuery), and the title is a few words where
@@ -512,7 +526,7 @@ type relatedTerms struct {
 //
 // Parameters: $1 project, $2 text, $3 excluded issue key (empty for none), $4 excluded document
 // artifact id (null for none), $5 the title.
-const relatedTermsSQL = `
+var relatedTermsSQL = `
 with body as (
   select search_document_text($2::text) as text
 ),
@@ -531,7 +545,7 @@ own_items as (
     join lateral (select v.search from artifact_versions v
                   where v.artifact_id = a.id and v.created_at <= t.refreshed_at
                   order by v.number desc limit 1) v on true
-   where a.kind = 'doc' and a.project_key = $1 and (a.issue_key = $3 or a.id = $4::uuid)
+   where ` + searchTermDocument("a") + ` and a.project_key = $1 and (a.issue_key = $3 or a.id = $4::uuid)
   union all
   select c.search from comments c cross join totals t
     left join issues i on i.key = c.issue_key
@@ -579,8 +593,9 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 
 // relatedProbeSQL answers which of the given lexemes some item of the project holds, leaving out
 // the excluded owner's items. Each kind probes its own search index with an exists: issues, then
-// documents through document_search (migration 20261101182447), the GIN-indexed vector of each
-// document's latest version, then comments, asks and messages.
+// documents through node_search (migration 20261125160000_issue_tree_node_search), the
+// GIN-indexed vector of each block node, a block read as a block of its document
+// (refs.NodeSearchDocumentSQL), then comments, asks and messages.
 //
 // The document arm's lexeme test is a subquery of its own, which `offset 0` keeps the planner
 // from folding into the exists around it. Folded in, the arm is costed as the search for a
@@ -598,15 +613,15 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 //
 // Parameters: $1 project, $2 lexemes, $3 excluded issue key (empty for none), $4 excluded document
 // artifact id (null for none).
-const relatedProbeSQL = `
+var relatedProbeSQL = `
 with probe as (
   select l.lexeme, quote_literal(l.lexeme)::tsquery as tq from unnest($2::text[]) l(lexeme)
 )
 select p.lexeme from probe p
  where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
-                 from (select v.artifact_id from document_search v where v.search @@ p.tq offset 0) v
-                 join artifacts a on a.id = v.artifact_id
+                 from (select ` + refs.NodeSearchDocumentSQL("s") + ` as document from node_search s where s.search @@ p.tq offset 0) s
+                 join artifacts a on a.id = s.document
                 where a.kind = 'doc' and a.project_key = $1
                   and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)
     or exists (select 1 from comments c

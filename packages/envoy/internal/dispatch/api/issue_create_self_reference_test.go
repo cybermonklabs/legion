@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -45,7 +46,10 @@ func namesReference(references []model.ChangedReference, kind, id string) bool {
 
 // A spec written at issue creation can cite the issue it opens: its key bare, and its own
 // document's address. Both name rows this very transaction writes, so the edge the bare key
-// stores and the targets the issue.created event names are read from what it has queued.
+// stores and the targets the issue.created event names are read from what it has queued. An
+// issue born converted keeps its spec's references with its room's, under the room's tree
+// artifact, which indexes the room as one document (T12a of this branch's plan), so the edge is
+// read from the room the spec is edited in (refs.DocumentRoomSQL), the spec itself otherwise.
 func TestIssueCreateSpecCitingTheIssueItOpensStoresAndCountsIt(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -72,7 +76,8 @@ func TestIssueCreateSpecCitingTheIssueItOpensStoresAndCountsIt(t *testing.T) {
 	var edges int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'issue' and to_id = $2
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text
+		  and to_kind = 'issue' and to_id = $2
 	`, issue.PrimaryArtifactID, issue.Key).Scan(&edges); err != nil {
 		t.Fatalf("count the spec's edges to its own issue: %v", err)
 	}

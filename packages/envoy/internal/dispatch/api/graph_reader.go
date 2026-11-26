@@ -42,5 +42,10 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 //     document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     one person would be served to another;
+//   - a write's walk of the issues under an issue (readStatusChange, which plans a step for each
+//     of them, and refuseSpecWriterOfMovedSubtree, which judges each of them) decides for the
+//     server, not for its caller, what the write touches; no write stores an issue reserved for
+//     its author (graphstore.CheckVisibilityAdmitted admits that only for the kinds the read
+//     registry flags), so the walk reaches every issue whoever reads it.
 var everyReader = model.Actor{}

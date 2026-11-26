@@ -46,6 +46,19 @@ import {
   projectUpdateCommand,
 } from "./projects";
 import { readCommand } from "./read";
+import {
+  constraintCommand,
+  constraintsCommand,
+  findingCommand,
+  lensCommand,
+  lensesCommand,
+  pointerCommand,
+  premortemConvertCommand,
+  proposedCommand,
+  riskCommand,
+  settleCommand,
+  stateCommand,
+} from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 import { stepsCommand } from "./steps";
@@ -124,4 +137,15 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_limits: onSession(limitsCommand),
   dispatch_api: onSession(apiCommand),
   dispatch_inbox: onSession(inboxCommand),
+  dispatch_lens: acting(lensCommand),
+  dispatch_finding: acting(findingCommand),
+  dispatch_risk: acting(riskCommand),
+  dispatch_constraint: acting(constraintCommand),
+  dispatch_constraints: acting(constraintsCommand),
+  dispatch_pointer: acting(pointerCommand),
+  dispatch_lenses: onSession(lensesCommand),
+  dispatch_state: acting(stateCommand),
+  dispatch_settle: acting(settleCommand),
+  dispatch_proposed: acting(proposedCommand),
+  dispatch_premortem_convert: acting(premortemConvertCommand),
 };

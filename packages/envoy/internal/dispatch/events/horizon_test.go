@@ -2024,6 +2024,46 @@ func TestWriterFloorIgnoresATransactionThatHasInsertedNoEvent(t *testing.T) {
 	}
 }
 
+// The oldest writer of the event log is named by the backend that holds it and when its transaction
+// began: the transaction a record of the backfill's horizon waits on (WriterFloor), the oldest of
+// those holding an event insert open. With none open, there is no writer to name. A transaction that
+// holds an older transaction id and has inserted no event is no writer, and a writer that began
+// after the oldest one is not the oldest. The answer's age, read against the database's own clock,
+// is at least as long as the test held the insert open.
+func TestTheOldestEventWriterNamesItsPidAndAge(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	if pid, since, err := OldestEventWriter(ctx, database.Pool); !errors.Is(err, ErrNoEventWriter) {
+		t.Fatalf("OldestEventWriter with no event insert open = %d, %v, %v; want ErrNoEventWriter", pid, since, err)
+	}
+	openEventWriter(ctx, t, database)
+	oldest, _ := openEventWriter(ctx, t, database)
+	var pid int32
+	if err := oldest.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the oldest writer's backend pid: %v", err)
+	}
+	insertHorizonEvent(ctx, t, oldest)
+	const held = 2 * time.Second
+	time.Sleep(held)
+	younger, _ := openEventWriter(ctx, t, database)
+	insertHorizonEvent(ctx, t, younger)
+
+	named, since, err := OldestEventWriter(ctx, database.Pool)
+	if err != nil || named != pid {
+		t.Fatalf("OldestEventWriter with an event insert open %v = %d, %v, %v; want the backend pid %d that holds it", held, named, since, err, pid)
+	}
+	var age time.Duration
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp() - $1::timestamptz`, since).Scan(&age); err != nil {
+		t.Fatalf("read the writer's age: %v", err)
+	}
+	if age < held {
+		t.Fatalf("OldestEventWriter answers the writer open since %v, %v ago; want at least the %v the test held it", since, age, held)
+	}
+	t.Logf("the oldest writer of the event log: backend pid %d, open %v", named, age)
+}
+
 // A Horizon that persists writes its H to event_horizon once it advances, and another Horizon (a
 // later process) reads it: every event at or below it is final, whichever process proved it. A
 // value of a log since reset is not read: its event is gone, or carries another created_at.

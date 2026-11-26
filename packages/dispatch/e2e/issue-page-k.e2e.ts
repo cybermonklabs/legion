@@ -1,6 +1,7 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -44,6 +45,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
+import { refuseTreeRead, TREE_PATH } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -154,15 +156,17 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
   ).toEqual([]);
 }
 
-/** Every read of a document's blocks, which the tree's tasks and statements are built from
- *  (`useIssueTree.ts`). */
-const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
+/** The Plan view's read of the tree, `?view=plan`, which the view's tasks and the plan's blocks
+ *  are built from (`tree-read/tree-read.ts`' `blocksOf`), of whatever issue it reads: each of its
+ *  pages. */
+const BLOCKS_READ = (url: URL): boolean =>
+  TREE_PATH.test(url.pathname) && url.searchParams.get("view") === "plan";
 
-/** Before the reads it needs answer: opened with every document's blocks read held, `path`
+/** Before the reads it needs answer: opened with the Plan view's read of the tree held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
  *  draws the view's tasks, its switch and its empty line once the plan's and the spec's blocks
- *  reads have answered); let go, it draws the chart. */
+ *  have answered); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -210,7 +214,7 @@ async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<v
 async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let failed = 0;
   const fail = async (route: Route) => {
-    if (route.request().url().includes(seeded.planArtifactId)) failed += 1;
+    if (route.request().url().includes(`/issues/${seeded.key}/tree`)) failed += 1;
     await route.fulfill({ status: 500 });
   };
   await page.route(BLOCKS_READ, fail);
@@ -246,50 +250,47 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
   }
 }
 
-/** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
- *  blocks refused, the page's two retries included, the page still opens on the question that
- *  waits on the reader, the spec's open question. `t p` from the conversation then opens Plan,
- *  which says in the page's words that it could not load the plan, with a Retry that holds the
- *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
- *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
- *  tree, and the stage the view is drawn in hands the focus on to the Retry
+/** A first read that fails (`slots/view-plan.tsx`): with every request of the issue's tree read
+ *  refused (`refuseTreeRead`), the page's two retries included, the page still opens, and its
+ *  outline says in the page's words that it could not load the outline
+ *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). The plan's blocks are the tree read's
+ *  (`tree-read/tree-read.ts`'s `blocksOf`), as the outline's rows are, so the question that waits
+ *  on the reader is refused with them and the page has none to open on. `t p` from the page then
+ *  opens Plan. The plan's blocks and the spec's are that one read, so its refusal is one line,
+ *  the statements' where the issue names a spec, as this seed's does: Plan says in the page's
+ *  words that it could not load the spec, with a Retry that holds the focus, and draws no bar and
+ *  no switch. `t p` pressed from a control that holds the
+ *  focus, the Spec control of the view row, puts the focus on that Retry too: the chord focuses
+ *  the view's tree, and the stage the view is drawn in hands the focus on to the Retry
  *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
  *  asks it again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
-  let refusing = true;
-  const refuse = async (route: Route) => {
-    if (refusing && route.request().url().includes(seeded.planArtifactId)) {
-      await route.fulfill({ status: 500 });
-      return;
-    }
-    await route.continue();
-  };
-  await page.route(BLOCKS_READ, refuse);
+  const treeRead = await refuseTreeRead(page, seeded.key);
   try {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // The page places its first focus once, when the reads its first rows come from have
-    // answered: on the question that waits on the reader, whatever reads failed (`IssueTree.tsx`).
-    // The focus is moved to the page only after that, or the first focus could land after the
-    // move and keep the focus off the page.
-    const question = blockNodeId(await primarySlug(seeded.key), seeded.openQuestion.blockId);
-    await expectOpeningLanded(page);
-    await expect
-      .poll(() => focusedNodeId(page), {
-        message: "the conversation does not open on the question that waits on the reader",
-      })
-      .toBe(question);
+    // no opening focus: the tree read is refused, so the outline draws no row for the page's
+    // opening to land on (`expectOpeningLanded`); its line is drawn once the read has failed, its
+    // two retries included, and the focus is moved to the page only after that.
+    await expect(
+      issuePage(page).locator("[data-tree-unreadable]"),
+      "the outline whose tree read was refused does not say it could not load the outline"
+    ).toContainText(ANSWER_LINES.outline_unreadable);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
-    const line = issuePage(page).locator('[data-plan-unreadable="plan"]');
+    const line = issuePage(page).locator('[data-plan-unreadable="statements"]');
     await expect(
       line,
-      "the Plan view whose first read of the plan's blocks failed does not say it could not load the plan"
-    ).toContainText(STATE_LINES.plan_unreadable);
+      "the Plan view whose first read of its blocks failed does not say it could not load the spec"
+    ).toContainText(STATE_LINES.spec_unreadable);
+    await expect(
+      issuePage(page).locator("[data-plan-unreadable]"),
+      "the Plan view draws more than one line for the one refused tree read"
+    ).toHaveCount(1);
     const retry = line.getByRole("button");
-    await expect(retry, "the line saying the plan could not be loaded draws no Retry").toHaveCount(
+    await expect(retry, "the line saying the spec could not be loaded draws no Retry").toHaveCount(
       1
     );
     await expect(
@@ -318,7 +319,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
     await expect(
       retry,
-      "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
+      "t p from the Spec control with the tree read refused does not put the focus on the Plan view's Retry"
     ).toBeFocused();
     // The chord shows the tree it focused from its own top (`useIssueKeymap.ts`'s `showPart`),
     // and the Retry stands over the tree, so the stage, which focuses the Retry, brings it on
@@ -328,7 +329,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
         message: "t p from the Spec control leaves the plan's focused Retry off the screen",
       })
       .toBe(true);
-    refusing = false;
+    await treeRead.lift();
     await page.keyboard.press("Enter");
     await expect(
       planView(page, "chart"),
@@ -336,7 +337,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     ).toHaveAttribute("aria-pressed", "true");
     const bars = planChart(page).locator("[data-plan-bar-row]");
     await expect(bars).toHaveCount(seeded.planTasks.length);
-    await expect(line, "the line saying the plan could not be loaded stays").toHaveCount(0);
+    await expect(line, "the line saying the spec could not be loaded stays").toHaveCount(0);
     const first = await bars.first().getAttribute("data-node-id");
     await expect
       .poll(() => focusedNodeId(page), {
@@ -345,7 +346,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       })
       .toBe(first);
   } finally {
-    await page.unroute(BLOCKS_READ, refuse);
+    await treeRead.lift();
   }
 }
 
@@ -554,10 +555,13 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       "a line of the axis stands outside the head row's middle cell"
     ).toEqual([]);
 
-    // The box: 1300 px wide, 22 px under the view row, and 120 px above the page's foot.
+    // At 1440 px the Contents pane stands beside Plan, leaving the view 1068 px.
     const column = page.getByTestId("issue-column");
     const box = await boxOf(planBody(page), "the view's box at 1440 px");
-    expect(box.width, "the view's box is not 1300 px wide at 1440 px").toBeCloseTo(1300, 0);
+    expect(box.width, "the view is not 1068 px wide beside Contents at 1440 px").toBeCloseTo(
+      1068,
+      0
+    );
     expect(
       Math.abs(box.y - (await boxOf(column, "the issue's column")).y - 22),
       "the view's box is not 22 px under the view row at 1440 px"
@@ -652,8 +656,8 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the steps");
 
-    // The same order on a phone, in both views, where the page fits in one direction, in
-    // a box 10 px under the view row and 10 px in from each side of the column.
+    // The same order on a phone, in both views. The three sentences start 10 px below the view
+    // row. Plan follows their 16 px bottom margin and stays 10 px in from each side.
     await page.setViewportSize(PHONE_K);
     await expectIssuePageDrawn(page);
     await expect
@@ -661,10 +665,17 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
         message: "the steps' order is not the same at 390 px",
       })
       .toEqual(stepped);
+    const synopsis = column.getByTestId("issue-three-things");
+    await expect(synopsis).toBeVisible();
+    const synopsisBox = await boxOf(synopsis, "the three sentences above Plan at 390 px");
     const phoneBox = await boxOf(planBody(page), "the view's box at 390 px");
     expect(
-      Math.abs(phoneBox.y - (await boxOf(column, "the issue's column")).y - 10),
-      "the view's box is not 10 px under the view row at 390 px"
+      Math.abs(synopsisBox.y - (await boxOf(column, "the issue's column")).y - 10),
+      "the three sentences do not start 10 px under the view row at 390 px"
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(phoneBox.y - (synopsisBox.y + synopsisBox.height) - 16),
+      "Plan is not 16 px below the three sentences at 390 px"
     ).toBeLessThanOrEqual(1);
     expect(
       Math.abs(phoneBox.width - 342),
@@ -812,11 +823,12 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       })
       .toBe(false);
 
-    // Enter on a step goes to its task in the conversation.
+    // Enter on a step goes to its task's address in the conversation, which Conversation draws
+    // no row of, so the address opens the filter of its kind, Plan, at that task.
     await nodeRow(page, step(T.loose)).first().focus();
     await page.keyboard.press("Enter");
-    await expect(page, `Enter on ${T.loose} does not go to it in the conversation`).toHaveURL(
-      new RegExp(`/issues/${seeded.key}#b-${T.loose}$`)
+    await expect(page, `Enter on ${T.loose} does not go to its address in Plan`).toHaveURL(
+      new RegExp(`${planPath(seeded.key)}#b-${T.loose}$`)
     );
 
     // Back on /plan, Tab goes from "Chart" to "Steps", then into the chart at its first step;

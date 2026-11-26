@@ -265,9 +265,10 @@ export const ExternalLinkSchema = z
 
 export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 
-/** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
- *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
- *  document. */
+/** A design-gate step a Legion deployment gates, as Dispatch stores it: `criteria` names the root
+ *  issue's Verification document, `spec` its primary document. `decisions`, the step that named
+ *  its decisions document, is still read from a Dispatch of the release before; this build
+ *  writes it nowhere. */
 export type GatedStep = (typeof GATED_STEPS)[number];
 
 /** `project.created` and `project.updated` carry the project row itself. */
@@ -279,7 +280,8 @@ export const ProjectSchema = z
     /** The design-gate steps the Legion deployment that serves this project gates, in the order
      *  it gates them, as its daemon last published them. The empty list is a deployment that
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
-     *  a person. */
+     *  a person. A Dispatch of the release before may still answer `decisions`. */
+    // kept for one release: contract-read-side
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     /** The project's default repository, `owner/name`: an issue that names no repository, and
      *  whose parent chain names none, resolves to it.

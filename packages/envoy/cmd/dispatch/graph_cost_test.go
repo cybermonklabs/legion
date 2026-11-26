@@ -9,14 +9,17 @@ package main
 // every reading is printed in. #3178's two cost checks that first used it, c-write-cost and
 // c-read-cost, are gone from main; the readers they used stay in read_cost_test.go and
 // write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file.
+// cybermonklabs/legion#4193's c-read-cost, TestThePredicateAndTheLensReadsGetNoSlower
+// (predicate_lens_read_cost_test.go), is one.
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
-// (baseBuild, testbaseline.Commit), which is the fork point with main for this branch. Each
-// serves a database of its own and migrates it at boot, so each arm runs its own code over its
-// own schema: the older build has no graph_nodes and no graph_tuples, and this build's
-// graph_edges reads the tuple arm over them. One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the base commit (baseBuild): the
+// commit BASELINE_SHA names (testbaseline.Commit), which is the fork point with main for a branch
+// that lands on main. Each serves a database of its own and migrates it at boot, so each arm runs
+// its own code over its own schema: the older build lacks migrations this one holds (the fork
+// point has no graph_nodes and no graph_tuples, over which this build's graph_edges reads the
+// tuple arm). One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -53,10 +56,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
 const (
@@ -94,12 +95,13 @@ const (
 
 // costArm is one build serving one database of this run's own.
 type costArm struct {
-	// name is how the arm is printed: "this child" or "the commit before this child".
+	// name is how the arm is printed: "this child" or "the base build".
 	name string
 	// head reports this working copy's build, the arm the budgets are taken on.
 	head bool
 	// server is the process, databaseURL its database and pool the test's own connections to
-	// that database, which seed it, read its row counts and take the block-index lease.
+	// that database, which seed it, read its row counts and take the block-index lease and the
+	// reference forms drain's.
 	server      *dispatchProcess
 	databaseURL string
 	pool        *pgxpool.Pool
@@ -110,18 +112,38 @@ func (a *costArm) ready(t *testing.T) {
 	t.Helper()
 }
 
-// startCostArms starts both arms: this working copy's build and the build of the commit this
-// branch forked from, each on an empty database of its own which that build migrates at boot,
-// and both delivering to one stub Envoy listener, so a delivery costs the same transport on
-// either arm. It answers them in the order they are measured in, this child first.
+// startCostArms starts both arms: this working copy's build and the base commit's (baseBuild:
+// the commit BASELINE_SHA names, testbaseline.Commit), each on an empty database of its own which
+// that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
+// the same transport on either arm. It answers them in the order they are measured in, this child
+// first. The base arm is named "the base build" and not "the commit before this child":
+// BASELINE_SHA may name a commit that already holds some of this child's own bases. It sets no
+// setting on either arm's database (startCostArmsWith with none), and the base build's server is
+// given no environment beyond its ENVOY_URL.
+//
+// This child's arm holds its boot's run of the backfill (DISPATCH_TEST_HOLD_BOOT_BACKFILL): the
+// read cost's run takes the store off the corpus and reads the rows that then name no node before
+// its own backfill (readCostBeforeTheBackfill, costRunBackfill), and the boot's passes, on a
+// goroutine of their own, would name those rows' nodes behind it.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
+	return startCostArmsWith(t, envoyURL, nil)
+}
+
+// startCostArmsWith is startCostArms with each of settings, a Postgres setting's name and value,
+// set on each arm's database before that arm's pool or server opens a session on it
+// (startCostArm), for a setting both builds have to run under. A setting on the database is the
+// value every session opened after it starts with, whichever client opens it - the server's, the
+// test's own pool's, and a connection a later step opens - unless that client names a value of its
+// own as it connects.
+func startCostArmsWith(t *testing.T, envoyURL string, settings map[string]string) (*costArm, *costArm) {
+	t.Helper()
 	older := baseBuild(t)
-	head := startCostArm(t, "this child", true, dispatchOptions{
+	head := startCostArm(t, "this child", true, settings, dispatchOptions{
 		SigningKey: costSigningKey,
-		Env:        map[string]string{"ENVOY_URL": envoyURL},
+		Env:        map[string]string{"ENVOY_URL": envoyURL, "DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
-	base := startCostArm(t, "the commit before this child", false, dispatchOptions{
+	base := startCostArm(t, "the base build", false, settings, dispatchOptions{
 		Binary:     older,
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL},
@@ -131,12 +153,15 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	return head, base
 }
 
-// startCostArm starts one arm on an empty database of its own. The database is empty rather
-// than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
-func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
+// startCostArm starts one arm on an empty database of its own, carrying settings
+// (setCostDatabase), which are set after censusDatabase makes the database and before the arm's
+// pool or server opens any session on it. The database is empty rather than storetest's clone of a
+// migrated template, because each build has to run its own migrations on it: that is what makes
+// the older arm the older schema.
+func startCostArm(t *testing.T, name string, head bool, settings map[string]string, options dispatchOptions) *costArm {
 	t.Helper()
 	databaseURL := censusDatabase(t)
+	setCostDatabase(t, name, databaseURL, settings)
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -145,6 +170,30 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	server := startDispatchProcessWith(t, databaseURL, options)
 	server.waitHealthy(t)
 	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
+}
+
+// setCostDatabase sets each of settings on the database databaseURL names, arm name's, with
+// `alter database <the database> set <name> = <value>` on a connection of its own, which it
+// closes before it returns. The database's name and each setting's name are quoted as identifiers
+// and each value as a literal. With no settings it opens no connection.
+func setCostDatabase(t *testing.T, name, databaseURL string, settings map[string]string) {
+	t.Helper()
+	if len(settings) == 0 {
+		return
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("%s: connect to set its database's settings: %v", name, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	database := pgx.Identifier{conn.Config().Database}.Sanitize()
+	for setting, value := range settings {
+		statement := "alter database " + database + " set " + pgx.Identifier{setting}.Sanitize() + " = '" + strings.ReplaceAll(value, "'", "''") + "'"
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %s: %v", name, statement, err)
+		}
+	}
 }
 
 // costDatabaseName is the database a URL names, for the line that says which arm served which.
@@ -277,14 +326,22 @@ func costInterleaved(
 // nothing.
 func (a *costArm) timed(t *testing.T, method, path, body string, want int) (time.Duration, httpAnswer) {
 	t.Helper()
+	taken, answer := a.timedAnswer(t, method, path, body)
+	if answer.status != want {
+		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
+	}
+	return taken, answer
+}
+
+// timedAnswer is timed without the status check, for a read whose caller takes one refusal as a
+// reading (predicateCostRead's cutAt) and checks the status itself.
+func (a *costArm) timedAnswer(t *testing.T, method, path, body string) (time.Duration, httpAnswer) {
+	t.Helper()
 	start := time.Now()
 	answer, err := a.server.trySend(method, path, body, asUser(costLogin))
 	taken := time.Since(start)
 	if err != nil {
 		t.Fatalf("%s: %s %s: %v", a.name, method, path, err)
-	}
-	if answer.status != want {
-		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
 	}
 	return taken, answer
 }
@@ -302,8 +359,9 @@ func (a *costArm) count(t *testing.T, statement string, args ...any) int64 {
 
 // documentUpload is the JSON body of an upload of content as the document issue holds under name,
 // sent as login. An upload replacing a document names the token of the version it replaces, which
-// Dispatch refuses every replacement without (docs.ErrPreconditionRequired), so the body names the
-// token the document carries now; a document's first version replaces nothing and names none.
+// docs.ReplaceText checks under the write's own locks, refusing a token behind the live document
+// 409 PRECONDITION_FAILED, so the body names the token the document carries now; a document's
+// first version replaces nothing and names none.
 func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
 	t.Helper()
 	upload := map[string]any{"name": name, "content": content}
@@ -329,16 +387,17 @@ func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, log
 }
 
 // costTableOf prints every reading of a measurement: the summary line of each path on each arm,
-// then every reading it took. Both are printed for every path, because a reader has to see the
-// spread a percentile came out of - and for the write paths, whose 20 readings make the p99
-// their maximum, that spread is the whole of what a single swinging reading means.
+// its nearest-rank p50, p95 and p99, then every reading it took. Both are printed for every path,
+// because a reader has to see the spread a percentile came out of - and for the write paths,
+// whose 20 readings make the p99 their maximum, that spread is the whole of what a single
+// swinging reading means.
 func costTableOf(t *testing.T, readings []costReading) {
 	t.Helper()
-	t.Log("reading\tshape\tarm\tp50 ms\tp99 ms\truns")
+	t.Log("reading\tshape\tarm\tp50 ms\tp95 ms\tp99 ms\truns")
 	for _, reading := range readings {
-		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%d",
-			reading.operation, costShapeName(reading.shape), reading.arm,
-			costMilliseconds(reading.p50()), costMilliseconds(reading.p99()), len(reading.runs))
+		t.Logf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%d",
+			reading.operation, costShapeName(reading.shape), reading.arm, costMilliseconds(reading.p50()),
+			costMilliseconds(reading.percentile(0.95)), costMilliseconds(reading.p99()), len(reading.runs))
 	}
 	t.Log("every reading, in the order it was taken, in milliseconds:")
 	for _, reading := range readings {
@@ -355,9 +414,9 @@ func costShapeName(shape string) string {
 
 // costBlockIndexDrained waits until the arm's block-index reconciliation has nothing owed, so
 // that no tick of its own runs inside a measured window. It is the same read
-// store_census_test.go's waitForTheBlockIndex takes: a document is owed while its version is
-// null, and on this child's arm also while it holds the backfill's own mark (store_owed_at),
-// which only this child's schema has and only its reconciliation clears.
+// store_census_test.go's waitForTheBlockIndex takes: on this child's arm a document owed by a null
+// version or by this release's own mark, store_owed_at, which the backfill and its drain set, and
+// on the older build's arm, whose schema holds no such column, one owed by a null version.
 //
 // On this child's arm the wait also holds until the tick has read every event the log holds:
 // until its build's row of block_index_event_cursors exists and its event_id has reached the
@@ -367,9 +426,9 @@ func costShapeName(shape string) string {
 // write a node inside a measured window, or after the run has taken the store off the corpus.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
-	owedRead := `select count(*) from document_block_versions where version is null`
+	read := `select count(*) from document_block_versions where version is null`
 	if arm.head {
-		owedRead = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
+		read = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
 			+ (select case when exists (select 1 from block_index_event_cursors)
 			               and not exists (select 1 from block_index_event_cursors
 			                               where event_id < (select coalesce(max(id), 0) from events))
@@ -377,7 +436,7 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	}
 	deadline := time.Now().Add(within)
 	for {
-		owed := arm.count(t, owedRead)
+		owed := arm.count(t, read)
 		if owed == 0 {
 			return
 		}
@@ -389,51 +448,19 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	}
 }
 
-// costLeaseNamespace is the first key every loop lease is taken under - duty's leaseNamespace,
-// which stays unexported - the four bytes of "LOOP". The second key is the lease's own name,
-// which Postgres hashes with hashtext. memory_harness_test.go states the same two for the same
-// lease, behind the `memory` build tag, which these two measurements do not carry.
-const costLeaseNamespace int32 = 0x4C4F4F50
-
-// costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
-// it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
+// costLeaseWait bounds the wait for the block-index lease and the forms drain's. A pass reads one
+// batch of each queue it serves and gives its lease back, so this is a hang guard on a wait
+// nothing healthy reaches.
 const costLeaseWait = 5 * time.Minute
 
-// costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured. It is memory_harness_test.go's
-// holdBlockIndexLease over a costArm's pool: duty.Exclusive takes that lease before every pass
-// and skips the pass where another session holds it.
-func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
+// costHoldBlockIndex takes the block-index pass's own lease and the reference forms drain's on this
+// arm and answers the hold that gives them back (holdBlockIndexLease, block_index_lease_test.go),
+// so neither a tick nor a drain pass runs while a window is measured. A reading of the tick's own
+// work gives the block-index lease back alone (blockIndexHold.giveBackIndex) and the drain's once
+// the reading ends.
+func costHoldBlockIndex(t *testing.T, arm *costArm) *blockIndexHold {
 	t.Helper()
-	ctx := context.Background()
-	conn, err := arm.pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", arm.name, err)
-	}
-	deadline := time.Now().Add(costLeaseWait)
-	for {
-		var held bool
-		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
-			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
-		}
-		if held {
-			break
-		}
-		if time.Now().After(deadline) {
-			conn.Release()
-			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
-		}
-	}
+	return holdBlockIndexLease(t, arm.pool, arm.name, costLeaseWait, arm.server.Output.String)
 }
 
 // costRunBackfill runs `envoy-dispatch backfill-graph-store` on this child's arm and waits for
@@ -468,5 +495,19 @@ func (a *costArm) analyze(t *testing.T) {
 	t.Helper()
 	if _, err := a.pool.Exec(context.Background(), "analyze"); err != nil {
 		t.Fatalf("%s: analyze the corpus: %v", a.name, err)
+	}
+}
+
+// vacuumAnalyze is analyze with a vacuum before it, `vacuum (analyze)`, for a read measurement
+// whose corpus is settled after its seed and its backfill. The vacuum clears what the two left
+// dead, so no autovacuum pass comes due on one arm in the middle of its readings, where it can
+// invalidate the plans that arm's connections hold - the backfill runs on this head alone, and its
+// rewrite of every projection row leaves dead tuples the base arm has none of - and it sets the
+// pages of a freshly loaded table all-visible, without which the planner avoids an index-only
+// scan however good the statistics are (cmd/dispatch-seed's vacuum).
+func (a *costArm) vacuumAnalyze(t *testing.T) {
+	t.Helper()
+	if _, err := a.pool.Exec(context.Background(), "vacuum (analyze)"); err != nil {
+		t.Fatalf("%s: vacuum and analyze the corpus: %v", a.name, err)
 	}
 }

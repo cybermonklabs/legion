@@ -40,7 +40,8 @@ export interface AddressedNode {
 /**
  * The node `address` names, resolved against the whole tree `root` - the page's and every
  * filter's - so a view keeps it even where its filter or its words would not have matched it.
- * Every target an address names, `/children` among them, is one a tree unfolds and focuses.
+ * Every target an address names is one a tree unfolds and focuses, but the children's
+ * (`/children`), which lands on their section above the outline (`children-section.tsx`).
  *
  * The target is read by what it says rather than by the value `issueAddress` built, which is a
  * new one on every render: the tree is walked again only when the address or the tree changes.
@@ -115,9 +116,9 @@ export function landingPath(to: string): string {
  * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
  * entry the turn was written under - the comment its write answered (`answers`, else the head of
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
- * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
- * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
- * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
+ * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-read/tree-nodes.ts`
+ * places each turn, by its `parent`. Where the tree holds none of them - the head of such a thread
+ * sits under the issue, and an approval request is no node (`draftAsk`) - it is the issue alone.
  */
 function agentsOnlyAncestor(
   root: TreeNode,
@@ -186,10 +187,16 @@ export type AddressFallback =
    * no node of it: a block id no node carries, or an issue with no children. No read is left
    * that would draw it, so the page says in the outline's place that the link names nothing on
    * it, rather than leave the reader on the page's body.
+   *
+   * A node that `?node=` names and the read holds none of is one too, but the page draws no line
+   * for it: on Conversation's own address it opens Graph at the node where Graph's read holds it,
+   * and else, on Conversation's address or Graph's, that outline's own address without it
+   * (`slots/body.tsx`' `addressView`). On Conversation's own address a block goes first to a view
+   * that draws it.
    */
   | {
       readonly kind: "absent";
-      readonly target: Extract<AddressTarget, { kind: "block" | "children" }>;
+      readonly target: Extract<AddressTarget, { kind: "block" | "children" | "node" }>;
     };
 
 /** The reads of the issue's conversation the tree's turns come from, as the page holds them:
@@ -219,10 +226,10 @@ function landingReadKey(route: ItemRoute): QueryKey {
  *  (`useAddressFallback`). */
 interface Following {
   /** Whether the following draws the line that the tree holds no node of the block or the
-   *  children its address names (`absent`), as last stored here. The children come with the
-   *  issue's own read alone (`tree-drafts.ts`'s `addChildren`), so the children's line, once
-   *  drawn, stays while the tree's reads are out again; a block's line goes then, since a
-   *  document added to the issue may hold the block. */
+   *  children its address names (`absent`), as last stored here. A document added to the issue
+   *  may hold a block but brings no child (each child is an issue, `tree-nodes.ts`' `draftChild`),
+   *  so the children's line, once drawn, stays while the tree's reads are out again; a block's
+   *  line goes then. */
   readonly absent: boolean;
   /** How many times the landing's read had failed as this following first read it (its
    *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
@@ -284,8 +291,8 @@ interface Following {
  * such turn the server stores - which the conversation's reads still tell while the blocks are
  * read: dropped then, the tree had no address to land on, and once the reads answered the
  * landing's key came back as a new landing's would, which left a zoom the reader had made after
- * the landing; and the line that the issue has no children, which come with the issue's own read
- * alone (`Following.absent`). A block's line goes while the reads are out, as a document added
+ * the landing; and the line that the issue has no children, as a document added brings no
+ * child (`Following.absent`). A block's line goes while the reads are out, as a document added
  * to the issue may hold the block. Each goes as before where the tree draws the address's node
  * (`found`), and with the following.
  */
@@ -371,7 +378,8 @@ export function useAddressFallback({
         : landing;
   const target = address.target;
   const named =
-    address.document === undefined && (target?.kind === "block" || target?.kind === "children")
+    address.document === undefined &&
+    (target?.kind === "block" || target?.kind === "children" || target?.kind === "node")
       ? target
       : undefined;
   // A block or the children the tree holds no node of, once the reads are held; the children's

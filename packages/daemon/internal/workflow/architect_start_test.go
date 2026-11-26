@@ -96,7 +96,7 @@ func childDecision() record.KeptDecisions {
 // or bring a message.
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	t.Parallel()
-	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
+	two := []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 	for _, tc := range []struct {
 		name  string
 		start ArchitectStart
@@ -111,7 +111,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			name:  "a tree nobody has architected, under a deployment that gates two steps",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}},
 			want: freshLead + " request approval of each document this deployment gates and register each of their steps of its design gate: " +
-				"its decisions document and its Verification document." + freshClosing,
+				"its Verification document and its primary document." + freshClosing,
 		},
 		{
 			name:  "a tree nobody has architected, under a deployment that gates no step",
@@ -192,11 +192,11 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		{
 			name: "a root whose two gated steps stand at a changes request and at nothing",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two, Rows: map[record.DesignStep]record.DesignGate{
-				record.DesignStepDecisions: {Issue: "LEGION-208", Step: record.DesignStepDecisions, LatestVersion: 3,
+				record.DesignStepCriteria: {Issue: "LEGION-208", Step: record.DesignStepCriteria, LatestVersion: 3,
 					ToldChangesVersion: new(3), ToldChangesReason: "name the alternative"}}}},
 			want: "LEGION-208 is yours and its design gate already stands part way: " +
-				"its decisions document is registered at version 3 and a person has asked for changes to it; " +
-				"its Verification document is not registered. " +
+				"its Verification document is registered at version 3 and a person has asked for changes to it; " +
+				"its primary document is not registered. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
 				"and take the tree up from there." + gateStandingClosing,
 		},
@@ -226,7 +226,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			name:  "a tree that ran at an earlier generation, under a deployment that gates two steps",
 			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: two}, Served: 1},
 			want: readmittedLead + " request approval of each document this deployment gates and register each of their steps of its design gate again: " +
-				"its decisions document and its Verification document. Decompose nothing anew." + readmittedClosing,
+				"its Verification document and its primary document. Decompose nothing anew." + readmittedClosing,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates no step",

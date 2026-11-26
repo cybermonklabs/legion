@@ -41,7 +41,7 @@ func BenchmarkSettlementTreeRead(b *testing.B) {
 				replica.atPoint("bench", live, func(_ uint64, doc *crdt.Doc) {
 					state = crdt.EncodeStateAsUpdateV1(doc, nil)
 				})
-				if _, err := stateTree(state); err != nil {
+				if _, _, err := stateTree(state, []string{fragmentName}); err != nil {
 					b.Fatal(err)
 				}
 			}

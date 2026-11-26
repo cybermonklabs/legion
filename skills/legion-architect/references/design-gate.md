@@ -80,8 +80,11 @@ For each gated step, once every child is filed:
 6. End your turn. The person's review brings your next task (the `design-approved` row of
    `skill://legion-architect/references/wake-routing.md`).
 
-- A newer version moves the open request to it and to your turn, and the person stops seeing it:
-  once they have agreed to that version, run `dispatch request-approval` again to give it back.
+- A version you write moves the request to your turn, and the person stops seeing it: once they
+  agree, run `dispatch request-approval` again.
+  Their answer, resolve or decline writes one version, which keeps it with them.
+  The version carries an approval only when the person's answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
 - `already approved at version <N>`: still `register_gate` that id and version.
 - Refusals record nothing: `VERSION_NOT_IN_DISPATCH` (register the latest version),
   `GATE_STEP_REQUIRED` (name the step),
@@ -92,11 +95,11 @@ For each gated step, once every child is filed:
 ## After approval
 
 An approval is pinned to its version: any new version closes that step. The daemon tells the
-architect and every phase holder when the gate closes. Three keep it: a version whose only change
-is the approver's answer to a decision block, given after the approval at a browser or under a
-credential with the approve scope; one equal to the approved text (an accidental edit undone
-exactly) with no decision block in it decided since; and, after a close and a reopen, the approved
-text with only the questions the close withdrew open again.
+architect and every phase holder when the gate closes. Dispatch carries it over a version equal to
+the approved text with no ask block decided since, or whose every change is a reading in a decision
+or an answered ask, a server-owned ask attribute or the decisions step's `## Decisions` write: it
+records an `approved` review, the daemon sends `design-approved`, and you request nothing. A close's
+version carries none; the reopen's does.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it

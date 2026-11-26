@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -451,9 +452,17 @@ func browserMark(t *testing.T, service *Service, artifactID, markType, id, quote
 
 func browserMarkWithAttrs(t *testing.T, service *Service, artifactID, markType, quote string, attrs pmdoc.Attrs) {
 	t.Helper()
-	err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-		fragment := doc.GetXmlFragment(fragmentName)
-		tree, err := treeOf(doc)
+	browserMarkInFragment(t, service, artifactID, fragmentName, markType, quote, attrs)
+}
+
+// browserMarkInFragment marks quote, as a browser bound to the fragment named fragment of room
+// marks it, with a markType mark of attrs: a document's own room and its own fragment, or an
+// issue room and the fragment of one of its documents.
+func browserMarkInFragment(t *testing.T, service *Service, room, fragment, markType, quote string, attrs pmdoc.Attrs) {
+	t.Helper()
+	err := service.srv.Apply(context.Background(), room, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		held := doc.GetXmlFragment(fragment)
+		tree, err := treeOfFragment(doc, fragment)
 		if err != nil {
 			t.Errorf("read browser tree: %v", err)
 			return
@@ -464,7 +473,7 @@ func browserMarkWithAttrs(t *testing.T, service *Service, artifactID, markType, 
 			return
 		}
 		transact(func(txn *crdt.Transaction) {
-			if err := pmdoc.MarkRange(txn, fragment, range_, pmdoc.Mark{Type: markType, Attrs: attrs}); err != nil {
+			if err := pmdoc.MarkRange(txn, held, range_, pmdoc.Mark{Type: markType, Attrs: attrs}); err != nil {
 				t.Errorf("mark browser quote: %v", err)
 			}
 		})
@@ -518,6 +527,14 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
+	service, age := newHeldClockMarkService(t, database)
+	return service, artifactID, age
+}
+
+// newHeldClockMarkService is newUnrecordedMarkService's service over database, whose documents
+// the caller makes.
+func newHeldClockMarkService(t *testing.T, database *store.Store) (*Service, func(age time.Duration)) {
+	t.Helper()
 	service := New(Deps{
 		Store:             database,
 		Events:            events.NewBroker(),
@@ -528,7 +545,7 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
-	return service, artifactID, func(age time.Duration) { aged.Store(int64(age)) }
+	return service, func(age time.Duration) { aged.Store(int64(age)) }
 }
 
 // markIsInTheDocument reports whether the live document still carries a comment mark.
@@ -571,6 +588,59 @@ func TestSettleSweepsUnrecordedMarksAfterTTL(t *testing.T) {
 	}
 	if _, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", resolvedCommentID); !found {
 		t.Fatal("recorded resolved comment mark was swept")
+	}
+}
+
+// commentMarkInFragment reports whether the fragment named fragment of room's live document carries
+// a comment mark of id.
+func commentMarkInFragment(t *testing.T, service *Service, room, fragment, id string) bool {
+	t.Helper()
+	var found bool
+	err := service.srv.Apply(context.Background(), room, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
+		tree, err := treeOfFragment(doc, fragment)
+		if err != nil {
+			t.Errorf("read the fragment %s of room %s: %v", fragment, room, err)
+			return
+		}
+		_, _, found = pmdoc.FindMark(tree, string(MarkComment), id)
+	})
+	if err != nil && !errors.Is(err, ygws.ErrNoChanges) {
+		t.Fatalf("read room %s: %v", room, err)
+	}
+	return found
+}
+
+// An issue room's settlement sweeps the marks of each document's fragment of the room: a stray
+// comment mark in the spec's fragment, one no row records, goes once its TTL has passed, taken out
+// of the spec's fragment, while the mark of a comment anchored on the spec stays, though no row
+// anchored on the room's own tree artifact records either: the sweep reads what every document of
+// the room records before it touches any fragment (T12b of the issue-tree plan).
+func TestAnIssueRoomsSettlementSweepsEachDocumentsFragmentAndKeepsWhatItsDocumentRecords(t *testing.T) {
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	service, age := newHeldClockMarkService(t, database)
+	err := service.srv.Apply(context.Background(), room.tree, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		transact(writeParagraph(doc, room.spec, "The quick brown fox"))
+	})
+	if err != nil {
+		t.Fatalf("write the spec's fragment: %v", err)
+	}
+	recorded := insertAnchoredComment(t, service, room.spec, "brown")
+	browserMarkInFragment(t, service, room.tree, room.spec, string(MarkComment), "quick", pmdoc.Attrs{"id": "dangling", "by": "user:bob"})
+
+	settleCurrentGeneration(t, service, room.tree)
+	age(markSweepTTL / 2)
+	settleCurrentGeneration(t, service, room.tree)
+	if !commentMarkInFragment(t, service, room.tree, room.spec, "dangling") {
+		t.Fatal("the spec's unrecorded mark was swept before its TTL")
+	}
+	age(markSweepTTL)
+	settleCurrentGeneration(t, service, room.tree)
+	if commentMarkInFragment(t, service, room.tree, room.spec, "dangling") {
+		t.Error("the spec's unrecorded mark was not swept out of its fragment once its TTL passed")
+	}
+	if !commentMarkInFragment(t, service, room.tree, room.spec, recorded) {
+		t.Error("the mark of the comment anchored on the spec was swept")
 	}
 }
 

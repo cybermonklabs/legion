@@ -4,6 +4,7 @@ package graphcensus
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"os/exec"
 	"regexp"
@@ -214,6 +215,219 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	}}
 }
 
+// The drives of the lens catalogue's writer, of the backfill's passes over what a process of the
+// release before leaves of a run and of a prevented_by, and of the block-index tick's sweep of the
+// lenses such a process leaves stale when it removes a document, each a site no drive over the
+// seeded history or the API runs.
+const (
+	addLensKindDrive      = "graphstore/lens_catalogue.go#AddLensKind"
+	owedRunDrive          = "graphcensus/backfill_runs.go#writeOwedRun"
+	runFramesDrive        = "graphcensus/backfill_runs.go#writeRunFrames"
+	goneRunDrive          = "graphcensus/backfill_runs.go#writeGoneRun"
+	endedPreventionsDrive = "graphcensus/backfill_preventions.go#writeEndedPreventions"
+	staleLensSweepDrive   = "graphcensus/orphans.go#StateStaleLensesGone"
+)
+
+// runAndCatalogueDrives are those drives, over a database of their own, one after another: a kind
+// added to the lens catalogue as `envoy-dispatch lens-kind-add` adds one, its lens_kind node and
+// the constraint node of its source, which the term lens_kind counts; then the backfill's passes
+// over the rows a process of the release before writes of a run during a roll (olderPodRun): the
+// node of a run it recorded with no node, written through graphstore.WriteRun with a frame value of
+// its one frame, which the terms interaction and frame count, and the node of its asker, the first
+// write of alice in this database, which the term person counts; the value of a frame it appended
+// to a run this build gave its node, which the term frame counts; and the gone state of a run whose
+// row it deleted, which the term interaction_gone counts. Then the backfill's retraction of the
+// prevented_by at a check of a document that process retired and at a check its version dropped
+// (seedEndedPreventions), which the term risk counts. Last, the block-index tick's sweep of the
+// stale lenses (StateStaleLensesGone) over one lens on a document that process removed, stating
+// nothing (seedOrphan): the lens's gone state, which the term lens counts.
+func runAndCatalogueDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	pass := func(backfill func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
+			t.Helper()
+			if done, err := backfill(ctx, database); err != nil {
+				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
+			} else if done.Rows == 0 {
+				t.Fatalf("the backfill of the %s kind wrote nothing, where the drive readied a row it owes", done.Kind)
+			}
+		}
+	}
+	return []StoreDrive{{
+		Name: addLensKindDrive, Sites: []string{"graphstore/lens_catalogue.go#AddLensKind"},
+		Database: database,
+		Drive: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				_, err := graphstore.AddLensKind(ctx, tx, graphstore.LensKind{
+					ID: "sizing-kind", Words: "Weigh what the store holds against what it costs.",
+					Source: "The sizing of the store", Reference: "its tuples a day",
+				}, time.Now().UTC())
+				return err
+			}); err != nil {
+				t.Fatalf("add a kind to the lens catalogue: %v", err)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{graphstore.KindLensKind, graphstore.AttributeVisibility}:   {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeState}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeWords}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.TupleConstrainedBy}:    {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeVisibility}: {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeState}:      {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeStandard}:   {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeReference}:  {graphstore.KindLensKind},
+		},
+	}, {
+		Name: owedRunDrive, Sites: []string{owedRunDrive, "graphstore/interaction.go#WriteRun"},
+		Database: database,
+		Ready:    func(t *testing.T) { olderPodRun(t, database, alice, "CORE", "who answers this?", "Half an answer.") },
+		Drive:    pass(backfillRuns),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindInteraction, graphstore.AttributeVisibility}: {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeState}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:      {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:           {graphstore.KindPerson},
+		},
+	}, {
+		Name: runFramesDrive, Sites: []string{runFramesDrive},
+		Database: database,
+		Ready: func(t *testing.T) {
+			framed := olderPodRun(t, database, alice, "", "and this one?", "One ")
+			giveRunItsNode(t, database, framed)
+			appendOlderPodFrame(t, database, framed, 2, "two.")
+		},
+		Drive:  pass(backfillRunFrames),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeFrame}: {graphstore.AttributeFrame}},
+	}, {
+		Name: goneRunDrive, Sites: []string{goneRunDrive},
+		Database: database,
+		Ready: func(t *testing.T) {
+			deleted := olderPodRun(t, database, alice, "", "asked and deleted an hour on", "Gone ")
+			giveRunItsNode(t, database, deleted)
+			if _, err := database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, deleted); err != nil {
+				t.Fatalf("delete run %s as an older pod's sweep does: %v", deleted, err)
+			}
+		},
+		Drive:  pass(backfillGoneRuns),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {"interaction_gone"}},
+	}, {
+		Name: endedPreventionsDrive, Sites: []string{endedPreventionsDrive},
+		Database: database,
+		Ready:    func(t *testing.T) { seedEndedPreventions(t, database) },
+		Drive:    pass(backfillEndedPreventions),
+		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
+	}, {
+		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone", "graphstore/write.go#WriteState"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			seedOrphan(t, database, "lensed-md", "00000000-0000-4000-8000-0000000005a1")
+		},
+		Drive: func(t *testing.T) {
+			if stated, err := StateStaleLensesGone(ctx, database); err != nil || stated != 1 {
+				t.Fatalf("the sweep of the stale lenses stated %d nodes gone (%v), want the one stale lens", stated, err)
+			}
+		},
+		Counts: map[StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {graphstore.KindLens}},
+	}}
+}
+
+// The drives of the boot step's ask passes (backfillAsks, backfillAskFollowers), each over the
+// rows a build before the store wrote.
+const (
+	askBatchDrive         = "graphcensus/backfill_asks.go#writeAskBatch"
+	askFollowerBatchDrive = "graphcensus/backfill_asks.go#writeAskFollowerBatch"
+)
+
+// askBackfillDrives are the drives of the boot step's two ask passes, over a database of their
+// own: an ask of ASKS-1 that a session asked and the person bob answered, written by a build
+// before the store, whose node the object pass writes first (backfillObjectNodes), as the boot
+// step's first phase runs it (BackfillAsks), and then a follow of it that build recorded. The asks
+// pass states who asked it, its answer and its answerer's node; the follower pass the follower's
+// node and its followed_by.
+func askBackfillDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	var ask string
+	return []StoreDrive{{
+		Name: askBatchDrive, Sites: []string{askBatchDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			t.Helper()
+			text := "The node store."
+			answer, err := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &text, At: time.Now().UTC()})
+			if err != nil {
+				t.Fatalf("encode bob's answer: %v", err)
+			}
+			if err := database.Pool.QueryRow(ctx, `
+				with project as (
+					insert into projects (key, name, default_assignee) values ('ASKS', 'Asks', 'bob') returning key
+				), issue as (
+					insert into issues (key, project_key, number, title, created_by, rank)
+					select 'ASKS-1', key, 1, 'Asked', '{"kind":"user","id":"bob"}', 'U' from project
+					returning key
+				)
+				insert into asks (issue_key, author, question, state, answer)
+				select key, '{"kind":"session","id":"ses_asked"}', 'Which store?', 'answered', $1::jsonb from issue
+				returning id::text
+			`, answer).Scan(&ask); err != nil {
+				t.Fatalf("write the answered ask a build before the store wrote: %v", err)
+			}
+			if _, err := backfillObjectNodes(ctx, database); err != nil {
+				t.Fatalf("write the nodes of ASKS-1 and its ask: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if done, err := backfillAsks(ctx, database); err != nil || done.Rows != 1 {
+				t.Fatalf("backfill the ask (%d rows): %v", done.Rows, err)
+			}
+		},
+		// Who asked the ask, which ask.opened states, the answer bob gave, and the nodes of the
+		// session that asked and of bob, each first recorded by this write.
+		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleAuthoredBy}:         {"ask_opened"},
+			{graphstore.KindAsk, graphstore.TupleAnswerState}:        {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnswer}:             {"answer"},
+			{graphstore.KindAsk, graphstore.TupleSelected}:           {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnsweredAt}:         {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnsweredBy}:         {"answer"},
+			{graphstore.KindAsk, graphstore.TupleDecidedBy}:          {"answer"},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+		},
+	}, {
+		Name: askFollowerBatchDrive, Sites: []string{askFollowerBatchDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			t.Helper()
+			if _, err := database.Pool.Exec(ctx, `insert into ask_followers (ask_id, session_id) values ($1::uuid, 'ses_follows')`, ask); err != nil {
+				t.Fatalf("write the follow a build before the store recorded: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if done, err := backfillAskFollowers(ctx, database); err != nil || done.Rows != 1 {
+				t.Fatalf("backfill the follower (%d rows): %v", done.Rows, err)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleFollowedBy}:         {"ask_follower"},
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+		},
+	}}
+}
+
 // The seed's three sites, each a drive of its own over one run of the seed.
 const (
 	seedDocumentsDrive = "cmd/dispatch-seed/write_docs.go#writeDocument"
@@ -313,26 +527,42 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// The issues' nodes, which the seed writes before their documents, each document's node,
-		// and each document's latest version, indexed as its first: the blocks it states afresh and
-		// the references they hold. Every node of the seed is in its project.
+		// The issues' nodes, which the seed writes before their documents, with a child's child_of
+		// its parent, each document's node with its part_of its issue and its references, and each
+		// document's latest version, indexed as its first: the version's node, and the blocks it
+		// states afresh with their values and the references they hold. Every node of the seed is
+		// in its project.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
 			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
 			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
 			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
+			{graphstore.KindVersion, graphstore.AttributeVisibility}:  {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeState}:       {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeProject}:     {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.TuplePartOf}:          {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeNumber}:      {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeCreatedAt}:   {graphstore.KindVersion},
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}:      {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:           {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeProject}:         {"block"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:                {"block"},
 			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:                  {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}:             {"block_values"},
+			{refs.BlockNodeKind, refs.TupleTextParent}:                {"block_values"},
+			{refs.BlockNodeKind, refs.AttributeTextRank}:              {"block_values"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:            {"block_text"},
 			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeAsks",
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeItemNodes",
 			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
@@ -352,7 +582,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeMessages",
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes",
 			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
@@ -368,14 +598,17 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, in their project, their one author's
-		// node, and the messages' nodes, which the seed writes after its comments.
+		// The comments, as the comment path states one, in their project, each anchored one's
+		// anchored_in its anchor's block and, for one that answers nothing, its part_of there (R31),
+		// their one author's node, and the messages' nodes, which the seed writes after its comments.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
+			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"anchor_block"},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},

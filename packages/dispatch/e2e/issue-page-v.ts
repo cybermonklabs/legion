@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, type Route } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS, type StatementState } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
@@ -49,9 +49,9 @@ import { openPreset } from "./issue-page-i";
  *
  * Each measure over the cards fails when the view draws none, so a view that draws nothing
  * never passes a reading of what it draws. `openSettledView` opens `seedWholeIssue`'s issue and
- * reads its view once every read has answered, `refuseBlocksRead` refuses its Verification
- * document's blocks read for the rows that read the view while that read fails, and row 3's
- * issue is `seedLinkedChecks`, at the end.
+ * reads its view once every read has answered, `refuseTreeRead` (`e2e/issue-page-t-tree.ts`)
+ * refuses the tree read, which holds its Verification document's blocks, for the rows that read
+ * the view while that read fails, and row 3's issue is `seedLinkedChecks`, at the end.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -634,59 +634,6 @@ export async function openSettledView(page: Page, seeded: WholeIssueSeed): Promi
   return { ids, served, truth: await readServed(page, ids) };
 }
 
-/** What `refuseBlocksRead` hands its row, to count its refusals and to end them. */
-export interface RefusedBlocksRead {
-  /** Takes the refusal off, so the blocks read reaches the server again. */
-  lift(): Promise<void>;
-  /** How many requests of the blocks read have been refused so far, the page's own retries
-   *  included. */
-  refusals(): number;
-  /** Settles once `count` requests of the blocks read have been refused in all, and not
-   *  before. */
-  refused(count: number): Promise<void>;
-}
-
-/** One wait `refused` hands a row: the promise it returns and the call that settles it. The
- *  package compiles against ES2022, whose library names no type for what
- *  `Promise.withResolvers` returns, so the two parts the helper uses are named here. */
-interface RefusalWait {
-  readonly promise: Promise<void>;
-  readonly resolve: () => void;
-}
-
-/**
- * Refuses the blocks read of the document `artifactId` names, with a 500 in the server's error
- * shape, from the next request the page sends until `lift`, as many times as the page asks it.
- * A refusal is counted once its answer has been sent, so a row that waits on `refused(n)` reads
- * a page that has had its nth refusal. The rows read this way how the view stands when its
- * Verification document's blocks read fails, which no seed makes, and every row refuses it
- * through this one route, so a change to how a refusal is answered reaches each of them.
- */
-export async function refuseBlocksRead(page: Page, artifactId: string): Promise<RefusedBlocksRead> {
-  const blocksRoute = `**/api/v1/artifacts/${artifactId}/blocks`;
-  let refusals = 0;
-  // Each wait a row asked for, by the count it waits on: the count rises by one at each
-  // refusal, so the refusal that reaches a wait's count is the one that settles it.
-  const waiting = new Map<number, RefusalWait>();
-  const refuse = async (route: Route) => {
-    await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-    refusals += 1;
-    waiting.get(refusals)?.resolve();
-    waiting.delete(refusals);
-  };
-  await page.route(blocksRoute, refuse);
-  return {
-    lift: () => page.unroute(blocksRoute, refuse),
-    refusals: () => refusals,
-    refused: (count) => {
-      if (refusals >= count) return Promise.resolve();
-      const wait = waiting.get(count) ?? Promise.withResolvers<void>();
-      waiting.set(count, wait);
-      return wait.promise;
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------------------------
 // Row 3's issue: a check with links serving two statements, and a child's check serving a third.
 // ---------------------------------------------------------------------------------------------
@@ -787,11 +734,14 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
     }
     await pause(100);
   }
+  // A pass of a before_merge check states the negative control that would have caught its
+  // failure, which the record route requires of it (400 NEGATIVE_CONTROL_REQUIRED).
   await recordCheckResult(
     key,
     {
       check: LINKED_BLOCKS.check,
       commit: HEAD_SHA,
+      negative_control: "Dropped the check's links and the run failed.",
       observed: "1 passed",
       role: "tester",
       run: "bun run e2e -- e2e/issue-page-v.e2e.ts",

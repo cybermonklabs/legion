@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -197,9 +198,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The row's created_at is the transaction's now(), its column default, read with its id and
-	// written explicitly, so the ask this route answers and its event carry the time the row will
-	// hold.
+	// The ask's id and its created_at, drawn before anything is written: the node goes in before
+	// the row, and each relation it states is dated as graph_edges' old arm dates the row, by the
+	// transaction's now(), its column default, which the insert below writes explicitly, so the
+	// ask this route answers and its event carry the time the row will hold.
 	var ask model.Ask
 	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
@@ -253,15 +255,29 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		}
 	}
 	// The ask's node goes in before its row, in the project of the issue or the document it is
-	// asked on, read here in the read phase; its write is a step of the write phase, queued before
-	// the row's insert, and what it states waits for the ask.opened event below
-	// (graphstore.QueueCaused).
+	// asked on, with the documents it is anchored to and belongs to and who asked it
+	// (graphstore.AskFacts), read here in the read phase; its write is a step of the write phase,
+	// queued before the row's insert, which names the node, and what it states waits for the
+	// ask.opened event below (graphstore.QueueCaused).
 	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, ask.CreatedAt)}, nil)
+	var anchorArtifact *string
+	if anchor != nil {
+		anchorArtifact = &anchor.ArtifactID
+	}
+	places, err := graphstore.ReadAskPlaces(r.Context(), tx, anchorArtifact, owner.ArtifactID, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
+	askNode := graphstore.PlanUncaused(nodes, facts)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, askNode)
 		return nil
@@ -269,20 +285,25 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(rowID, marked)
 	if err := queueExec(ledger, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt); err != nil {
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt, nodeKind, nodeAddress); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The asker follows the ask it opened, and a session asker is a node of the store from this
 	// write on; its node learns the ask.opened event below, right after that event's insert. The
-	// follow's step fills followed when the write phase runs it, before the step that causes it.
+	// ask is new, so its follower row is too, and the follow is planned with no read
+	// (asks.PlanFollowNewAsk: the ask's node queued above is the one the row is marked with, and
+	// the row is dated by the ask's created_at); its step fills followed when the write phase runs
+	// it, before the step that causes it.
+	follow := asks.PlanFollowNewAsk(rowID, actor, ask.CreatedAt)
 	var followed graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		var err error
-		followed, err = asks.QueueFollowAuthor(b, rowID, actor, ask.CreatedAt, graphstore.NoEvent)
+		followed, err = follow.Queue(b, graphstore.NoEvent)
 		return err
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -316,7 +337,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	appended := []*model.Event{}
 	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -336,6 +357,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(askNode), graphstore.HeldHeads(followed)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -349,20 +371,23 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The review the issue's specification already carries, reported beside the advice above.
 	// It is read here, in the read phase after every write of this ask is queued, so it answers
 	// for the specification as this write leaves it: a version the anchor's snapshot queued of
-	// that document, and a review that version's carry queued, come off the ledger, and the rest
-	// from the table. It is about the document rather than about this session, so it is read for
-	// a person's question as for an agent's, and it rides the advice the write already answers
-	// rather than a read of its own. A question on a project document has no issue and so no
-	// specification, and a write whose advice read failed carries nothing to hang it on; both
-	// report no review.
+	// that document is its newest, off the ledger, and the review that version's carry writes,
+	// which the write phase keeps or drops as only it decides (a restore's carry), is set over the
+	// stored newest one once Commit has returned, with no statement. It is about the document
+	// rather than about this session, so it is read for a person's question as for an agent's,
+	// and it rides the advice the write already answers rather than a read of its own. A question
+	// on a project document has no issue and so no specification, and a write whose advice read
+	// failed carries nothing to hang it on; both report no review.
+	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
-		)
+		standing = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if advice != nil {
+		advice.StandingReview = standing.asWritten(ledger)
 	}
 	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -623,12 +648,56 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the ask as changed by that run where it changed them
+	// (spec requirement r-interaction): its question, or the words of an option
+	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
+	// holds of the ask and no words of it, and names no change. Nothing else this route writes
+	// reaches the ask's node, so it writes that node as the create and the backfill write it
+	// (graphstore.AskNode): in the project, or between the parties, of what it is asked on
+	// (graphstore.ScopeOf, read here in the read phase), made by its asker at its created_at, and
+	// names it changed at its edited_at by its writer (graphstore.PlanChangedForRun, which reads
+	// and plans nothing for no run). The node write is queued after the row's update and the
+	// parts the edit queued above, and what it states right after ask.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (writeIssue).
+	var askNode graphstore.Uncaused
+	if askWordsChanged(previous, ask) {
+		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
+			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+			if err != nil {
+				return graphstore.Node{}, err
+			}
+			return graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt), nil
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, askNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	), "ask", ask.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
+	// still names ask.edited here.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -652,6 +721,17 @@ func blockArtifactOf(ask model.Ask) (string, error) {
 		return "", fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
 	return *ask.BlockArtifactID, nil
+}
+
+// askWordsChanged is whether an edit changed the words of the ask, as the row now stores them
+// against what it held before: its question, or the label or the description of an option, an
+// option added or an option dropped. An option's block id is no word of it, and multiple and
+// urgency are none either. It is what an edit made for a run names the ask's node changed by
+// (editAsk).
+func askWordsChanged(previous model.AskEditPrevious, ask model.Ask) bool {
+	return previous.Question != ask.Question || !slices.EqualFunc(previous.Options, ask.Options, func(was, now model.AskOption) bool {
+		return was.Label == now.Label && was.Description == now.Description
+	})
 }
 
 func timestampPtr(value *time.Time) *string {
@@ -704,7 +784,8 @@ type openAsksResponse struct {
 // one project's issues and documents (?project=) regardless of author -- issue-owned via
 // issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
 // parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// responsible for the next reply. An ask is open as the Inbox picks it: its row's state and its
+// node's (askOpenOf).
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -773,7 +854,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				`+waitingOnExpression+` as waiting_on,
 				`+askedOfPersonExpression+` as waiting_on_person
 			from mine a`+askedOfPersonJoins+lastReplyJoin+`
-			where a.state = 'open' and (i.key is null or i.closed_at is null)
+			where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
 		)
 		select
 			statement_timestamp(),
@@ -1128,27 +1209,30 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 }
 
 // pgx caches prepared plans by query text. State and ownership each have a fixed query, with the
-// state written in as a literal, so that the index a state carries stays eligible under a
-// generic plan too: an issue's open asks read asks_open (0001), the partial index on
-// (issue_key) where state = 'open', which a $-parameterized state would lose. A document's asks
-// read asks_artifact_id (0032) and filter the state, whatever state is asked for:
-// asks_open_artifact, the partial index 0009 built for the open case, went unused for the nine
-// days the index audit measured and migration 20261101182440 drops it. An issue's asks with no
-// state filter read asks_issue_key (20261101182426). They are vars, not consts, because
-// askReadFrom builds its anchor join from store.CastableUUID.
+// state written in as a literal. A state is the ask's node's (askNodeStateOf), which every row
+// these read shows (scanAskRead), so a list by state is picked by the state it shows (R3); no
+// index of asks holds it, so the issue's lists read asks_issue_key (20261101182426) and a
+// document's read asks_artifact_id (0032), and each filters the owner's asks by their node's
+// state. The partial index asks_open (0001), on (issue_key) where the row's state is open, served
+// an issue's open asks while they were picked by the row's state; the open counts still read it
+// (issueSummaryJoins). asks_open_artifact, the partial index 0009 built for a document's open
+// asks, went unused for the nine days the index audit measured and migration 20261101182440 drops
+// it. An issue's asks with no state filter read asks_issue_key too. They are vars, not consts,
+// because askReadFrom builds its anchor join from store.CastableUUID and askNodeStateOf its read
+// of the node from graphstore.CurrentTupleRead.
 var (
 	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.artifact_id = $1 order by a.created_at, a.id`
 	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + askNodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",

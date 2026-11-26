@@ -540,9 +540,15 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 // appends that event before the answer moves Alice's row (docs/anchor_refresh.go's refreshAnchors,
 // then ask_transitions.go's update asks): the mark takes the issue before Alice's row, so it never
 // holds the row the answer's trigger waits on while waiting for the event lock the answer holds.
+// The answer writes its block's attributes (docs.KeepAskBlockInStep): while another build serves,
+// the ones that build's pages read, its words among them, and on a fleet of one build the ones a
+// version keeps, since an answer writes one version that changes only the server-owned attributes
+// of the ask's block (R3). The test registers a process of each of two builds, whose write holds
+// the most.
 func TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor(t *testing.T) {
 	t.Parallel()
 	handler, database := blockAskHandler(t)
+	registerTwoBuilds(t, database)
 	issue, askID := seedBlockAsk(t, handler, "Block race", "decision", transportAsk, "Which transport?")
 	anchored := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "Say which.", "anchor": map[string]any{"artifact": "spec", "quote": "Which transport"},

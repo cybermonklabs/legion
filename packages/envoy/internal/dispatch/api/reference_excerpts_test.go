@@ -81,11 +81,14 @@ func renderedMentionExcerpt(t *testing.T, service *docs.Service, artifactID, ref
 }
 
 // documentMention is the mention of reference written by the document artifactID, whose ref_key
-// is refKey: listed from the document itself, or from the block of it that holds the mention.
+// is refKey: listed from the document itself, or from the block of it that holds the mention - a
+// block node keyed by its ref_key, or for a spec in its issue's room, the room's block node the
+// read names as the spec's (its document, the spec's address dispatch://<KEY>/spec).
 func documentMention(t *testing.T, handler http.Handler, reference, artifactID, refKey string) model.GraphEdge {
 	t.Helper()
 	for _, edge := range graphEdges(t, handler, url.Values{"to": {reference}, "kind": {"mentions"}}).Edges {
-		if edge.Node.Kind == "artifact" && edge.Node.ID == artifactID || edge.Node.Kind == "block" && strings.HasPrefix(edge.Node.ID, refKey+"#") {
+		if edge.Node.Kind == "artifact" && edge.Node.ID == artifactID ||
+			edge.Node.Kind == "block" && (strings.HasPrefix(edge.Node.ID, refKey+"#") || edge.Node.Document == "dispatch://"+refKey) {
 			return edge
 		}
 	}

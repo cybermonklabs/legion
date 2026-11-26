@@ -533,7 +533,7 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, _, err = service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil)
+		_, _, err = service.indexRenderedVersion(ctx, tx, document, refs.OneVersion(document, version, versionAt), nil, false, live, blocks, nil, nil)
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}

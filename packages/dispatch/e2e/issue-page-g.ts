@@ -31,7 +31,6 @@ import {
   recordCheckResult,
   userHeaders,
 } from "./api";
-import { blockId } from "./editor";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
 import { ONE_PIXEL_PNG } from "./sends";
@@ -43,17 +42,17 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
- * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
- * folded branch first (`unfoldEveryBranch`), and holds on either body.
+ * with `page.goto`; the body is `slots/body.tsx`'s, whose outline opens with every node unfolded
+ * and folds a node only where the reader folds it: a row that reads a node the reader may have
+ * folded unfolds every folded branch first (`unfoldEveryBranch`).
  *
  * The DOM a row reads: each node is a `role="treeitem"` `[data-node-row]` inside the
  * `role="tree"` named "Issue tree", carrying `data-node-id`, `data-node-type`, `data-node-state`
  * and `aria-level`; inside it the bullet `[data-node-bullet]` (the fold control where the node
  * holds nodes), the words `[data-node-words]` with their trail of chips `[data-node-chip]`, the
  * group `[data-node-margin]` (tag `[data-node-tag]`, author `[data-node-author]`, time
- * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` of the focused or
- * pinned row, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
+ * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` that every row's
+ * face draws whatever the focus, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
  *
  * A reader answers through one `page.evaluate` and returns what is there - an empty list for a
  * page that draws none of it - and a row asserts on that answer.
@@ -170,13 +169,11 @@ export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"):
 }
 
 /** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits until the row
- *  holds it and draws its body, which every row draws while it has the focus: a row draws its
- *  card whether or not it has the focus, so the card says nothing of it. */
+ *  holds it. A row draws its body whatever the focus, so the focus opens nothing to wait for. */
 export async function focusRow(page: Page, id: string): Promise<Locator> {
   const row = nodeRow(page, id).first();
   await row.focus();
   await expect(row).toBeFocused();
-  await expect(rowBody(row)).toHaveCount(1);
   return row;
 }
 
@@ -256,19 +253,15 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
- * with every branch open before the outline, which folds to the frontier and draws a
- * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
- * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
- * each fold control and each such line's control, until neither is left, rather than asserting
- * that the first drawing carried it. It ends with the focus on no row: a press may leave it on
- * the row it opened, and a focused row draws its body, while the rows read the tree as it stands
- * with no row focused.
+ * Opens every branch a fold left shut, as a reader does to read past one: the outline opens with
+ * every node unfolded, and a row that folded one, or a node that arrives under a fold, is read
+ * only once its branch is open again. So a row that reads what a branch holds presses each fold
+ * control until none is left, rather than asserting that the first drawing carried it. It ends
+ * with the focus on no row: a press may leave it on the row it opened, while the rows read the
+ * tree as it stands with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
-  const controls = nodeRows(page)
-    .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-    .or(issuePage(page).locator("[data-branch-more] button"));
+  const controls = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
     // A caller waits for the tree it opens first - a settled load, or an expect.poll that reads
@@ -288,16 +281,32 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
 /** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */
 const SEED_DRAWN_MS = 30_000;
 
+/** The seeded nodes Conversation draws no row of: its read holds no result, plan task or
+ *  message, and a comment on a node's text is drawn beside that node and not as a row. Graph,
+ *  which draws the whole tree read, draws each of them as Conversation draws a node. */
+export function leftOutOfConversation(seeded: RowSeed): string[] {
+  return [
+    seeded.result,
+    seeded.longMessage,
+    seeded.linked,
+    ...seeded.replies,
+    seeded.change,
+    blockNode(seeded.slugs.plan, "t1"),
+    blockNode(seeded.slugs.plan, "t2"),
+  ];
+}
+
 /**
- * Waits until the page draws a row for every node the seed wrote that a row reads, and the names
- * of what their chips cite. The tree is drawn with the issue alone; its comments, messages,
- * questions, decisions, results and blocks arrive after it, and the batched names last
- * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
- * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
- * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * Waits until the page draws a row for every node the seed wrote that Conversation draws, and
+ * the names of what their chips cite. The tree is drawn with the issue alone; its nodes, the
+ * kept reads and the batched names arrive after it (`useIssueTree.ts`), so a reading taken as
+ * soon as the tree exists may find a row, or a chip's name, not drawn yet. The unsure decision
+ * cites the plan's `t1`, which Conversation's read does not hold, so its chip names `t1` only
+ * once the batched names have come, and it stands for them. Each poll first opens every branch
+ * a fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
+  const leftOut = leftOutOfConversation(seeded);
   const ids = [
     seeded.child,
     seeded.blocker,
@@ -323,8 +332,10 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
     blockNode(seeded.slugs.plan, "t1"),
     blockNode(seeded.slugs.plan, "t2"),
     blockNode(seeded.slugs.verification, "c1"),
-  ];
-  const needs = blockNode(seeded.slugs.plan, "t2");
+  ].filter((id) => !leftOut.includes(id));
+  const cited = nodeRow(page, seeded.unsure)
+    .first()
+    .locator(`${SELECTORS.nodeWords} a[data-row-chip]`);
   await expect
     .poll(
       async () => {
@@ -332,7 +343,7 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
         const rows = await drawnRows(page);
         return {
           missing: ids.filter((id) => rowOf(rows, id) === undefined),
-          named: (rowOf(rows, needs)?.chips.length ?? 0) > 0,
+          named: /^1\. Stand/u.test((await cited.allTextContents()).join("").trim()),
         };
       },
       {
@@ -1031,10 +1042,9 @@ export const ONE_LINE_WORDS = "The page draws one row per node.";
 /** What the seed wrote, by the ids the page draws its rows under. */
 export interface RowSeed {
   readonly key: string;
-  /** The slug of each document the issue holds: its spec, its notes, its plan, its
-   *  Verification document and its decisions. */
+  /** The slug of each document the issue holds: its spec, its notes, its plan and its
+   *  Verification document. */
   readonly slugs: {
-    readonly decisions: string;
     readonly notes: string;
     readonly plan: string;
     readonly spec: string;
@@ -1061,13 +1071,13 @@ export interface RowSeed {
   /** The open question with two options that waits on the reader, and an answered one. */
   readonly openQuestion: string;
   readonly answered: string;
-  /** The decision that shaped a statement and waits for review, the decision a person asked to
-   *  change, and the comment that asks it. */
+  /** The decision of the spec that shaped a statement and waits for review, the decision of the
+   *  spec a person asked to change, and the comment that asks it. */
   readonly shaping: string;
   readonly changed: string;
   readonly change: string;
-  /** The decision the seed marks unsure, whose words cite `t1` by its address, and the one that
-   *  quotes a typed block and cites `r-one` by its address. */
+  /** The decision of the spec the seed marks unsure, whose words cite `t1` by its address, and
+   *  the plan's decision that holds a typed block and cites `r-one` by its address. */
   readonly unsure: string;
   readonly raw: string;
   /** The result the untitled session recorded against `c1`. */
@@ -1100,10 +1110,15 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
  * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
- * recorded; a decision that shaped a statement, one opening "Unsure:" that cites `t1`, one
- * holding `:::requirement{#r1}` and a block's address, and one a person asked to change; a
+ * recorded; the planner's `decision` blocks in the spec's `## Decisions` part - one that shaped
+ * a statement, one the seed marks of high uncertainty that cites `t1`, and one a person asked to
+ * change - and its `decision` block of the plan holding `:::requirement{#r1}` and a block's
+ * address, so `r1` is a requirement of a document other than the spec (decision 246); a
  * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * long texts c-cut reads. It is at most three levels deep.
+ *
+ * A decision is a `decision` block of the document that holds it, which the seed names by the
+ * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1208,26 +1223,69 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
 
-  const headings = {
-    changed: "Name every node from one read",
-    raw: "Keep the source out of the rows",
-    shaping: "Draw a statement on one line",
-    unsure: "Fold to the frontier and not to a depth",
+  // The planner's decisions, each a `decision` block it writes: three in the spec's `## Decisions`
+  // part, and one of the plan whose typed block is a requirement of a document other than the
+  // spec. A decision is tied to the statement it shaped by its `shaped` attribute, and its
+  // uncertainty is its own attribute.
+  const ids = {
+    changed: "d-changed",
+    raw: "d-raw",
+    shaping: "d-shaping",
+    unsure: "d-unsure",
   };
-  const decisions = await createIssueArtifact(key, {
-    content: [
-      `## ${headings.shaping}\n\nShapes ${spec("r-one")}.`,
-      `## ${headings.changed}\n\n${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
-      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this. ` +
-        `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
-      `## ${headings.raw}\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::`,
-    ].join("\n\n"),
-    name: "decisions.md",
-  });
-  // A person asks to change one decision, by a comment anchored to its words after they last
-  // changed (decision 45: the anchor names the document by its id).
+  const decisionBlock = (id: string, attributes: string, heading: string, words: string) =>
+    `:::decision{#${id}${attributes}}\n### ${heading}\n\n${words}\n:::\n`;
+  await editArtifact(
+    issue.primary_artifact_id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: [
+            "## Decisions\n",
+            decisionBlock(
+              ids.shaping,
+              ` shaped="${spec("r-one")}"`,
+              "Draw a statement on one line",
+              `Shapes ${spec("r-one")}.`
+            ),
+            decisionBlock(
+              ids.changed,
+              ` shaped="${spec("r-cites")}"`,
+              "Name every node from one read",
+              `${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`
+            ),
+            decisionBlock(
+              ids.unsure,
+              ' uncertainty="high"',
+              "Fold to the frontier and not to a depth",
+              "A reader who never finds the newest question would change this. " +
+                `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`
+            ),
+          ].join("\n"),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  await editArtifact(
+    plan.artifact.id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: `::::decision{#${ids.raw}}\n### Keep the source out of the rows\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::\n::::\n`,
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
+  // A person asks to change one decision, by a comment anchored to its words in the spec after
+  // they last changed (decision 45: the anchor names the document by its id).
   const change = await createComment(key, {
-    anchor: { artifact: decisions.artifact.id, quote: CHANGED_DECISION_WORDS },
+    anchor: { artifact: issue.primary_artifact_id, quote: CHANGED_DECISION_WORDS },
     body: "Name them from the tree instead.",
   });
 
@@ -1251,18 +1309,13 @@ export async function seedRows(): Promise<RowSeed> {
   const pictured = await createComment(key, {
     body: `The layout at 1440 px:\n\n![The layout at 1440 px](dispatch://${key}/artifact/${picture})`,
   });
-
-  const decisionsSlug = decisions.artifact.slug;
-  // A decision is addressed by its heading block, whose id the server gives.
-  const decision = async (heading: string) =>
-    blockNode(decisionsSlug, await blockId(decisions.artifact.id, `## ${heading}`));
   return {
     answered: answered.id,
     answeredLong: answeredLong.id,
     answerWords,
     blocker: blocker.key,
     change: change.id,
-    changed: await decision(headings.changed),
+    changed: blockNode(specSlug, ids.changed),
     child: child.key,
     childTitle,
     comment: comment.id,
@@ -1273,18 +1326,17 @@ export async function seedRows(): Promise<RowSeed> {
     openQuestion: openQuestion.id,
     picture,
     pictured: pictured.id,
-    raw: await decision(headings.raw),
+    raw: blockNode(plan.artifact.slug, ids.raw),
     replies,
     result: recorded.result.id,
-    shaping: await decision(headings.shaping),
+    shaping: blockNode(specSlug, ids.shaping),
     slugs: {
-      decisions: decisionsSlug,
       notes: notes.artifact.slug,
       plan: plan.artifact.slug,
       spec: specSlug,
       verification: verification.artifact.slug,
     },
-    unsure: await decision(headings.unsure),
+    unsure: blockNode(specSlug, ids.unsure),
     waitingLong: waitingLong.id,
   };
 }
@@ -1314,12 +1366,11 @@ export interface LongRowsSeed {
 /**
  * One issue whose spec opens with one long statement the planner wrote, which a check of its
  * Verification document serves and no result proves, and whose conversation is the reader's
- * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
- * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
- * run of `OWN_ROWS` replies of the reader's own of the same words after the first
- * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
- * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
- * the check nothing proves keeps it open in an outline folded to what is open.
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, each drawn
+ * whole and shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own
+ * of the same words after the first `ROWS_ABOVE_OWN`. Drawn whole they make a page many screens
+ * tall, so a jump into it lands on rows no frame has laid out yet. The statement is the body's
+ * first row.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1345,7 +1396,7 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const specSlug =
     ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   // A question that waits on the reader, which an outline that opens with the focus on such a
-  // question focuses in place of its first row, so the statement keeps its cut.
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
   await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];

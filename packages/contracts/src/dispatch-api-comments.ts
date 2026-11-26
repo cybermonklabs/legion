@@ -113,6 +113,44 @@ export const commentFields = {
 
 export const CommentSchema = z.strictObject(commentFields).readonly();
 
+/** The states the node a comment's anchor names stands in, as the tree read answers a node's
+ *  (`model.IssueTreeAnchorNode`): `gone` for a node deleted since the comment was written. */
+const ANCHORED_NODE_STATES = ["live", "gone", "proposed", "settled", "overtaken"] as const;
+
+/**
+ * The member `node_anchor` that `GET /api/v1/issues/{key}/comments` and `GET /api/v1/comments/{id}`
+ * answer a caller that sends `?node_anchor=true`, on each comment whose anchor names a node or a
+ * block (`model.CommentNodeAnchor`): that node by its store kind and id, with its state; the words
+ * the anchor quotes; the zero-based match of those words in the node's text it names, null for a
+ * document anchor, which stores none; and `orphaned`, which says the quoted words left the node's
+ * text. A reader tells a deleted node from its `state`, `gone`, since an edit that drops the words
+ * makes `orphaned` true too. A node is named as the store keys it: a lens, a risk, a constraint and
+ * a result by kind and uuid, a finding and a block of a document as kind `block` with the block's
+ * own node id (`lens/<uuid>#<block id>`, `<ref_key>#<block id>`).
+ *
+ * A comment on a node answers `anchor: null` and no `node_anchor` to every read without the
+ * parameter and in every `comment.*` event, because the deployed clients read a comment with the
+ * strict `CommentSchema`, and an event is retained verbatim under the strict
+ * `WrittenCommentEventPayloadSchema`: either refuses a member it does not declare.
+ */
+export const CommentNodeAnchorSchema = z
+  .strictObject({
+    node: z
+      .strictObject({ kind: z.string(), id: z.string(), state: z.enum(ANCHORED_NODE_STATES) })
+      .readonly(),
+    quote: z.string(),
+    occurrence: z.number().int().nonnegative().nullable(),
+    orphaned: z.boolean(),
+  })
+  .readonly();
+
+/** A comment as the two comment reads answer it to a caller that sends `?node_anchor=true`: the
+ *  comment `CommentSchema` reads, with `node_anchor` (`CommentNodeAnchorSchema`) where its anchor
+ *  names a node or a block. Only a caller that sends the parameter reads a comment with it. */
+export const CommentWithNodeAnchorSchema = z
+  .strictObject({ ...commentFields, node_anchor: CommentNodeAnchorSchema.optional() })
+  .readonly();
+
 /**
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was
  * written, and events are retained verbatim, so the row's later additions are optional here:

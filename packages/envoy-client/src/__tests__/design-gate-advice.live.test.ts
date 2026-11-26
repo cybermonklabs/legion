@@ -42,7 +42,7 @@ function planNextStep(issue: string, version: number): string {
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
-  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write stores the text of version ${version - 1} again exactly, with no decision block in it decided since.`;
+  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write stores the text of version ${version - 1} again exactly, with no ask block in it decided since.`;
 }
 
 /** The clause between them, for the issues whose design gates record the document written. */
@@ -100,7 +100,7 @@ describe.skipIf(!dispatchStackEnabled)(
         // and which the advice reads: a gate row with no `holds`, on a step the deployment does not
         // gate, holds no READY back and prints no clause.
         await asMachine("PUT", `/api/v1/projects/${key}/gated-steps`, {
-          steps: ["decisions", "criteria", "spec"],
+          steps: ["criteria", "spec"],
           actor: { kind: "session", id: SESSION },
         });
       }

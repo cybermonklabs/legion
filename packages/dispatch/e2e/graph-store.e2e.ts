@@ -306,9 +306,10 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  *     and presents a DPoP proof on every request - and no browser can present one, which is why
  *     `e2e/acceptance/graph-store.sh` carries that row to a Go test as well.
  *
- * The fifth comment is written author-private the same way: no route offers that visibility yet,
- * so the node is stored as such a write would store it, and it is delivered to the same session,
- * so only the predicate keeps it off the page.
+ * The fifth comment is made author-private the same way, in the store: the comment route takes
+ * `visibility` and refuses `author` with 400 VISIBILITY_NOT_ADMITTED, since not every read of a
+ * comment binds the visibility predicate, so its node is set as an author-only node is stored. It
+ * is delivered to the same session, so only the predicate keeps it off the page.
  */
 async function seedThePersonPage(): Promise<{
   authored: string;
@@ -398,8 +399,9 @@ async function seedThePersonPage(): Promise<{
     `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
      values ('session', '${SESSION}', 'alias_of', 'person', 'alice', now(),
        '{"kind": "session", "id": "${SESSION}"}'::jsonb, 0, null, true)`,
-    // The fifth comment as an author-private write stores it: the node reserved for its author,
-    // and the base attribute that node row projects.
+    // The fifth comment's node as an author-only node is stored: reserved for its author, with
+    // the base attribute that node row projects. The comment route refuses `author`, so no write
+    // through it stores this.
     `update graph_nodes set visibility = 'author' where kind = 'comment' and id = '${unseen.id}'`,
     `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
      select 'comment', '${unseen.id}', 'visibility', 'value', 'author', now(), made_by, 0, null, true
