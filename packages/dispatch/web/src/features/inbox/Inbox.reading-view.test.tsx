@@ -274,6 +274,56 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
   }
 });
 
+// INFRA-3135 (the architect's ruling M2 of round 31): below 1280 px with a row open, the page hides
+// the list under the row's reading view, so the selection bar's hand-off reads the view. Clear
+// selection lands the focus on the view's own checkbox for the open row, and not on a checkbox in
+// the hidden list, from which a browser drops the focus to the page's body: with the open row
+// marked last, and with another row, hidden in the list, marked last.
+test("below 1280 px with a row open and a row marked, Clear selection on the bar lands the focus on the reading view's own checkbox", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    for (const marked of ["ask-b", "ask-a"]) {
+      // Marked in the list, then `ask-b` opened.
+      await user.click(within(shortRow(marked)).getByRole("checkbox"));
+      await screen.findByText("1 selected");
+      await user.click(shortRow("ask-b"));
+      const view = await screen.findByTestId("inbox-reading-view");
+      expect(view.getAttribute("data-inbox-reading-row")).toBe("ask-b");
+      const mark = within(view).getByRole("checkbox", { name: /^Select / });
+      expect((mark as HTMLInputElement).checked).toBe(marked === "ask-b");
+
+      await user.click(screen.getByRole("button", { name: "Clear selection" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull()
+      );
+      await waitFor(() => expect(mark).toHaveFocus());
+      expect(mark).not.toBeChecked();
+      // The view the reader opened still stands: the press took nothing but the marks.
+      expect(view.isConnected).toBe(true);
+
+      await user.click(within(view).getByRole("button", { name: "Back to the Inbox list" }));
+      await waitFor(() =>
+        expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument()
+      );
+    }
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 test("below 1280 px Escape in the reading view's answer box is the box's, and leaves the view only from outside a text field", async () => {
   const user = userEvent.setup();
   const rows = [

@@ -1047,8 +1047,8 @@ function InboxBody({
   const showDismissed = show === "dismissed";
   const listRef = useRef<HTMLElement>(null);
   /** The list column, which scrolls in itself beside the reading column. It is drawn with no row
-   *  as well, and it is the list's own stop for the selection bar's hand-off
-   *  (`useLastMarkedPlace`). */
+   *  as well, and it is the list's own stop for the selection bar's hand-off while the list is
+   *  shown (`barStop`, `useLastMarkedPlace`). */
   const listScroller = useRef<HTMLElement>(null);
   /** The reading column, where `h`, `o`, `y`, Enter and `1`-`9` act while it is on. Written by
    *  `holdPane` below rather than handed to the wrapper, so the column's unmount is seen. */
@@ -2107,7 +2107,7 @@ function InboxBody({
   // the list holds it, out of sight or not. After a press that took that row away: a row the
   // reader can see at its place, else before it, else after it. With no row marked: the first row
   // the reader can see below whatever the page draws over the list. Each is shown whole at its
-  // nearest edge. Else the list column's own stop, with no scroll. While a press is taking a
+  // nearest edge. Else the list's own stop, with no scroll (`barStop`). While a press is taking a
   // listed row off this view (`leavingNow`), the landing is owed and made by the commit that takes
   // those rows away: a Dismiss's or a Move to Inbox's rows (`dismissedHere`), and a Snooze's, the
   // bar's and a row's own (`snoozedHere`). The list keeps a snoozed row in its band only until
@@ -2157,12 +2157,33 @@ function InboxBody({
       if (refused || adoptedInbox !== name.read) names.delete(id);
     }
   });
+  // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
+  // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
+  // page's body. So there the hand-off reads the view: the view's row is the one row drawn, the
+  // view's own checkbox is that row's mark, and the view's scroller is the list's own stop.
+  /** The open row's reading view while it stands in the list's place, else null. */
+  const barReadingView = (): HTMLElement | null => (mode === "reading" ? paneRef.current : null);
+  /** The list's own stop for the bar's hand-off: the reading view's scroller while the view
+   *  stands in the list's place, else the list column. */
+  const barStop = (): HTMLElement | null =>
+    barReadingView() === null ? listScroller.current : paneScroller();
   const landAtPlace = useLastMarkedPlace({
-    control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
+    control: (id) => {
+      const view = barReadingView();
+      // The view's own mark is the first checkbox in it: its first line, Back and Mark, comes
+      // before the row's body (`ReadingView`).
+      const row = view === null ? originRow(id) : view.dataset.inboxReadingRow === id ? view : null;
+      return row?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null;
+    },
     lastMarked,
     leaving: leavingNow,
-    list: () => listScroller.current,
-    order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
+    list: barStop,
+    order: () => {
+      const view = barReadingView();
+      return view === null
+        ? rows().map((row) => row.dataset.inboxRow ?? "")
+        : [view.dataset.inboxReadingRow ?? ""];
+    },
     shown: bulkBarShown,
   });
 
@@ -2674,9 +2695,9 @@ function InboxBody({
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus, or the control in it that held the focus: the hand-off above
-      // (`landAtPlace`) puts the focus itself. The list column's own stop is the last place the
-      // focus can go.
-      returnFocus={() => (landAtPlace.land() ? null : focusListStop(listScroller.current))}
+      // (`landAtPlace`) puts the focus itself. The list's own stop (`barStop`) is the last place
+      // the focus can go.
+      returnFocus={() => (landAtPlace.land() ? null : focusListStop(barStop()))}
       size={BAR_SIZE}
       state={barState}
     >

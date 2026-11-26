@@ -94,6 +94,7 @@ import {
   inboxPane,
   inboxRow,
   paneScroller,
+  readingView,
   selectedRow,
   selectRow,
 } from "./inbox-pane";
@@ -12636,6 +12637,87 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
       landed.bottom <= now.bottom + 1 &&
       Math.abs(scrolled) <= cut + 1,
     text
+  ).toBe(true);
+});
+
+// INFRA-3135, round 30 (the implementer's own row, by the architect's ruling M2): below 1280 px a
+// row the reader opens is read in place of the list, which the page keeps mounted under `hidden`
+// (#5223), and a focus put in the hidden list falls to the page's body. So in that reading view the
+// selection bar's hand-off reads the view: the view's row is the one row drawn, the view's own
+// checkbox is that row's mark, and the view's scroller is the list's own stop. At 390x664, with
+// one row marked in the list and another row's reading view open, Clear selection takes the bar
+// away with the focus in it, and the focus lands on the view's own checkbox for the open row,
+// wholly in the window and drawn over by nothing: not on the body, and not on the marked row's
+// checkbox in the hidden list.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the row INFRA-3135's
+// round 30 gave main's reading view (e2e/playwright.config.ts): the bar's going takes its focused
+// Clear selection away, a focused control taken away with no `focusout` in those engines.
+// SLOW(>=2s): six asks seeded, and a reading view opened before the press.
+test("at 390 with a row marked and another row's reading view open, Clear selection on the Inbox bar lands the focus on the view's own checkbox for the open row, wholly in sight @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ height: 664, width: 390 });
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 6; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  await page.goto("/?group=none");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(6);
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  // The last two rows, away from the top of the list, over which the bar stands below `sm`
+  // (`SelectionBar`): the row opened by a click is not under it.
+  const marked = ids[4] ?? "";
+  const open = ids[5] ?? "";
+  await inboxRow(page, marked).getByRole("checkbox").first().check();
+  await expect(bar).toContainText("1 selected");
+  await selectRow(page, open);
+  // The view of the open row stands in the list's place, and the list is hidden under it.
+  const view = readingView(page);
+  await expect(view).toHaveAttribute("data-inbox-reading-row", open);
+  await expect(inboxList(page)).toBeHidden();
+  // The row marked is the hidden one, and the view's own checkbox neither is marked nor holds the
+  // focus before the press.
+  const mark = view.getByRole("checkbox", { name: /^Select / });
+  await expect(mark).not.toBeChecked();
+  await expect(mark).not.toBeFocused();
+  await expect(bar).toContainText("1 selected");
+
+  await bar.getByRole("button", { name: "Clear selection" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(bar).toHaveCount(0);
+  await expect(mark).toBeFocused();
+  await nextFrames(page);
+  // Read once the landing has settled: the focus and where its checkbox stands in the window.
+  const sight = await mark.evaluate((box) => {
+    const rect = box.getBoundingClientRect();
+    const drawn = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return {
+      bottom: rect.bottom,
+      focused: document.activeElement === box,
+      height: window.innerHeight,
+      left: rect.left,
+      onTop: drawn === box,
+      right: rect.right,
+      top: rect.top,
+      width: window.innerWidth,
+    };
+  });
+  expect(
+    sight.focused &&
+      sight.onTop &&
+      sight.top >= 0 &&
+      sight.left >= 0 &&
+      sight.bottom <= sight.height &&
+      sight.right <= sight.width,
+    `the view's checkbox ${sight.focused ? "holds" : "does not hold"} the focus and stands at ` +
+      `${Math.round(sight.left)}-${Math.round(sight.right)} x ${Math.round(sight.top)}-` +
+      `${Math.round(sight.bottom)} in ${sight.width}x${sight.height}, ` +
+      `${sight.onTop ? "drawn over by nothing" : "under another element"}`
   ).toBe(true);
 });
 
