@@ -144,14 +144,14 @@ role_perms() {
     ROLE_ERROR="gcloud is not on PATH, so the role $1 cannot be described"
   elif ! gcloud iam roles describe "$1" --format=json --quiet >"$WORK/role.json" 2>"$WORK/role.err"; then
     ROLE_ERROR="gcloud iam roles describe $1 was refused (it needs iam.roles.get for a custom role): $(first_line "$WORK/role.err")"
-  elif ! jq -r '.includedPermissions[]?' "$WORK/role.json" >"$WORK/role.list" 2>"$WORK/role.err"; then
+  elif ! jq -r '[.includedPermissions[]?] | unique[]' "$WORK/role.json" >"$ROLE_FILE" 2>"$WORK/role.err"; then
     ROLE_ERROR="gcloud iam roles describe $1 answered no JSON role: $(first_line "$WORK/role.err")"
+    rm -f "$ROLE_FILE"
   fi
   if [ -n "$ROLE_ERROR" ]; then
     printf '%s' "$ROLE_ERROR" >"$ROLE_FILE.error"
     return 1
   fi
-  sort -u "$WORK/role.list" >"$ROLE_FILE"
 }
 # role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
 # the role file ROLE_FILE (role_perms) lists, comma-separated, or "" for none. Each role file is

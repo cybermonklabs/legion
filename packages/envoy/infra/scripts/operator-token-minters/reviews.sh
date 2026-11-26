@@ -637,18 +637,21 @@ bound_subjects() {
 # system:serviceaccounts:<namespace> for the namespace of each reviewed ServiceAccount outside the
 # system namespaces, a bound one too (a system namespace's ServiceAccounts are seeds, reviewed with
 # that group). A binding to one reaches every member Kubernetes gives it, whatever Google Groups for
-# RBAC says. Sets GROUPS_ADDED.
+# RBAC says. Sets GROUPS_ADDED. One awk reads the principals once for the groups they lack, which
+# sort -u puts in the order they are added.
 namespace_groups() {
   local group
   GROUPS_ADDED=0
   while IFS= read -r group; do
-    grep -qxF -- "group:$group" < <(cut -d"$US" -f1 "$WORK/principals.rec") && continue
     printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
     GROUPS_ADDED=$((GROUPS_ADDED + 1))
-  done < <({
-    printf '%s\n' system:authenticated system:serviceaccounts
-    cut -d"$US" -f1 "$WORK/principals.rec" | sed -n 's/^system:serviceaccount:\([^:]*\):.*/system:serviceaccounts:\1/p'
-  } | sort -u)
+  done < <(awk -F"$US" '
+      { have[$1] = 1 }
+      match($1, /^system:serviceaccount:[^:]*:/) { want["system:serviceaccounts:" substr($1, 23, RLENGTH - 23)] = 1 }
+      END {
+        want["system:authenticated"] = 1; want["system:serviceaccounts"] = 1
+        for (group in want) if (!(("group:" group) in have)) print group
+      }' "$WORK/principals.rec" | sort -u)
 }
 # masters_bindings STEP SUFFIX RESOURCE: every binding of $WORK/bindings.json that names the group
 # system:masters is a finding, but the bootstrap cluster-admin ClusterRoleBinding (matched by its
