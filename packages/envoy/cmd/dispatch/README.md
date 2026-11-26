@@ -5715,20 +5715,25 @@ Each item below names a path with its method and identity, then its purpose.
   A priority of `0` needs the `p0` scope: without it the create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
   Priorities `1` to `3`, or none, need no scope; an inherited priority is not the new issue's own.
   A create from a reference that Dispatch already imported answers that issue and sets no priority.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
-  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
-  External references skip the check.
-  A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
-  A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A create the route made answers `201`; one naming an external reference Dispatch already holds an issue for answers that issue `200` and makes nothing, which is how a caller (the CLI's "already holds", the command bar's `unchanged` write) tells the two apart.
-  A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
-  one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
-  so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
-  A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
-  With `DISPATCH_PARENT_STATUS_RULE` on, a create under a `done` parent is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, with `issues` naming the parent (`POST /api/v1/issues/{key}/status-change`, below).
-  A create under a parent and a close of that parent at the same moment never both go through: the one that reaches the parent's row second is refused.
-  When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
-  A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
+
+  - The route refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+    a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+    External references skip the check.
+    A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
+
+  - A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
+
+  - A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
+    one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
+    so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
+    A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
+
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a create under a `done` parent is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, with `issues` naming the parent (`POST /api/v1/issues/{key}/status-change`, below).
+    A create under a parent and a close of that parent at the same moment never both go through: the one that reaches the parent's row second is refused.
+
+  - When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+    A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
 
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
