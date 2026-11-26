@@ -688,7 +688,7 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
       saveEntry: () => {},
       claim: () => checker,
       readRecord: async () => record,
-      publisher: () => undefined,
+      publisher: async () => undefined,
       project: "legion",
       limits: DEFAULT_STALL_LIMITS,
       log: { debug: (message) => debugged.push(message), warn: () => {} },
