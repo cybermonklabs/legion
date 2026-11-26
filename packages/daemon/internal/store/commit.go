@@ -245,8 +245,9 @@ func scopeOf(ctx context.Context) *commitScope {
 // orders it against every other write; a store write the watcher runs late has no such order and
 // can change what a newer write wrote. So a hook's effects are log lines, wakes and in-process
 // state, and in-process state only behind a fence a late run cannot cross: admission's held
-// release clears only the holds it applied, and a controller mint's hook revokes only the grants
-// of generations below the one it confirms.
+// release clears only the holds it applied, admission's memory of its held-retro reads takes a
+// hook's write only while no later pass has begun, and a controller mint's hook revokes only the
+// grants of generations below the one it confirms.
 //
 // The hook list is not goroutine-safe: OnCommit is called only on the goroutine that runs
 // TransactWith's write. It panics on a context no TransactWith scopes, since a write made outside
