@@ -440,6 +440,51 @@ func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	}
 }
 
+// A leave ends the old starts through the same settle. Its deletion waits for the tester's end
+// too, so a push of that tester's branch before the end is recorded before deletion is queued.
+func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
+	engine := returnEngine()
+	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+
+	const pushed = "6666666666666666666666666666666666666666"
+	called := 0
+	engine.afterOldGenerationRunEnd = func(ctx context.Context, tx pgx.Tx, row record.IssueStepRun) error {
+		if row.Generation != 1 || row.Place.Task != "a" {
+			return nil
+		}
+		called++
+		tester, err := engine.store.StepStarts(ctx, tx, "LEGION-208", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2})
+		if err != nil {
+			return err
+		}
+		if tester.Run == record.RunOpen {
+			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
+				return err
+			}
+		}
+		var queued int
+		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, "LEGION-208", string(record.OutboxKindBesideBranchesDelete)).Scan(&queued); err != nil {
+			return err
+		}
+		if queued != 0 {
+			return fmt.Errorf("the leaving start %s/%d ended with %d branch deletion rows already queued", row.Place.Kind, row.Place.Place, queued)
+		}
+		return nil
+	}
+
+	r.parks()
+
+	if called == 0 {
+		t.Fatal("the leave ended no old start through the hook")
+	}
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 1"})
+	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
+		t.Fatalf("the leaving tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
+	}
+}
+
 // testerWaitReasons is the reason of each phase-finished notice of LEGION-208's tester whose testing
 // move waits for the head's set of checks, oldest first.
 func (r *fixRig) testerWaitReasons() []string {
