@@ -9,6 +9,11 @@ body: |-
   operator's set and clear of the P0 bound (`LegionProjectP0BoundRequest`,
   `LegionProjectP0BoundClearRequest` and the operator's two) and their answer,
   `LegionP0BoundResponse`.
+
+  `schemas/dispatch-openapi.json`, and so the `LegionBoardHeader` type rendered from it, carries
+  `p0_holders` on the header of Dispatch's Legion board (`GET /api/v1/projects/{key}/legion/board`):
+  the daemon's number of P0 holders, an integer, or `null` where the daemon's newest recorded state
+  gives none. The key is always present.
 time: 2026-11-25T00:54:38Z
 custom:
     Issue: INFRA-5636

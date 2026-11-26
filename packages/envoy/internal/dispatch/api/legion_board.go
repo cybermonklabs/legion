@@ -113,15 +113,23 @@ type legionBoardResponse struct {
 	ComputedAt time.Time                  `json:"computed_at"`
 }
 
-// legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
-// trees, the queue's length, and the last read of the daemon — when it was made, whether it
-// succeeded and why it did not. SlotCap is null until a read records the daemon's admission
-// block, Trees is 0 until a daemon that reports its live trees does (dispatch://INFRA-980), and
-// ReadAt is null for a project whose daemon has never answered at all, which shows the board with
-// empty columns.
+// legionBoardHeader is what the view's header shows: the slots in use against the cap, the P0
+// holders, the live trees, the queue's length, and the last read of the daemon — when it was
+// made, whether it succeeded and why it did not. SlotCap is null until a read records the
+// daemon's admission block, Trees is 0 until a daemon that reports its live trees does
+// (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never answered at
+// all, which shows the board with empty columns.
+//
+// P0Holders is the daemon's own number of P0 holders, copied from the newest admission block a
+// read recorded (dispatch://INFRA-5636): a P0 issue holds its slot outside the cap, so this is
+// what tells a reader why SlotsInUse can be more than SlotCap. The board counts none itself. It
+// is null, never 0, where that block gives no number (a daemon before that change sends none)
+// and where no read has recorded a block: 0 would say no P0 issue holds a slot, which nothing
+// read says.
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
+	P0Holders   *int       `json:"p0_holders"`
 	Trees       int        `json:"trees"`
 	QueueLength int        `json:"queue_length"`
 	ReadAt      *time.Time `json:"read_at"`
@@ -632,6 +640,9 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 	if p.admission != nil {
 		header.SlotCap = p.admission.Cap
+		// The daemon's own count, copied as it sent it: nil, and so null, where its block gives
+		// none, never a 0 the board made up.
+		header.P0Holders = p.admission.P0Holders
 		// Trees is the live trees' roots, which only a daemon on dispatch://INFRA-980 reports; it
 		// is 0 for an older one, where the view shows no tree count rather than a wrong one.
 		header.Trees = len(p.admission.Trees)

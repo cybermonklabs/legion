@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -34,5 +36,42 @@ func p0BoundAnswerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerP0Bound: {roots: typesOf(P0BoundView{}), bodies: []any{P0BoundView{Bound: new(2), Configured: new(4),
 			Live: &P0BoundLiveView{Bound: new(2), SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
 				SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "the P0 issues outran the gateway"}}}},
+	}
+}
+
+// TestACallerInNoPodStatingNoContractIsServedTheP0Holders: Dispatch's sampler reads the state
+// stating no plugin contract, from an address no claim's pod names, so contractsFor places it at
+// this daemon's own body, which carries `admission.p0Holders`, the number the Legion board's
+// header copies (dispatch://INFRA-5636; Dispatch's own row,
+// TestTheStateReadStatesNoContractAndKeepsP0Holders, pins that its read states none). The caller
+// of the pod whose claims record a contract below this entry, asking the same daemon, is the
+// control: it is served no number, so the claims could strip the key, and the caller in no pod is
+// served it by its placement alone. A change that strips the key for such a caller fails here.
+func TestACallerInNoPodStatingNoContractIsServedTheP0Holders(t *testing.T) {
+	state := populatedState(t)
+	if state.Admission.P0Holders == nil {
+		t.Fatal("the populated state holds no number of P0 holders, so this test proves nothing")
+	}
+	handler := stateServer(t, state, podClaims(ServingFloor))
+	admissionServed := func(remote string) map[string]json.RawMessage {
+		t.Helper()
+		var body struct {
+			Admission map[string]json.RawMessage `json:"admission"`
+		}
+		if err := json.Unmarshal(stateAsked(t, handler, remote), &body); err != nil {
+			t.Fatalf("decode the state served %s: %v", remote, err)
+		}
+		return body.Admission
+	}
+
+	if _, carried := admissionServed(statePodAddr + ":41000")["p0Holders"]; carried {
+		t.Fatalf("the caller of a pod at contract %d is served admission.p0Holders, want none below the P0 start's entry: this test proves nothing", ServingFloor)
+	}
+	raw, carried := admissionServed("192.0.2.1:41000")["p0Holders"]
+	if !carried {
+		t.Fatal("a caller in no pod stating no contract is served no admission.p0Holders, want this daemon's own body, which carries it")
+	}
+	if want := strconv.Itoa(*state.Admission.P0Holders); string(raw) != want {
+		t.Errorf("a caller in no pod stating no contract is served admission.p0Holders %s, want the state's %s", raw, want)
 	}
 }
