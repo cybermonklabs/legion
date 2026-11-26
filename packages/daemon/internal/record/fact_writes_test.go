@@ -73,6 +73,10 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 	gate := DesignGate{Issue: key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 1}
 	phaseRow := PhaseRow{Issue: key, Role: claim.RoleTester, Claim: "legion-LEGION-310-tester"}
 	slot := Slot{Issue: key, Index: 7, AdmittedAt: at}
+	merge := Merge{Number: 1310, Head: "h1", SHA: "m1", Base: "main", Repo: "acme/widgets", MergedAt: at}
+	merged := PullRequest{Issue: key, Repo: "acme/widgets", Number: 1310, Branch: "legion/" + key, HeadSHA: "h1", HeadUpdatedAt: at,
+		State: PullRequestMerged, Failing: []string{}, Cancelled: []string{}}
+	architectRow := PhaseRow{Issue: key, Role: claim.RoleArchitect, Claim: "legion-LEGION-310-architect"}
 	type step func(t *testing.T, ctx context.Context, tx pgx.Tx)
 	seedPlan := func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 		v, tasks, steps := ownersPlan(key, generation, 1, "architect-310", planGivenAt)
@@ -106,6 +110,20 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "its stalled tree told", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.MarkTreeStalledTold(ctx, tx, key, at))
 		}, marks: true},
+		{name: "its merge snapshot", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			if _, err := store.PutMergeSnapshot(ctx, tx, key, merge); err != nil {
+				t.Fatal(err)
+			}
+		}, marks: true, issue: true},
+		{name: "control: a merge snapshot older than the one recorded", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			if _, err := store.PutMergeSnapshot(ctx, tx, key, merge); err != nil {
+				t.Fatal(err)
+			}
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			if _, err := store.PutMergeSnapshot(ctx, tx, key, Merge{Number: 1309, SHA: "m0", MergedAt: at.Add(-time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+		}, issue: true},
 		{name: "a phase row", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, marks: true},
@@ -119,6 +137,12 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearTreeGeneration(ctx, tx, key, at))
 		}, marks: true},
+		{name: "a clear of its tree's generation that raises the tree's run alone", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ClearTreeGeneration(ctx, tx, key, at))
+		}, marks: true},
+		{name: "control: a clear of the tree of an issue with no record", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ClearTreeGeneration(ctx, tx, "LEGION-999", at))
+		}},
 		{name: "a clear that deletes a gate alone", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutGate(ctx, tx, gate))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
@@ -126,6 +150,21 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		}, marks: true},
 		{name: "control: a clear of a generation that holds nothing", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearGeneration(ctx, tx, key, at))
+		}},
+		{name: "a next change's clear of its merged pull request", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutPullRequest(ctx, tx, merged))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
+		}, marks: true},
+		{name: "a next change's clear of its phase rows", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutPhase(ctx, tx, phaseRow))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
+		}, marks: true},
+		{name: "control: a next change's clear of a root's architect row, which it keeps", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutPhase(ctx, tx, architectRow))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
 		}},
 		{name: "a handout", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.StartHandout(ctx, tx, key))
