@@ -378,6 +378,13 @@ func (a *Attributor) upsertHead(ctx context.Context, db refs.Pool, head PullRequ
 	return applied, nil
 }
 
+// seedsBranch is whether writing head records its merge commit as on its base branch, for good:
+// the rule UpsertPullRequestHead's doc comment argues, by which upsertHead writes the
+// branch_commits row in the head's own transaction.
+func (head PullRequestHead) seedsBranch() bool {
+	return head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
+}
+
 // upsertTexts writes the texts row of head, which checkHeadRow answered, in the transaction of
 // its results row: GitHub's facts of the head it describes, and its commit messages where they
 // were read (null where not). The trigger pull_request_texts_keys writes the keys and the reading
@@ -1106,7 +1113,7 @@ func (a *Attributor) storePullRequestFacts(
 		stamped, at := frozenHead(head), *checkedAt
 		_, err := f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
 			return false, stampHeadRead(ctx, db, stamped, at, bounded)
-		}, nil)
+		})
 		return answer(), err
 	}
 	owner, repo, err := refs.SplitGitHubRepo(canonical)
@@ -1174,7 +1181,7 @@ func (a *Attributor) keepFacts(ctx context.Context, f facts, head PullRequestHea
 	head = frozenHead(head)
 	return f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
 		return a.writeFacts(ctx, db, head, storedUnder, bounded)
-	}, &head)
+	})
 }
 
 // stampHeadRead stamps the row of head with at, where the row still holds the answer that head
@@ -1244,7 +1251,7 @@ func (a *Attributor) refreshPullRequestHead(
 	mark := func() error {
 		_, err := f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
 			return false, MarkPullRequestHeadChecked(ctx, db, repoFull, number, now)
-		}, nil)
+		})
 		return err
 	}
 	canonical := a.canonical(repoFull)
@@ -1440,7 +1447,7 @@ func (a *Attributor) readThroughCommitPulls(
 		for _, read := range owed[pull.Number] {
 			if _, err := f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
 				return false, settleOwedRead(ctx, db, read.Repo, read.Number, read.Revision)
-			}, nil); err != nil {
+			}); err != nil {
 				logging.FromContext(ctx).Warn("dispatch delivery: settle the read owed before this read-through; the reconcile reads the pull request once more",
 					"repo", read.Repo, "number", read.Number, "error", err)
 			}

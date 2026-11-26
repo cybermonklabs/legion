@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,10 +21,11 @@ import (
 // in a transaction of the pool that first makes the writes the request kept before it, in their
 // order, and is rolled back. A write it makes is kept, and every later read of the request, the
 // reads of the results path among them (HeadsAttributedTo, NewestPullRequestHead,
-// BaseBranchMergedFor, BaseBranchMergedIn, PullRequestsNotKnown, LinkedHeadsUnread), runs in such
-// a transaction too (HeadAnswers.Read). So each read sees the rows a writer's read would see at
-// that place, by the writer's own statements and triggers, and no copy of any rule of the write
-// exists to drift from it.
+// BaseBranchMergedFor, BaseBranchMergedIn, PullRequestsNotKnown, LinkedHeadsUnread, and the read
+// of a commit's place on a branch, Branches.ReadCommitOnBranch), runs in such a transaction too
+// (HeadAnswers.Read). So each read sees the rows a writer's read would see at that place, by the
+// writer's own statements and triggers, and no copy of any rule of the write exists to drift from
+// it.
 //
 // What a rolled-back transaction leaves: no row of any table, and no NOTIFY (a notification is
 // sent only when its transaction commits). Every write the read-throughs make goes through that
@@ -42,13 +42,11 @@ import (
 
 // HeadAnswers is what one read-only caller's results read learned from GitHub and stored nowhere:
 // each write a writer's read would have made with it, in the order the read made them, as the
-// writer's own code (answerWrite), and the merges among them (mergeLearnedOnBranch). The request's
-// reader makes one and drops it with the request, so no answer reaches another request. Its zero
-// value holds no write, which is what a writer's read passes, and every read over it reads the
-// stored rows alone.
+// writer's own code (answerWrite). The request's reader makes one and drops it with the request,
+// so no answer reaches another request. Its zero value holds no write, which is what a writer's
+// read passes, and every read over it reads the stored rows alone.
 type HeadAnswers struct {
 	writes []answerWrite
-	merges []PullRequestHead
 }
 
 // answerWrite is one write a writer's read makes, kept to be made again: the writer's own call,
@@ -106,11 +104,10 @@ func (a HeadAnswers) inTransaction(ctx context.Context, begin transactionBegin, 
 }
 
 // keep makes write as the request's next write, in a transaction of begin that holds the writes
-// before it, rolls it back, and keeps write where it succeeded, with merge among the merges where
-// merge is a head whose write seeds its base branch (PullRequestHead.seedsBranch). It answers
-// write's own answer and error.
+// before it, rolls it back, and keeps write where it succeeded. It answers write's own answer and
+// error.
 func (a *HeadAnswers) keep(
-	ctx context.Context, begin transactionBegin, write func(ctx context.Context, db refs.Pool) (bool, error), merge *PullRequestHead,
+	ctx context.Context, begin transactionBegin, write func(ctx context.Context, db refs.Pool) (bool, error),
 ) (bool, error) {
 	var answer bool
 	if err := a.inTransaction(ctx, begin, func(tx pgx.Tx) error {
@@ -124,25 +121,7 @@ func (a *HeadAnswers) keep(
 		_, err := write(ctx, db)
 		return err
 	})
-	if merge != nil && merge.seedsBranch() {
-		a.merges = append(a.merges, *merge)
-	}
 	return answer, nil
-}
-
-// mergeLearnedOnBranch is whether the writes of the caller's request record sha as on branch of
-// repoFull: the yes UpsertPullRequestHead writes for a merged pull request's merge commit on its
-// base branch (seedsBranch), whether or not its event-time guard applies the head row, compared
-// as branch_commits keys it, the repository without case and the branch and the commit exactly
-// (readBranchCommit). Branches.ReadCommitOnBranch reads branch_commits on the pool, outside the
-// request's transactions, so it reads these as the row a writer's write would have stored.
-func mergeLearnedOnBranch(answers HeadAnswers, repoFull, branch, sha string) bool {
-	for _, head := range answers.merges {
-		if strings.EqualFold(head.Repo, repoFull) && head.BaseRef == branch && head.MergeCommitSHA == sha {
-			return true
-		}
-	}
-	return false
 }
 
 // facts is where one read of GitHub keeps what it learned: the pool, for every writer, and for a
@@ -163,12 +142,12 @@ func (f facts) read(ctx context.Context, read func(q refs.Pool) error) error {
 }
 
 // write makes write on the pool for a writer, and for a read-only read keeps it for the request
-// (HeadAnswers.keep), with merge, the head it writes where it writes one.
-func (f facts) write(ctx context.Context, write func(ctx context.Context, db refs.Pool) (bool, error), merge *PullRequestHead) (bool, error) {
+// (HeadAnswers.keep).
+func (f facts) write(ctx context.Context, write func(ctx context.Context, db refs.Pool) (bool, error)) (bool, error) {
 	if f.answers == nil {
 		return write(ctx, f.pool)
 	}
-	return f.answers.keep(ctx, f.pool, write, merge)
+	return f.answers.keep(ctx, f.pool, write)
 }
 
 // startRead is the read's place in the order of every read of GitHub: one a writer takes
@@ -204,12 +183,4 @@ func frozenHead(head PullRequestHead) PullRequestHead {
 		head.Texts = &texts
 	}
 	return head
-}
-
-// seedsBranch is whether writing head records its merge commit as on its base branch, for good:
-// the one rule UpsertPullRequestHead's doc comment argues, kept here so a read-only read that
-// stores nothing reads the same yes a writer's store of the same head would have written
-// (mergeLearnedOnBranch).
-func (head PullRequestHead) seedsBranch() bool {
-	return head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 }

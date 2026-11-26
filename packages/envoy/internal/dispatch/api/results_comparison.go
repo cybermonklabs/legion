@@ -164,12 +164,12 @@ type comparisonReader struct {
 	// answers is, for a read-only caller's read, each write its own read-throughs would have made
 	// had a writer made them, in order, and stored nowhere (delivery.HeadAnswers): every read of
 	// the stored heads, of the merged branch, in the issue's own repository and in a linked one,
-	// of the newest head a check CI proves is derived at, and of the pull requests whose answer is
-	// not known, runs in a transaction that makes those writes with the writer's own code and is
-	// rolled back after the read (delivery.HeadAnswers.Read), and a commit's branch answer reads a
-	// merge among them as its yes (delivery.Branches.ReadCommitOnBranch), which is what a writer's
-	// read reads once its read-throughs have stored them. A writer's read stores what it finds and
-	// passes this empty, which reads the stored rows alone. It is dropped with the read.
+	// of the newest head a check CI proves is derived at, of the pull requests whose answer is not
+	// known, and of a commit's stored branch answer (delivery.Branches.ReadCommitOnBranch) runs in
+	// a transaction that makes those writes with the writer's own code and is rolled back after the
+	// read (delivery.HeadAnswers.Read), which is what a writer's read reads once its read-throughs
+	// have stored them. A writer's read stores what it finds and passes this empty, which reads the
+	// stored rows alone. It is dropped with the read.
 	answers delivery.HeadAnswers
 	// carried is what a read-only caller's branch reads carry for this read alone in place of what
 	// a writer's read writes on server.branches: the default branch its own read of a repository

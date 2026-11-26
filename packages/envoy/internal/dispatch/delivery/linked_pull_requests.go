@@ -225,7 +225,7 @@ func (a *Attributor) readLinkedHead(ctx context.Context, f facts, client *github
 		owed := *link.owed
 		if _, recordErr := f.write(ctx, func(ctx context.Context, db refs.Pool) (bool, error) {
 			return false, recordOwedReadOutcome(ctx, db, owed, outcome, refusedAs)
-		}, nil); recordErr != nil {
+		}); recordErr != nil {
 			slog.Warn("dispatch: record how a linked pull request's owed read ended; the reconcile reads it again",
 				"repo", link.Repo, "number", link.Number, "error", recordErr)
 		}
