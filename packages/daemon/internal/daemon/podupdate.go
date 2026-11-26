@@ -1241,7 +1241,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		return
 	}
 	// The decision (readReplacement, replacementDue) reads the claims masked (live), because what
-	// it lets through deletes the pod's disk (masked). The keep (roundKeeps), the line (named,
+	// it lets through deletes the pod's disk (masked). The keep (keepPodForRound), the line (named,
 	// roundReplaced) and the notice (lost) read them as the claims hold their answers (told): the
 	// read stops nothing in the pod, and the line and the notice report what each claim answered.
 	// A pod replaced through a claim whose launch waits on it has no role process to read the
