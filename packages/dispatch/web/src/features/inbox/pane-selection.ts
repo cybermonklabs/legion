@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { focusIntoView, focusNoScroll } from "../../components/focus-place";
+import { focusNoScroll, landNearest, scrollToNearest } from "../../components/focus-place";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
@@ -216,8 +216,8 @@ export function usePaneSelection({
   /** The hand-off that has landed and whose target has not taken the focus yet. */
   const focusTo = useRef<HandOff | undefined>(undefined);
   /** A target `focusTarget` gave the focus with no scroll while rows of `acted` still stood
-   *  before it: once none does, it is scrolled into view where the reader cannot see the whole
-   *  of it, while it still holds the focus. */
+   *  before it: once none does, it is shown whole at its nearest edge by the least scroll where
+   *  the reader cannot see the whole of it (`landNearest`), while it still holds the focus. */
   const intoView = useRef<{ acted: ReadonlySet<string>; target: HTMLElement } | undefined>(
     undefined
   );
@@ -295,16 +295,19 @@ export function usePaneSelection({
    * optimistic removal, an answered row the list lets go of, a snooze folding its rows away -
    * and their going moves the target up into the place the reader saw them in, where the list's
    * anchor holds it (`ViewportAnchor`). A scroll to the target where it stands below them would
-   * carry the view past that place by the height still to go. So it is scrolled into view only
-   * once they have gone (`intoView`), where the reader cannot see the whole of it then; with
-   * none of them before it, at once (`focusIntoView`).
+   * carry the view past that place by the height still to go. So it is shown whole only once
+   * they have gone (`intoView`), where the reader cannot see the whole of it then; with none of
+   * them before it, at once. Either way it is shown at its nearest edge by the least scroll,
+   * against the window's and each box's visible edges and not the root's `scroll-padding-bottom`
+   * below 1280 px (`landNearest`), which the engine's own nearest-edge scroll counts: the rule the
+   * selection bar's landing takes (`components/SelectionBar.tsx`).
    */
   const focusTarget = (acted: ReadonlySet<string>, target: HTMLElement): void => {
     if (actedBefore(acted, target)) {
       focusNoScroll(target);
       intoView.current = { acted, target };
     } else {
-      focusIntoView(target);
+      landNearest(target);
     }
   };
   /** Takes the begun action on rows that include every one of `ids` off the record, and gives
@@ -580,22 +583,23 @@ export function usePaneSelection({
 
   // The hand-off's focus, after every commit: the row the reader's action sends them to, or the
   // list's empty message, takes the keyboard focus once the page draws it (`focusHandOff`), and
-  // is scrolled into view where the reader cannot see the whole of it - once no row acted on
-  // stands above it - since WebKit scrolls a focused element into view only a frame later; a row
-  // in sight moves nothing. After every commit, because the acted row and the
-  // control that held the focus leave in their own commits - a closing dialog's own return of the
-  // focus (`useDialog`), the column's card swapped for the next one, a row taken off the list -
-  // and a passive effect runs after their cleanups, so the target wins over each of them. The
-  // empty message is drawn only once the acted rows have gone, so the hand-off waits for it while
-  // they are still drawn, and is spent once they have gone without it.
+  // is shown whole at its nearest edge by the least scroll where the reader cannot see the whole
+  // of it (`landNearest`) - once no row acted on stands above it - since WebKit scrolls a focused
+  // element into view only a frame later; a row in sight moves nothing. After every commit,
+  // because the acted row and the control that held the focus leave in their own commits - a
+  // closing dialog's own return of the focus (`useDialog`), the column's card swapped for the
+  // next one, a row taken off the list - and a passive effect runs after their cleanups, so the
+  // target wins over each of them. The empty message is drawn only once the acted rows have gone,
+  // so the hand-off waits for it while they are still drawn, and is spent once they have gone
+  // without it.
   //
   // An action still in the air can lose its rows first - a bulk snooze folds them at once - and,
   // with the focus in one of them, the focus with them: the target takes it then rather than
   // leave it on the body, and the landing finds the reader there.
   //
-  // A target given the focus while rows acted on still stood before it is scrolled into view in
-  // the first commit that finds none of them there (`intoView`): after the list's anchor has held
-  // it at their place, which leaves a target in sight there where it is.
+  // A target given the focus while rows acted on still stood before it is shown whole in the
+  // first commit that finds none of them there (`intoView`): after the list's anchor has held it
+  // at their place, which leaves a target in sight there where it is.
   useEffect(() => {
     const shown = intoView.current;
     if (
@@ -603,7 +607,7 @@ export function usePaneSelection({
       (document.activeElement !== shown.target || !actedBefore(shown.acted, shown.target))
     ) {
       intoView.current = undefined;
-      if (document.activeElement === shown.target) focusIntoView(shown.target);
+      if (document.activeElement === shown.target) landNearest(shown.target);
     }
     const handOff = focusTo.current;
     if (handOff !== undefined) {
@@ -614,18 +618,22 @@ export function usePaneSelection({
     for (const handOff of [...begun.current].reverse()) {
       if (drawsAny(handOff.acted)) continue;
       const target = targetElement(handOff.target);
-      if (target !== null) focusIntoView(target);
+      if (target !== null) landNearest(target);
       return;
     }
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise.
+  // the row they cannot see otherwise. It is shown at its nearest edge by the least scroll, by the
+  // window's and each box's visible edges and not the root's scroll padding (`scrollToNearest`),
+  // as the hand-off lands its target (`landNearest`), but moves no focus: the reader's focus can
+  // be in the column while `j` and `k` step the selection.
   useEffect(() => {
     if (!paneShown || selectedId === undefined) {
       return;
     }
-    selectedRow()?.scrollIntoView?.({ block: "nearest" });
+    const row = selectedRow();
+    if (row !== null) scrollToNearest(row);
   }, [paneShown, selectedId, selectedRow]);
 
   return {

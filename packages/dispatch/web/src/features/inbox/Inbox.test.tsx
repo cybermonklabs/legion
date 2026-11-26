@@ -1519,7 +1519,7 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     route_status_reason: null,
     replies: [],
   }));
-  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const scrolls = watchScrolls();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -1557,10 +1557,10 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     expect(row).toHaveFocus();
     expect(kept.closest("[data-inbox-row]")).toBe(row);
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
-    expect(scrolls).not.toHaveBeenCalled();
+    expect(scrolls.asked()).toEqual([]);
   } finally {
     view.unmount();
-    scrolls.mockRestore();
+    scrolls.restore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -1604,7 +1604,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     route_status_reason: null,
     replies: [],
   }));
-  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const scrolls = watchScrolls();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -1640,15 +1640,15 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     await afterFrameAndTasks();
     expect(row).toHaveFocus();
     expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]);
-    expect(scrolls).not.toHaveBeenCalled();
+    expect(scrolls.asked()).toEqual([]);
 
     await user.keyboard("j");
     expect(shortRow("ask-c")).toHaveFocus();
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
-    expect(scrolls).not.toHaveBeenCalled();
+    expect(scrolls.asked()).toEqual([]);
   } finally {
     view.unmount();
-    scrolls.mockRestore();
+    scrolls.restore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -2243,6 +2243,27 @@ function rowIds(): string[] {
   return [...document.querySelectorAll("[data-inbox-row]")].map(
     (row) => row.getAttribute("data-inbox-row") ?? ""
   );
+}
+
+/** Every scroll the page asks for from now on, by each way it has to scroll: the engine's own
+ *  nearest-edge scroll (`scrollIntoView`), and the `scrollBy` of a box or of the window, which a
+ *  least-scroll landing makes (`scrollToNearest`). Each spy passes the call on. `asked` names the
+ *  ways that were asked, so a row that reads it prints which. */
+function watchScrolls(): { asked: () => string[]; clear: () => void; restore: () => void } {
+  const spies = [
+    ["scrollIntoView", spyOn(Element.prototype, "scrollIntoView")],
+    ["a box's scrollBy", spyOn(Element.prototype, "scrollBy")],
+    ["the window's scrollBy", spyOn(window, "scrollBy")],
+  ] as const;
+  return {
+    asked: () => spies.filter(([, spy]) => spy.mock.calls.length > 0).map(([way]) => way),
+    clear: () => {
+      for (const [, spy] of spies) spy.mockClear();
+    },
+    restore: () => {
+      for (const [, spy] of spies) spy.mockRestore();
+    },
+  };
 }
 
 const ROW_HEIGHT = 200;
@@ -4413,9 +4434,11 @@ test("after a refused bulk Dismiss, the focus stays on the row its landing chose
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
 // marked last, and the next one, end wholly above the window. The row after the threads is the
 // item the reader goes to (R8: the item after the last of the rows acted on is selected and its
-// row has the keyboard focus), though it ends above the window: it takes the focus with no scroll
-// of the engine's own, and is then scrolled to its nearest edge, into the reader's sight
-// (`focusIntoView`). The list's own scroll keeping moves the window nowhere.
+// row has the keyboard focus), though it ends above the window, 300 to 200 px above its top: it
+// takes the focus with no scroll of the engine's own, and is then shown whole at its nearest
+// edge, the window's top, by the least scroll, those 300 px (`landNearest`), and not by the
+// engine's nearest-edge scroll, which counts the root's scroll padding. The list's own scroll
+// keeping moves the window no further.
 test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the row after them, and brings that row into view", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
@@ -4440,10 +4463,9 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
     await waitFor(() => expect(landing).toHaveFocus());
     expect(moves.focused.at(-1)?.target).toBe(landing);
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
-    expect(landing.getBoundingClientRect().bottom).toBeLessThanOrEqual(0);
-    expect(moves.scrolled.length).toBe(1);
-    expect(moves.scrolled[0]).toBe(landing);
-    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(landing.getBoundingClientRect().top).toBe(0);
+    expect(window.scrollY).toBe(2 * LAID_ROW_PX);
+    expect(moves.scrolled.length).toBe(0);
   } finally {
     await act(async () => {
       settle.resolve({ dismissed: 2 });
@@ -4587,6 +4609,64 @@ for (const { name, pressOf } of [
     }
   });
 }
+
+// The bar's Dismiss over the list's last thread, which the reader marked and left below the
+// window, 800 to 900 px down a 768 px window. No row stands after it, so the row before it, 700
+// to 800 px down, takes the focus (R8: the item after the last of the rows acted on, else the
+// nearest before it), and no row the press takes away stands above it, so it is shown whole at
+// once: the window's bottom edge cuts it by 32 px, and the hand-off scrolls those 32 px, the least
+// scroll to the window's own edge (`landNearest`), as the selection bar's own landing does. The
+// engine's nearest-edge scroll (`scrollIntoView`) counts the root's `scroll-padding-bottom`, 80 px
+// below 1280 px (`styles.css`), and would carry the row 80 px further up than the cut. happy-dom
+// scrolls nothing, so the stub below scrolls the window as an engine does under that padding.
+test("the row before a bulk Dismiss of the list's last thread, cut by the window's bottom edge by less than the root's scroll padding, is shown whole by the cut alone", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Three rows above the window: the eleventh row stands 700 to 800 px down it, and the twelfth,
+  // the one dismissed, 800 to 900 px.
+  const laidOut = layRowsDown(3 * LAID_ROW_PX);
+  /** The root's `scroll-padding-bottom` below 1280 px (`styles.css`). */
+  const paddingPx = 80;
+  const padded = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    const edge = window.innerHeight - paddingPx;
+    const { bottom } = this.getBoundingClientRect();
+    if (bottom > edge) window.scrollBy({ top: bottom - edge });
+  });
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const [before, dismissed] = rowIds().slice(10, 12) as [string, string];
+    await user.click(markOf(dismissed));
+    await screen.findByText("1 selected");
+    const landing = shortRow(before);
+    const cut = landing.getBoundingClientRect().bottom - window.innerHeight;
+    expect(cut).toBeGreaterThan(0);
+    expect(cut).toBeLessThan(paddingPx);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).not.toContain(dismissed));
+    await waitFor(() => expect(landing).toHaveFocus());
+    await waitFor(() => expect(window.scrollY).not.toBe(3 * LAID_ROW_PX));
+    // The landing's own second look, a microtask after it (`landNearest`), and the commits after
+    // it have all run: nothing moves the window after this.
+    await afterFrameAndTasks();
+    expect(window.scrollY).toBe(3 * LAID_ROW_PX + cut);
+    expect(landing.getBoundingClientRect().bottom).toBe(window.innerHeight);
+    expect(landing).toHaveFocus();
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    padded.mockRestore();
+    laidOut();
+    reads();
+  }
+});
 
 // An answer from a card deep in the list, with the reader's focus moved on to a row below it
 // while the answer is out. The Inbox keeps the answered row where the reader saw it until the
@@ -6377,7 +6457,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
-  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const scrolls = watchScrolls();
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -6404,7 +6484,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     expect(draft).toHaveFocus();
     // The opening selection keeps its row in sight (`pane-selection.ts`); what follows is the
     // loss, which scrolls nothing.
-    scrolls.mockClear();
+    scrolls.clear();
 
     // The server withdraws the question the reader is answering: it leaves the list, its own
     // read says it is closed, and the card swaps to its record with the focus in its form.
@@ -6421,7 +6501,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
 
     expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
     expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
-    expect(scrolls).not.toHaveBeenCalled();
+    expect(scrolls.asked()).toEqual([]);
 
     await user.keyboard("j");
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
@@ -6429,7 +6509,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   } finally {
     view.unmount();
     narrow();
-    scrolls.mockRestore();
+    scrolls.restore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
@@ -6647,6 +6727,50 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     getInbox.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+// Beside the reading column the list keeps the selected row in the reader's sight as `j` walks it
+// (`pane-selection.ts`), at its nearest edge by the least scroll, against the window's and each
+// box's visible edges (`scrollToNearest`), the rule the hand-off and the selection bar land by.
+// Here the eighth row stands 700 to 800 px down a 768 px window, so `j` onto it from the seventh
+// scrolls the window by the 32 px the window's bottom edge cuts it by, and the focus stays where
+// the reader had it.
+test("j onto a row the window's bottom edge cuts, beside the reading column, shows that row whole by the cut alone", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const laidOut = layRowsDown(0);
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await screen.findByTestId("inbox-pane");
+    const order = rowIds();
+    const [seventh, eighth] = order.slice(6, 8) as [string, string];
+    const cut = shortRow(eighth).getBoundingClientRect().bottom - window.innerHeight;
+    expect(cut).toBeGreaterThan(0);
+    await user.click(shortRow(seventh));
+    await waitFor(() => expect(selectedIds()).toEqual([seventh]));
+    expect(window.scrollY).toBe(0);
+    const focused = document.activeElement;
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual([eighth]));
+    await afterFrameAndTasks();
+    expect(window.scrollY).toBe(cut);
+    expect(shortRow(eighth).getBoundingClientRect().bottom).toBe(window.innerHeight);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    unmount();
+    laidOut();
+    narrow();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
   }
 });
 
@@ -10230,11 +10354,12 @@ test("below the column's width a snooze gives the next row the focus, and an ans
 });
 
 // WebKit scrolls a focused element into view only a frame later, by when the list's own scroll
-// keeping may have moved the page again, so the hand-off scrolls the row it focuses into view
-// itself where the reader cannot see the whole of it (`focusIntoView`): at a phone's width the row
-// after a snoozed one is in the reader's sight the moment it has the focus. The rows are laid out
-// below the window here; a row the reader already sees whole scrolls nothing (the bar's hand-off
-// rows, "a bulk Snooze deep in a long list ...").
+// keeping may have moved the page again, so the hand-off brings the row it focuses into view
+// itself where the reader cannot see the whole of it, at its nearest edge by the least scroll
+// (`landNearest`): at a phone's width the row after a snoozed one is in the reader's sight the
+// moment it has the focus. The rows are laid out below the window here, so the window's scroll
+// brings that row's bottom edge to the window's own; a row the reader already sees whole scrolls
+// nothing (the bar's hand-off rows, "a bulk Snooze deep in a long list ...").
 test("the row a hand-off gives the focus to is scrolled into view once it holds the focus", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -10249,18 +10374,19 @@ test("the row a hand-off gives the focus to is scrolled into view once it holds 
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  /** Each row scrolled into view, with how, and whether it held the focus as it was. */
-  const scrolled: { focused: boolean; options: unknown; row: string | null }[] = [];
-  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element,
-    options?: boolean | ScrollIntoViewOptions
-  ) {
-    scrolled.push({
-      focused: document.activeElement === this,
-      options,
-      row: this.getAttribute("data-inbox-row"),
-    });
-  });
+  /** Each scroll of the window: the row that held the focus as it was asked, and where the scroll
+   *  leaves that row's bottom edge. */
+  const scrolled: { bottom: number; focused: string | null }[] = [];
+  const scrolls = spyOn(window, "scrollBy").mockImplementation(
+    (x?: number | ScrollToOptions, y?: number) => {
+      const by = typeof x === "number" ? (y ?? 0) : (x?.top ?? 0);
+      const focused = document.activeElement;
+      scrolled.push({
+        bottom: (focused?.getBoundingClientRect().bottom ?? Number.NaN) - by,
+        focused: focused?.getAttribute("data-inbox-row") ?? null,
+      });
+    }
+  );
   // Every row a thousand pixels and more down the page, out of the reader's sight.
   const laidOut = layRowsOut("[data-inbox-row]", -10);
   const { unmount } = renderInbox();
@@ -10271,11 +10397,7 @@ test("the row a hand-off gives the focus to is scrolled into view once it holds 
     await user.keyboard("b");
     await user.keyboard("2");
     await waitFor(() => expect(rowOf("ask-c")).toHaveFocus());
-    expect(scrolled).toContainEqual({
-      focused: true,
-      options: { block: "nearest", inline: "nearest" },
-      row: "ask-c",
-    });
+    expect(scrolled).toContainEqual({ bottom: window.innerHeight, focused: "ask-c" });
   } finally {
     unmount();
     laidOut();

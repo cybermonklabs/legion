@@ -468,13 +468,12 @@ export function focusLost(): boolean {
 /** Focuses `element` with no scroll of the engine's own and, once it holds the focus, scrolls it
  *  to its nearest edge unless the reader can see the whole of it: WebKit scrolls a focused control
  *  into view only a frame later, by when a list's own scroll keeping may have moved the page
- *  again, and Chromium and Firefox centre a control that is not wholly in view. The Inbox's
- *  hand-off after the reader's action (`pane-selection.ts`), which brings the item it focuses into
- *  view wherever it stood, and scrolls nothing for a row the reader already sees whole - the row
- *  that moves up into the place of the rows a press took away, which the list's own scroll
- *  keeping holds where the reader saw it (`ViewportAnchor`). A component's own hand-off scrolls a
- *  control only where the reader sees a part of it (`landFirstInSight`). Answers whether it took
- *  the focus. */
+ *  again, and Chromium and Firefox centre a control that is not wholly in view. That scroll is the
+ *  engine's nearest-edge one, which counts the root's scroll padding: a composer's box, a turn
+ *  given back and a card's first control take it. The Inbox's hand-off after the reader's action
+ *  (`pane-selection.ts`) and the selection bar's land by the visible edges instead (`landNearest`).
+ *  A component's own hand-off scrolls a control only where the reader sees a part of it
+ *  (`landFirstInSight`). Answers whether it took the focus. */
 export function focusIntoView(element: HTMLElement): boolean {
   if (!focusNoScroll(element)) return false;
   showWhole(element, new Map(), false);

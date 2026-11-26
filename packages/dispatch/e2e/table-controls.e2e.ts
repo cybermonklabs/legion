@@ -8331,7 +8331,7 @@ test("Unpin on a pinned agent keeps the keyboard focus on a control in sight, on
 // selected beside the reading column at 1440, and every row below the column's width - selects
 // the item after it and gives that item's row the keyboard focus, not a control in it. That row
 // moves up into the place, and where it stands partly out of the reader's sight there, the
-// hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll the
+// hand-off brings it whole into sight at its nearest edge (`landNearest`), the one scroll the
 // 12:3xZ ruling allows a landing. Measured at 390x664 in the full lane's Jobs at 3a7a98a9
 // (infra-2160-fullproof-shard-2 and -4): the row stood 190 px above the window once the first
 // thread went, and the window scrolled up by those 190 px, in Chromium, Firefox and WebKit.
@@ -8494,11 +8494,12 @@ test("a thread's Dismiss in the Inbox's list hands the focus to the next row, an
 
 /** Where a box `height` tall whose top stands at `top` stands once it is scrolled to its nearest
  *  edge in the part of the window the reader sees from `viewTop` to `viewBottom`, as
- *  `scrollIntoView({ block: "nearest" })` puts it: where it stands while it is wholly in that part
- *  or overhangs both its ends; else, with one end out, at the top of that part where the top is
- *  out and it fits, or where the foot is out and it does not, and at its foot otherwise. INFRA-
- *  2160's R8 hand-off scrolls the row it focuses so (`focusIntoView`), the one scroll a landing may
- *  make (INFRA-3135's ruling of 2026-11-21 12:3xZ). */
+ *  `scrollIntoView({ block: "nearest" })` puts it with no scroll padding: where it stands while it
+ *  is wholly in that part or overhangs both its ends; else, with one end out, at the top of that
+ *  part where the top is out and it fits, or where the foot is out and it does not, and at its
+ *  foot otherwise. INFRA-2160's R8 hand-off scrolls the row it focuses so, by the window's and
+ *  each box's visible edges (`landNearest`), the one scroll a landing may make (INFRA-3135's
+ *  ruling of 2026-11-21 12:3xZ). */
 function nearestEdgeTop(top: number, height: number, viewTop: number, viewBottom: number): number {
   const bottom = top + height;
   const fits = height <= viewBottom - viewTop;
@@ -8636,10 +8637,11 @@ function focusPlace(
 // page-own focus row (e2e/playwright.config.ts).
 // INFRA-2160's R8, merged over this row: a decline is the reader's answer to the item in hand, so
 // once it lands the row of the question after it is selected and takes the focus, and the hand-off
-// brings that row into sight at its nearest edge (`focusIntoView`). A row taller than the window
+// brings that row into sight at its nearest edge (`landNearest`). A row taller than the window
 // cannot stand wholly in it: in sight is then filling the window, less its scroll padding below
-// 1280 px (`styles.css`). Measured at 390x664 in builds Job infra-2160-fl-diag: the next question's
-// card, 718 px tall, took the focus at -336 px and was brought to -134 to 584 px.
+// 1280 px (`styles.css`). Measured at 390x664 in builds Job infra-2160-fl-diag, when the hand-off
+// scrolled by the engine's own nearest edge (`focusIntoView`): the next question's card, 718 px
+// tall, took the focus at -336 px and was brought to -134 to 584 px.
 test("the Inbox's Decline dialog keeps the keyboard focus inside itself while its write is out, and on a control after it lands @firefox @webkit", async ({
   page,
 }) => {
@@ -12303,10 +12305,15 @@ test("with the agent list refused, the project List's header filters keep each c
 // and it passes in every Chromium and Firefox run there, where the landing is right; at 4f1ad776
 // WebKit's landing at 1440 was whole in 3 of 3 probe runs. So a pass at a fixed head counts only
 // over 8 or more WebKit repeats (the architect, 2026-11-25 21:20Z).
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): eighty threads seeded, and two Dismiss presses read once the scroll settles.
-test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the checkbox of the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
+test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(240_000);
@@ -12348,6 +12355,12 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   const landings: { ok: boolean; text: string }[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -12386,7 +12399,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
     await settledScrollTop(page.getByTestId("inbox-list"));
     await nextFrames(page);
     const before = await readerSight();
-    const placed = await checkboxRect(upper);
+    const placed = await rowRect(upper);
     const cut = placed.bottom - before.bottom;
     await bar.getByRole("button", { name: /selected threads$/u }).focus();
     await page.keyboard.press("Enter");
@@ -12396,12 +12409,10 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
       .poll(
         () =>
           page.evaluate(
-            (id) =>
-              document.activeElement ===
-              document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+            (id) => document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
             after
           ),
-        { message: `${where}: the focus is not on the checkbox of the row now at the place` }
+        { message: `${where}: the focus is not on the row now at the place` }
       )
       .toBe(true);
     await settledScrollTop(page);
@@ -12411,7 +12422,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
     // still, so nothing moves the focus or the rows after this.
     const now = await readerSight();
     // Read in the same settled moment as the sight above, so it is where the press left it.
-    const landed = await checkboxRect(after);
+    const landed = await rowRect(after);
     const scrolled = Math.round(now.scroll - before.scroll);
     landings.push({
       ok:
@@ -12419,8 +12430,8 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
         landed.bottom <= now.bottom + 1 &&
         Math.abs(scrolled) <= cut + 1,
       text:
-        `${where}: the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
-        `the rows scrolled ${scrolled} px, and the checkbox now at the place stands at top ` +
+        `${where}: the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
+        `the rows scrolled ${scrolled} px, and the row now at the place stands at top ` +
         `${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
         `${Math.round(now.top)} to ${Math.round(now.bottom)}`,
     });
@@ -12561,10 +12572,15 @@ test("at 390 Take out of epic with the rows marked last far below the view and n
 // row marked last cut by 70% at the bottom edge of the Inbox list's box, the bar's Snooze
 // (Tomorrow) lands the focus on the checkbox of the row now at the place in Chromium and Firefox,
 // shown whole by a scroll of the cut (11 px). In WebKit it leaves the focus on the page body.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): thirty asks seeded, and one Snooze read once the list's box settles.
-test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the row now at the place whole by the least scroll @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -12598,6 +12614,12 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   await page.goto("/?group=none");
   await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
   // The rows read once the poll above found the list drawn; they only name the rows marked and
@@ -12621,13 +12643,15 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   await settledScrollTop(list);
   await nextFrames(page);
   const before = await readerSight();
-  const placed = await checkboxRect(upper);
+  const placed = await rowRect(upper);
   const cut = placed.bottom - before.bottom;
   const trigger = listTrigger(bar, "Snooze selected asks");
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
-  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  // The Snooze list stands in a menu's place and draws each choice's digit after its words
+  // (dispatch://INFRA-2160, D5), so the option is read by the words it starts with.
+  await expect(listOf(trigger).getByRole("option")).toHaveText([/^Tomorrow/]);
   await page.keyboard.press("Enter");
   await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
@@ -12638,7 +12662,7 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   // focus or the rows after this.
   const now = await readerSight();
   // Read in the same settled moment as the sight above, so it is where the press left it.
-  const landed = await checkboxRect(after);
+  const landed = await rowRect(after);
   // The focus read once, in that same settled moment: nothing moves it after the box holds still.
   const focused = await page.evaluate(
     (id) => ({
@@ -12646,20 +12670,18 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
         document.activeElement?.getAttribute("aria-label") ??
         document.activeElement?.tagName ??
         "nothing",
-      onMark:
-        document.activeElement ===
-        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+      onRow: document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
     }),
     after
   );
   const scrolled = Math.round(now.scroll - before.scroll);
   const text =
-    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
-    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the row now at the place stands at ` +
     `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
     `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
   expect(
-    focused.onMark &&
+    focused.onRow &&
       landed.top >= now.top - 1 &&
       landed.bottom <= now.bottom + 1 &&
       Math.abs(scrolled) <= cut + 1,
@@ -12668,13 +12690,16 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
 });
 
 // INFRA-2160, round 22, by the architect's ruling of 2026-11-26T07:01Z: below `sm` the selection
-// bar stands under the header over the list's top rows with no room given for it. With
-// `BAR_LINE.compact` set to `"flex-wrap"` (`components/SelectionBar.tsx`), the project List's bar
-// with two rows marked wraps to 210 px tall at 390x664 (y 56 to 266) and covers the marked rows: a
-// press on a marked row's control lands on a `DIV` of the bar instead (INFRA-3135's builds Jobs
-// `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). Keeping one sideways-scrolling line below
-// `sm` (and wrapping from `sm` up, where the bar stands at the foot) keeps the bar above the rows
-// so a press on a marked row's checkbox or key link lands on that control.
+// bar stands under the header over the list's top rows with no room given for it. This row pins
+// the place the compact bar, the project List's, keeps there: one line under the header, which
+// scrolls sideways (`BAR_LINE.compact` in `components/SelectionBar.tsx`, which wraps that line
+// from `sm` up, where the bar stands at the foot). So with two rows marked at 390x664, a press on
+// a marked row's checkbox or key link lands on that control. The row failed with the wrapped line
+// of `addb8cc7` in Chromium, Firefox and WebKit: the bar wrapped over the marked rows, and the
+// centre of each marked row's checkbox, and of the first one's key link, hit a button of the bar
+// instead (builds Job `infra-2160-r22-f390-crczx`; INFRA-3135's builds Jobs
+// `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp` measured the wrapped bar 210 px tall, y 56 to
+// 266). It passes from #3729's `230b68ae` on, which keeps that one line below `sm`.
 // Its engines: Chromium, Firefox and WebKit (`@firefox @webkit`), as its round-27/28 neighbours at
 // 390x664 are tagged (`e2e/playwright.config.ts`).
 // SLOW(>=2s): twenty seeded issues on the project List at 390x664, two rows marked, controls probed
@@ -12732,6 +12757,8 @@ test("at 390 the project List's selection bar with two rows marked leaves the ma
       ["key link", row.getByRole("link", { exact: true, name: key })],
     ];
     for (const [name, control] of controls) {
+      // One read of each control is the answer: the bar counts the two marked rows, and the
+      // window and the table's box have held still, so nothing moves the bar or the rows now.
       const problem = await control.evaluate((target) => {
         const rect = target.getBoundingClientRect();
         const x = rect.left + rect.width / 2;
@@ -12772,6 +12799,9 @@ test("at 390 the project List's selection bar with two rows marked leaves the ma
 // the landing back nor moves it. `@firefox` and `@webkit`: WebKit drew a snoozed row in its band
 // in a commit after its write had settled (builds Job `infra-3135-infra-3135-r30f-s70p`), so the
 // row runs in each engine.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it, so the landing is read on that row.
 // SLOW(>=2s): thirty asks seeded, and the reads of the Inbox held for two seconds.
 test("the Inbox bar's Snooze with the Inbox's own read held lands while the read is out, on the row now at the snoozed rows' place, and the read moves nothing @firefox @webkit", async ({
   page,
@@ -12808,9 +12838,11 @@ test("the Inbox bar's Snooze with the Inbox's own read held lands while the read
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
-  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  // The Snooze list stands in a menu's place and draws each choice's digit after its words
+  // (dispatch://INFRA-2160, D5), so the option is read by the words it starts with.
+  await expect(listOf(trigger).getByRole("option")).toHaveText([/^Tomorrow/]);
   await page.keyboard.press("Enter");
-  const landing = inboxRow(page, after).getByRole("checkbox").first();
+  const landing = inboxRow(page, after);
   await expect(landing).toBeFocused({ timeout: 1_500 });
   expect(heldNow, "no read of the Inbox was out when the landing was made").toBeGreaterThan(0);
   await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0);
@@ -12834,10 +12866,15 @@ test("the Inbox bar's Snooze with the Inbox's own read held lands while the read
 // at 876. Chromium and Firefox show that checkbox whole by the cut alone. The same landing at 30%
 // is the row above; this one is its deeper cut, where the rows the press takes away free the most
 // space above the place.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): eighty threads seeded, and one Dismiss read once the box settles.
-test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's bottom edge shows the row now at the place whole by the least scroll @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -12875,6 +12912,12 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   await page.goto("/?group=none");
   await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
   // The rows read once the poll above found the list drawn; they only name the rows marked and
@@ -12898,7 +12941,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   await settledScrollTop(list);
   await nextFrames(page);
   const before = await readerSight();
-  const placed = await checkboxRect(upper);
+  const placed = await rowRect(upper);
   const cut = placed.bottom - before.bottom;
   await bar.getByRole("button", { name: /selected threads$/u }).focus();
   await page.keyboard.press("Enter");
@@ -12911,7 +12954,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   // focus or the rows after this.
   const now = await readerSight();
   // Read in the same settled moment as the sight above, so it is where the press left it.
-  const landed = await checkboxRect(after);
+  const landed = await rowRect(after);
   // The focus read once, in that same settled moment: nothing moves it after the box holds still.
   const focused = await page.evaluate(
     (id) => ({
@@ -12919,20 +12962,18 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
         document.activeElement?.getAttribute("aria-label") ??
         document.activeElement?.tagName ??
         "nothing",
-      onMark:
-        document.activeElement ===
-        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+      onRow: document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
     }),
     after
   );
   const scrolled = Math.round(now.scroll - before.scroll);
   const text =
-    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
-    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the row now at the place stands at ` +
     `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
     `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
   expect(
-    focused.onMark &&
+    focused.onRow &&
       landed.top >= now.top - 1 &&
       landed.bottom <= now.bottom + 1 &&
       Math.abs(scrolled) <= cut + 1,

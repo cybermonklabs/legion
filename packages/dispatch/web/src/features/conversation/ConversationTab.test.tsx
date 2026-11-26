@@ -3843,10 +3843,9 @@ test("Discard over a typed draft in the Conversation's comment composer puts the
   const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
   try {
     const composer = await screen.findByRole("form", { name: "Comment composer" });
-    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", {
-      exact: true,
-      name: "Comment",
-    });
+    // A string `name` matches the whole accessible name, so no box whose name only holds the
+    // word "Comment" is taken for it.
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(field);
     await user.keyboard("Half a thought about the clock");
     await user.keyboard("{Escape}");
