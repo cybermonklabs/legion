@@ -253,7 +253,11 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
-		refreshGate:     supervise.NewRefreshGate(0),
+		// Where each role pushes at the round's ask, read through the rig's engine as the
+		// workflow's attach sets it (supervision.updatePushes): an issue with no plan rows, and
+		// one with no fix, gets the zero push for every role.
+		updatePushes: w.updatePushes,
+		refreshGate:  supervise.NewRefreshGate(0),
 	}
 	// The runtime's launches read the update round over a pod they would keep through the
 	// supervision, bound once it exists and before any machine is restored, as the daemon's boot
@@ -1715,8 +1719,8 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	r.t.Cleanup(sup.stop)
 	s := &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
-		applySweepFacts: r.s.applySweepFacts,
-		refreshGate:     supervise.NewRefreshGate(0),
+		applySweepFacts: r.s.applySweepFacts, updatePushes: r.s.updatePushes,
+		refreshGate: supervise.NewRefreshGate(0),
 	}
 	// The second daemon binds its own reading of the round over a pod to its runtime before it
 	// restores a machine, as the first did (newPodUpdateRigWith).

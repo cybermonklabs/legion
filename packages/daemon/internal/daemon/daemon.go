@@ -275,6 +275,11 @@ type overrides struct {
 	// applies anything or starts a consumer. It is a test's way to set a seam of the engine, a
 	// control that takes one of its rules out, in a whole daemon. nil, in production, is nothing.
 	engine func(*workflow.Engine)
+	// outbox runs on the workflow's outbox once the boot has built it (workflowRuntime.attach)
+	// and before its lanes run (workflowRuntime.run). It is a test's way to set a seam of the
+	// outbox, a control that takes one of its rules out, in a whole daemon. nil, in production, is
+	// nothing.
+	outbox func(*outbox)
 	// experimentSource is the random source admission and the workflow draw every `random`
 	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
 	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
@@ -698,6 +703,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		log.Info("legion workflow boot stage", "stage", "admission")
 		workflow.attach(s)
+		if o.outbox != nil {
+			o.outbox(workflow.outbox)
+		}
 		if o.supervising != nil {
 			o.supervising(s.supervisor, func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error) {
 				return intake.ApplyFact(ctx, workflow.pool, source, eventID, fact, workflow.handlers...)
