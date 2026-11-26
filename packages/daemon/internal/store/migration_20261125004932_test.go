@@ -289,13 +289,18 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // the rows the release before cannot decode and keeps every other, and gives the child's
 // suspension, release and workspace check the root's generation, the tree generation the release
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
-// store that release boots on: each column, constraint, function, index and version recorded.
+// store that release boots on: each column, constraint, function, index and version recorded. The
+// release before applies every embedded migration but this one, those that sort above it among
+// them. So a difference is what the block leaves of this migration, or what it takes of the release
+// before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
 // issue: neither fails on the dropped tree_generation.
 //
 // The negative control is block B without its restore of the four function bodies: the read of
-// the credit then fails at run time, on a function or a column the block dropped.
+// the credit then fails at run time, on a function or a column the block dropped. A second is
+// block B without its drop of pending_task_deliveries.start_at: the store then holds that column
+// besides the release before's.
 func TestTheWayBackOfDoneByChecks(t *testing.T) {
 	store := emptyStore(t)
 	if _, err := store.Migrate(t.Context()); err != nil {
@@ -346,7 +351,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 	}
 
 	before := emptyStore(t)
-	migrateThrough(t, before, doneByChecksVersion-1)
+	migrateAllBut(t, before, doneByChecksVersion)
 	if got, want := schemaShape(t, store), schemaShape(t, before); !reflect.DeepEqual(got, want) {
 		var extra, missing []string
 		for _, line := range got {

@@ -48,7 +48,7 @@
 -- carries it, and when that change merged or a withdrawal ended it. close_reads holds each issue's
 -- newest read of its checks' states, with the moment the read began. The outbox takes close_read, the
 -- read of an issue's checks for the judge of its close, and close_wait_publish, the write of its
--- close-wait.md. The kind list is the design news's of 20261119203047 with the two, written whole, so
+-- close-wait.md. The kind list is the basis seeds' of 20261122154643 with the two, written whole, so
 -- this list is the last word on any database: its version stands above every list beneath it.
 -- pending_task_deliveries.start_at is where a next change's first task starts the working copy (a
 -- supervise start's StartAt), kept on the delivery so a restart between the queue and the send keeps
