@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -47,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -1496,11 +1498,13 @@ const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 // its tests measure processes' memory against a runner's 16 GB and were sized at that default.
 var dispatchTestParallelism = 8
 
-// TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
-// test's Dispatch server; that server starts its agent process from its own binary, this one, as
-// `<binary> agent` with an environment of its own, which runs main's agent subcommand here too.
-// It sets the package's default -parallel (dispatchTestParallelism); go test parses its flags
-// inside m.Run, so a -parallel on the command line still wins.
+// TestMain runs the package's tests or, with memoryTestServeEnv set, the Dispatch server.
+// The server starts its agent from the same test binary with the agent subcommand, which also
+// enters main here.
+// Go test parses its flags inside m.Run, so a command-line -parallel overrides the default.
+// Without TestMain, a server copy would run the tests and could start more copies. dispatchCopy
+// refuses to start a copy from that process, and TestACopyStartedAsTheServerRunsMain checks that
+// the server copy enters main.
 func TestMain(m *testing.M) {
 	if os.Getenv(memoryTestServeEnv) == "1" || (len(os.Args) == 2 && os.Args[1] == "agent") {
 		main()
@@ -1512,6 +1516,57 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
+}
+
+// dispatchCopy is the path of this test binary, which a memory test runs as its Dispatch server
+// with memoryTestServeEnv=1 in the copy's environment. It fails t where dispatchCopyRefusal
+// refuses.
+func dispatchCopy(t *testing.T) string {
+	t.Helper()
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// dispatchCopyRefusal is why this process may start no copy of this test binary, nil when it may.
+// A process that has memoryTestServeEnv=1 was started as a Dispatch server, and TestMain runs such
+// a process as the server, so one that runs the tests runs in a build without TestMain, and a copy
+// started there would run the tests again.
+func dispatchCopyRefusal() error {
+	if os.Getenv(memoryTestServeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as a Dispatch server, but it runs the tests: this build of the tests has no TestMain that runs the server, and a copy started here would run the tests again", memoryTestServeEnv)
+	}
+	return nil
+}
+
+// dispatchCopyRefusal, which dispatchCopy asks before any copy starts, refuses a process that has
+// memoryTestServeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheServerStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, memoryTestServeEnv)
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", memoryTestServeEnv, err)
+	}
+	t.Setenv(memoryTestServeEnv, "1")
+	if err := dispatchCopyRefusal(); err == nil || !strings.Contains(err.Error(), memoryTestServeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", memoryTestServeEnv, err)
+	}
+}
+
+// A copy started with memoryTestServeEnv=1 runs main: given -h, main reads it as a subcommand it
+// does not know and refuses it, exit 2. In a build without TestMain, the testing package reads -h
+// before any test runs, prints its own flag usage and exits 0, so this test fails there by name and
+// its copy starts no copy of its own.
+func TestACopyStartedAsTheServerRunsMain(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(dispatchCopy(t), "-h")
+	cmd.Env = append(os.Environ(), memoryTestServeEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := `envoy-dispatch: unknown subcommand "-h"`; !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as the Dispatch server with -h: %v, want exit 2 and a refusal that starts %q\n%s", err, want, out)
+	}
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
