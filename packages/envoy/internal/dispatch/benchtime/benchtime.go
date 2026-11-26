@@ -60,6 +60,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // DatabaseURLEnv names the seeded measurement database (cmd/dispatch-seed). It is deliberately
@@ -121,7 +123,9 @@ func Open(t *testing.T, databaseURL string) *Runner {
 	}
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		t.Fatalf("read %s: %v", DatabaseURLEnv, err)
+		// pgx's ParseConfigError quotes the URL with its user name and its query, and a CI log is
+		// public: the setting is named, its value is not printed.
+		t.Fatalf("read %s: %v", DatabaseURLEnv, redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	// Every run re-plans. pgx's default mode names a prepared statement and caches it, and
 	// Postgres switches such a statement to a generic plan from its sixth execution, whose

@@ -1769,11 +1769,14 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
-// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
+// DATABASE_URL pgx cannot read is refused by its setting in fixed words (redact.Masked): pgx's
+// ParseConfigError quotes the URL with its password masked but its user name and every other
+// query pair kept, and the error it wraps can quote a query key alone.
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return fmt.Errorf("DATABASE_URL: %w", redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {

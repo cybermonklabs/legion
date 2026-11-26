@@ -132,6 +132,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // describe_exec. In exec and simple_protocol pgx encodes each argument with no parameter type, so
 // a jsonb argument would get the text rule and keep a \u0000 escape the server refuses. A daemon
 // that cannot keep the rule does not start.
+//
+// Its error for a dsn pgx cannot read is pgx's own *pgconn.ParseConfigError, which quotes dsn
+// with its user name and its query; a caller prints it through ConnectError, as Open and
+// daemon.CheckStart do, which names such a dsn in fixed words.
 func PoolConfig(dsn string) (*pgxpool.Config, error) {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -162,9 +166,9 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 }
 
 // ConnectError is a failure to reach the Postgres dsn names as an operator reads it: the address
-// it points at and the driver's detail, never dsn's password (connectError). Every connection Legion
-// opens reports its refusal this way, the daemon's own and Oh My Pi's session database's
-// (internal/ompsessions).
+// it points at and the driver's detail, never dsn's password (connectError), and of a dsn pgx
+// cannot read nothing but that address and fixed words. Every connection Legion opens reports its
+// refusal this way, the daemon's own and Oh My Pi's session database's (internal/ompsessions).
 func ConnectError(dsn string, err error) error {
 	address, password := target(dsn)
 	return &connectError{address: address, password: password, err: err}
@@ -537,6 +541,12 @@ func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 // connectError says where the daemon could not reach Postgres without saying
 // how it would have got in: an operator reads this in a boot refusal, and a
 // DSN's password has no business in a log line.
+//
+// A DSN pgx cannot read (a *pgconn.ParseConfigError anywhere in err's chain) prints as the
+// address and fixed words alone, the store's rule for such a DSN: pgx's ParseConfigError quotes
+// the DSN with its password masked but its user name and every other query pair kept, and the
+// error it wraps can quote a query key alone (a credential written as `?<token>` with no `=`).
+// The error still unwraps to pgx's, so OpenRetryable reads its type.
 type connectError struct {
 	address  string
 	password string
@@ -544,6 +554,10 @@ type connectError struct {
 }
 
 func (e *connectError) Error() string {
+	var unread *pgconn.ParseConfigError
+	if errors.As(e.err, &unread) {
+		return fmt.Sprintf("connect to Postgres at %s: pgx cannot read its connection settings", e.address)
+	}
 	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Store is the shared Dispatch database handle.
@@ -54,7 +55,9 @@ const poolSizeParam = "pool_max_conns"
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
-// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration.
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
+// pgx cannot read, here or where declaresPoolSize reads it, is refused in fixed words, as Connect
+// refuses one.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -67,7 +70,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, fmt.Errorf("parse Postgres URL: %w", redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
@@ -127,7 +130,7 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 func declaresPoolSize(databaseURL string) (bool, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, fmt.Errorf("parse Postgres URL: %w", redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil

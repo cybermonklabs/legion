@@ -1104,7 +1104,7 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
 		},
 			func(string) string {
-				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
+				return "legion config check: connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings\n"
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
