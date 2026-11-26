@@ -1176,6 +1176,50 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   });
 });
 
+test("services_up passes a given Postgres URL to the loopback helpers by environment name alone", () => {
+  const source = fn("services_up");
+  expect({
+    direct: source.includes(
+      'require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL"'
+    ),
+    named:
+      source.includes(
+        'require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there"'
+      ) &&
+      source.includes(
+        'run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run\'s Dispatch opens its database there"'
+      ),
+  }).toEqual({ direct: false, named: true });
+});
+
+test("psql_env gives psql a Postgres URL without its password in arguments", () => {
+  const dir = freshDir("psql-env");
+  const bin = path.join(dir, "bin");
+  const argv = path.join(dir, "argv.log");
+  const password = fixtureSecret("postgres");
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, "psql"), `#!/bin/sh\nprintf '%s\\n' "$@" >${JSON.stringify(argv)}\n`, {
+    mode: 0o755,
+  });
+  const result = bash(
+    `set -euo pipefail\n. "$1"\npsql_env SKILL_SCENARIOS_POSTGRES_URL -X -q -c 'select 1'`,
+    [path.join(root, "scripts/e2e/lib/loopback-dsn.sh")],
+    {
+      PATH: `${bin}:${callerPath}`,
+      SKILL_SCENARIOS_POSTGRES_URL: `postgres://user:${password}@127.0.0.1:5432/postgres`,
+    }
+  );
+  const leaked = readFileSync(argv, "utf8")
+    .split("\n")
+    .filter((line) => line.includes(password))
+    .map((line) => line.replaceAll(password, "<password>"));
+  expect({ code: result.code, ran: existsSync(argv), leaked }).toEqual({
+    code: 0,
+    ran: true,
+    leaked: [],
+  });
+});
+
 // run_env_pids names each process whose environment carries a run under DIR, with its start time,
 // for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its

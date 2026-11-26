@@ -836,7 +836,7 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside
@@ -862,7 +862,16 @@ What each part is for:
   Anthropic organization refuses the calls over its per-minute uncached-input cap. The rate is a
   ceiling, not the rate a wave keeps: each wake waits its turn and then a random part of up to one
   interval more, so a long wave sustains about two thirds of the rate, which is about 5 a minute at
-  the default of 8. The arithmetic behind the defaults: 8 a minute with a burst of 1 holds any
+  the default of 8. Each paced wake waits in one of two queues. The first holds the wake of a role
+  that has an Envoy message waiting, which Envoy keeps for one hour, and the relaunch of a role
+  whose own process died; the second holds every other paced wake. At each turn the pacing lets
+  out the head of the first queue, except that while both hold wakes the turn after three
+  first-queue wakes in a row goes to the second, which so keeps one turn in four. No two wakes go
+  out in one turn, so the queues change the order of a wave and never its rate. The daemon's line
+  `supervise: wake ran` names the `queue` each paced wake came from (`message` or `other`) and the
+  turns it waited (`turnsWaited`), and is a warning with `lateForMessage` for a message wake let
+  out more than 45 minutes after the message that marked it. The arithmetic behind the defaults: 8
+  a minute with a burst of 1 holds any
   minute to 9 paced wakes, which at the mean is 5.2M tokens, split over the two Anthropic
   organizations one gateway key reaches, against an acceptance bar of 8M an organization a minute.
   They also leave room beside the pod-update round rate: one round opening a minute costs up to
@@ -1601,12 +1610,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
   whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
   asks nothing of first; `catch-up`, the notice a start writes to an
-  architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  architect that is already running — and the pacing's estimate, at the read, of the moment it
+  lets that wake out, by its place in the queues (`wakes waiting: 2 —
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). A waiting wake
+  holds a place and no moment of its own. A change to the queues or to the pace can move that
+  moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+  its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+  moves it later.
   Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
   ordinary read has no such line.
-  It is what says whether a wave is still going out, and the last `due` on it is when
-  the last of that wave goes.
+  It is what says whether a wave is still going out, and the latest `due` on it is the pacing's
+  estimate of when the last of that wave goes.
 
   The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
   does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
@@ -1646,7 +1660,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   says what each reason means and what to do.
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
-  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
+  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
+  `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
+  the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
   below, for a caller below contract 250),
@@ -1655,7 +1671,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
-  — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
+  — `unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
+  `pending_on_basis` — `changesReason`, and on the last two words `basis`: the ancestor `issue`,
+  its `artifactId`, the `version`, and `approver` and `approvedAt` for an approval or `askId` for a
+  request; `open_on_basis` is a step open on a person's approval of an ancestor's document, and its
+  `approvedVersion` is the root's version that its architect registered, which no person approved;
+  `pending_on_basis` is a step closed until a person approves the ancestor's version that the open
+  request names; a pod whose plugin is older than these fields gets no `treeRuns`, and no
+  `gatedSteps` on an issue with a step on a basis), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
@@ -1690,7 +1713,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `heldOutboxRows` ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)),
   `strandedClaims` ([A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)),
   `wakesWaiting` (each wake the pacing holds until its turn, in claim order: `claim`, `issue`,
-  `role`, `kind` and `dueAt`; an array, never null, and empty at every moment outside a wave),
+  `role`, `kind` and `dueAt`, the pacing's estimate, at the read, of the moment it lets the wake
+  out, which a later read can name earlier or later; an array, never null, and empty at every
+  moment outside a wave),
   `repositories` (`live`, one entry for each repository the project's live records name, sorted:
   its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
   where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,

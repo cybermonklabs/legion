@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingDepsJudgedBy is countingDeps with the role-route holders judged by windows
@@ -35,30 +36,34 @@ func (r *roleRig) countingDepsJudgedBy(windows roles.Windows) (Deps, *metrics.Re
 // probeRelaySubject asks once, over conn, whether anything subscribes sessionID's relay subject
 // (bus.DeliverSubject), as a connection probe asks it: a core request carrying
 // bus.ConnectionProbeHeader and no body. A subscriber's answer is nil, and nats.ErrNoResponders
-// says nothing subscribes the subject.
-func probeRelaySubject(conn *natsgo.Conn, sessionID string) error {
+// says nothing subscribes the subject. The request waits for its answer until ctx ends, so a
+// subscriber that answers late on a busy machine is not read as none (testwait.Context).
+func probeRelaySubject(ctx context.Context, conn *natsgo.Conn, sessionID string) error {
 	msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 	msg.Header.Set(bus.ConnectionProbeHeader, "1")
-	_, err := conn.RequestMsg(msg, time.Second)
+	_, err := conn.RequestMsgWithContext(ctx, msg)
 	return err
 }
 
 // awaitNoRelayResponder waits until a probe of sessionID's relay subject meets no responder: a
-// closed connection leaves its subscriptions for the moment the server reads the close.
+// closed connection leaves its subscriptions for the moment the server reads the close. Until the
+// server has read it, a probe goes to the closed subscriber's interest, which nobody answers and
+// which is no "no responders" either, so each probe ends after relayProbeTry and the next asks
+// again: a try that ends is a question to repeat, not an answer. The asking's one bound is the
+// test binary's deadline, and its failure prints the last probe's answer.
 func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		err := probeRelaySubject(conn, sessionID)
-		if errors.Is(err, natsgo.ErrNoResponders) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("something still subscribes %s's relay subject: the last probe answered %v", sessionID, err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	ctx := testwait.Context(t)
+	testwait.Until(t, fmt.Sprintf("nothing to subscribe %s's relay subject", sessionID), func() (error, bool) {
+		try, cancel := context.WithTimeout(ctx, relayProbeTry)
+		defer cancel()
+		err := probeRelaySubject(try, conn, sessionID)
+		return err, errors.Is(err, natsgo.ErrNoResponders)
+	})
 }
+
+// relayProbeTry is how long one of awaitNoRelayResponder's probes waits before the next asks.
+const relayProbeTry = time.Second
 
 // Dispatch's outbox judges a role route's holder by the age of its last registration alone, as
 // the listener's role routes do (roles.ResolveHolder over roles.Buckets): a holder registered in
@@ -73,6 +78,7 @@ func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
 // sent and the hold counted under that state. So the forward before it comes from the
 // registration's age and from nothing else of the rig.
 func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRig(t)
 	const role, holder = "window-holder", "ses_window_outbox_holder"
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -92,7 +98,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 		t.Fatalf("flush the holder's relay subscription: %v", err)
 	}
 	rig.claim(t, role, holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Delivery: session.DeliveryConsumer})
-	if err := probeRelaySubject(rig.conn, holder); err != nil {
+	if err := probeRelaySubject(testwait.Context(t), rig.conn, holder); err != nil {
 		t.Fatalf("a probe of %s's relay subject while its subscriber holds it answered %v, want the subscriber's answer", holder, err)
 	}
 	relay.Close()
@@ -127,8 +133,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 		if copies := storedCopies(t, rig.client, holderSubject); copies != 1 {
 			t.Fatalf("the stream holds %d messages on %s, want the one forward", copies, holderSubject)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		stored, err := rig.client.LastStoredMessage(ctx, holderSubject)
 		if err != nil {
 			t.Fatalf("read the forward on %s: %v", holderSubject, err)

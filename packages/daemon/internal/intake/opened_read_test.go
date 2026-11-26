@@ -12,6 +12,7 @@ import (
 // (daemon's followOnBase) before any of them has answered, and a record with no base would leave
 // a head whose read fails unread.
 func TestAnOpenedReadCarriesTheBaseTheListAnswerNames(t *testing.T) {
+	t.Parallel()
 	var pull githubrest.PullRequest
 	pull.Number, pull.Head.SHA, pull.Base.Ref = 42, "head", "main"
 	fact, _ := OpenedRead("LEGION", "sjawhar/legion", "legion/LEGION-208", pull, 1, nil)

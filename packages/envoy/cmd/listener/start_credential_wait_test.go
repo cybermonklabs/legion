@@ -17,13 +17,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
@@ -274,46 +275,27 @@ func recordAttr(record slog.Record, key string) string {
 	return value
 }
 
-// listenerTry is one connection of the listener's start as the server lists it (/connz): when the
-// server took it, and when it closed, nil while it is open.
-type listenerTry struct {
-	Name   string     `json:"name"`
-	Start  time.Time  `json:"start"`
-	Stop   *time.Time `json:"stop"`
-	Reason string     `json:"reason"`
-}
-
-// listenerTries are the connections of the listener's start that the server whose monitoring is at
-// monitor took, open and closed, in the order it took them: the server's record of the start's
-// tries, each of which dials one connection.
-func listenerTries(t *testing.T, monitor string) []listenerTry {
+// listenerTries are the connections of the listener's start that server took, open and closed, in
+// the order it took them, as its settled record of them lists them (testnats.Server.Connections):
+// the server's record of the start's tries, each of which dials one connection. A start ends right
+// after it closes its last try's connection, and one read of the server's listings at that moment
+// can find that connection on neither its list of open connections nor its list of closed ones,
+// and so leave the last try out.
+func listenerTries(t *testing.T, server *testnats.Server) []*natsserver.ConnInfo {
 	t.Helper()
-	endpoint := monitor + "/connz?state=all&limit=4096"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
-	if err != nil {
-		t.Fatalf("GET %s: %v", endpoint, err)
-	}
-	defer response.Body.Close()
-	var connz struct {
-		Connections []listenerTry `json:"connections"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		t.Fatalf("decode %s: %v", endpoint, err)
-	}
-	var tries []listenerTry
-	for _, connection := range connz.Connections {
+	var tries []*natsserver.ConnInfo
+	for _, connection := range server.Connections(t) {
 		if connection.Name == listenerTryName {
 			tries = append(tries, connection)
 		}
 	}
-	slices.SortFunc(tries, func(a, b listenerTry) int { return a.Start.Compare(b.Start) })
 	return tries
 }
 
 // triesWaits are the waits between the first n of tries, each from the moment the server closed one
 // try's connection to the moment it took the next one's: the time the start spent waiting, to which
 // a try's own handshake and refusal add nothing.
-func triesWaits(t *testing.T, tries []listenerTry, n int) []time.Duration {
+func triesWaits(t *testing.T, tries []*natsserver.ConnInfo, n int) []time.Duration {
 	t.Helper()
 	if len(tries) < n {
 		t.Fatalf("the server recorded %d tries of the listener's start, want at least %d: %+v", len(tries), n, tries)
@@ -400,7 +382,7 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 			if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 				t.Fatalf("/healthz after the start = %d %v, want main's 200 starting", status, fields)
 			}
-			tries := listenerTries(t, server.MonitorURL())
+			tries := listenerTries(t, server)
 			waits := triesWaits(t, tries, len(wantWaits)+1)
 			t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
 			for i, want := range wantWaits {
@@ -494,7 +476,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 	}
-	tries := listenerTries(t, rig.server.MonitorURL())
+	tries := listenerTries(t, rig.server)
 	waits := triesWaits(t, tries, len(wantWaits)+1)
 	t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
 	for i, want := range wantWaits {
@@ -550,7 +532,7 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 		}
-		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server.MonitorURL())))
+		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server)))
 	})
 
 	t.Run("control: a read the grant refuses for good ends the listener at the bound", func(t *testing.T) {
@@ -912,7 +894,7 @@ func startListenerChild(t *testing.T, uri, seed, machineID string, env func(port
 // test's own scheduling and on the reaping of the process. The child counts its bound from the
 // moment it began its first try, and the server records that try when it took the connection, up to
 // a dial's latency later, so the lower bound is startChildWait less credentialWaitTolerance.
-func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStartServer, watchdog, most time.Duration, refusal string) []listenerTry {
+func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStartServer, watchdog, most time.Duration, refusal string) []*natsserver.ConnInfo {
 	t.Helper()
 	select {
 	case <-listener.Exited:
@@ -924,7 +906,7 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
 		t.Fatalf("the listener exited %d, want 1:\n%s", code, output)
 	}
-	tries := listenerTries(t, rig.server.MonitorURL())
+	tries := listenerTries(t, rig.server)
 	if len(tries) == 0 {
 		t.Fatalf("the server recorded no try of the listener's start:\n%s", output)
 	}
