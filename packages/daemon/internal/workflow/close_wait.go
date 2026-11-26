@@ -881,9 +881,6 @@ func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []recor
 func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) []string {
 	since := func(at time.Time) string { return at.UTC().Format(time.RFC3339) }
 	var terms []string
-	if unread := stored.Unread; unread != nil {
-		terms = append(terms, fmt.Sprintf("Its checks are unread since %s: %s.", since(unread.Since), unread.Cause))
-	}
 	if unapproved := stored.Unapproved; unapproved != nil {
 		terms = append(terms, fmt.Sprintf("Since %s these checks changed without a person's approval: %s.", since(unapproved.Since), strings.Join(unapproved.Checks, ", ")))
 	}
