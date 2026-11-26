@@ -333,6 +333,36 @@ When a test waits for a process that the code under test starts, the code tells 
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
 
+## A Go test that starts a copy of its own test binary
+
+A copy of a Go test binary that a test starts with a marker, an environment variable or a first
+argument, gets its role from the package's `TestMain`, which runs that role and no test. In a build
+of the tests without that `TestMain` (a build constraint that keeps its file out of one build, a
+split of the test files) the copy runs every test, and each test that starts a copy starts more:
+on 2026-11-25 a copy of `packages/envoy/clitest`'s tests, split so that its `TestMain` was in an
+`integration` build alone, grew to 21,523 live copies and 505,340 threads, and stopped a 288-CPU
+host for 3.5 hours.
+
+So before every start of such a copy, a test asks one function of its package that returns an
+error in a process that carries a copy's marker itself (`fakeCopyRefusal` in
+`packages/envoy/clitest`, `legionCopyRefusal` in the daemon's `cmd/legion`, `helperCopyRefusal` in
+its `internal/launcher`), and refuses to start the copy on that error. A test that must set a
+copy's marker in its own process, because a copy started by code under test inherits it from there,
+starts every copy of its own before it sets it.
+
+The package has two tests of this. One is a unit test of that function: under `t.Setenv` of the
+marker (and, for a role given by the first argument, with `os.Args` set and put back) it returns
+the error, and with the marker unset it returns nil. While `TestMain` is in the build no copy ever
+reaches the function, so this test is the one that fails when the check is deleted. The other
+starts one copy with its marker and `-h`. Whatever the role does with `-h`, the testing package
+reads it before any test runs: in a build without `TestMain` that copy prints the testing package's
+flag usage and exits, so the test fails by name and starts nothing more. That covers a role chosen
+by an environment variable alone: Go stops reading flags at the first argument that is not one, so
+a copy whose role is its first argument (the launcher's `worker-shim` stand-in) never reads a `-h`
+after it, and for such a role the unit test, with `os.Args` set, is the only test. A copy started
+with `-test.run=^Name$`, whose named test reads its marker, is not of this kind: without
+`TestMain` it still runs that one test.
+
 ## The act rule of a Dispatch unit test
 
 The preload of Dispatch's unit suite (`web/src/__tests__/setup.ts`) fails a row in which React

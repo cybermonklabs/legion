@@ -3,7 +3,9 @@ package launcher
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,7 +37,16 @@ var helperChildVariables = []string{
 // keyed by its LEGION_ marker, and TestMain runs the one whose marker is set before anything else
 // and exits; the file whose helper it is registers it, as roleinit_test.go registers its markers
 // in helperChildVariables.
-var mainHelpers = map[string]func(){}
+var mainHelpers = map[string]func(){mainHelperProbeEnv: mainHelperProbe}
+
+// mainHelperProbeEnv marks the copy TestACopyStartedAsAMainHelperRunsAsTheHelper starts, which
+// TestMain runs as mainHelperProbe; mainHelperProbeLine is all that helper prints.
+const (
+	mainHelperProbeEnv  = "LEGION_LAUNCHER_TEST_MAIN_HELPER_PROBE"
+	mainHelperProbeLine = "the main helper probe ran\n"
+)
+
+func mainHelperProbe() { fmt.Print(mainHelperProbeLine) }
 
 // guardKeep is what TestMain's guard keeps beyond fixtureenv's own test inputs: the inputs of a
 // gated live test, which a person or a measurement Job sets for that test alone and none of which
@@ -69,6 +80,11 @@ var guardKeep []string
 // every test, so TestMain runs the stand-in before anything else, and only in a process that
 // carries the test's marker (sessionPeerShim).
 //
+// Only TestMain makes a helper of a copy a test starts, a mainHelpers helper or the shim stand-in:
+// in a build of these tests without it, such a copy runs the tests, each of which starts copies
+// that run them again. Each test that starts such a copy asks helperCopyRefusal first, and
+// TestACopyStartedAsAMainHelperRunsAsTheHelper fails in such a build by name.
+//
 // The tests run under testpg.Main, which drops the migrated template database that a test of a
 // restore through the daemon's store clones (testpg.CloneStore).
 func TestMain(m *testing.M) {
@@ -78,7 +94,7 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 	}
-	if len(os.Args) > 1 && os.Args[1] == shimArgument && os.Getenv(peerPlanEnv) != "" {
+	if startedAsThePeerShim() {
 		os.Exit(sessionPeerShim())
 	}
 	for _, name := range helperChildVariables {
@@ -94,6 +110,81 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(testpg.Main("legion_launcher_test", m.Run))
+}
+
+// startedAsThePeerShim says whether this process was started as the session peer test's shim
+// stand-in: `worker-shim` as its first argument, with peerPlanEnv set.
+func startedAsThePeerShim() bool {
+	return len(os.Args) > 1 && os.Args[1] == shimArgument && os.Getenv(peerPlanEnv) != ""
+}
+
+// helperCopyRefusal is why this process may not start a copy that TestMain runs as one of its
+// helpers, a mainHelpers helper or the session peer's shim stand-in, nil when it may. TestMain runs
+// a process started as such a helper as that helper, so a test that runs in one runs in a build
+// without TestMain, and a copy started there would run the tests again. It answers every helper's
+// marker, not only the one the copy gets, since a copy of one kind could start a copy of another.
+func helperCopyRefusal() error {
+	for name := range mainHelpers {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("this process has %s set, so a test started it as one of TestMain's helpers, but it runs the tests: this build of the tests has no TestMain that runs the helper, and a copy started here would run the tests again", name)
+		}
+	}
+	if startedAsThePeerShim() {
+		return fmt.Errorf("this process is `%s` with %s set, so a test started it as the session peer's shim stand-in, but it runs the tests: this build of the tests has no TestMain that runs the stand-in, and a copy started here would run the tests again", shimArgument, peerPlanEnv)
+	}
+	return nil
+}
+
+// helperCopyRefusal, which each start of a helper's copy asks first, refuses a process that has a
+// main helper's marker, and one started as `worker-shim` with peerPlanEnv set, and no other. While
+// TestMain is in the build no copy reaches it, so this test is what holds the refusal. It sets
+// os.Args, so it runs alone (no t.Parallel) and puts them back when it ends.
+func TestAProcessStartedAsAHelperStartsNoCopy(t *testing.T) {
+	args := os.Args
+	t.Cleanup(func() { os.Args = args })
+	fixtureenv.Unset(t, mainHelperProbeEnv, peerPlanEnv)
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatalf("with no helper's marker: %v, want no refusal", err)
+	}
+	t.Setenv(mainHelperProbeEnv, "1")
+	if err := helperCopyRefusal(); err == nil || !strings.Contains(err.Error(), mainHelperProbeEnv) {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", mainHelperProbeEnv, err)
+	}
+	fixtureenv.Unset(t, mainHelperProbeEnv)
+	os.Args = []string{args[0], shimArgument}
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatalf("as `%s` with no %s: %v, want no refusal", shimArgument, peerPlanEnv, err)
+	}
+	t.Setenv(peerPlanEnv, "{}")
+	if err := helperCopyRefusal(); err == nil || !strings.Contains(err.Error(), peerPlanEnv) {
+		t.Fatalf("as `%s` with %s set: %v, want a refusal that names it", shimArgument, peerPlanEnv, err)
+	}
+	os.Args = []string{args[0], "-test.run=^TestRoleInitAgentHelper$"}
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatalf("with %s set and no `%s` argument: %v, want no refusal", peerPlanEnv, shimArgument, err)
+	}
+}
+
+// A copy started with a main helper's marker runs as that helper: mainHelperProbe prints its line.
+// The probe does not read -h. In a build without TestMain, the testing package reads -h before any
+// test runs, prints its own flag usage and exits, so this test fails there by name and its copy
+// starts no copy of its own. The session peer's shim stand-in takes `worker-shim` as its first
+// argument, ahead of any -h, so no copy of that kind can be checked this way.
+func TestACopyStartedAsAMainHelperRunsAsTheHelper(t *testing.T) {
+	t.Parallel()
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, "-h")
+	cmd.Env = append(os.Environ(), mainHelperProbeEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != mainHelperProbeLine {
+		t.Fatalf("a copy started as a main helper with -h: %v, printed %q, want exit 0 and %q", err, out, mainHelperProbeLine)
+	}
 }
 
 // reentry is the arguments that run this test binary's helper test alone, in a process of its own
