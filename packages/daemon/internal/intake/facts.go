@@ -142,6 +142,23 @@ type DispatchIssue struct {
 	// Only "user" has admission queue a person's handover (a todo through the outbox); every other
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
+	// StatusBefore is the status Dispatch showed before this event: the status of the newest issue
+	// event of the issue's Dispatch event log at a sequence below the event's own
+	// (StatusBeforeOf). The daemon's preparation reads it from that log, outside the fact lock,
+	// only for a session's todo under a parent (SessionTodoUnderParent) on an issue it does not
+	// record, whose view stands at the event's own sequence (settleObserved carries it there),
+	// since the workflow sets such a todo back to it where the session is an agent of the child's
+	// tree (workflow's sessionTodoOnChild). It is "" for every other fact, and where the log holds
+	// no issue event below the event's sequence: an issue created at todo.
+	StatusBefore string
+}
+
+// SessionTodoUnderParent says whether the fact is a session's todo on an issue under a Dispatch
+// parent: the one kind of event of an unrecorded issue whose StatusBefore the prepare stage reads,
+// and the workflow then judges (workflow's sessionTodoOnChild), so the two sides test one
+// predicate.
+func (i DispatchIssue) SessionTodoUnderParent() bool {
+	return i.Status == "todo" && i.Parent != "" && i.ActorSession != ""
 }
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
@@ -2628,6 +2645,13 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
 // re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
 // edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
+//
+// A view of an unrecorded issue that stands at the sequence of the event it was prepared in place
+// of shows the state that event wrote, Dispatch having run no further, so it carries that event's
+// writer: its session (ActorSession), its time (At) and the status Dispatch showed before it
+// (StatusBefore), by which the workflow judges a session's todo on a child (workflow's
+// sessionTodoOnChild). A view Dispatch has run past carries none of them, since no one event wrote
+// what it shows.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -2646,6 +2670,9 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		}
 		if applied > issue.Seq {
 			return nil, false, nil
+		}
+		if delivered := issue.Delivered; delivered != nil && delivered.Seq == issue.Seq {
+			issue.ActorSession, issue.At, issue.StatusBefore = delivered.ActorSession, delivered.At, delivered.StatusBefore
 		}
 		issue.Observed, issue.Delivered = false, nil
 		return issue, true, nil

@@ -161,10 +161,12 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 
 // ReassertStatusWrite is the daemon's own status set back over a status that the daemon does not
 // take, which the row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of the
-// write that put that status on the issue. The workflow queues one in two cases (workflow's
-// sessionStatusWrite). A session with a claim in the issue's gate tree on the Dispatch chain writes
-// a status, other than the owning architect's move of a child out of the workflow. A session with
-// no claim there writes a status on a gate root that runs or that waits on a person.
+// write that put that status on the issue. The workflow queues one in three cases (workflow's
+// sessionStatusWrite, sessionTodoOnChild). A session with a claim on an issue of the written
+// issue's Dispatch chain or of its gate root's tree writes a status, other than the owning
+// architect's move of a child out of the workflow. Such a session writes todo on an unrecorded
+// child under a parent in Legion's work, set back to the status Dispatch showed before it. A
+// session with no claim there writes a status on a gate root that runs or that waits on a person.
 func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
 	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
 }

@@ -2544,6 +2544,14 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // fails the preparation, so the event is delivered again; a log that does not decode fails it at
 // every delivery, so the intake gives the event up at its bound. A recorded root a person moved
 // back to triage is never queued again, so its log is not read.
+//
+// An unrecorded child whose delivered event writes todo under a parent by a session
+// (intake.DispatchIssue.SessionTodoUnderParent) also has its Dispatch event log read when
+// Dispatch's view still stands at that event's own sequence, for the status Dispatch showed before
+// it (statusBefore, intake.DispatchIssue.StatusBefore): the workflow sets an agent's todo back to
+// that status, at the write's sequence, rather than starting the child (workflow's
+// sessionTodoOnChild). A failed or undecodable log read fails the preparation naming the issue, so
+// the event is delivered again.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, true)
 }
@@ -2584,6 +2592,11 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 			issue.Priority, issue.Resolved = event.Priority, event.Resolved
 		}
 		issue.Seq, issue.Delivered = max(delivered, issue.Seq), &event
+		if event.SessionTodoUnderParent() && issue.Seq == delivered {
+			if event.StatusBefore, err = w.statusBefore(ctx, event.Key, delivered); err != nil {
+				return issue, err
+			}
+		}
 	}
 	return w.prepareUnrecorded(ctx, issue, false)
 }
@@ -2606,6 +2619,22 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 		return "", fmt.Errorf("read who set the label of %s from its event log: %w", key, err)
 	}
 	return setter, nil
+}
+
+// statusBefore is the status Dispatch showed for key before the event at seq, by
+// intake.StatusBeforeOf's rule. It reads the issue's whole Dispatch event log from sequence 0, in
+// one paged read, outside the fact lock. A failed or undecodable read fails with an error naming
+// key, so the event is delivered again rather than applied without the status it came from.
+func (w *workflowRuntime) statusBefore(ctx context.Context, key string, seq int64) (string, error) {
+	events, err := w.dispatch.EventsAfter(ctx, key, 0)
+	if err != nil {
+		return "", fmt.Errorf("read the event log of %s from Dispatch for its status before %d: %w", key, seq, err)
+	}
+	status, err := intake.StatusBeforeOf(events, seq)
+	if err != nil {
+		return "", fmt.Errorf("read the status of %s before %d from its event log: %w", key, seq, err)
+	}
+	return status, nil
 }
 
 // prepareArtifact readies a Dispatch review event before it is applied (intake's

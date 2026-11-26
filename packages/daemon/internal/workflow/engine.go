@@ -690,10 +690,12 @@ const releaseReason = "the issue was set to todo while its phase was held"
 const restartReason = "the issue was set to todo while its task was stopped"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
-// does not act on. A session holding a claim of an issue whose gate root is the issue's own on the
-// Dispatch chain (record.Chains.GateTree, Store.SessionClaimsOf) is an agent of its tree, never a
-// human move, since a phase ends only by its completion (the `legion` tool's `handoff_complete`)
-// and a tree only by the architect's sign-off. Any other session on a gate root that runs
+// does not act on. A session holding a claim on an issue of the written issue's Dispatch chain —
+// the issue and every issue above it up to its top, whichever of them holds its own gate — or on
+// an issue of its gate root's tree (record.Chains.Chain, record.Chains.GateTree,
+// Store.SessionClaimsOf) is an agent of its tree, never a human move, since a phase ends only by
+// its completion (the `legion` tool's `handoff_complete`) and a tree only by the architect's
+// sign-off (R26 of dispatch://INFRA-3320). Any other session on a gate root that runs
 // (record.TreeRuns) — one holding its admission slot, or one waiting on a person, whose tree
 // stays live and which keeps its slot — another tree's agent, or one outside Legion that took the
 // issue for its own, has no part in the tree it would end or park, so the tree's architect is told
@@ -776,12 +778,17 @@ func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *recor
 		return writeTaken, false, err
 	}
 	gateRoot := chains.GateRoot(issue.Key)
-	// The issue's own claims count whatever the chain reads, a chain with no gate root included.
-	tree := []string{issue.Key}
+	// The claims of the issue itself and of every issue above it on its chain count, up to its top
+	// and whichever gate holder stands between (R26), and so do those of its gate root's tree: one
+	// gate tree alone takes a session of an issue above a gate holder for a person.
+	links := chains.Chain(issue.Key).Links
+	var tree []string
 	if gateRoot != "" {
-		tree = append(tree, chains.GateTree(gateRoot)...)
+		tree = chains.GateTree(gateRoot)
 	}
-	agent, err := e.store.SessionClaimsOf(ctx, tx, tree, write.Session)
+	claimed := make([]string, 0, 1+len(links)+len(tree))
+	claimed = append(append(append(claimed, issue.Key), links...), tree...)
+	agent, err := e.store.SessionClaimsOf(ctx, tx, claimed, write.Session)
 	if err != nil {
 		return writeTaken, false, err
 	}
@@ -932,6 +939,9 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // again. An issue whose parent is not in Legion's work is recorded by nothing here either: with an
 // issue above that parent in Legion's work it is held `ancestry` (record.HeldReasonOf), and with
 // none it is a root, admission's to take on a person's handover.
+//
+// A todo that a session of the child's own tree wrote is neither R19's release nor a person's, so
+// it starts nothing (sessionTodoOnChild).
 func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	if fact.Status != "todo" || fact.Parent == "" {
 		return intake.Result{}, nil
@@ -951,7 +961,45 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 	if !recorded {
 		return intake.Result{}, nil
 	}
+	if setBack, err := e.sessionTodoOnChild(ctx, tx, chains, fact); err != nil || setBack {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.recordChild(ctx, tx, chains, root, fact)
+}
+
+// sessionTodoOnChild judges fact, a session's todo on an issue the daemon does not record under a
+// parent in Legion's work, on chains, the child's known chain, as sessionStatusWrite judges a
+// session's status write on a recorded issue (legionOnChain, judgeSessionWrite), and says whether
+// the write is set back. The todo of a session that holds a claim on an issue of the child's chain
+// or of its gate root's tree is an agent's, which starts nothing, since only the release_children
+// and rerun_child of an architect above it, which the daemon writes, and a person start such a
+// child (R19 of dispatch://INFRA-3320; the architect's ruling,
+// dispatch://INFRA-4730/comment/ada915ba-c94a-4876-8d6e-6cc1a1423f32). Until the release that
+// removes the repair (dispatch://INFRA-4733) the daemon sets that write back to the status Dispatch
+// showed before it (intake.DispatchIssue.StatusBefore), at the write's sequence, and records
+// nothing for the child. Where Dispatch's log holds no status before the write, the issue having
+// been created at todo, there is nothing to set it back to: no row is queued, and the child stays
+// todo in Dispatch and out of Legion's work. Either way it logs one line. An event that shows the
+// status Dispatch showed before it is an edit, which writes no status, as on a recorded issue
+// (dispatchIssue), and any other session's todo is taken as a person's, as it is on a recorded
+// issue under no running root.
+func (e *Engine) sessionTodoOnChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, fact intake.DispatchIssue) (bool, error) {
+	if fact.ActorSession == "" || fact.StatusBefore == fact.Status || !legionOnChain(chains, fact.Key) {
+		return false, nil
+	}
+	write := record.HeldSessionWrite{Session: fact.ActorSession, Status: fact.Status, Seq: fact.Seq, At: fact.At}
+	verdict, _, err := e.judgeSessionWrite(ctx, tx, chains, record.Issue{Key: fact.Key, Project: e.cfg.Project}, write)
+	if err != nil || verdict == writeTaken {
+		return false, err
+	}
+	if fact.StatusBefore == "" {
+		e.logOnCommit(ctx, "workflow: a session of the tree wrote todo on a child the daemon does not record; it starts nothing, and Dispatch shows no status before it to set it back to",
+			"issue", fact.Key, "parent", fact.Parent, "session", fact.ActorSession, "seq", fact.Seq)
+		return true, nil
+	}
+	e.logOnCommit(ctx, "workflow: a session of the tree wrote todo on a child the daemon does not record; it starts nothing, and the daemon sets it back",
+		"issue", fact.Key, "parent", fact.Parent, "session", fact.ActorSession, "seq", fact.Seq, "status", fact.StatusBefore)
+	return true, e.enqueue(ctx, tx, fact.Key, record.ReassertStatusWrite(fact.StatusBefore, fact.Status, fact.Seq))
 }
 
 // recordChild records an unrecorded todo child under root, its gate root on chains, on the

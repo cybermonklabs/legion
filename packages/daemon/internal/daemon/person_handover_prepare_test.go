@@ -610,3 +610,103 @@ func TestARepositoryRecoveryLeavesOutAnUnreadableEventLogAndFailsOnARefusal(t *t
 		})
 	}
 }
+
+// issueStatusLogEvent is one issue event of key's Dispatch event log at seq leaving the issue at
+// status, as EventsAfter serves it.
+func issueStatusLogEvent(key string, seq int, typ, status string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":%q,"actor":{"kind":"user","id":"user-1"},"notify":true,"payload":{"key":%q,"status":%q,"title":%q,"labels":[]}}`,
+		seq, key, seq, typ, key, status, key))
+}
+
+// A session's todo event on an unrecorded issue under a parent has its Dispatch event log read in
+// one read when Dispatch's view still stands at the event's own sequence, setting Delivered's
+// StatusBefore to the status of the newest issue event below the event's sequence ("" where none
+// exists, as for an issue created at todo, passing over non-issue events such as comments). No
+// other event reads the log — a person's todo, a session's todo on a root, a session's non-todo,
+// a recorded child, or a view Dispatch has moved past — and a failed or undecodable log read fails
+// the preparation naming the issue.
+func TestPrepareIssueReadsStatusBeforeASessionsTodoOnAnUnrecordedChild(t *testing.T) {
+	t.Parallel()
+	const parent, key, session = "LEGION-700", "LEGION-765", "ses-parent-implementer"
+	sessionTodo := intake.DispatchIssue{Key: key, Seq: 3, Type: "issue.updated", Status: "todo", Title: key, Parent: parent, Rank: "B",
+		ActorSession: session, ResolvedRepo: "acme/widgets"}
+	commentAt := func(seq int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":"comment.created","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":{"body":"note"}}`,
+			seq, key, seq))
+	}
+	pool := isolatedOutboxPool(t)
+	for _, tc := range []struct {
+		name     string
+		event    func(intake.DispatchIssue) intake.DispatchIssue
+		viewSeq  int64
+		recorded bool
+		logs     []json.RawMessage
+		logErr   error
+		reads    int
+		want     string
+		fails    string
+	}{
+		{name: "session todo over backlog after a comment", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "triage"), issueStatusLogEvent(key, 2, "issue.updated", "backlog"),
+				commentAt(2), issueStatusLogEvent(key, 3, "issue.updated", "todo")},
+			reads: 1, want: "backlog"},
+		{name: "session todo over icebox", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+			logs:  []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "icebox"), issueStatusLogEvent(key, 3, "issue.updated", "todo")},
+			reads: 1, want: "icebox"},
+		{name: "session created at todo, no prior status", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Seq, i.Type = 1, "issue.created"; return i }, viewSeq: 1,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "todo")}, reads: 1, want: ""},
+		{name: "view moved past the event reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 4,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
+		{name: "person todo reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.ActorSession = ""; return i }, viewSeq: 3,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
+		{name: "session todo on a root reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Parent, i.HandedOver = "", true; return i }, viewSeq: 3,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
+		{name: "session backlog on a child reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Status = "backlog"; return i }, viewSeq: 3,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "triage")}},
+		{name: "recorded child reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3, recorded: true,
+			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
+		{name: "failed log read fails preparation", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+			logErr: errors.New("Dispatch is restarting"), reads: 1, fails: "Dispatch is restarting"},
+		{name: "undecodable log fails preparation", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+			logs: []json.RawMessage{json.RawMessage(`{not json`)}, reads: 1, fails: "decode Dispatch event 1 of 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := pool.Exec(context.Background(), "delete from issues"); err != nil {
+				t.Fatalf("clear the recorded issues: %v", err)
+			}
+			records := record.NewStore()
+			if tc.recorded {
+				putOutboxIssue(t, pool, records, recordedOn(key, "backlog"))
+			}
+			repos := newRepositories("LEGION", ghrepo.Renames{})
+			repos.fill(ghrepo.MustParse("acme/widgets"))
+			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
+			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
+			shown := dispatch.Issue{Key: key, Status: "todo", Title: key, Parent: new(parent), Rank: "B", ResolvedRepo: "acme/widgets", LastSeq: tc.viewSeq}
+			client := &eventLogDispatch{logs: map[string][]json.RawMessage{key: tc.logs}, logErrs: map[string]error{key: tc.logErr}}
+			client.issues = map[string]dispatch.Issue{key: shown}
+			w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: quietLogger()}
+
+			got, err := w.prepareRepository(context.Background(), tc.event(sessionTodo))
+			if tc.fails != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.fails) || !strings.Contains(err.Error(), key) {
+					t.Fatalf("prepareRepository = %#v, %v; want the failed read to fail the preparation, naming %s and %q", got, err, key, tc.fails)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("prepareRepository: %v", err)
+			}
+			if client.logReads[key] != tc.reads {
+				t.Fatalf("the event log of %s was read %d times, want %d", key, client.logReads[key], tc.reads)
+			}
+			gotBefore := got.StatusBefore
+			if got.Delivered != nil {
+				gotBefore = got.Delivered.StatusBefore
+			}
+			if gotBefore != tc.want {
+				t.Fatalf("StatusBefore = %q, want %q", gotBefore, tc.want)
+			}
+		})
+	}
+}

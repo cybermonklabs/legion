@@ -104,3 +104,25 @@ func statusChangedAfter(events []json.RawMessage, seq int64) (int64, error) {
 	}
 	return 0, nil
 }
+
+// StatusBeforeOf is the status Dispatch showed before the event at seq, read from events, an
+// issue's Dispatch event log as dispatch.Client.EventsAfter serves it from sequence 0, oldest
+// first: the status of the newest issue event at a sequence below seq, each issue event carrying
+// the issue's status as it leaves it (walkIssueEvents), every other event passed over. It is ""
+// where no issue event stands below seq, as for an issue created by the event at seq. The walk
+// stops at the first issue event at or past seq, so the log after it is never read. For a log
+// walkIssueEvents cannot read up to there, it returns the walk's *dispatch.EventLogError, since
+// such a log cannot say what Dispatch showed (DispatchIssue.StatusBefore).
+func StatusBeforeOf(events []json.RawMessage, seq int64) (string, error) {
+	status := ""
+	for event, err := range walkIssueEvents(events) {
+		if err != nil {
+			return "", err
+		}
+		if event.Seq >= seq {
+			break
+		}
+		status = event.Status
+	}
+	return status, nil
+}
