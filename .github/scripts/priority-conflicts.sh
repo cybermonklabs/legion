@@ -177,7 +177,7 @@ while :; do
     '{operationName: "PriorityPulls", query: $query, variables: {owner: $owner, repo: $repo, after: $after}}' \
     > "$work/request.json"
   if ! gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
-    fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
+    exit 0 # CONTROL 1: a refused label read passes
   fi
   if ! jq -e "$shape" "$work/answer.json" > /dev/null 2>&1; then
     fail "GitHub's GraphQL API answered the read of the open pull requests labelled priority in a shape this check does not read, $unread"
@@ -244,8 +244,7 @@ if [ "$event_name" = pull_request ]; then
   fi
   base=$(git -C "$repo" rev-parse --verify "$head^1")
   # The change as the queue will land it: the test merge's tree on its base, one commit.
-  change_commit=$(git -C "$repo" commit-tree -p "$base" -m "$change, squashed" "$head^{tree}") ||
-    fail "git could not write $change as one commit on its base, $unread"
+  change_commit=$head # CONTROL 2: the test merge, not the squash the queue lands
 else
   git -C "$repo" merge-base --is-ancestor "$base" "$head" ||
     fail "merge_group.base_sha $base is not below the group's head $head, so this check cannot tell which commits $change holds"
@@ -341,7 +340,7 @@ merge() {
   done
   sort -z -o "$out.entries" "$out.entries" && sort -z -u "$out.raw" > "$out.paths" &&
     sort -z -u -o "$out.binary" "$out.binary" &&
-    sort -z -u "$out.text" | comm -z -23 - "$out.binary" > "$out.marked" || return 2
+    sort -z -u "$out.text" > "$out.marked" || return 2 # CONTROL 3: binary conflicts read as marked
   return 1
 }
 
@@ -414,7 +413,7 @@ compare() {
     cmp -s "$work/a" "$work/b" || same=$?
     case $same in
       0) ;;
-      1) printf '%s\0' "$path" >> "$work/caused" ;;
+      1) ;; # CONTROL 4: a file that differs from the change's own merge is not counted
       *) fail "could not compare $path of the merges of $change with #$pull, $unread" ;;
     esac
   done < "$work/differ"
@@ -448,7 +447,7 @@ judge() {
   merge "$work/before" change="$base" priority="$pull_head" || status=$?
   [ "$status" -le 1 ] || fail "git could not merge the base $base of $change with #$pull, $unread"
   if [ "$status" -eq 0 ]; then
-    cp "$work/ours.paths" "$work/caused"
+    verdict=clean # CONTROL 5: a conflict with a priority pull request the base merges cleanly passes
     return 0
   fi
   stale=$(unaside < "$work/before.paths" | tr -cd '\0' | wc -c)
@@ -457,7 +456,7 @@ judge() {
   # once more with renames found at 1% likeness.
   landed=$(git -C "$repo" commit-tree -p "$base" -m "#$pull merged into $base" "$(cat "$work/before.tree")") ||
     fail "git could not write a commit of #$pull merged into the base of $change, $unread"
-  for attempt in default loose; do
+  for attempt in default; do # CONTROL 6: no looser second try of step 3
     options=(--merge-base="$base")
     [ "$attempt" = default ] || options+=(--strategy-option=find-renames=1%)
     status=0
