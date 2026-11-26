@@ -1975,7 +1975,10 @@ func startSupervisedSandboxRole(
 // That start may have begun the new generation even though start returns an error, so relaunch,
 // which owns the child it started, sends a Stop for the issued generation before returning. This
 // holds both where Resume has no previous locator and where its previous locator names the same
-// pod: the Stop names the issued generation, never the previous one, which is the caller's.
+// pod: the Stop names the issued generation, never the previous one, which is the caller's. The
+// start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
+// the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
+// deadline's error without the launcher ever receiving the Start (run 45723523570).
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
 	t.Parallel()
 	for name, previous := range map[string]bool{
@@ -1994,11 +1997,29 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 			if previous {
 				prev = &first
 			}
-			if _, err := g.r.Resume(g.ctx, prev, spec); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
-				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
-			}
+			// The launch's wait for its role launcher reads the launcher ready only once the
+			// runtime holds the launcher's first state, which wakes no wait: on the fake clock no
+			// recheck follows a first check that came before it, so Resume starts after it.
+			g.eventually("the runtime to hold the scripted launcher's first state", func() bool {
+				_, ready := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
+				return ready
+			})
+			fc := clocktest.New(rigNow)
+			g.r.clock = fc
+			resumed := make(chan error, 1)
+			go func() { _, err := g.r.Resume(g.ctx, prev, spec); resumed <- err }()
 			if start := delayed.start(t, 2); start.Generation != 2 {
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
+			}
+			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
+			// the fake clock's moment, plus the termination grace. It moves only once the runtime has
+			// finished writing the Start (written): an end of the deadline inside the write closes the
+			// connection, as a write the context cuts does, and the Stop that follows would find no
+			// launcher.
+			delayed.written()
+			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
+			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
+				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
 			}
 			if stop := delayed.stop(t, 2); stop.Generation != 2 {
 				t.Fatalf("Stop = generation %d, want the Start's generation 2", stop.Generation)
@@ -2062,8 +2083,17 @@ func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *te
 // the Start's generation. Its hello says of looking a session up by its id what the rig's own fake
 // launchers' do (withResumesBySession).
 type scriptedStartLauncher struct {
-	starts chan shimwire.LauncherStart
-	stops  chan shimwire.LauncherStop
+	session *launcherSession
+	starts  chan shimwire.LauncherStart
+	stops   chan shimwire.LauncherStop
+}
+
+// written returns once the runtime has finished writing the frame the scripted launcher last read
+// and stopped watching that write's context: requestSession holds the session's lock through both,
+// and the launcher reads the frame only while the write holds it.
+func (d *scriptedStartLauncher) written() {
+	d.session.mu.Lock()
+	defer d.session.mu.Unlock()
 }
 
 func (g *rig) scriptedStartLauncher(
@@ -2083,8 +2113,9 @@ func (g *rig) scriptedStartLauncher(
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
-		starts: make(chan shimwire.LauncherStart, 2),
-		stops:  make(chan shimwire.LauncherStop, 4),
+		session: session,
+		starts:  make(chan shimwire.LauncherStart, 2),
+		stops:   make(chan shimwire.LauncherStop, 4),
 	}
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
@@ -2122,30 +2153,36 @@ func (g *rig) scriptedStartLauncher(
 	return scripted
 }
 
+// start is the scripted launcher's first Start of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) start(t *testing.T, generation uint64) shimwire.LauncherStart {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.starts:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Start", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Start before the test binary's deadline", generation)
 		}
 	}
 }
 
+// stop is the scripted launcher's first Stop of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) stop(t *testing.T, generation uint64) shimwire.LauncherStop {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.stops:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Stop", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Stop before the test binary's deadline", generation)
 		}
 	}
 }
