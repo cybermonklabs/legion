@@ -3175,6 +3175,54 @@ After a roll forward, the first pod of a kept volume this release records is not
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the two tables, the claims table and the outbox hold the rows of every project.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that admits by signals
+
+This release keeps what the five signals of admission by signals read, a person's settings of the rule and the record of its changes ([Admission by signals](https://cybermonklabs.github.io/legion/legion/admission-signals/)).
+Its seven migrations add tables, a column, a defaulted column and an outbox kind, and change nothing that an earlier release reads:
+
+- `20261126011110_memory_kills` adds `memory_kills`, one row for each memory kill of a project's issue pods, kept once by the report's guard and sequence at the moment the launcher named it, and `signal_inputs`, the moment the daemon began to keep each input of a signal for each project, which the first boot of this release writes.
+
+- `20261126020201_queue_events` adds `queue_events`, each merge-queue event of GitHub's timeline of a project's pull requests, once by GitHub's event id, the column `signal_inputs.read_error`, why the boot's read of the merge queue failed, and the outbox kind `queue_timeline_read` to `outbox_kind_check`.
+
+- `20261126025927_approval_asks` adds `approval_asks`, `approval_assignees` and `approval_default_assignees`: each ask of a project's issues with the person it was asked of and whose turn it is, each issue's assignee, and the project's default assignee, each at the sequence of Dispatch's event that set it.
+
+- `20261126042544_model_requests` adds `model_requests`, each model request a host reported, `signal_token_limits`, the token limit a minute each boot found configured, and `claim_turns`, each turn of each claim with the plugin contract its host registered with.
+
+- `20261126055316_signal_deadlines` adds `signal_deadlines`, each project's one deadline of the rule with its fence.
+
+- `20261126070017_model_requests_retried_refusals` adds `model_requests.retried_refusals_reported`, whether the batch of a request came from a host that reports the HTTP 429s its transport retries by itself.
+
+- `20261126072843_signal_settings` adds `signal_settings`, each project's switch and limits with who set each, when and why, `signal_changes`, the record of changes, and `signal_change_ids`, the last id each project's record gave out.
+
+An earlier release runs over the migrated database as it stands, and needs none of the statements below.
+It names none of the tables and none of the two columns, so it keeps nothing in them and moves no row; it puts `queue_timeline_read` in no outbox lane, so it never decodes or runs such a row, and the widened kind check refuses nothing it writes.
+It reads no setting of the rule, so every project admits under the cap alone, whatever a person set, and it arms no deadline's timer.
+It sets no `noRoleKills` on its answer to a launcher, so a launcher of this release sends it no report of a kill of no role ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+
+The way back is owed to the roll forward.
+Kept in place, the tables would read the time the earlier release ran as kept with nothing in it: `signal_inputs` would say the kills and the queue were kept all along, and the provider's minutes of that time would hold no request, so for up to an hour after the roll forward the kills and the provider's two series would read too low, and the queue for up to six hours could miss a wait, as if each held its whole span.
+The header of each migration file in `packages/daemon/internal/store/migrations` ends with its way back, one transaction in its last paragraph (`migrations.WayBack` reads it), which this section names rather than copies.
+Run each of them, its comment markers taken off, with every daemon of the database stopped and before the earlier image is pinned, through `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, one after another, newest first:
+
+1. `20261126072843_signal_settings`, whose drops cost each project's settings, which a person sets again, and its record of changes, which starts again from id 1;
+
+2. `20261126070017_model_requests_retried_refusals`, whose header says it runs before the way back of `20261126042544_model_requests`;
+
+3. `20261126055316_signal_deadlines`;
+
+4. `20261126042544_model_requests`;
+
+5. `20261126025927_approval_asks`;
+
+6. `20261126020201_queue_events`, which also deletes the `queue_timeline_read` rows of the outbox;
+
+7. `20261126011110_memory_kills` last, since it drops `signal_inputs`, from which the three before it delete their rows.
+
+Each transaction deletes its own version row of `schema_version` too, so the newer image's `Migrate` applies each migration again at the roll forward, and the roll forward's first boot writes each project's `signal_inputs` anew: each signal that counts over a span then reads as not recorded until its span is whole, rather than as a count that misses what the earlier release did not keep.
+
+**Every daemon sharing the database moves together.**
+Each of these tables holds the rows of every project of the database, and `schema_version` records each migration once for all of them, so roll back, and roll forward, every daemon of one database in the same change.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3668,6 +3716,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
+A rollback of a store that the release that admits by signals migrated runs the seven ways back in the headers of its migrations first, newest first, as [Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals) orders them, each of which deletes its own version row alone.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3760,6 +3809,13 @@ It touches none of the six, so the block holds over it and leaves the five colum
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
 20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
+20261126011110_memory_kills, of cybermonklabs/legion#5603, adds the tables `memory_kills` and `signal_inputs` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header last of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops both tables and deletes its version row.
+20261126020201_queue_events, of cybermonklabs/legion#5603, adds the table `queue_events` and the column `signal_inputs.read_error`, writes the outbox's kind check again with `queue_timeline_read` added, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which deletes the queued `queue_timeline_read` rows, drops the table and the column, deletes the queue's row of `signal_inputs` and deletes its version row.
+20261126025927_approval_asks, of cybermonklabs/legion#5603, adds the tables `approval_asks`, `approval_assignees` and `approval_default_assignees` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables, deletes the approvals' row of `signal_inputs` and deletes its version row.
+20261126042544_model_requests, of cybermonklabs/legion#5603, adds the tables `model_requests`, `signal_token_limits` and `claim_turns`, fills `claim_turns` with the turn each working claim is in, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables, deletes the provider's row of `signal_inputs` and deletes its version row.
+20261126055316_signal_deadlines, of cybermonklabs/legion#5603, adds the table `signal_deadlines` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the table and deletes its version row.
+20261126070017_model_requests_retried_refusals, of cybermonklabs/legion#5603, adds `model_requests.retried_refusals_reported` at its default, false, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header before that of 20261126042544_model_requests ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the column and deletes its version row.
+20261126072843_signal_settings, of cybermonklabs/legion#5603, adds the tables `signal_settings`, `signal_changes` and `signal_change_ids` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables and deletes its version row.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

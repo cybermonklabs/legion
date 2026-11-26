@@ -650,6 +650,7 @@ What each part is for:
   Each pattern is a regular expression of the subset Go and JavaScript read alike, since a Claude Code host matches it with Go and an Oh My Pi host with JavaScript: characters, `\` before a metacharacter, `.`, `^`, `$`, `\b`, `\B`, `\d`, `\D`, `\w`, `\W`, `\t`, `\n`, `\r`, classes such as `[a-z]` and `[^0-9]`, groups `(…)` and `(?:…)`, `|`, and the repetitions `*`, `+`, `?` and `{n,m}` up to 1000.
   The loader refuses every other construct, naming the key and why: lookarounds, back references, named groups, inline flags such as `(?i)`, `\p`, `\s` (ASCII's spaces in Go, Unicode's in JavaScript), POSIX classes, `\A`, `\Q`, `[]`, a lone `{` or `]`, and an empty pattern.
   A refused file is refused whole, so none of its keys takes effect.
+  [Admission by signals](/legion/legion/admission-signals/) says what the two series read, how `legion state` shows them, and how a person turns the rule on and sets their limits.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.
@@ -1518,6 +1519,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `--json` carries the same reading as `admission.slots`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
   The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
+  A daemon that keeps admission by signals prints one more line right after the `slots` line, which the sample above leaves out, `signals: admission by signals off; idle 0 limit none does not hold; queue 0.75 limit none does not hold; …`: whether the rule is on, and each of its six series by its signal and part, with its value or `not recorded`, its limit or `limit none`, and whether it holds admission, since when where a pass dated the hold.
+  [Admission by signals](/legion/legion/admission-signals/) says what each signal is, how to read it here and in `--json`, and how a person turns the rule on and off and sets or clears each limit.
+
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no
   priority, each issue at its own priority, else at its tree root's; and within one priority the
@@ -1695,7 +1699,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
   says what each reason means and what to do.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, `blocked`, and `signals` and `signalChanges`, admission by signals and its record of changes, which [Admission by signals](/legion/legion/admission-signals/#read-the-signals) describes), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
