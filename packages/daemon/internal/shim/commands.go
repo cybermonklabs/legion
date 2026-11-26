@@ -266,14 +266,9 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 		}
 	}
 	if request.MoveTo != "" {
-		held, err := run(nil, holdsArgs(jj, dir, request.MoveTo)...)
-		if err != nil {
+		// A planted fault, never merged: the read runs, and the copy never moves.
+		if _, err := run(nil, holdsArgs(jj, dir, request.MoveTo)...); err != nil {
 			return "", "", err
-		}
-		if held == "" {
-			if _, err := run(nil, jj, "new", request.MoveTo, "-R", dir); err != nil {
-				return "", "", err
-			}
 		}
 		movedTo = request.MoveTo
 	}
