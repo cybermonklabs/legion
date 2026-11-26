@@ -4,8 +4,9 @@ body: |-
   `GET /api/v1/search/results`) runs in a read transaction of its own with a `statement_timeout`
   of 15 s and a `client_connection_check_interval` of 1 s. The keyword statement had no bound
   before. A statement that reaches the bound answers `503 SEARCH_TIMEOUT`, with a message that
-  names the bound, in place of `500 INTERNAL`; the web app and the `dispatch` command send such a
-  search once and leave asking again to the reader. A search whose first statement found nothing
+  names the bound, in place of `500 INTERNAL`. Neither the web app nor the `dispatch` command
+  retries such a search automatically; the web app sends a new search when a reader presses
+  Retry, or when its tab regains focus. A search whose first statement found nothing
   runs its broadened statement under the same bound again.
 time: 2026-11-24T07:00:10Z
 custom:

@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// This file holds search's statements as main ran them at 497581c7, the merge base for this
+// This file holds search's statements as main ran them at commit 497581c7, frozen for this
 // change: the keyword statement searchQuery, search's three meaning statements, the related-item
 // check's six meaning statements, and the meaning document arm of search's three apart, and the
 // rule main builds each of them for a set of kinds with (mainAt4975Statement). Their meaning
@@ -24,7 +24,7 @@ import (
 // statements to their answers.
 //
 // Main's statements moved after df18d9be, the earlier base commit, so this file was
-// frozen again at 497581c7, the merge base: cybermonklabs/legion#3125 changed the headline window
+// frozen again at main's commit 497581c7: cybermonklabs/legion#3125 changed the headline window
 // the page tail selects and added the kinds a search can leave out, and #3512 made the comment,
 // ask and message arms' updated_since filters read coalesce(edited_at, created_at).
 //

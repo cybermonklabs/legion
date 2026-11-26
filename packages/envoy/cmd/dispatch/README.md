@@ -5354,7 +5354,7 @@ Each item below names a path with its method and identity, then its purpose.
   `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
   Each keyword and meaning statement runs in a read transaction of its own under a `statement_timeout` of 15 s and a `client_connection_check_interval` of 1 s, and the second search for the rarest words runs its statement under a bound of its own.
   A statement that runs past the bound finds nothing, and the search answers `503 SEARCH_TIMEOUT` with a message naming the bound (`the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query`);
-  the web app and the `dispatch` command do not send that request again.
+  neither the web app nor the `dispatch` command retries that request automatically; the web app sends a new search when a reader presses Retry, or when its tab regains focus.
   This route declares `q`, `project`, `limit` and `offset` alone.
   `number_project`, `status`, `author`, `updated_since`, `keywords_only` and `kind` are declared on `GET /api/v1/search/results` below, and a client sends a search carrying one of them there.
   It still reads all ten, refusing each of those six under its own code (`400 INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`, `INVALID_QUERY`), so a page served by an earlier release that sends one here is still answered narrowed ([Search](#search)).

@@ -971,8 +971,9 @@ const coverageSettings = `set local enable_seqscan = off; set local enable_sort 
 // every window's vector (dropForeignVectors) that half is empty, and the planner read the arm
 // through embeddings_kind_project by kind, with the regex as the heap scan's filter over every
 // window's text: 4,590 ms at production's size and 8,455 ms at twice it, 10 s at 2.33 times
-// (dispatch://INFRA-4241/artifact/tester-r3-job-0ec6b4ad-log). R2 asks for at least 4 times. The
-// times at production's size and twice it are the tester's, from a builds Job (8 CPUs, 16 GiB).
+// production's size. The coverage read must hold its bound up to at least 4 times production's
+// size. The times at production's size and twice it come from scale runs in a builds Job
+// (8 CPUs, 16 GiB).
 func planCoverage(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, coverageSettings); err != nil {
 		return coverageFailed(ctx, fmt.Errorf("plan the statement: %w", err))
