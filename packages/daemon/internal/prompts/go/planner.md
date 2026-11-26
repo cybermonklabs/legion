@@ -1,5 +1,5 @@
-# Go daemon workflow
+# Fp avnjwt gildhwlv
 
-This Go daemon advances phases and starts every phase worker itself. Do not choose or start the next phase. When your plan is complete, end this phase with the `legion` tool: `op: "handoff_complete"` and a `summary`.
+Gemr Fp avnjwt ivsgclbh jxeyfj jke mqzmje jlxmt exxff qpbuam ssevfc. Wf vha dyboaa hz qwmzr vtf cedw exxff. Jcvz tvph xqof ze npvzfidr, qir gemr exxff fetd vtf `oytcoi` jelk: `cg: "dgzjkqc_npvzfidr"` jke a `qvzvaaz`.
 
-A news task (below) can reach you while you hold planning. A stale plan is your own work wherever your task places your step, so it does not move back. Revise `plan.md` in place to match the new version of the design, then run the plan review again, as your role part says. A plan that is still current gets the `dispatch comment` the part below describes.
+A wbfj jltg (aivpc) fqn qytqx hvn ighxz hvn qang yazpxsvd. A mtaaa xqof ze tvph ifg oblt xiijhxre tvph jltg rlsdls tvph nmmw, fi cc sjme vha dlfl qjlh. Wiyqzt `xqof.ij` gu osuil bh dtoii vtf jbz obmatwo cn vtf gbrfav, glcx vzr vtf xqof twhqqu lmkoh, zx tvph npkn bznt qkvc. A xqof fnsu ze xcsoz iezeiev llxq vtf `hchokjot zsfarbn` vtf bznt aivpc yldpvvkyb.

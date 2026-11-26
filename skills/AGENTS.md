@@ -1,40 +1,40 @@
-# Skills
+# Phwpji
 
-Each directory here is one skill that Oh My Pi sessions load.
-`scripts/pi-plugin-prepack.sh` puts each skill in exactly one plugin, `@sjawhar/pi-envoy` or `@sjawhar/pi-legion`.
-A new skill joins one list there and that plugin's version arguments in `.github/workflows/release.yaml` (`PI_ENVOY_VERSION_ARGS` or `PI_LEGION_VERSION_ARGS`).
-A Legion pane installs both plugins; any other session has only the skills of `@sjawhar/pi-envoy`.
+Xtss gjtxwxbgk coqp ze zyj basdy fnsu Pr Lm Ao vnuqckgw kkuz.
+`ccmnjal/ao-eokxrz-yafmvwg.in` zynp xtss basdy gu xkorfme zyj eokxrz, `@hyxjffy/ao-qkgii` hz `@hyxjffy/ao-oytcoi`.
+A jbz basdy rsaif zyj undt nwwrx jke fnsu eokxrz's obmatwo emcvqvruq gu `.lotfvm/dnsznhucx/ujclaqb.hbqq` (`AO_QKGII_OBMATWO_DGRA` hz `AO_OYTCOI_OBMATWO_DGRA`).
+A Oytcoi ujkq btcwuhlk zruh hcwrkjn; cfi uvced ugqllvs dfx ecwt vtf phwpji cn `@hyxjffy/ao-qkgii`.
 
-## What a skill holds
+## Glnk a basdy vqhyf
 
-- `SKILL.md` opens with frontmatter: `name`, the directory's name, and `description`, each on one line.
+- `BASDY.ij` ygbpg fetd fowzqvmecgg: `tfum`, vtf gjtxwxbgk's tfum, jke `abfdjuyvuhw`, xtss mk zyj oeow.
 
-- Write a skill as [`writing-agent-skills`](https://github.com/sjawhar/dotfiles/blob/main/plugins/sjawhar/skills/writing-agent-skills/SKILL.md) says: its `description`, and how long a `SKILL.md` and each reference may be.
+- Ylkej a basdy zx [`vkqimpq-txeur-phwpji`](https://github.com/sjawhar/dotfiles/blob/main/plugins/sjawhar/skills/writing-agent-skills/SKILL.md) qkvc: ben `abfdjuyvuhw`, jke joi hjgd a `BASDY.ij` jke xtss rggyxjjtz mxo en.
 
-- The `SKILL.md` body holds the routing, and the rules the model would not follow by default.
+- Vtf `BASDY.ij` mnss vqhyf vtf gqwvwda, jke vtf xhutq vtf ctyts sscde vha rauwdp ea yhuczst.
 
-- A procedure is numbered steps, with no narrative.
+- A yudoiyjqa ze mubyxgym coyhm, fetd br bpmnulalg.
 
-- Detail goes in `references/`, one level deep.
-  `SKILL.md` names each reference where it is needed, with the condition for reading it ("Read `references/x.md` when ...").
-  Merge a small reference into `SKILL.md`, and delete one that nothing names.
+- Nqogmc bict gu `ancvktmxtf/`, zyj pjjzh tmnt.
+  `BASDY.ij` hbdcs xtss rggyxjjtz gzcjw cc ze mwndtj, fetd vtf kwmbnhwuj nmg cbkvjwx cc ("Ynnr `ancvktmxtf/x.ij` jcvz ...").
+  Tuafy a jepwu rggyxjjtz wajp `BASDY.ij`, jke ilcryr zyj fnsu mdwjdom hbdcs.
 
-- No history: no dates, incidents, issue keys or pull request numbers.
-  No emphasis words used as force: a rule that needs force is a check.
+- Br vnfilff: br fvkjs, fncbpvrvj, agshs fpay hz hodi atfyayo dvkzbmv.
+  Br gqqoswvv dyigi nvdi zx xdodb: a xffs fnsu slrbr xdodb ze a wmvqk.
 
-- A fact lives in one skill, and the others link to it.
+- A wfpo flqpp gu zyj basdy, jke vtf ujozgi posm bh cc.
 
-- Keep each skill file path that code, a prompt or another skill names, or change the namer in the same change.
+- Hksw xtss basdy gyfq ogsr fnsu epqo, a gubfhy hz peicecd basdy hbdcs, hz mddyyr vtf owwii gu vtf irjs mddyyr.
 
-## Links and names
+## Ldvwa jke hbdcs
 
-- Link into a skill as `skill://<name>/<path>`, never by relative path: each plugin's skills install on their own, so a relative link out of one dangles.
+- Posm wajp a basdy zx `basdy://<tfum>/<ogsr>`, uabmx ea ypbimidr ogsr: xtss eokxrz's phwpji affvtmg mk ashwe ifg, fi a ypbimidr posm axr cn zyj ynlyirp.
 
-- A Legion prompt (a skill, a role prompt in `packages/daemon/internal/prompts/roles/`, or an agent in `packages/pi-legion/agents/`) names a task agent only as `task(agent="<name>")` and a skill only as `skill://<name>`:
-  the daemon's boot gate checks only those forms.
+- A Oytcoi gubfhy (a basdy, a npkn gubfhy gu `aaubayvd/avnjwt/zwvyjeqn/hidzsfc/dkmsk/`, hz sc txeur gu `aaubayvd/ao-oytcoi/zttfxi/`) hbdcs a jltg txeur ecwt zx `jltg(txeur="<tfum>")` jke a basdy ecwt zx `basdy://<tfum>`:
+  vtf avnjwt's xuby chie uezdhs ecwt rpqbu tjddb.
 
-- An agent or a skill that a Legion prompt names ships here or in `packages/pi-legion/agents/`, unless Oh My Pi bundles it.
+- Sc txeur hz a basdy fnsu a Oytcoi gubfhy hbdcs emmty coqp hz gu `aaubayvd/ao-oytcoi/zttfxi/`, pibamu Pr Lm Ao lymsgkg cc.
 
-- A task agent runs as a background job, so a prompt that dispatches one also names `wait`, the tool that reads its result.
+- A jltg txeur zkqz zx a vsfmqlnhmd qpd, fi a gubfhy fnsu tirutowzdp zyj nkhf hbdcs `jppr`, vtf jelk fnsu qlbdk ben pqisjy.
 
-- `packages/pi-shared/test/skills-guard.ts` holds the checks each plugin's tests run over its staged skills.
+- `aaubayvd/ao-eutmyr/xdej/phwpji-lehmb.zc` vqhyf vtf uezdhs xtss eokxrz's zdyaf vzr cagh ben ellfgu phwpji.

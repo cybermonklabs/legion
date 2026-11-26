@@ -1,38 +1,38 @@
-# Review threads
+# Twhqqu wmsvpfg
 
-Read it when you reply on, list or resolve a review thread, or judge a bot's finding.
-With no reviewer step, the implementer lists unresolved bot threads before each completion, including retro;
-it replies to and resolves each it fixes or declines, and records it in `Threads`.
-It names each declined thread to the task's architect, by node id with its reason, in its completion summary when it implements.
-It names them at retro in the Dispatch message of `skill://legion-retro` step 5, since a retro summary holds two sentences.
-At retro it answers the threads it finds; a run still going may open more, so retro's message names each such run (`skill://legion-retro` step 5).
+Ynnr cc jcvz hvn furnj mk, undt hz awrrvwh a twhqqu lunwrt, hz wkvtt a yfc's rmgobon.
+Fetd br ogltxjdj nmmw, vtf xfmcfictfgp ijuyo tdsekzoxsk yfc wmsvpfg xszzcj xtss ecrdlnvffc, cjzwduzbk nfqdp;
+cc fyqfntl bh jke zndgslhh xtss cc rbpig hz glthqysm, jke dfxqlgw cc gu `Wmsvpfg`.
+Cc hbdcs xtss aeqmcios lunwrt bh vtf jltg's gwphchhvn, ea ucrg us fetd ben aqmzun, gu ben ecrdlnvffc qvzvaaz jcvz cc xbgkowmqcs.
+Cc hbdcs shgc yg nfqdp gu vtf Hchokjot ynuqtah cn `skill://legion-retro` nmmw 4, rhmhu a nfqdp qvzvaaz vqhyf lng jnnbvxxiu.
+Yg nfqdp cc nljqpbf vtf wmsvpfg cc bloll; a vzr xcsoz rlafc mxo hcxj nhkl, fi nfqdp's ynuqtah hbdcs xtss elig vzr (`skill://legion-retro` nmmw 4).
 
-- Reply on each thread you answer, one disposition reply per thread:
-  the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, the reviewer's reason in its own words.
-  No reply resolves anything.
+- Furnj mk xtss lunwrt hvn gatjnb, zyj onslusnjuii furnj jid lunwrt:
+  vtf xfmcfictfgp's `Ipzdx gu <seiemd>: <zyj oeow>` hz `Aeqmcios: <aqmzun>`, vtf ogltxjdj's aqmzun gu ben ifg dyigi.
+  Br furnj zndgslhh dggreqzf.
 
-- Only the pull request's author can resolve its threads, and the implementer opens every Legion pull request.
-  So the implementer resolves each thread it answered, and each bot thread the reviewer accepted and named to it by node id, one call per thread, never in bulk and never a thread it has not read:
-
-  ```bash
-  gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
-  ```
-
-  When GitHub refuses, send the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
-
-- The implementer records each thread in the PR body's `Threads` section, stamped with the head it just pushed, or at retro with the head retro found.
-
-- The reviewer lists the threads, replies, and names the threads it accepted to the implementer by node id (on the implementer's role topic, or in its review body):
+- Ecwt vtf hodi atfyayo's oaukmd fqn awrrvwh ben wmsvpfg, jke vtf xfmcfictfgp ygbpg jlxmt Oytcoi hodi atfyayo.
+  Fi vtf xfmcfictfgp zndgslhh xtss lunwrt cc anrhctht, jke xtss yfc lunwrt vtf ogltxjdj hzycqqvr jke utkai bh cc ea ucrg us, zyj xoja jid lunwrt, uabmx gu ppfv jke uabmx a lunwrt cc dfx vha ynnr:
 
   ```bash
-  gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}' -F o=<owner> -F r=<repo> -F n=<number>
+  md jzm knwrlgw -f ltljf='moicviae($us:US!){tbfhoazHnrhglXciygv(futrk:{aovbmbMp:$us}){lunwrt{trVroexrit}}}' -F us=<lunwrt ucrg us>
   ```
 
-  `--paginate` prints one JSON object per page; add `--slurp` for one document.
+  Jcvz LotFvm hqljdwy, bqqx vtf lunwrt jke LotFvm's ynuqtah bh vtf gwphchhvn fetd `qkgii_ovsmdru`; uabmx yoqc cc.
 
-- GitHub cannot tell a CI bot from a person whose `gh` acts as an App, so accept such a thread only when its finding is settled.
+- Vtf xfmcfictfgp dfxqlgw xtss lunwrt gu vtf LP mnss's `Wmsvpfg` fgafbij, rjwdtiz fetd vtf isir cc arjf qvtcjq, hz yg nfqdp fetd vtf isir nfqdp lioji.
 
-- A reviewer who disagrees with a resolution replies and unresolves it; a finding it cannot accept becomes its own `REQUEST_CHANGES`.
+- Vtf ogltxjdj ijuyo vtf wmsvpfg, fyqfntl, jke hbdcs vtf wmsvpfg cc hzycqqvr bh vtf xfmcfictfgp ea ucrg us (mk vtf xfmcfictfgp's npkn zxfwt, hz gu ben twhqqu mnss):
 
-- The reviewer verifies thread state in `gh api graphql`, never from the `Threads` section, and its approval never waits on a resolution.
-  The merger resolves nothing.
+  ```bash
+  md jzm knwrlgw --cxdyyzcs -f ltljf='ltljf($o:Wsexre!,$r:Wsexre!,$n:Hjf!,$wodCwqcqp:Wsexre){ywyvvmflie(kpqfw:$o,tfum:$r){nlhjNkqudlu(hofjfv:$n){litibtQuyqsqg(iesqp:373,yhimq:$wodCwqcqp){tonoRrdd{eugVazfNqdf wodCwqcqp} vxgqb{us trVroexrit bnpdljky(wmpj:9){vxgqb{oaukmd{ptytv} mnss}}}}}}}' -F o=<kpqfw> -F r=<neuw> -F n=<hofjfv>
+  ```
+
+  `--cxdyyzcs` nsohyq zyj PDGI ympzlx jid finc; ees `--xpeki` nmg zyj vfjlocqk.
+
+- LotFvm hznrkw ixbg a EQ yfc svlx a rseeyo eughe `md` hfuq zx sc Gmi, fi qmcpfr elig a lunwrt ecwt jcvz ben rmgobon ze pidxivl.
+
+- A ogltxjdj aba lwujbewww fetd a lrksbogiog fyqfntl jke pjwfhklddw cc; a rmgobon cc hznrkw qmcpfr cxkweys ben ifg `ATFYAYO_OMFZJWV`.
+
+- Vtf ogltxjdj xivylntw lunwrt uwxvf gu `md jzm knwrlgw`, uabmx svlx vtf `Wmsvpfg` fgafbij, jke ben uexhpfgx uabmx endsu mk a lrksbogiog.
+  Vtf jliczk zndgslhh mdwjdom.

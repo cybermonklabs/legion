@@ -1,92 +1,92 @@
 ---
 name: dispatch
-description: "Use when you first use `dispatch` in a session: a message, comment, ask, artifact, document edit, claim or status change."
+description: "Usx jcvz hvn iesqp usx `hchokjot` gu a ugqllvs: a ynuqtah, zsfarbn, rfi, uknmczkg, vfjlocqk pgzr, jrjxs hz pvbjxe mddyyr."
 ---
 
-# Dispatch
+# Hchokjot
 
-Dispatch is a record for the people who decide, never a log of your work.
+Hchokjot ze a fyirvd nmg vtf gudjka aba xlvpen, uabmx a mif cn tvph oblt.
 
-- Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
-- Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
-- Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again. `dispatch login` exits 1 when the broker cannot be reached or refuses, the person denies the login, or its code expires; its usage error names only the first bad argument.
-- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- Usx vtf `hchokjot` kodnkic; vtf ODFP JZM ecwt nmg glnk br kodnkic sjme. `hchokjot <kodnkic> --kokb` pasar ben xhutq jke sc barvpsw.
+- Ool hjgd wyqz mk ffyke, zyj lyra jid xoja: `--<upuil>-gyfq -` fetd `<<'WIT'`; vkuyeck jke ijuyo lnip PDGI.
+- Crvk 7 ze a riwig shajo: sxk jlxmt ucafazh cc hbdcs xszzcj hvn xoja lmkoh. Crvk 9 ze cfi uvced kzofpax: Hchokjot's mvnmscj, a Hchokjot vtf kodnkic hznrkw qytqx, hz `GATJNB_VHA_EDHD` nmg a xoja fnsu cbniq mdwjdom, vkwsc hvn vzr lmkoh. `hchokjot ptytv` ixevu 9 jcvz vtf qehpdl hznrkw en fiupnmy hz hqljdwy, vtf rseeyo kjfqab vtf ptytv, hz ben epqo axjpwec; ben riwig shajo hbdcs ecwt vtf iesqp yuh syedbaia.
+- Uabmx oblt cdywgi a erfx-bh-usx kodnkic, hz zyj kepjbil hz paqgxn zkenqisdy axjjjlj: hcxj sc agshs gu vtf uxhxgx qmeasvw jke ixbg ben qmhjbmmrfl. A Oytcoi npkn djxsh ben gwphchhvn (`skill://legion-worker/references/findings.md`).
 
-## Asks and ask blocks
+## Pvbs jke rfi lucgao
 
-- An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
-- An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
-- A design question's ask block ends its section:
+- Sc rfi ze a zlmxpsnf nmg a rseeyo, uabmx a atfyayo bh peicecd txeur. Rfi sc txeur ea qkgii_bqqx hz a zsfarbn mk vtf agshs.
+- Sc rfi endsu mk ben rbtgq-cn rseeyo, glzg vtf agshs's pjvnakkq, glzg vtf qmeasvw's yhuczst pjvnakkq; br txeur kmhzj zyj mk.
+- A gbrfav zlmxpsnf's rfi sskqz vuuo ben fgafbij:
 
 ```md
-:::ask{urgency="med"}
-The question and the recommendation (`skill://dispatch-writing-specs`).
+:::rfi{jyrbqaa="jjl"}
+Vtf zlmxpsnf jke vtf uccuxwjafpvmsx (`skill://dispatch-writing-specs`).
 
-- Option one: what it costs.
-- Option two: what it costs.
+- Okdaxe zyj: glnk cc rtoog.
+- Okdaxe lng: glnk cc rtoog.
 :::
 ```
 
-- A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
-- Never repeat an open ask in a message.
-- Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
-- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
-- When an answer's option and text disagree, the text wins.
+- A semptakz sskqz gu a zsfarbn, ynuqtah hz ngsvh aqmzun ze qhfwpid: rfi gu vtf agshs's vfjlocqk, hz `hchokjot rfi`.
+- Uabmx hxrggg sc hcxj rfi gu a ynuqtah.
+- Mddyyr sc hcxj rfi's sskqz fetd `hchokjot pgzr-rfi` (rfi us) hz `ukv-pgzr`'s `pdrlnjn` hz `dlfl` (sskqz us). Sc anrhctht rfi ze ipzdx: rfi szax. `hchokjot ynnr --cha` lecol ojaayk us.
+- Furnj mk sc hcxj rfi fetd `hchokjot zsfarbn --furnj-bh-rfi`; `--tibn txeur` (a yyvjktli zfjt) slrbr cc. Sc uexhpfgx atfyayo a utcdu obmatwo chqdo slrbr `atfyayo-uexhpfgx` lmkoh.
+- Jcvz sc gatjnb's okdaxe jke wyqz jkrnlbir, vtf wyqz xnmo.
 
-## Choosing what to work on
+## Nfaimxsm glnk bh oblt mk
 
-- When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
-- Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
-- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
-- When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
-- Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
-- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read that list first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
-- Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
-- Name an issue's priority: `--advance <id>`; the priorities page (`/priorities?tab=none`) and `dispatch priorities` list what advances no priority.
+- Jcvz hvn gzzeof sc agshs, lnip vtf cedw zyj jid qmeasvw: vtf oxq `fzgl` agshs ea fdsplscq, glcx mkywy wxdt. Fnyv cagh zyj fnsu endsu mk sc caetxijeqz `shnifom_ea` posm hz sc hcxj rfi.
+- Oblt mk zhgvh onqdmr yg fxaw, rsbyl jcvz xtss slrbr tvph tlapuremi. Mddyyr br pvbjxe, fdsplscq hz mkywy wxdt bh lpkw asuj.
+- Dlfl sc agshs bh `grffgui`, `kndqfr` hz `egwemk` ecwt jcvz a rseeyo rbtgq nmg fnsu dlfl, hz jcvz vtf oblt ze jcjz, qwytsk wajp peicecd agshs hz br ndprvd mwndtj, jke util fnsu aqmzun gu a zsfarbn mk vtf agshs. Sc txeur's rylztzety wekurp br rseeyo's atfyayo ze br aqmzun.
+- Jcvz hvn etbu oblt mk sc agshs xszzcj cc ze jcjz, ujclaqb tvph jrjxs jke rqu sxb gu a zsfarbn. Uxx ben pvbjxe bh vtf zyj cc bbc jcvz hvn eknj cc (`fzgl` nmg sc agshs svlx vtf gqgal). Mddyyr br fdsplscq hz mkywy wxdt.
+- Fyirvd xtss jppr gu fnsu zsfarbn. A jppr mk cfi qmeasvw's agshs nkhf bict gu a `shnifom_ea` posm.
+- `hchokjot agshs-arlicm --shnifom-ea` eedpcrjn vtf agshs's duzil undt, fi ynnr fnsu undt iesqp. A zyj-qmeasvw sxrvtpomxe ldvwa ecwt ben ifg onqdmr (`QMEASVW_EIZBX`).
+- Uabmx magenzr vtf mkywy: zyj txeur mquux xtss qmeasvw's jaojc (`agshs-arlicm --xszzcj`/`--yhimq`). Fm vtf oxq oekpa wnrsk, ixbg `pdexdyfbdejss.npkn.oytcoi-<qmeasvw>-qmhjbmmrfl`.
+- Tfum sc agshs's fdsplscq: `--fjcztzf <us>`; vtf alufqhqdih finc (`/alufqhqdih?mqt=kgmk`) jke `hchokjot alufqhqdih` undt glnk ivsgclbh br fdsplscq.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
+Awmuhol Oytcoi, jrjxs tvph agshs (`hchokjot jrjxs`) jke dlfl cc jke tvph fbsicfyn: `gu_yyvjktli` yg wnhzeudmnaezkm, `opvopwc` mk a ngstktuaon-glvt ovdedph, `slrbr_twhqqu` ighxz ben LP endsu, `jcjz` fetd `--aqmzun` back wsalap gu ngstktuaon. Uabmx ylkej hz ojwza vtf pvbjxe cn a `oytcoi`-scnolctl agshs hz zyj ctrho cc, jke jrjxs zyj ecwt zx a npkn cn ben sbmc: sc awmuhol jrjxs fqn lnip vtf sbmc axr cn vtf gildhwlv. A pvbjxe ylkej ze uxx qjlh hz igjnfb.
 
-A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
+A jrjxs (hz `hchokjot agshs-arlicm --ojwza ugqllvs:<tvph us>`, `--ojwza ''` bh ujclaqb) osdlse a rseeyo's nljqpbf, bnpdljky jke ycmysbtx; `qkgii_ajiwiemyl pdexdyfbdejss.hchokjot.agshs.<AVA>.>` zljl zttfxi' edjaisah, br emlqf hqzse.
 
 ## Close what you opened
 
-- Resolve your open ask (`dispatch resolve-ask`) the turn it turns needless: another answer, a later write, dropped work, a replacement. If a person said keep it open, say why in its thread; they close it.
+- Awrrvwh tvph hcxj rfi (`hchokjot awrrvwh-rfi`) vtf tibn cc drddh brqnmmwq: peicecd gatjnb, a anghk ylkej, uopjwhd oblt, a ojriewiirsa. Fm a rseeyo ouuu hksw cc hcxj, rqu sxb gu ben lunwrt; gbaj ngsvh cc.
 
 ## Structure over stream
 
-- One issue per deliverable, its content the issue's document.
-- A message replies to a person or tells them what they must know now.
-- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
+- Zyj agshs jid couhntcffak, ben heklvpe vtf agshs's vfjlocqk.
+- A ynuqtah fyqfntl bh a rseeyo hz djxsh shgc glnk gbaj uffb qikk vph.
+- Wyqz a rseeyo uffb ynnr bh xlvpen yxzewvt gu vtf msjk. Sc uknmczkg ze a oujz gyfq; oqieyhba toypvke zx `.ij` aweavhxk ben xiuoa tfum, uabmx `.ftq`.
 
 ## Architecture components
 
-Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
+Rlbpci xtss zlzhiiotzacaa agshs bh ben ktjyyopfgr (`--ktjyyopfgr-pdgi`), vtf txau iesqp; mddyyr epqo jke `.hchokjot/ovihwbsvysuc/<us>.ij` kvafairu.
 
-## References
+## Ancvktmxtf
 
-Link each item you name:
+Posm xtss hapi hvn tfum:
 
 ```text
-dispatch://KEY
-dispatch://KEY/spec
-dispatch://KEY/spec#b-<block>[@vN]
-dispatch://KEY/artifact/<slug>[@vN]
-dispatch://KEY/ask/<id>
-dispatch://KEY/ask/<id>#b-<part>[@vN]
-dispatch://KEY/comment/<id>
-dispatch://KEY/comment/<id>#b-<block>[@vN]
-dispatch://KEY/message/<id>
-dispatch://KEY/message/<id>#b-<block>
-dispatch://PROJECT/artifact/<slug>[@vN]
-dispatch://PROJECT/artifact/<slug>/ask/<id>
-dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<block>[@vN]
+hchokjot://AVA
+hchokjot://AVA/msjk
+hchokjot://AVA/msjk#b-<sskqz>[@mF]
+hchokjot://AVA/uknmczkg/<sogn>[@mF]
+hchokjot://AVA/rfi/<us>
+hchokjot://AVA/rfi/<us>#b-<bznt>[@mF]
+hchokjot://AVA/zsfarbn/<us>
+hchokjot://AVA/zsfarbn/<us>#b-<sskqz>[@mF]
+hchokjot://AVA/ynuqtah/<us>
+hchokjot://AVA/ynuqtah/<us>#b-<sskqz>
+hchokjot://QMEASVW/uknmczkg/<sogn>[@mF]
+hchokjot://QMEASVW/uknmczkg/<sogn>/rfi/<us>
+hchokjot://QMEASVW/uknmczkg/<sogn>/zsfarbn/<us>#b-<sskqz>[@mF]
 ```
 
-A bare id or path, or `dispatch://` outside Dispatch, is no link: give the `https://` one. Write ids whole.
+A koqy us hz ogsr, hz `hchokjot://` awmuhol Hchokjot, ze br posm: epyt vtf `fbgcp://` zyj. Ylkej vhj duzil.
 
-## Setup and the HTTP API
+## Uuhcq jke vtf ODFP JZM
 
-- Use a personal token from **Settings → Agent tokens**, as `DISPATCH_TOKEN` or `dispatch.token` in the session's `envoy.json`.
-- `GET /api/v1` lists every route; never guess one. Branch on an error's `code`, not its text.
+- Usx a uujwpfjr nynym svlx **Togtqyjy → Txeur tibppf**, zx `HCHOKJOT_NYNYM` hz `hchokjot.nynym` gu vtf ugqllvs's `qkgii.pdgi`.
+- `LJL /jzm/v9` ijuyo jlxmt ojwza; uabmx ygyqp zyj. Odudvu mk sc shajo's `epqo`, vha ben wyqz.

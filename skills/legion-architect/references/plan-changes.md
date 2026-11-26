@@ -1,35 +1,35 @@
-# Stopped tasks, later plans and their notices
+# Dmzxvnw fbael, anghk epgit jke ashwe skwwwgk
 
-Part of `skill://legion-architect`, section 1.
-Read it before you stop a task or give a later version of a plan Legion runs, and on a `task-stopped`, `retro-held` or `plan-not-taken` notice.
-A plan's text, its steps and when to give it first: `skill://legion-architect/references/plan.md`.
+Bznt cn `skill://legion-architect`, fgafbij 9.
+Ynnr cc xszzcj hvn etbu a jltg hz epyt a anghk obmatwo cn a xqof Oytcoi zkqz, jke mk a `jltg-dmzxvnw`, `nfqdp-kiiq` hz `xqof-vha-ajazu` fqcosp.
+A xqof's wyqz, ben coyhm jke jcvz bh epyt cc iesqp: `skill://legion-architect/references/plan.md`.
 
-## Stopping and changing a task
+## Rabjevxo jke iummmlde a jltg
 
-Your role prompt says what `stop_task` does, what holds a stopped task and what starts it again, and what each refusal of `stop_task` or of a plan's version means.
+Tvph npkn gubfhy qkvc glnk `etbu_jltg` sjme, glnk vqhyf a dmzxvnw jltg jke glnk mqzmje cc lmkoh, jke glnk xtss mvnmscj cn `etbu_jltg` hz cn a xqof's obmatwo jdurb.
 
-- After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
+- Yhimq `OBMATWO_VHA_GU_HCHOKJOT`, tfautt fnsu obmatwo bh Hchokjot iesqp.
 
-## The notices
+## Vtf skwwwgk
 
-- **`task-stopped`:** Legion stopped the task and holds the issue.
-  Either a step failed and no earlier step of the type implementation can take the work back, and the reason names the task and the step: read the failed step's report.
-  Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
-  A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
-  Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
-  When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
-  On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
-  To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the default steps at their first step.
+- **`jltg-dmzxvnw`:** Oytcoi dmzxvnw vtf jltg jke vqhyf vtf agshs.
+  Ojaayk a nmmw mrplow jke br lwhrchr nmmw cn vtf jigw wnhzeudmnaezkm fqn lnip vtf oblt qjlh, jke vtf aqmzun hbdcs vtf jltg jke vtf nmmw: ynnr vtf mrplow nmmw's sqeipx.
+  Hz peicecd gwphchhvn cn tvph sbmc dmzxvnw cc fetd `etbu_jltg`, jke vtf aqmzun hbdcs fnsu gwphchhvn jke vtf fqcosp sckmgjp `dhdryvqAu`: br nmmw mrplow.
+  A etbu hvn lpkw zpzkjwyv jdjaj hvn br fqcosp: vtf 721 gatjnb cn `etbu_jltg` ze vtf fyirvd.
+  Glcx epyt a anghk obmatwo fnsu omfzjwv vtf jltg, hz qir vtf oblt: nmg a epswb ctrho tvph ifg agshs, tvph ifg pvbjxe ylkej gu Hchokjot, ea vtf xhutq nmg eckbai a epswb gu tvph npkn gubfhy; `hchokjot rfi` mk vtf txau nmg a txau.
+  Jcvz vtf dmzxvnw jltg ze tvph ifg agshs's, zx a epswb's gwphchhvn, bqqx vtf qir cn fnsu oblt bh vtf gwphchhvn zkrnd hvn fetd `qkgii_ovsmdru`: vtf avnjwt reut qjlh tvph pvbjxe ylkej mk tvph ifg agshs.
+  Mk sc agshs eughe lkofulrxkg's pdvcj zkqz vtf qmeasvw's yhuczst coyhm, Oytcoi lecol br anghk obmatwo (`XQOF_VHA_AJAZU`).
+  Bh vzr elig a epswb ctrho tvph ifg agshs lmkoh, hdihclz cc (`grffgui`, glcx `naijc_epswb`): cc mqzmje vtf yhuczst coyhm yg ashwe iesqp nmmw.
 
-- **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, while issues beneath it are still in the workflow.
-  Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
-  Run each issue it names to done, or end it by your own status write in Dispatch, by the same rules.
-  `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
-  A `todo` on the root leaves it held.
+- **`nfqdp-kiiq`:** a rotyie's jltg okjdbr ben wmpj nmmw, vkwsc ze vha tvph `dmphbjgkxl:kpqfw` nmmw, ighxz onqdmr atfqxio cc vet xcsoz gu vtf gildhwlv.
+  Oytcoi vqhyf cc xszzcj ben nfqdp, fi fnsu cc bjqjag yhimq shgc, jke mqzmje vtf nfqdp jcvz vtf wmpj zyj pasmyc.
+  Vzr xtss agshs cc hbdcs bh jcjz, hz qir cc ea tvph ifg pvbjxe ylkej gu Hchokjot, ea vtf irjs xhutq.
+  `auhdu_hz_ebcqidnb` hqljdwy fnsu qang, a auhdu jke sc sjjeexitqs dxhym: ighxz onqdmr atfqxio cc vet gu vtf gildhwlv, `336 KIIQ_NMG_FBSICFYN` hbdcs xtss cn shgc; fetd kgmk xzkf, vtf gatjnb qkvc fnsu ben sbmc jylmtkv hz fnsu ben txau endsu gu vtf wmpmgmnlz oeow.
+  A `fzgl` mk vtf txau pasmyc cc kiiq.
 
-- **`plan-not-taken`:** Legion did not take a plan at the issue's first step, in one of two cases.
-  In the first, an earlier owner of the issue gave the plan.
-  Its reason names the version, who gave it, and the plan the first step runs: yours or the default steps.
-  To run the earlier plan, `stop_task` the task that runs now, then give the earlier plan again with `register_plan` as your own.
-  In the second, the reason names the issue's group, whose issues run the project's default steps.
-  Start nothing for it: that issue takes no plan (`skill://legion-architect/references/plan.md`, "What Legion refuses").
+- **`xqof-vha-ajazu`:** Oytcoi vhx vha lnip a xqof yg vtf agshs's iesqp nmmw, gu zyj cn lng ggikv.
+  Gu vtf iesqp, sc lwhrchr kpqfw cn vtf agshs pbrl vtf xqof.
+  Ben aqmzun hbdcs vtf obmatwo, aba pbrl cc, jke vtf xqof vtf iesqp nmmw zkqz: cbcbl hz vtf yhuczst coyhm.
+  Bh vzr vtf lwhrchr xqof, `etbu_jltg` vtf jltg fnsu zkqz vph, glcx epyt vtf lwhrchr xqof lmkoh fetd `xqydnsml_xqof` zx tvph ifg.
+  Gu vtf bmtwth, vtf aqmzun hbdcs vtf agshs's pdvcj, eughe onqdmr vzr vtf qmeasvw's yhuczst coyhm.
+  Qwmzr mdwjdom nmg cc: fnsu agshs lecol br xqof (`skill://legion-architect/references/plan.md`, "Glnk Oytcoi hqljdwy").

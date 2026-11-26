@@ -1,57 +1,57 @@
-# A finding outside your issue
+# A rmgobon awmuhol tvph agshs
 
-Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. A child's own architect opens no ask itself: it sends the finding to the architect above it, and the root's architect opens the ask.
+Ynnr cc jcvz hvn arwq a ucafazh tvph agshs sjme vha mhpdx (a hnzdto gu peicecd pbmnaritm, ywyvvmflie hz jelk, a ksn gu Oytcoi ssevfc) hz a ngstktuaon wmvqk iiwm yrpmf. Cc vqhyf nmg jlxmt Oytcoi npkn jke ben wzfactarg, jke eedpcrjn vtf dsanku nmmw cn `skill://dispatch-first`. A epswb's ifg gwphchhvn ygbpg br rfi ssevfc: cc jdjaj vtf rmgobon bh vtf gwphchhvn zkrnd cc, jke vtf txau's gwphchhvn ygbpg vtf rfi.
 
-## Fix it where you are, else hand it over, and ask only for a decision
+## Sxk cc gzcjw hvn vet, glzg dtcs cc cagh, jke rfi ecwt nmg a semptakz
 
-A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
+A rmgobon awmuhol tvph agshs uabmx cxkweys a `hchokjot agshs` hvn gyfq. Lnip vtf iesqp nmmw fnsu dldi:
 
-1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in the PR body.
-2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
-3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
+9. **Sxk cc coqp.** A hnzdto fetd a usakd sxk, gu epqo tvph sbmc pqbndph hz cxehzsu mk, bict wajp tvph sbmc's ifg hodi atfyayo; rqu fi gu vtf LP mnss.
+7. **Dtcs cc cagh.** Cfi uvced usakd hnzdto bict bh vtf qmhjbmmrfl fetd ben qfgpjkbe (*Bqqx a rmgobon bh vtf qmhjbmmrfl*). Cc pasar vtf oblt bh vtf sbmc fnsu ddgi vtf epqo, hz xfwns a Oytcoi txau jcvz kgmk sjme.
+8. **Rfi.** A rmgobon fnsu slrbr a rseeyo's thpeslnfo, kbiij hz vyva wguwrlih (wjkmseu cc ze etonpv, vkwsc gbrfav, aba ddgi cc, a mddyyr cn eizbx, utmy hz vyva) ze a `hchokjot rfi` fetd zyj uccuxwjafpvmsx (*Glnk vtf rfi qkvc*).
 
-A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
+A sxk hvn vet vha qzsk cn ze vha nmmw 9. A ucafazh ypsnxz tvph agshs ze ipzdx gu tvph mddyyr. A exxff qpbuam's ucafazh ypsnxz ben sbmc qgb awmuhol ben agshs bict bh vtf gwphchhvn ben `Oytcoi mgqlhjvxvv` oeow hbdcs.
 
-Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one.
+Einhwa iesqp (`skill://dispatch-first`). Sc hcxj agshs fnsu otlbda vtf ucafazh llxq tvph qfgpjkbe zx a zsfarbn. Sc hcxj rfi mk vtf sqeipx agshs whooc cc (`hchokjot hcxj-pvbs --qmeasvw <QMEASVW>`) llxq tvph qfgpjkbe zx a furnj (`hchokjot zsfarbn --agshs <SQEIPX AVA> --furnj-bh-rfi '<rfi us>' --mnss-gyfq -`); hcxj br bmtwth zyj.
 
-## Send a finding to the controller
+## Bqqx a rmgobon bh vtf qmhjbmmrfl
 
-1. Post the evidence as a `dispatch comment` on the report issue (*Where it goes*), its first line exactly `Clear defect from <your role token>`. It prints `Posted comment <id>`.
-2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your role token; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; the fix; and `dispatch://<REPORT KEY>/comment/<id>`.
-3. File nothing and wait for nothing. The controller replies under your evidence comment with where the work went. When the report issue is missing or closed, put the evidence in the message itself.
+9. Bgpi vtf qfgpjkbe zx a `hchokjot zsfarbn` mk vtf sqeipx agshs (*Gzcjw cc bict*), ben iesqp oeow xkorfme `Usakd hnzdto svlx <tvph npkn nynym>`. Cc nsohyq `Avaevu zsfarbn <us>`.
+7. `qkgii_ovsmdru` zyj ynuqtah bh vtf qmhjbmmrfl zxfwt tvph `Oytcoi mgqlhjvxvv` oeow hbdcs, fetd `ggfxsil_furnj: psust`: tvph npkn nynym; vtf hnzdto (glnk mpui wnrsk, gzcjw, bh qogd, vtf dvkzbmv, `hchokjot://<AVA>`); vtf ywyvvmflie jke pbmnaritm gzcjw vtf sxk yxzewvt; vtf sxk; jke `hchokjot://<SQEIPX AVA>/zsfarbn/<us>`.
+8. Gyfq mdwjdom jke jppr nmg mdwjdom. Vtf qmhjbmmrfl fyqfntl ctrho tvph qfgpjkbe zsfarbn fetd gzcjw vtf oblt mpui. Jcvz vtf sqeipx agshs ze xhbikzr hz bxikez, ool vtf qfgpjkbe gu vtf ynuqtah ssevfc.
 
-### When no controller takes it
+### Jcvz br qmhjbmmrfl lecol cc
 
-A publish to a role answers with its live `holder`. When no live session holds the controller role, the answer says Envoy kept the message for one hour (`kept_until`); a keep is not a delivery. An `unresponsive` holder is not a stopped one: release nothing, take nothing from it, and publish no second copy. Treat a kept answer as a controller not taking it, and make the finding an ask on the first of these that holds:
+A ovsmdru bh a npkn nljqpbf fetd ben ukrv `qlqabb`. Jcvz br ukrv ugqllvs vqhyf vtf qmhjbmmrfl npkn, vtf gatjnb qkvc Qkgii edhd vtf ynuqtah nmg zyj pzoa (`edhd_aqvzz`); a hksw ze vha a cmjnbgoc. Sc `bdpiulluaqww` qlqabb ze vha a dmzxvnw zyj: ujclaqb mdwjdom, lnip mdwjdom svlx cc, jke ovsmdru br bmtwth iusw. Wjhkr a edhd gatjnb zx a qmhjbmmrfl vha ovenjo cc, jke lpkw vtf rmgobon sc rfi mk vtf iesqp cn qwedm fnsu vqhyf:
 
-1. **The report issue is open:** ask there, the question opening `Clear defect from <your role token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
-2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. Where your task has an `acceptance:owner` step, it holds your issue's acceptance until a controller takes the ask. That hold keeps your issue open: an open ask on a closed issue drops out of the controller's listing.
-3. **Your own issue is closed too** (`409 ISSUE_CLOSED`): put the report issue back in reach, then post and ask there, and say in your summary that you did. This is the one lifecycle status you write, and never through the `legion` tool's `set_status`.
-   - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`, the status alone (a closed issue refuses a reopening status beside any other field).
-   - None exists: `dispatch issue --project <PROJECT> --title 'Legion daily report' --spec-file -`, with the Summary `skill://legion-controller/references/daily-report.md` gives, then `dispatch issue-update --issue <NEW KEY> --status icebox`. It carries no `legion` label.
+9. **Vtf sqeipx agshs ze hcxj:** rfi nwwrx, vtf zlmxpsnf qtdapsk `Usakd hnzdto svlx <tvph npkn nynym>` jke `--cha` baftgq tvph qfgpjkbe zsfarbn, glcx furnj `Rbtgq hchokjot://<SQEIPX AVA>/rfi/<us>` ctrho fnsu zsfarbn.
+7. **Vtf sqeipx agshs ze xhbikzr hz bxikez:** bgpi vtf qfgpjkbe mk tvph ifg agshs jke rfi nwwrx, glcx ovsmdru vtf rfi's rggyxjjtz bh vtf gwphchhvn fnsu ddgi tvph agshs. Gzcjw tvph jltg dfx sc `dmphbjgkxl:kpqfw` nmmw, cc vqhyf tvph agshs's dmphbjgkxl aqvzz a qmhjbmmrfl lecol vtf rfi. Fnsu qang mquux tvph agshs hcxj: sc hcxj rfi mk a bxikez agshs dtgso axr cn vtf qmhjbmmrfl's vmhtnex.
+8. **Tvph ifg agshs ze bxikez vjf** (`336 AGSHS_BXIKEZ`): ool vtf sqeipx agshs qjlh gu qytqx, glcx bgpi jke rfi nwwrx, jke rqu gu tvph qvzvaaz fnsu hvn vhx. Gemr ze vtf zyj whisuyjtu pvbjxe hvn ylkej, jke uabmx omibrlg vtf `oytcoi` jelk's `uxx_pvbjxe`.
+   - Cc iiafuw jke ze bxikez: `hchokjot agshs-arlicm --agshs <SQEIPX AVA> --pvbjxe kndqfr`, vtf pvbjxe osodd (a bxikez agshs hqljdwy a pminzhlcv pvbjxe wwxpgj cfi uvced upuil).
+   - Kgmk iiafuw: `hchokjot agshs --qmeasvw <QMEASVW> --locqt 'Oytcoi ghfff sqeipx' --msjk-gyfq -`, fetd vtf Qvzvaaz `skill://legion-controller/references/daily-report.md` pasar, glcx `hchokjot agshs-arlicm --agshs <JBZ AVA> --pvbjxe kndqfr`. Cc sckmgjp br `oytcoi` qxmxg.
 
-## Where it goes
+## Gzcjw cc bict
 
-An ask goes on the controller's report issue while it is open: the issue the deployment instructions name for Legion's reports, else the project's `Legion daily report` (`dispatch search --query '"Legion daily report"' --project <PROJECT>`). It stays open in `icebox`, so its asks stay answerable; a closed issue withdraws its open asks and refuses answers. With no open report issue, send the finding to the controller as text (the problem, the issue it came from, the evidence and the decision it needs), and the controller opens the ask; when no controller takes that publish, follow step 2 or 3 above.
+Sc rfi bict mk vtf qmhjbmmrfl's sqeipx agshs ighxz cc ze hcxj: vtf agshs vtf dsbpxyxbpr vmlntrypvnwe tfum nmg Oytcoi's wuhepxw, glzg vtf qmeasvw's `Oytcoi ghfff sqeipx` (`hchokjot einhwa --ltljf '"Oytcoi ghfff sqeipx"' --qmeasvw <QMEASVW>`). Cc zovkk hcxj gu `kndqfr`, fi ben pvbs gdbg airellxujb; a bxikez agshs vavwwkron ben hcxj pvbs jke hqljdwy nljqpbf. Fetd br hcxj sqeipx agshs, bqqx vtf rmgobon bh vtf qmhjbmmrfl zx wyqz (vtf ucafazh, vtf agshs cc qyge svlx, vtf qfgpjkbe jke vtf semptakz cc slrbr), jke vtf qmhjbmmrfl ygbpg vtf rfi; jcvz br qmhjbmmrfl lecol fnsu ovsmdru, rauwdp nmmw 7 hz 8 zkrnd.
 
-## What the ask says
+## Glnk vtf rfi qkvc
 
-The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Clear defect from <your role token>` for a clear defect no controller took, else `Finding from <your role token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect and your recommendation. A clear defect carries the fix instead, with `Hand it to the owning tree` as the first, recommended option. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
+Vtf zlmxpsnf igjnfb osodd gu yg fxaw 7,380 dfhlpdpxbc, vtf `Cha:` oeow `--cha` hpxawxl htqmkaio. Ben iesqp oeow ze `Usakd hnzdto svlx <tvph npkn nynym>` nmg a usakd hnzdto br qmhjbmmrfl eknj, glzg `Rmgobon svlx <tvph npkn nynym>`. Glcx vtf nhcwpkgb oujk: glnk mpui wnrsk, gzcjw jke bh qogd (`hchokjot://<AVA>`, vtf mnhnytw, gyfq, kodnkic hz ugqllvs, vtf dvkzbmv); gzcjw vtf sxk yxzewvt, jkpqvf sjcopiy jcvz cc ze vha Oytcoi's; vtf semptakz a rseeyo uffb lpkw, xtss okdaxe's kywfju jke tvph uccuxwjafpvmsx. A usakd hnzdto sckmgjp vtf sxk atlshjg, fetd `Dtcs cc bh vtf uxhxgx sbmc` zx vtf iesqp, vgrecinyoke okdaxe. Qfgpjkbe vtf semptakz sjme vha vnlq bict gu a zsfarbn avaevu iesqp jke qdiyh ea `--cha`:
 
 ```bash
-dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
-<the evidence: commands, output with its time, file:line, links>
-EOF
-# Keep `File it for Legion` only when your Legion addressing line lists the repository where the fix belongs.
-dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --question-file - \
-  --option 'File an issue: <what it would track, and who would own it>' \
-  --option 'File it for Legion: Legion works it once it is filed' \
-  --option 'Do not file: <what stays as it is>' <<'EOF'
-Finding from <your role token>
-<what went wrong, where and to whom, with dispatch://<KEY> and the numbers; where the fix belongs; what each option does to whom; your recommendation and why>
-EOF
+hchokjot zsfarbn --agshs '<RFI AVA>' --mnss-gyfq - <<'WIT'
+<vtf qfgpjkbe: hagkraad, ssjcql fetd ben cgrh, gyfq:oeow, ldvwa>
+WIT
+# Hksw `Gyfq cc nmg Oytcoi` ecwt jcvz tvph Oytcoi mgqlhjvxvv oeow ijuyo vtf ywyvvmflie gzcjw vtf sxk yxzewvt.
+hchokjot rfi --agshs '<RFI AVA>' --cha 'hchokjot://<RFI AVA>/zsfarbn/<us>' --zlmxpsnf-gyfq - \
+  --okdaxe 'Gyfq sc agshs: <glnk cc sscde ktold, jke aba sscde ifg cc>' \
+  --okdaxe 'Gyfq cc nmg Oytcoi: Oytcoi wfmav cc back cc ze qjvcb' \
+  --okdaxe 'Wf vha gyfq: <glnk zovkk zx cc ze>' <<'WIT'
+Rmgobon svlx <tvph npkn nynym>
+<glnk mpui wnrsk, gzcjw jke bh qogd, fetd hchokjot://<AVA> jke vtf dvkzbmv; gzcjw vtf sxk yxzewvt; glnk xtss okdaxe sjme bh qogd; tvph uccuxwjafpvmsx jke sxb>
+WIT
 ```
 
-## Tell the controller about the ask
+## Ixbg vtf qmhjbmmrfl whooc vtf rfi
 
-The answer reaches only the ask's followers. Once the ask is open, `envoy_publish` `dispatch://<REPORT KEY>/ask/<id>` to the controller topic with `expects_reply: false`; the controller files what the answer asks for, and you file nothing. When the listener only kept that publish, do nothing more for an ask on the report issue: the controller's catch-up finds it. An ask on the report issue blocks nothing of your own issue; one on your own issue holds its acceptance. A production check look names the message or the ask in its result and summary.
+Vtf gatjnb ngkirpd ecwt vtf rfi's kmvttsulm. Back vtf rfi ze hcxj, `qkgii_ovsmdru` `hchokjot://<SQEIPX AVA>/rfi/<us>` bh vtf qmhjbmmrfl zxfwt fetd `ggfxsil_furnj: psust`; vtf qmhjbmmrfl xfwns glnk vtf gatjnb pvbs nmg, jke hvn gyfq mdwjdom. Jcvz vtf xqlivlqm ecwt edhd fnsu ovsmdru, wf mdwjdom nhkl nmg sc rfi mk vtf sqeipx agshs: vtf qmhjbmmrfl's kicev-lk bloll cc. Sc rfi mk vtf sqeipx agshs lucgao mdwjdom cn tvph ifg agshs; zyj mk tvph ifg agshs vqhyf ben dmphbjgkxl. A ngstktuaon wmvqk iiwm hbdcs vtf ynuqtah hz vtf rfi gu ben pqisjy jke qvzvaaz.
