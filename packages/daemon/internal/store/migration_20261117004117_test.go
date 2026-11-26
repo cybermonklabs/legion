@@ -14,6 +14,7 @@ import (
 // as the outbox refuses a kind it does not name, so no caller can write a place no step has; the
 // places today's phases run at are taken.
 func TestStepStartsRefusesAPlaceNoStepHas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

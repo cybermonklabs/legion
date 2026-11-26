@@ -39,8 +39,8 @@ import (
 // second preparation did. Neither of them fails reliably when the keeper is gone, and the reason
 // is the daemon's own client. It asks for one message at a time (jetstream.PullMaxMessages with
 // consumerFetchBatch in consumeConsumer) and nats.go calls the handler inline, sending the next
-// pull request only after the handler returns (nats.go v1.53.1's (*pullConsumer).Consume, whose
-// internal handler calls the handler and only then checkPending, which sends the next pull
+// pull request only after the handler returns (nats.go v1.55.0's (*pullConsumer).Consume,
+// jetstream/pull.go:291-295, whose internal handler calls the handler and only then checkPending, which sends the next
 // request), so no request of the daemon's is open while the fact is held. A redelivery can only
 // reach the daemon through the request that follows the handler, and that request races the
 // acknowledgement the handler's end sent — the server works the two on separate queues,
@@ -169,6 +169,7 @@ func issueConsumer(t *testing.T, stream jetstream.Stream, durable string, ackWai
 // reports it in progress for as long as it holds, and JetStream still delivers every event of
 // that backlog once and has every one of them prepared once.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *testing.T) {
+	// Not parallel: its counts hold only while the keeper's ticks, a third of its 2 s window apart, land inside that window: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	// Watched before the daemon opens, so no signal of the held fact's can be made before the
@@ -217,8 +218,8 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// callback consumeConsumer passes to Consume: from that entry to the keeper's start —
 	// lagWatch.observe and decodeMessage — was at most 1.544 ms, measured in this pod under 16
 	// busy loops on 2 CPUs over 3 runs of 200 deliveries, whose worst values were 372 µs,
-	// 1.544 ms and 264 µs. The library's own dispatch into that callback (nats.go v1.53.1 calls
-	// it at jetstream/pull.go:287) and the server-to-client hop before it are outside that figure
+	// 1.544 ms and 264 µs. The library's own dispatch into that callback (nats.go v1.55.0 calls
+	// it from jetstream/pull.go's Consume handler) and the server-to-client hop before it are outside that figure
 	// and are unmeasured. At consumerSpec's 200 ms this row is not sound: measured in this pod at
 	// the base commit, under 16 busy loops on 2 CPUs, it failed 11 of 300 runs, each failure a
 	// delivery too many with one event prepared twice, while the control below passed 300 of 300.
@@ -314,6 +315,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // design, so here the window alone says when the server makes the held message due again, and
 // this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	const ackWait = 2 * time.Second
 	publishHeldBacklog(t, js)
@@ -422,6 +424,7 @@ func (c *countedProgress) reported() int {
 // and the stop it hands back. The delivery is real, and fetched rather than consumed, so each
 // signal countedProgress passes on has a reply subject to go to.
 func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	publishIssueEvent(t, js, "CAPTURE-310", 1)
 	// A window far longer than the row runs: a redelivery would hand the row a second message and
@@ -480,7 +483,7 @@ func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
 }
 
 // progressSignal is the acknowledgement-protocol payload a progress signal carries, the
-// ackProgress of nats.go v1.53.1.
+// ackProgress of nats.go v1.55.0.
 const progressSignal = "+WPI"
 
 // watchProgressSignals answers how many messages the daemon's client reported in progress within a
@@ -583,12 +586,13 @@ func (h *heldNak) window() (time.Time, time.Time) {
 // So the row measures that retry. It also watches the signals themselves, because the retry alone
 // would not catch the fault this row is here for: a stop() left to a defer after the terminal
 // call. nats.go marks a message acknowledged for a nak and refuses every later signal for it
-// (ErrMsgAlreadyAckd, nats.go v1.53.1's (*jetStreamMsg).ackReply), so a keeper that outlives the
+// (ErrMsgAlreadyAckd, nats.go v1.55.0's `(*jetStreamMsg).ackReply`), so a keeper that outlives the
 // nak publishes nothing and the retry stands anyway — on that client. What such a keeper does do
 // is report the message in progress between its handler's end and the nak, which is where the row
 // looks, and the one thing between the two the row can hold is the line nakResolve writes there
 // (heldNak).
 func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
+	// Not parallel: it bounds the retry at a quarter of its 2 s window, 500 ms, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	progress := watchProgressSignals(t, js)
@@ -658,13 +662,15 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 // measures is the cut itself, the redelivery the nak after it brings, and the attributes of the
 // warn line that names the cut. It says nothing about the keeper.
 func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
+	// Not parallel: it bounds the cut at twice its 600 ms limit, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
 	// Three times the acknowledgement window, so the redelivery this row measures cannot be read
-	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits a
-	// minute), so a limit that never cuts fails the row instead of holding it.
+	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits
+	// until 30 s before the test binary's deadline), so a limit that never cuts fails the row
+	// instead of holding it.
 	spec.HandlerLimit = 600 * time.Millisecond
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
@@ -675,14 +681,22 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	held := newHeldOnce()
 	var mu sync.Mutex
 	var entered []time.Time
+	var cutAt time.Time
+	var cutBy error
 	stop := runConsumers(t, consumers, handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
 		mu.Lock()
 		entered = append(entered, time.Now())
+		first := len(entered) == 1
 		mu.Unlock()
 		// The first delivery waits on the context consumeMessage passes and nothing releases it,
 		// so it ends when and only when the limit cuts it; a handler sleeping on the clock would
 		// ignore the cut and prove nothing. Every delivery after it returns at once.
 		held.hold(ctx)
+		if first {
+			mu.Lock()
+			cutAt, cutBy = time.Now(), ctx.Err()
+			mu.Unlock()
+		}
 		return Result{}, nil
 	}))
 	defer stop()
@@ -697,11 +711,20 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	stop()
 
 	mu.Lock()
-	cut := entered[1].Sub(entered[0])
+	cut, again, by := cutAt.Sub(entered[0]), entered[1].Sub(entered[0]), cutBy
 	mu.Unlock()
-	if cut < spec.HandlerLimit/2 || cut > 2*spec.HandlerLimit {
-		t.Errorf("the handler that never ends was cut and its fact delivered again %s after its first delivery, want about its %s handler limit plus the %s the nak after the cut asks for: the limit is the only thing that ends this handling",
-			cut, spec.HandlerLimit, spec.NakDelay)
+	// The cut is timed to the first handling's context end, which the limit alone brings. A bound
+	// on the redelivery also held what comes after the cut: the failure's record, written to
+	// Postgres, and the redelivery's own way back to the handler. A slow store crossed it, 1.227 s
+	// against 1.2 s (Job legion-ci-intakepar-ab-xnw6n, run poolfix-r2), so the redelivery is held
+	// from below alone.
+	if !errors.Is(by, context.DeadlineExceeded) || cut > 2*spec.HandlerLimit {
+		t.Errorf("the handler that never ends was cut %s after its first delivery began, by %v, want its %s handler limit's deadline within that limit: the limit is the only thing that ends this handling",
+			cut, by, spec.HandlerLimit)
+	}
+	if again < spec.HandlerLimit/2 {
+		t.Errorf("the cut fact was delivered again %s after its first delivery, want no sooner than about its %s handler limit plus the %s the nak after the cut asks for",
+			again, spec.HandlerLimit, spec.NakDelay)
 	}
 	line := logLine(logs.String(), "an intake handler outran its limit and was cut")
 	if line == "" {
@@ -730,6 +753,7 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // after the first, so a redelivered copy is handled in milliseconds and outlives no window of
 // its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
+	// Not parallel: its one line holds only while the keeper ticks inside consumerSpec's 200 ms window and a redelivered copy is handled within it: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}

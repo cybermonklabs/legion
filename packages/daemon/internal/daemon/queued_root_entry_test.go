@@ -51,7 +51,7 @@ func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []strin
 func architectStallArmsOf(t *testing.T, pool *store.Pool, admission *admit.Admission, root string) []record.ArchitectStallArm {
 	t.Helper()
 	var arms []record.ArchitectStallArm
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		held, err := admission.ArchitectStallArms(context.Background(), tx)
 		arms = held[root]
 		return err
@@ -117,7 +117,7 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 	}
 	r.put(issue)
 	token := mustClaimToken(t, row.issue, row.role)
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutSlot(r.ctx, tx, record.Slot{Issue: row.issue, Index: index, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
@@ -150,6 +150,7 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 // a phase worker of the root's own tree whose claim is retired. None of them is sent anything,
 // and each is read from the same pass that served the root.
 func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -212,7 +213,7 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 
 	if held := architectStartCount(t, r.pool, mainPathRoot); held != 0 {
 		t.Fatalf("four more passes wrote %d architect start rows of %s, want none: a task the claim has not confirmed is a start "+
-			"already on its way, and a pass runs on every fact of the project", held, mainPathRoot)
+			"already on its way, and passes run again and again (the pass rule, admit's Admission.Apply)", held, mainPathRoot)
 	}
 	if given := r.machine().Claim().GivenEntry; given != 1 {
 		t.Fatalf("the architect's claim was given entry %d after four more passes, want the 1 it was given once", given)

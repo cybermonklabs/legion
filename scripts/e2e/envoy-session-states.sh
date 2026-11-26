@@ -120,7 +120,6 @@ done
 root=$(cd "$(dirname "$0")/../.." && pwd)
 check=setup
 timeout_hook=
-ok=
 ran=0
 passed=0
 selection=all
@@ -224,6 +223,12 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -373,6 +378,7 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$natsd_pid"
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
   # process the run marked (both agents carry LEGION_E2E_RUN).
@@ -384,13 +390,13 @@ cleanup() {
   rm -rf "$work"
   [ -z "$measured_kill_latency" ] ||
     echo "   measured SIGKILL-to-gone latency: ${measured_kill_latency}s"
-  if [ -n "$ok" ] && [ "$ran" -eq "$passed" ] && [ "$status" -eq 0 ]; then
-    echo "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)"
-  else
-    [ "$status" -ne 0 ] || status=1
-    echo "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)" >&2
-  fi
-  exit "$status"
+  # The last line is lib/run-verdict.sh's: PASS only for a run that reached run_end, the script's
+  # last statement, with every check it ran passed. A failed check fails the run though it reached
+  # its end, since run_check goes on to the next check.
+  [ "$ran" -eq "$passed" ] || [ "$status" -ne 0 ] || status=1
+  run_verdict "$status" \
+    "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)" \
+    "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -668,6 +674,7 @@ if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from this checkout"
+  dispatch_identity_start
 fi
 if [ -n "$needs_omp" ] || [ -n "$needs_claude" ]; then
   (cd "$root" && bun install --frozen-lockfile) >"$evidence/logs/bun-install.log" 2>&1 ||
@@ -738,7 +745,8 @@ start_listener() {
     ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
+    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
+    "$work/bin/envoy-listener"
 }
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
@@ -798,7 +806,8 @@ if [ -n "$needs_dispatch" ]; then
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
     DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
-    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "$work/bin/envoy-dispatch"
+    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
   await_start dispatch "$dispatch_pid" 120 "Dispatch to serve" \
     curl -fsS --max-time 3 "$dispatch_url/healthz"
@@ -881,10 +890,10 @@ make_issue() {
 # and agent directory of the run's own. Its RPC is newline JSON both ways, so the rig writes
 # requests on a FIFO it holds open and reads answers out of the process's own stdout.
 write_omp_profile() {
-  local natives=$HOME/.omp/natives role url id key
-  # The caller's native-module cache, linked as lib/omp-home.sh links it, so a fresh home downloads
+  local natives role url id key
+  # The caller's native-module cache (omp_natives_dir, lib/omp-home.sh), so a fresh home downloads
   # nothing and the caller's own ~/.omp is neither written nor removed.
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  natives=$(omp_natives_dir)
   mkdir -p "$natives" "$work/home/.omp" "$work/agent"
   ln -sfT "$natives" "$work/home/.omp/natives"
   # A selection with no check that needs a model turn needs no model route, and still needs a
@@ -1787,4 +1796,4 @@ for name in "${selected[@]}"; do
   run_check "$name"
 done
 check=summary
-ok=1
+run_end

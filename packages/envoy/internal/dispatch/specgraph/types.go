@@ -209,14 +209,3 @@ func (t Tree) ChecksOf(statement string) []Check {
 	}
 	return checks
 }
-
-// Children is the statements whose parent is statement, in the tree's order.
-func (t Tree) Children(statement string) []Statement {
-	var children []Statement
-	for _, s := range t.Statements {
-		if s.Parent == statement {
-			children = append(children, s)
-		}
-	}
-	return children
-}

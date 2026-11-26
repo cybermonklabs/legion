@@ -21,6 +21,7 @@ import (
 // keeps the pod end that death wrote (supervise's died). The negative control is applyTerminal
 // building the fact without the claim's pod end: both facts then carry none.
 func TestAFailedClaimsPodEndReachesTheWorkflowLiveAndAtTheBootReplay(t *testing.T) {
+	t.Parallel()
 	const evicted = "Evicted: The node was low on resource: ephemeral-storage. Container roles was using 48Gi, which exceeds its request of 0."
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())

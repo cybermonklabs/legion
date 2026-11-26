@@ -28,7 +28,7 @@
 // directory, or otherwise goes around the CLI. Precision comes first: the gate must not refuse a
 // call that holds no Dispatch write, since a false refusal in block mode stops real work.
 //
-// Scope: eight calls on the command line and six of them as devices, each recorded under one tool
+// Scope: twelve calls on the command line and six of them as devices, each recorded under one tool
 // name (dispatch_ask, …).
 //   - A `bash` call whose whole command is the literal grammar of one `dispatch` call
 //     (`dispatchCommandHead`): `[cd <literal path> && ] dispatch <subcommand> <literal words…>
@@ -46,22 +46,33 @@
 //     alone (`# --advisor-rebuttal '<line>'`, the form a rebutted command is handed back in),
 //     read as those overrides and no part of what runs (`overrideComment`). Nothing else: no
 //     assignment, other statement, other pipe, `;`, `||`, `&`, other redirect or other comment.
-//     The subcommand is `ask`, `message`, `edit-ask`, `comment`, `doc-edit`, `request-approval` (its
-//     `summary` is what the person approves), `issue` with `--spec` or `--spec-file`, or
+//     The subcommand is `ask`, `message`, `edit-ask`, `comment`, one of the four corrections
+//     (`edit-comment`, `delete-comment`, `edit-message`, `delete-message`, which write and take
+//     down the text the gate reviewed under `comment` and `message`), `doc-edit`,
+//     `request-approval` (its `summary` is what the person approves), `issue` with `--spec` or
+//     `--spec-file`, or
 //     `artifact` unless its literal `--name` and literal `--path` both show it is no markdown
 //     document (`uploadMayBeDocument`): its dry run then decides, from the name and path it
 //     prints, and an upload that is no markdown document runs with no entry. The gate learns
 //     the exact arguments by running that command with `--dry-run` after the command name, in the
 //     call's working directory (then its `cd`, as the call will) and environment, its
 //     here-document still on stdin and without its `2>&1` and its pipe stage, and reviews the
-//     JSON it prints. The reads (the dry run, and the `cd`'s `pwd -P` probe) take at most half
+//     JSON it prints. The reads (the dry run, and the `cd`'s `pwd -P` probe) run with
+//     DISPATCH_DRY_RUN_LOCAL=1 added to that environment (`spawnDryRun`), which the probe
+//     ignores: the CLI's dry run then checks the arguments alone and contacts no Dispatch server,
+//     where `dispatch artifact --dry-run` otherwise asks Dispatch to check the text as the call
+//     does: how it would store text given inline, read from --content-file or from stdin, or what
+//     it refuses of a Markdown `--path` file's bytes. The call runs without the variable and
+//     itself refuses a text Dispatch would store
+//     under another spelling or refuses for the text alone, so the gate's read needs no round
+//     trip. The reads take at most half
 //     the call's deadline: the first run of each is cut at 20 s, or sooner when that half ends
 //     sooner, and a run cut there is run once more with what is left of that half, when at
 //     least 2 s of it is left (`DRY_RUN_TIMEOUT_MS`). A dry-run that fails, times out again or
 //     prints no JSON object is recorded as `error` and the call runs (the CLI refuses arguments
 //     it cannot parse, before it sends anything); a dry run that timed out tells the agent it
 //     contacts no Dispatch server, so the likely cause is a busy machine, and to read back what
-//     the write posted. A `dispatch` command with `--dry-run` or `--help` sends nothing and is
+//     the write posted. A `dispatch` command with `--dry-run` or `--help` stores nothing and is
 //     not reviewed. An upload given with `--path` prints the path, not the text. Every file whose
 //     text the write posts, that path and each `--<field>-file`, is read in place before the
 //     model is asked, and the call runs as written. The model reviews those bytes (an upload's
@@ -256,6 +267,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -296,11 +308,24 @@ const SCOPED_DEVICES = [
   "dispatch_issue",
 ] as const;
 const SPEC_ONLY_DEVICE = "dispatch_issue";
+/**
+ * The subcommands whose write AskGate reviews. A correction replaces the text of a post the gate
+ * already reviewed, and writes the same text in the same place, so `edit-comment` and
+ * `edit-message` stand beside `comment` and `message`, their new body the reviewed text. A delete
+ * carries no body of its own: what the gate reviews for it is the call itself, because the
+ * reviewed text of every gated call is the arguments its dry run printed (`renderArgs`), which
+ * for a delete name the post it takes down - as they already do for a `doc-edit` whose operations
+ * only `delete` or `move`.
+ */
 const SCOPED_COMMANDS = [
   "ask",
   "message",
   "edit-ask",
   "comment",
+  "edit-comment",
+  "delete-comment",
+  "edit-message",
+  "delete-message",
   "doc-edit",
   "issue",
   "request-approval",
@@ -320,14 +345,15 @@ const UPLOAD_COMMAND = "artifact";
 const INLINE_FLAGS = ["--content", "--content-file"];
 /** The upload flags that read the name or the path from a file, which only the dry run resolves. */
 const INDIRECT_FLAGS = ["--name-file", "--path-file"];
-/** Flags under which a `dispatch` command sends nothing. */
-const NO_SEND_FLAGS = ["--dry-run", "--help"];
+/** Flags under which a `dispatch` command stores nothing, so it is no write to review. */
+const NO_STORE_FLAGS = ["--dry-run", "--help"];
 const REBUTTAL_KEY = "advisor_rebuttal";
 const REBUTTAL_FLAG = "--advisor-rebuttal";
-// A read script (the dry run, and the `cd`'s `pwd -P` probe) contacts no Dispatch server, so a
-// slow one most likely means a busy machine. Its first run is cut at DRY_RUN_TIMEOUT_MS, above
-// every dry run the gate saw finish on a shared dev box in the week of 2026-10-27 (p99 7.2 s,
-// longest 12.3 s; that box ran at about six runnable processes per core while it was measured).
+// A read script (the dry run, and the `cd`'s `pwd -P` probe) runs with DISPATCH_DRY_RUN_LOCAL=1
+// (`spawnDryRun`) and contacts no Dispatch server, so a slow one most likely means a busy
+// machine. Its first run is cut at DRY_RUN_TIMEOUT_MS, above every dry run the gate saw finish on
+// a shared dev box in the week of 2026-10-27 (p99 7.2 s, longest 12.3 s; that box ran at about
+// six runnable processes per core while it was measured).
 // A run cut there is run once more with what is left of the reads' share of the call's deadline
 // (READ_SHARE), when that is at least MIN_RETRY_MS; the review keeps the rest, which at the 90 s
 // default is 45 s, above the p95 of a reviewed call's whole gate time (42 s, its dry run included).
@@ -654,7 +680,7 @@ interface Deps {
     directory: string,
     signal: AbortSignal,
     deadlineMs?: number
-  ) => DispatchSession | undefined;
+  ) => Promise<DispatchSession | undefined>;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -1346,12 +1372,12 @@ type Word = { raw: string; value: string; start?: number; end?: number };
 
 /**
  * Whether `name` with `flags` is a write the gate reviews: a scoped command, with no flag under
- * which it sends nothing, an `issue` only with a spec, and an `artifact` unless its words show it
+ * which it stores nothing, an `issue` only with a spec, and an `artifact` unless its words show it
  * is no markdown document (`uploadMayBeDocument`).
  */
 function reviewedWrite(name: string, flags: readonly Word[]): boolean {
   if (!(SCOPED_COMMANDS as readonly string[]).includes(name)) return false;
-  if (flags.some((flag) => NO_SEND_FLAGS.includes(flag.value))) return false;
+  if (flags.some((flag) => NO_STORE_FLAGS.includes(flag.value))) return false;
   if (name === SPEC_ONLY_COMMAND) return flags.some((flag) => SPEC_FLAGS.includes(flagName(flag)));
   if (name === UPLOAD_COMMAND) return uploadMayBeDocument(flags);
   return true;
@@ -1795,42 +1821,51 @@ export interface UnreadableCommand {
   file: { flag: string; path: string; reason: string; inMessage?: true };
 }
 
-/** Runs `script` under bash in a process group of its own, which is killed at the limit or on the signal. */
+/**
+ * Runs `script` under bash in a process group of its own, which is killed at the limit, on the
+ * signal and once the script's own shell exits, and which ends with this process however it ends
+ * (`spawnWatched`): a helper the script left running neither outlives the dry run nor holds its
+ * pipes, and so its answer, open until the limit. The script gets `env` with
+ * DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run of an upload
+ * (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch nothing, where it
+ * otherwise asks Dispatch to check the text as the call does: how it would store text given
+ * inline, read from --content-file or from stdin (POST /api/v1/markdown/round-trip), or what it
+ * refuses of a Markdown `--path` file's bytes
+ * (POST /api/v1/markdown/file-round-trip). The variable leaves a `dispatch result` record's dry
+ * run asking Dispatch, as it did before, and the gate reviews no `result`. The gate reads
+ * arguments, and the call makes those round trips itself and refuses a text Dispatch would store
+ * under another spelling or refuses for the text alone, so the read needs none. The
+ * `cd`'s `pwd -P` probe, the other script the gate runs here, ignores the variable. The call
+ * never gets it: Oh My Pi runs the call in its own environment, and `env` is copied here, not
+ * changed. A `dispatch` older than the variable ignores it and asks nothing either way.
+ */
 export async function spawnDryRun(
   script: string,
   { cwd, env, timeoutMs, signal }: DryRunOptions
 ): Promise<DryRunResult> {
-  const child = Bun.spawn(["bash", "-c", script], {
+  const { child, endGroup } = spawnWatched(["bash", "-c", script], {
     cwd,
-    env,
-    stdin: "ignore",
+    env: { ...env, DISPATCH_DRY_RUN_LOCAL: "1" },
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
   });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group already exited.
-    }
-  };
   const timer = setTimeout(() => {
     timedOut = true;
-    kill();
+    endGroup();
   }, timeoutMs);
-  signal?.addEventListener("abort", kill, { once: true });
+  signal?.addEventListener("abort", endGroup, { once: true });
   try {
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
+      child.exited.finally(endGroup),
     ]);
-    await child.exited;
     return { exitCode: child.exitCode, stdout, stderr, timedOut };
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", kill);
+    signal?.removeEventListener("abort", endGroup);
+    endGroup();
   }
 }
 
@@ -2155,12 +2190,19 @@ const UNKEYED_REFUSAL =
   "AskGate did not send this call: it could not read the arguments the dispatch CLI gets from the command that runs, so it could not mint the marker the CLI needs to post the write. Send the write again as one bash call of literal words.";
 /** The note, in warn mode, of the same call: it runs, and the CLI posts it with a warning. */
 const UNKEYED_NOTE = `<advisor-gate advisor="AskGate" outcome="unkeyed">\nAskGate minted no marker for this Dispatch write: it could not read the arguments the dispatch CLI gets from the command that runs. The call ran, and the CLI posts it with a warning that it went out unreviewed.\n</advisor-gate>`;
-// A comment or message cannot be edited or deleted, so its only fix is one more post; the note says so,
-// rather than offering an edit the agent cannot make (two lanes resent whole comments chasing one).
+// A comment and an issue message are corrected in place, by their author alone, with
+// `dispatch edit-comment` and `dispatch edit-message`, so the note names those rather than one
+// more post (told no edit existed, two lanes resent whole comments chasing one wording). A
+// message of a direct conversation takes no edit, so that one is still fixed by a reply, and the
+// note keeps the limit that held for every resend: only where the original would mislead. The
+// rewording cost 5 bytes: measured with an empty reason, this wrapper is 513 bytes, where the
+// note that said a comment cannot be edited was 508. The whole context a revise hands the agent
+// is the reason, capped at 8 KiB, and this wrapper, so the row that bounds that context at
+// 8 KiB + 512 (askgate.test.ts) holds the note at 8,698 bytes with 6 bytes to spare.
 // The warn note never says a third resend goes unreviewed: a warn revise sends the call, so it
 // refuses nothing and the breaker, which counts refusals, does not move for it.
 const renderWarn = (reason: string) =>
-  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it now where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`. A comment or message cannot be edited, so post one reply carrying only the correction, and only when the original would mislead its reader. Or state your rebuttal in your next step.\n</advisor-gate>`;
+  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`, a comment or issue message with \`dispatch edit-comment\`/\`edit-message\`. A direct message takes no edit: reply with the correction where it misleads. Or state your rebuttal in your next step.\n</advisor-gate>`;
 // Oh My Pi records a call as the gate returns it. Told only that its override was "removed",
 // agents read their call back, found no override and reported a rebuttal they never wrote, and a
 // note naming the removal did not stop it (tester round 6 and the round after, 6 of 9 sessions).
@@ -2269,11 +2311,11 @@ const renderUnreviewed = (outcome: GateEntry["outcome"], reason: string | undefi
 };
 /**
  * The note of a write whose dry run did not finish in time, run again once where the deadline
- * left room. The dry run contacts no Dispatch server, so the cause is the machine, and the one
- * thing the agent can do is check what the write posted.
+ * left room. The gate's dry run contacts no Dispatch server (`spawnDryRun`), so the cause is the
+ * machine, and the one thing the agent can do is check what the write posted.
  */
 const renderSlowDryRun = (reason: string) =>
-  `<advisor-gate advisor="AskGate" outcome="error">\nAskGate did not review this Dispatch write: ${agentFacing(reason)}. A dry run only checks the arguments on this machine and contacts no Dispatch server, so the likely cause is a busy machine, not Dispatch. The call ran unreviewed: read back what it posted, and correct it if it is wrong.\n</advisor-gate>`;
+  `<advisor-gate advisor="AskGate" outcome="error">\nAskGate did not review this Dispatch write: ${agentFacing(reason)}. AskGate's dry run only checks the arguments on this machine and contacts no Dispatch server, so the likely cause is a busy machine, not Dispatch. The call ran unreviewed: read back what it posted, and correct it if it is wrong.\n</advisor-gate>`;
 /**
  * The flags a refused file's text can go through instead: a `--<field>-file` reads `-` as stdin and
  * any other path as a file. An upload's `--path` (and `--path-file`, which names it) is a path the

@@ -1,0 +1,124 @@
+# oidc-issuer.yaml: the token issuer the copy's listener verifies Dispatch's identity against
+# (manifests/listener.yaml, ENVOY_OIDC_ISSUER), served inside the namespace. The namespace's
+# NetworkPolicy lets the copy's pods reach each other and DNS and nothing else, the cluster's own
+# token issuer among the rest, and a listener that cannot read its issuer's discovery document
+# takes no role mark from Dispatch: an older one exits, and a newer one starts and answers that
+# issuer's tokens 503 until it can read it. So cluster.sh up mints the copy's own issuer (loadgen
+# oidc-mint): a P-256 key, whose public half this ConfigMap holds, and Dispatch's token of it,
+# which manifests/dispatch.yaml mounts from the run's Secret. The private key never leaves that
+# loadgen process. The issuer is http://oidc-issuer.<namespace>.svc:8080 (__OIDC_ISSUER__), the
+# iss of that token; the listener reads the discovery document under it when it starts, and the
+# key set when it first verifies a token and again every 15 minutes, keeping the last set it read.
+#
+# socat, the pprof sidecar's image, serves the two documents through serve.sh, one shell per
+# connection. The Deployment starts at 1 replica; cluster.sh waits for it before it scales the
+# listener. cluster.sh fills every placeholder from validated values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oidc-issuer
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: dispatch-loadtest
+    dispatch-loadtest/run: __RUN_ID__
+data:
+  openid-configuration: '{"issuer":"__OIDC_ISSUER__","jwks_uri":"__OIDC_ISSUER__/jwks","response_types_supported":["id_token"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["ES256"]}'
+  jwks: '{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"__OIDC_KEY_ID__","x":"__OIDC_KEY_X__","y":"__OIDC_KEY_Y__"}]}'
+  # serve.sh: one HTTP request on standard input and its answer on standard output, under
+  # busybox sh. GET /.well-known/openid-configuration answers the discovery document and GET /jwks
+  # the key set, each the file of that name beside this script, and anything else 404. It reads
+  # the request's headers to their blank line before it answers, so the connection closes with
+  # nothing unread: a close with unread bytes is a reset, which can lose the answer on its way.
+  serve.sh: |
+    set -f
+    dir=${0%/*}
+    cr=$(printf '\r')
+    IFS= read -r request || exit 0
+    while IFS= read -r header; do
+      [ -n "${header%"$cr"}" ] || break
+    done
+    set -- $request
+    case "${1:-} ${2:-}" in
+      "GET /.well-known/openid-configuration") file=$dir/openid-configuration ;;
+      "GET /jwks") file=$dir/jwks ;;
+      *)
+        printf 'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+        exit 0
+        ;;
+    esac
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' "$(wc -c <"$file")"
+    cat "$file"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oidc-issuer
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: dispatch-loadtest
+    dispatch-loadtest/run: __RUN_ID__
+spec:
+  type: ClusterIP
+  selector:
+    dispatch-loadtest/run: __RUN_ID__
+    dispatch-loadtest/role: oidc-issuer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oidc-issuer
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: dispatch-loadtest
+    dispatch-loadtest/run: __RUN_ID__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      dispatch-loadtest/run: __RUN_ID__
+      dispatch-loadtest/role: oidc-issuer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: dispatch-loadtest
+        dispatch-loadtest/run: __RUN_ID__
+        dispatch-loadtest/role: oidc-issuer
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        # The image's entrypoint is socat. -T 10 closes a connection idle for 10 s.
+        - name: oidc-issuer
+          image: __SOCAT_IMAGE__
+          args: ["-T", "10", "TCP-LISTEN:8080,fork,reuseaddr", "EXEC:/bin/sh /oidc/serve.sh"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 256Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 256Mi
+          volumeMounts:
+            - name: documents
+              mountPath: /oidc
+              readOnly: true
+      volumes:
+        - name: documents
+          configMap:
+            name: oidc-issuer

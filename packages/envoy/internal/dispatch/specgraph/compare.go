@@ -43,6 +43,12 @@ type Holding struct {
 	Current bool
 }
 
+// holdsCurrent is whether the files hold the node's current approved text: the one reading of it
+// that the check judge (not_built) and the statement judge (notBuilt) share.
+func (h Holding) holdsCurrent() bool {
+	return h.Present && h.Current
+}
+
 // Comparison is what Compare finds: Problems, each node of the files in a text that the approved
 // spec does not let them hold; Holds, for each node of the approved spec that it did not remove,
 // the approved text that the files hold; and Removed, the id of each node that the files hold in
@@ -76,7 +82,7 @@ func Compare(files Tree, a Approved) Comparison {
 	c := Comparison{Holds: map[string]Holding{}}
 	texts := make(map[string]map[string]int, len(a.Nodes)) // id -> digest -> its newest version
 	for id, n := range a.Nodes {
-		if !n.removed() {
+		if !n.Removed {
 			c.Holds[id] = Holding{}
 		}
 		texts[id] = map[string]int{}
@@ -94,11 +100,11 @@ func Compare(files Tree, a Approved) Comparison {
 		switch {
 		case !held:
 			detail = approvalKinds[unapprovedID]
-		case !approvedText && approved.removed():
+		case !approvedText && approved.Removed:
 			detail = approvalKinds[removedID]
 		case !approvedText:
 			detail = approvalKinds[unapprovedText]
-		case approved.removed():
+		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
 			if !slices.Contains(c.Removed, f.id) {
 				c.Removed = append(c.Removed, f.id)

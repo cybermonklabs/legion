@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -124,15 +125,18 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 // One person's spawn is not the wave the pacing exists for.
 func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
 	h := newHarness(t)
-	// One wake a minute, its burst already taken by another claim of this daemon, so the next
-	// reservation is a minute out: that is the wait a paced spawn would be held for.
+	// One wake a minute, its burst already taken by another claim of this daemon, so a place
+	// joined now waits a minute for its turn: that is the wait a paced spawn would be held for.
+	// The pacer is on the harness's still clock, whose timers never fire, so that turn never
+	// comes and a spawn the pacing held would stay parked.
 	limiter := wakepace.New(1, 1, nil)
-	now := stillClock{}.Now()
-	limiter.Reserve(now)
-	if at := limiter.Reserve(now); !at.After(now) {
-		t.Fatalf("the limiter reserved %s for a spent queue, want a moment after %s", at, now)
+	clock := stillClock{}
+	limiter.Reserve(clock.Now())
+	pacer := supervise.NewPacer(limiter, clock)
+	if waiting := pacer.Join(wakepace.Second); !waiting.Estimate().After(clock.Now()) {
+		t.Fatalf("the pacer lets a place out at %s over a spent queue, want a moment after %s", waiting.Estimate(), clock.Now())
 	}
-	h.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: 1, Burst: 1}
+	h.supervisor.deps.WakePace = supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: 1, Burst: 1}
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 
@@ -581,7 +585,7 @@ func (r *heldRetrier) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (i
 func heldIssue(t *testing.T, h *harness, from phase.Phase) {
 	t.Helper()
 	parent := "LEGION-208"
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject,
 			Title: "LEGION-209", Parent: &parent, Phase: phase.Held, Hold: &record.Hold{From: from}, Generation: 1, Status: "in_progress",
@@ -1705,7 +1709,7 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 	generation := machine.Claim().Generation
 	if err := machine.Handle(h.ctx, supervise.RequestRegister{
 		Claim: architectToken, Generation: generation, Session: "ses_replacement", SessionFile: "/sessions/ses_replacement.jsonl",
-		PluginContract: DaemonAPIVersion,
+		PluginContract: DaemonAPIVersion(),
 	}); err != nil {
 		t.Fatalf("register replacement session: %v", err)
 	}

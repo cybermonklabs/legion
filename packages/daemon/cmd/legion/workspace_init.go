@@ -16,6 +16,8 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -24,12 +26,22 @@ const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> -
 // provisionTokenFileEnv points `workspace-init fetch` at the mounted provisioning token.
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
-// provisionBudget is the runner's slow-command budget for `provision`, workspace.CommandTimeout:
-// what the runner gives a command carrying no bound of its own, the commands that carry one being
-// the exceptions workspace.CommandTimeout names. A test shortens it to prove the issue's checkout
-// takes no part of it, holding workspace.CheckoutTimeout of its own instead (workspace.Provision,
-// Request.CheckoutBound).
-var provisionBudget = workspace.CommandTimeout
+// newProvisionRunner is the runner `provision`'s commands run under, workspace.NewRunner given
+// commandBudget: the slow-command budget of every command carrying no bound of its own, the
+// commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
+// checkout among them (workspace.Provision, Request.CheckoutBound). This package's tests wrap it to
+// read the bound each command was given.
+var newProvisionRunner = workspace.NewRunner
+
+// commandBudget is the slow-command budget of the runners workspace-init's provision, fetch and
+// cache run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
+// package's tests can give it their own deadline (programbound): a stand-in jj that a loaded machine
+// made slower than the budget would be killed, and the row would read the kill.
+var commandBudget = workspace.CommandTimeout
+
+func init() {
+	programbound.Register(&commandBudget)
+}
 
 // secretFileFromEnv is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
@@ -52,12 +64,16 @@ func secretFileFromEnv(name string) (string, error) {
 // `provision` is the last, all the disk's work, in a container the provisioning Secret is not
 // mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
 // `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
-// stdout and its refusals and failures to stderr — together the init log the runtime quotes. A
-// usage error exits 2 (workspace.InitExitUsage), as for every legion command. `fetch` and
-// `provision` exit 3 (workspace.InitExitOutsideVolume) for a failure whose cause is outside the
-// issue's volume, and 1 for every other failure (issuePodInitExit). `cache` exits 1 for every
-// failure (workspaceInitExit).
+// stdout and its refusals and failures to stderr — together the init log the runtime quotes —
+// both through the URL rule (redact.Writer here for stdout, newRoot's for stderr), as Go's
+// standard logger is for the run of each (podLogs): a failure that quotes --cache-url, the cache's
+// address, loses its query and its userinfo. No child process is handed either writer. A usage
+// error exits 2 (workspace.InitExitUsage), as for every legion command. `fetch` and `provision`
+// exit 3 (workspace.InitExitOutsideVolume) for a failure whose cause is outside the issue's
+// volume, and 1 for every other failure (issuePodInitExit). `cache` exits 1 for every failure
+// (workspaceInitExit).
 func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
+	stdout = redact.Writer(stdout)
 	return group(&cobra.Command{
 		Use:    "workspace-init",
 		Short:  "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process",
@@ -75,6 +91,7 @@ func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
 	feed := cmd.Flags().String("feed", "", "the pod's feed directory, the container's own (required)")
 	cacheURL := cmd.Flags().String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		return issuePodInitExit(cmd, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
 	})
 	return cmd
@@ -89,6 +106,7 @@ func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	credentialHelper := cmd.Flags().String("credential-helper", "", "git credential helper written into the clone's config (required)")
 	feed := cmd.Flags().String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		defer podLogs(stderr)()
 		return issuePodInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
 	})
 	return cmd
@@ -127,7 +145,11 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // the clone: it is the issue's own, on the issue's own disk, and no other pod mounts that disk
 // while this one runs, since the issue's Sandbox runs one pod at a time. For the same reason, and
 // because the pod's launcher container has not started, no process holds a git lock on the disk
-// while this runs, so every one there is stale and would fail each later write of what it locks
+// while this runs but a git or jj the provision itself starts, and each of those holds its locks
+// only while it runs: every git provisioning starts, directly or through jj, reads gc.auto=0 and
+// maintenance.auto=false among its pinned settings (the workspace package's pinnedGitConfig), so
+// no fetch leaves git's automatic maintenance holding a lock behind it.
+// So every lock there when this starts is stale and would fail each later write of what it locks
 // (LEGION-731). The kubelet restarts a failed init container on the same pod, and so on the same
 // disk, so a first attempt killed mid-fetch leaves exactly those locks for the retry to clear. An
 // earlier pod that was stopped on a kept volume leaves its locks for the next pod in the same way.
@@ -143,7 +165,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := workspace.NewRunner(provisionBudget, inputs.tools)
+	run := newProvisionRunner(programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,

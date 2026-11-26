@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -30,10 +33,13 @@ import (
 // resume launches each session that the pause held something for, once). The spawn's task, which
 // its agent never took, is delivered at the launch's ready.
 func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	issue := r.issue(7)
 	const task = "Summarize the incident for the operator."
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
 	if got := r.count(`select count(*) from issues where key = $1`, issue); got != 0 {
 		t.Fatalf("records of %s = %d, want none: the operator's spawn is of an issue the daemon keeps no record of", issue, got)
@@ -49,7 +55,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 	session := "ses-operator-spawn"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	stopped := r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 	if !stopped.Released() || stopped.Pending == nil || stopped.Pending.Task != task || !stopped.Pending.ConfirmedAt.IsZero() {
@@ -89,7 +95,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 		return r.claim(token).State == supervise.StateShimConnected
 	})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: relaunched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: relaunched.Generation, Session: session})
 	r.startTurn(sh, task)
 	r.awaitState(token, supervise.StateWorking, "the spawn takes its task in a turn")
@@ -114,6 +120,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 // (workflow's wakeReleased): it takes no resume of the role, which would refuse every later wake
 // of it, and queues no start keyed by the other project's issue.
 func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// recorded seeds another project's record of each spawned issue.
@@ -130,7 +137,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				for _, key := range []string{owedIssue, idleIssue} {
 					recorded := r.root(key, phase.Planning)
 					recorded.Project = "OTHERPROJECT"
-					if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+					if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 						t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", key, err)
 					}
 				}
@@ -140,6 +147,9 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				return r.count(`select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, issue)
 			}
 			const task = "Summarize the incident for the operator."
+			// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+			r.board.place(owedIssue, "todo", "", false)
+			r.board.place(idleIssue, "todo", "", false)
 			owed := r.d.spawn(api.SpawnRequest{Tree: owedIssue, Issue: owedIssue, Role: claim.RoleArchitect,
 				Prompt: "Reply ready and wait.", Task: task})
 			idle := r.d.spawn(api.SpawnRequest{Tree: idleIssue, Issue: idleIssue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
@@ -149,7 +159,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				launched := r.claim(token)
 				r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 				r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-					SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+					SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 				r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 			}
 			up(idle, "ses-other-idle")
@@ -251,8 +261,12 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // its pause holds (record.OutboxRow.HeldByPause, store.Store.TakePodWake), the third case's row,
 // already due when the pause began, as well as the second's. P's row is held back, under a lease
 // of the test's, until every other worker has reserved its turn, so the pacing lets P's worker
-// out last, 84 turns of 7.5 seconds after the resume. The resume ends P's hold, since P's
-// architect is live in the pod.
+// out last, 84 turns of 7.5 seconds after the resume. The others' wakes carry a role's message, so
+// they wait in the pacing's first queue (dispatch://INFRA-5682 R1), and so does P's held wake. A
+// hook's prompt carries none, and its launch would wait in the second queue and be let out at
+// that queue's first turn, three turns in: so in those two cases the listener reports a message
+// for P's worker once its launch waits, which moves it to the back of the first queue, behind
+// every other worker's. The resume ends P's hold, since P's architect is live in the pod.
 //
 // The round's pod keeps a process through P's architect, whose turn runs through the pause, as
 // k4's pod 6 does: a role the rig relaunches runs in no pod (the fake runtime records a tmux pane),
@@ -264,6 +278,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // pause held, so did the third case's, whose wake read the pause that stood at the row's due time
 // and found none.
 func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// hook is whether P's worker is woken by a held hook's prompt rather than a held wake.
@@ -351,17 +366,26 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			if _, err := r.pool.Exec(r.ctx, `update outbox set lease_until = $2 where id = $1`, held, r.dueNow()); err != nil {
 				t.Fatalf("let P's row's lease lapse: %v", err)
 			}
-			// The outbox's sweep, every outboxLease of the wall clock, wakes P's lane.
+			// The outbox's sweep, every pauseRigOutboxSweep of the wall clock, wakes P's lane.
 			testwait.WithinPolling(t, 2*time.Minute, 200*time.Millisecond, "P's worker's launch to reserve the last turn", func() bool {
 				return len(r.rt.launches())-before+len(r.state().WakesWaiting) == others+1
 			})
+			if tc.hook {
+				r.applyFact("listener", "wake-1", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker(P)),
+					At: r.clock.Now(), Report: "report-1"})
+				testwait.WithinPolling(t, time.Minute, 100*time.Millisecond, "the message to move P's worker's launch behind every other worker's", func() bool {
+					waiting := r.state().WakesWaiting
+					last := slices.MaxFunc(waiting, func(a, b api.WakeWaiting) int { return a.DueAt.Compare(b.DueAt) })
+					return len(waiting) > 1 && last.Claim == worker(P)
+				})
+			}
 
 			var letOut time.Time
 			r.runPacing(before, others+1, func(launch waveLaunch) {
 				if launch.claim == worker(P) {
 					letOut = launch.at
 					// Every sweep that read the clock before this turn has run.
-					time.Sleep(5 * r.o.orphanSweep)
+					r.awaitFullSweep()
 				}
 				if replaced := r.replacedPods(P); replaced != 0 {
 					t.Fatalf("P's pod was replaced %d times by %s after the resume, at the launch of %s, while P's worker had not yet been let out of the pacing",
@@ -381,7 +405,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 
 			// The roles get what was left of their grace once the pacing let P's worker out.
 			r.clock.advanceTo(letOut.Add(left - time.Minute))
-			time.Sleep(5 * r.o.orphanSweep)
+			r.awaitFullSweep()
 			if replaced := r.replacedPods(P); replaced != 0 {
 				t.Fatalf("P's pod was replaced %d times a minute before the bound moved to the let-out, want none", replaced)
 			}
@@ -403,6 +427,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 // release's; before the second, the wake of a notice due before the pause still was, since the
 // wake read the pause that stood at the row's due time.
 func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// dueBefore is how long before the pause began the notice was due, 0 for a notice that fell
@@ -464,6 +489,7 @@ func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
 // release. Before the second the outbox took a delivery's wake of the role for the held message
 // and resumed it with no task, and the listener's report then took no wake.
 func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -528,6 +554,7 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 // The negative control is the wait counted whatever the claim's state: the row waits for a role
 // that is not coming back, and the test fails where it waits for the row to end.
 func TestAHeldRoleMessageForARoleAnOperatorSuspendedDuringThePauseEndsUndelivered(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -574,6 +601,7 @@ func TestAHeldRoleMessageForARoleAnOperatorSuspendedDuringThePauseEndsUndelivere
 // delivery wake read its row's mark alone, found none, and was recorded as the wake of the release
 // from before the pause.
 func TestANoticeQueuedAfterTheResumeWakesAnArchitectThePauseStoppedWithThatPause(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	architect := r.token(issue, claim.RoleArchitect)
@@ -616,15 +644,18 @@ func TestANoticeQueuedAfterTheResumeWakesAnArchitectThePauseStoppedWithThatPause
 // daemon's own. So after the resume the relaunched spawn's ready queues no row keyed by the other
 // project's issue and deletes none of that daemon's rows.
 func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectAtItsReady(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	const issue = "OTHERPROJECT-9"
 	recorded := r.root(issue, phase.Planning)
 	recorded.Project = "OTHERPROJECT"
-	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+	if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 	}
 	const task = "Summarize the incident for the operator."
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait.", Task: task})
 	pause := r.pauseProject()
 	testwait.Eventually(t, "the pause's stop of the spawn to be held until its agent is ready", func() bool {
@@ -634,7 +665,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 	const session = "ses-other-root-architect"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed`,
@@ -690,7 +721,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 		return r.claim(token).State == supervise.StateShimConnected
 	})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: relaunched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: relaunched.Generation, Session: session})
 	testwait.Eventually(t, "the relaunched spawn's agent to be ready", func() bool {
 		state := r.claim(token).State
@@ -726,6 +757,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 // one, so its failure is one that would tell the tree's architect and the controller were the
 // record this daemon's.
 func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t *testing.T) {
+	t.Parallel()
 	const issue = "OTHERPROJECT-9"
 	const role = claim.RoleArchitect
 	for _, tc := range []struct {
@@ -753,9 +785,11 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 			r.boot()
 			recorded := r.root(issue, phase.Planning)
 			recorded.Project = "OTHERPROJECT"
-			if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+			if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 				t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 			}
+			// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+			r.board.place(issue, "todo", "", false)
 			token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: role, Prompt: "Reply ready and wait.",
 				Task: "Summarize the incident for the operator."})
 			r.pauseProject()
@@ -766,7 +800,7 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 			const session = "ses-other-root-architect"
 			r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 			r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-				SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+				SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 			r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 			r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 			launches := len(r.rt.launchesOf(token))
@@ -831,12 +865,13 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 // pause is a claim write that changes the role's holder (the store's putClaim), so it is where the
 // pause meets this row.
 func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfThatProject(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	r.boot()
 	const issue = "OTHERPROJECT-9"
 	recorded := r.root(issue, phase.Planning)
 	recorded.Project = "OTHERPROJECT"
-	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+	if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 	}
 	holderRows := func() (int, string) {
@@ -852,13 +887,15 @@ func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfTha
 		}
 		return n, *lease
 	}
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(issue, "todo", "", false)
 	token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	testwait.Eventually(t, "the spawn to launch", func() bool { return len(r.rt.launchesOf(token)) == 1 })
 	launched := r.claim(token)
 	const session = "ses-other-architect"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	testwait.Eventually(t, "the spawn's agent to be ready", func() bool {
 		state := r.claim(token).State

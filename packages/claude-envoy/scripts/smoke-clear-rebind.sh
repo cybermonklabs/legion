@@ -69,7 +69,7 @@ trap cleanup EXIT INT TERM
 # scratch directory (`scripts/build.ts --out`), since a pull request's tree carries no fresh
 # `dist/` or `legion/`.
 if [[ -n "${CLAUDE_PLUGIN_DIR:-}" ]]; then
-  plugin_dir="$(cd "$CLAUDE_PLUGIN_DIR" && pwd)"
+  plugin_dir="$(CDPATH='' cd "$CLAUDE_PLUGIN_DIR" && pwd)"
 else
   plugin_dir="${workdir}/claude-envoy"
   bun "$(dirname "${BASH_SOURCE[0]}")/build.ts" --out "$plugin_dir" >/dev/null ||

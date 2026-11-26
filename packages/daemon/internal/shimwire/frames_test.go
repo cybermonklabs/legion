@@ -214,6 +214,13 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc"}, Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeFile: "/sessions/test.jsonl"},
 		},
 		{
+			// An Oh My Pi launch wrapped in the deployment's setup: the agent's executable is not
+			// the first word of Argv, so the start names it.
+			"launcher_start of an Oh My Pi launch",
+			`{"type":"launcher_start","id":"start-2","generation":8,"argv":["/bin/sh","-c","exec \"$@\"","legion-start","/opt/omp/bin/omp"],"env":["A=B"],"agentExecutable":"/opt/omp/bin/omp"}`,
+			LauncherStart{ID: "start-2", Generation: 8, Argv: []string{"/bin/sh", "-c", `exec "$@"`, "legion-start", "/opt/omp/bin/omp"}, Env: []string{"A=B"}, AgentExecutable: "/opt/omp/bin/omp"},
+		},
+		{
 			"launcher_start_result",
 			`{"type":"launcher_start_result","id":"start-1","ok":true,"runningGeneration":7}`,
 			LauncherStartResult{ID: "start-1", OK: true, RunningGeneration: 7},
@@ -342,6 +349,33 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 			}},
 		},
 		{
+			// OpenAI's cyber-policy refusal, relayed by a gateway as a 503: the status alone reads
+			// as "not now", and only the code says that sending it again is refused again. Oh My
+			// Pi's promptError builds the object in this order: it marks the failure not
+			// retryable and adds the code, then adds the status last; `#report` writes the error
+			// after `sessionSettled` (packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts at
+			// the pinned tag). Synthetic refusal text, as Oh My Pi's own test of it uses.
+			"a turn OpenAI refused for cyber policy, relayed as a 503",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"503 cyber_policy: This content was flagged for possible cybersecurity risk.","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "503 cyber_policy: This content was flagged for possible cybersecurity risk.", Provider: "openai",
+				Model: "gpt-5.5", HTTPStatus: 503, Code: "cyber_policy",
+			}},
+		},
+		{
+			// A request Oh My Pi's cost gate refused once the session reached `session.maxCost`:
+			// no request went out, so the error names no provider, model or status, only the code
+			// (`#costCapOutcome` there).
+			"a turn the session's cost cap stopped",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.","retryable":false,"code":"cost_cap"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+				Code:    "cost_cap",
+			}},
+		},
+		{
 			// `id` is optional in the schema, and a result that names no request names no
 			// delivery either; it still decodes, and the daemon drops it downstream.
 			"a result of no request of the daemon's",
@@ -366,9 +400,8 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
 			}
 			// Each member of the error object by itself: the daemon decides what a failed turn
-			// means from four of the members beside the message, so one dropped here is a
-			// failure it reads as something else; code, which nothing reads, is kept so the
-			// frame survives whole.
+			// means from the members beside the message, the status and the code among them, so
+			// one dropped here is a failure it reads as something else.
 			if want := tc.want.Error; want != nil {
 				got := result.Error
 				if got == nil {
@@ -574,6 +607,46 @@ func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
 			err := report.Validate()
 			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
 				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
+	}
+}
+
+// A start that names a session by its id alone (resumeSession) is the launcher's to look up, and
+// the launcher resumes what it finds by replacing the argv's one `--resume=<id>` with the found
+// file's path: a start that also names a file names two sessions, and one whose argv does not
+// hold exactly one `--resume=<id>` of that session leaves the launcher no element to replace, or
+// two. The sandbox runtime is the frame's only sender, so each is a bug to name. The negative
+// control is the round-trip table's start naming its session by id in place of its file, with the
+// one element, which validates.
+func TestALauncherStartNamingASessionMustNameOneResumeOfIt(t *testing.T) {
+	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	byID := LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc", "--resume=" + session},
+		Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeSession: session}
+	if err := byID.Validate(); err != nil {
+		t.Fatalf("a start naming its session by id with one --resume of it was refused: %v", err)
+	}
+	for name, change := range map[string]func(*LauncherStart){
+		"a session file as well": func(s *LauncherStart) { s.ResumeFile = "/sessions/test.jsonl" },
+		"no --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc"}
+		},
+		"two --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--resume=" + session, "--mode", "rpc", "--resume=" + session}
+		},
+		"a --resume of another session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume=01a1f5de-4835-7667-b005-e99e3e28aa01"}
+		},
+		"the session as an element of its own": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume", session}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := byID
+			change(&start)
+			err := start.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "resumeSession") {
+				t.Fatalf("a start naming session %s with %s validated as %v, want ErrMalformedFrame naming resumeSession", session, name, err)
 			}
 		})
 	}
@@ -798,8 +871,8 @@ func TestMemoryGuardTheAcknowledgementBytesDecode(t *testing.T) {
 }
 
 // Each number of the settings is refused one below its minimum and one above its maximum, by a
-// refusal that names the member and its range, and taken at either bound. The defaults are inside
-// every range.
+// refusal that names the member and its range, and taken at either bound. The defaults, the
+// controller pod's wait among them, are inside every range.
 func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	defaults := LauncherMemoryGuard{
 		ActPercent: MemoryGuardActDefault, FloorPercent: MemoryGuardFloorDefault,
@@ -807,6 +880,11 @@ func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	}
 	if err := defaults.Validate(); err != nil {
 		t.Fatalf("the defaults are refused: %v", err)
+	}
+	controller := defaults
+	controller.WaitSeconds = MemoryGuardControllerWaitDefault
+	if err := controller.Validate(); err != nil {
+		t.Fatalf("the controller pod's defaults are refused: %v", err)
 	}
 	for _, tc := range []struct {
 		member string

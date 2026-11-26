@@ -291,7 +291,7 @@ func TestTheFilesRefuseANameOfNoLetterAndNoDigitAtEachPlaceOfADocument(t *testin
 			if parent, last := holderAt(docs[0], place); parent.Content[last].Kind != yaml.ScalarNode {
 				continue
 			}
-			for _, name := range append(slices.Clone(namesOfNothing), "\u200b") {
+			for _, name := range append(slices.Clone(namesOfNothing()), "\u200b") {
 				text := writeDocuments(t, []*yaml.Node{nameAt(docs[0], place, name)})
 				tree, problems := Parse(map[string][]byte{"x.yaml": text})
 				for _, p := range Validate(tree, Options{}) {
@@ -570,7 +570,7 @@ func documentInputs(t *testing.T, docs []*yaml.Node, leftOut bool) []documentInp
 				inputs = append(inputs, documentInput{where + " left out", with(changedAt(doc, place, true))})
 			}
 			if holder, last := holderAt(doc, place); holder.Content[last].Kind == yaml.ScalarNode {
-				for _, name := range namesOfNothing {
+				for _, name := range namesOfNothing() {
 					if name != "" {
 						inputs = append(inputs, documentInput{fmt.Sprintf("%s as %q", where, name), with(nameAt(doc, place, name))})
 					}
@@ -602,6 +602,49 @@ func approvedDocuments(t *testing.T, data []byte) map[[2]int]string {
 		}
 	}
 	return documents
+}
+
+// yamlScenarioInput is one changed YAML input for the same scenario.
+type yamlScenarioInput struct {
+	what string
+	fsys fstest.MapFS
+}
+
+// yamlInputStates derives every check, statement and own-statement state of each subject of fsys.
+// A changed input may be refused instead; then no state is returned.
+func yamlInputStates(fsys fstest.MapFS) (map[string]string, error) {
+	scenario, err := ReadScenario(fsys)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	for i := range scenario.Subjects {
+		state, err := Derive(scenario.Input(i))
+		if err != nil {
+			return nil, err
+		}
+		prefix := fmt.Sprintf("%d/", i)
+		for _, check := range state.Checks {
+			states[prefix+"check/"+check.ID] = check.State
+		}
+		for _, statement := range state.Statements {
+			states[prefix+"statement/"+statement.ID] = statement.State
+			states[prefix+"own/"+statement.ID] = statement.Own
+		}
+	}
+	return states, nil
+}
+
+// yamlStatesTowardTrue names each check, statement or own statement that became true or met.
+func yamlStatesTowardTrue(before, after map[string]string) []string {
+	var moved []string
+	for key, state := range after {
+		if state == "true" && before[key] != "true" || state == "met" && before[key] != "met" {
+			moved = append(moved, key+" became "+state)
+		}
+	}
+	slices.Sort(moved)
+	return moved
 }
 
 // The sweep of TestNoInputThatSaysNothingMovesAStateTowardTrue reads each JSON file of a scenario
@@ -640,15 +683,15 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			base := bases[scenario]
-			whole, err := sweepStates(base)
+			whole, err := yamlInputStates(base)
 			if err != nil {
 				t.Fatalf("the scenario: %v", err)
 			}
-			var inputs []sweepInput
+			var inputs []yamlScenarioInput
 			with := func(what string, change func(fsys fstest.MapFS)) {
 				fsys := maps.Clone(base)
 				change(fsys)
-				inputs = append(inputs, sweepInput{what, fsys})
+				inputs = append(inputs, yamlScenarioInput{what, fsys})
 			}
 			readBack := func(what string, text []byte) []*yaml.Node {
 				docs := specDocuments(t, text)
@@ -692,7 +735,7 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 				if strings.HasSuffix(in.what, ` as " "`) {
 					names++
 				}
-				got, err := sweepStates(in.fsys)
+				got, err := yamlInputStates(in.fsys)
 				switch {
 				case err != nil:
 					refused++
@@ -700,7 +743,7 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 					same++
 				default:
 					moved++
-					if toward := towardTrue(whole, got); len(toward) > 0 {
+					if toward := yamlStatesTowardTrue(whole, got); len(toward) > 0 {
 						t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
 					}
 				}

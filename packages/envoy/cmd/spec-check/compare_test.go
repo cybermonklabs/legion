@@ -113,7 +113,7 @@ func testCompare(t *testing.T, binary string) {
 		removed := 0
 		approved := approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 			if n.ID == "shipping" || n.ID == "orders-to-billing" || n.ID == "order" {
-				n.Removed = new(true)
+				n.Removed = true
 				removed++
 			}
 		})
@@ -133,7 +133,7 @@ func testCompare(t *testing.T, binary string) {
 		dir := copyOf(t, fixture(t, "compare", "removed-kept", "spec"))
 		approved := fixture(t, "compare", "removed-kept", "approved.json")
 		removed := approvedOf(t, "removed-kept").Nodes["an-order-is-paid-once"]
-		if !*removed.Removed {
+		if !removed.Removed {
 			t.Fatal("the fixture did not remove an-order-is-paid-once")
 		}
 		writeFile(t, filepath.Join(dir, "again.yaml"), []byte(removed.Versions[len(removed.Versions)-1].Document))
@@ -201,7 +201,7 @@ func testCompare(t *testing.T, binary string) {
 		only := func(keep func(id, document string) bool) string {
 			return approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 				if !keep(n.ID, n.Versions[len(n.Versions)-1].Document) {
-					n.Removed = new(true)
+					n.Removed = true
 				}
 			})
 		}
@@ -522,7 +522,9 @@ func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode
 // is not valid edits its bytes instead (replaceIn).
 func editApproved(t *testing.T, path string, edit func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode) {
 	t.Helper()
-	var file specgraph.ApprovedFile
+	var file struct {
+		Nodes []specgraph.ApprovedNode `json:"nodes"`
+	}
 	readJSONFile(t, path, &file)
 	file.Nodes = edit(file.Nodes)
 	writeJSONFile(t, path, file)

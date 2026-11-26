@@ -29,8 +29,9 @@ const (
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Blockers: waits, Seq: 1, Parent: parent}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+		reading := record.DispatchReading{Key: key, Project: testProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}
 	})
@@ -267,10 +268,10 @@ func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	}
 }
 
-// A5. One children-first notice per parent per run: every fact, tick and boot runs the admission
-// pass again, and a child filed later during one wait is no second telling, while a run the tree
-// has not had yet — the one a re-admission opens, and the one a hand-over gives a sub-parent in a
-// tree of its own — is.
+// A5. One children-first notice per parent per run: every pass (the pass rule, Admission.Apply)
+// and boot runs the admission pass again, and a child filed later during one wait is no second
+// telling, while a run the tree has not had yet — the one a re-admission opens, and the one a
+// hand-over gives a sub-parent in a tree of its own — is.
 func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)

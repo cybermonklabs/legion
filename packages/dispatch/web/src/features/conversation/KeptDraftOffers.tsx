@@ -1,5 +1,7 @@
+import type { MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
+import type { Actor } from "../../api/types";
 import {
   dangerText,
   linkHoverText,
@@ -8,10 +10,18 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import type { ComposerKind } from "./composer-model";
+import { SendStoppedError } from "../writes/keyed-write";
+import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
-import type { GoneReplyDraft, KeptDrafts, OfferedDraft } from "./useKeptDrafts";
+import { useUnsentDrafts } from "./unsent-drafts";
+import {
+  composerNameOf,
+  type GoneReplyDraft,
+  type KeptDrafts,
+  type OfferedDraft,
+} from "./useKeptDrafts";
 
 /** Each kind as a kept draft names the one it was written as, beside a compose of another
  *  (`KeptDraftOffers`) or in the margin's list of what its compose kept (`MarginKeptDrafts`). */
@@ -56,6 +66,7 @@ export function DraftOffer({
         <blockquote
           className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
         >
+          {/* The reader's own text as the field holds it: the reading list's `kept-draft`. */}
           {body}
         </blockquote>
         {replacement === "" ? null : (
@@ -93,12 +104,64 @@ export function DraftOffer({
 }
 
 /**
+ * The reply the reader kept for a thread whose root its author deleted, where the host draws no
+ * reply composer: the post keeps its place, but Dispatch takes no reply to it (`409
+ * POST_DELETED`), so no Reply or Send goes on with the reply. Its own words are drawn instead,
+ * from where the thread's reply composer kept them under `mutationKey` - typed and never sent
+ * (`unsent-drafts.ts`, an inline reply's or a standing box's), or a send Dispatch refused or the
+ * reader stopped (`held-sends.ts`) - saying the post was deleted and giving no word of it, with
+ * Discard my draft, which drops them where they are kept. Nothing is sent. The margin's thread
+ * card draws it under a deleted root (`ThreadCard`), and so does the Inbox's thread
+ * (`ThreadBody`).
+ */
+export function KeptReplyToDeleted({
+  actor,
+  mutationKey,
+  parentKind,
+}: {
+  /** The deleted post's author. */
+  readonly actor: Actor;
+  readonly mutationKey: MutationKey;
+  readonly parentKind: ReplyTarget["parentKind"];
+}): ReactNode {
+  const store = useHeldSends();
+  const unsent = useUnsentDrafts();
+  const name = composerNameOf(mutationKey);
+  const held = useHeldSend(mutationKey);
+  const typed = unsent.useUnsent(name);
+  const refused = held?.status === "refused" ? held : undefined;
+  const draft = refused?.draft.draft ?? typed;
+  if (draft === undefined) return null;
+  return (
+    <div className="mt-2">
+      <DraftOffer
+        body={draft.body}
+        drop={{
+          label: "Discard my draft",
+          press: () => {
+            if (refused !== undefined) store.discard(mutationKey);
+            else unsent.write(name, undefined);
+          },
+        }}
+        lead={<GoneReply actor={actor} deleted parentKind={parentKind} />}
+        note={
+          refused?.refusal instanceof SendStoppedError
+            ? "Dispatch has not confirmed this reply: it may have been posted, and if it was, it is listed in this thread."
+            : undefined
+        }
+        replacement={draft.replacement}
+      />
+    </div>
+  );
+}
+
+/**
  * What a composer offers beside its field that the field does not hold (`useKeptDrafts`): an
  * edit written over a body the comment no longer holds (`changed`), a draft a margin compose
  * kept for other words of its document (`offered`), and each reply it keeps whose comment or
- * message its host no longer lists (`gone`). Each waits with the words that say why, and with the
- * reader's presses for it: one takes it into the field, where the composer can send it, and the
- * other drops it. Nothing is saved or sent meanwhile.
+ * message its host no longer lists, or lists deleted (`gone`). Each waits with the words that say
+ * why, and with the reader's presses for it: one takes it into the field, where the composer can
+ * send it, and the other drops it. Nothing is saved or sent meanwhile.
  */
 export function KeptDraftOffers({
   changed,
@@ -156,6 +219,7 @@ export function KeptDraftOffers({
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: onDropOffered }}
+          // The words the draft was written for, as the document has them: `anchor-quote`.
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}
@@ -166,11 +230,13 @@ export function KeptDraftOffers({
           }
         />
       )}
-      {/* A reply kept for a comment or message the host no longer lists: the Reply its kept line
-          would name is gone with it, so the reply itself waits here, with the words that say whose
-          comment or message it answered, and Discard my draft. At the owner's own address, Use it
-          here puts it in the field as a message that answers none, once nothing of the field's
-          own is there to be written over, and the words say when it waits for that. */}
+      {/* A reply kept for a comment or message the host no longer lists, or lists deleted, which
+          takes no reply: the Reply its kept line would name goes nowhere, so the reply itself
+          waits here, with the words that say whose comment or message it answered and what
+          became of it - never a word of that post - and Discard my draft. At the owner's own
+          address, Use it here puts it in the field as a message that answers none, once nothing
+          of the field's own is there to be written over, and the words say when it waits for
+          that. */}
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
@@ -179,6 +245,7 @@ export function KeptDraftOffers({
           lead={
             <GoneReply
               actor={away.replyTo.actor}
+              deleted={away.listing === "deleted"}
               parentKind={away.replyTo.parentKind}
               waits={goneTakes === "once empty"}
             />

@@ -31,6 +31,9 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  type Envelope,
+  EnvelopeSchema,
+  IDEMPOTENCY_KEY_COMMITTED,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -40,7 +43,7 @@ import {
   MARKER_MAX_AGE_MS,
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
-import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
+import { brokerTokenFor, forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
@@ -48,11 +51,16 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
-import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
+import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
+import {
+  NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  natsConnectionOptions,
+} from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -64,9 +72,18 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
+  sessionGrantConfig,
+  useNatsServerDirectory,
+} from "@legion/envoy-client/test/nats-server";
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
-import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
+import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
@@ -89,16 +106,22 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
+import { type ConnectionOptions, ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
+import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with {
+  type: "json",
+};
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import type { EnvoyModule } from "../test/envoy-module";
 import { runSessionPod } from "../test/session-pod-report";
 import {
   type BranchEntry,
@@ -213,6 +236,23 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
+/**
+ * The row a session's own work runs for. `bootDirectSession` starts its session inside this
+ * scope, so what the session goes on to do (a delivery, a person's `!command` and its answer)
+ * carries the row that booted it; the file's `beforeEach` makes each row a new one. Bun fails a
+ * row at its timeout and starts the next while that row's session still runs (bun kills the
+ * row's dangling child, and the command it was running then answers), so what such a session
+ * writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read as the
+ * next row's.
+ */
+const rowScope = new AsyncLocalStorage<symbol>();
+let currentRow = Symbol("row");
+/** Whether the code running now is the work of a session whose row has ended. */
+function fromEndedRow(): boolean {
+  const row = rowScope.getStore();
+  return row !== undefined && row !== currentRow;
+}
+
 test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
   // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
   // the recording wrapper, and so is handed its own request again on every call, each after an
@@ -314,11 +354,17 @@ const natsState = {
   /** Each connection `close()` was called on, by the name its dial carried: a dial nothing holds
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
+  /** Every connection the stand-in made, in order, so a row can close one for good, as nats.js
+   *  closes a connection on an authorization error it does not ignore, or on `close()`. */
+  connections: [] as { readonly close: () => Promise<void> }[],
   failConnects: 0,
   /** The error a failed connect throws, as nats.js throws it: its refusal by default, a
    *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
    *  carries of it. */
   failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
+  /** What `closed()` of a connection settles with once it is closed, as nats.js settles it with
+   *  the close's own error (protocol.js:906-913); none by default. */
+  closeError: undefined as Error | undefined,
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -394,15 +440,15 @@ const natsStandInConnect = async (options: {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
-  // nats.js's `closed()`: settles once the connection is closed for good.
-  const ended = Promise.withResolvers<void>();
-  return {
+  // nats.js's `closed()`: settles once the connection is closed for good, with the close's error.
+  const ended = Promise.withResolvers<Error | undefined>();
+  const made = {
     isClosed: () => closed || natsState.connectionsClosed,
     closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
-      ended.resolve();
+      ended.resolve(natsState.closeError);
     },
     drain: async () => {
       natsState.drainStarted = true;
@@ -461,6 +507,7 @@ const natsStandInConnect = async (options: {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
       }
+      if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
@@ -544,6 +591,8 @@ const natsStandInConnect = async (options: {
       return subscription;
     },
   };
+  natsState.connections.push(made);
+  return made;
 };
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
@@ -705,6 +754,7 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
+  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -761,9 +811,6 @@ afterEach(async () => {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   // A broker client's retry loop trades on for the process's life, so each row's clients are
   // closed with it: one whose trades were failing would go on trading, and logging, into the
   // rows after it.
@@ -818,6 +865,7 @@ afterEach(async () => {
   natsState.presented.length = 0;
   natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
+  natsState.connections.length = 0;
   // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
   // would park every later test's connect for the rest of the process.
   natsState.heldConnect = undefined;
@@ -831,6 +879,7 @@ afterEach(async () => {
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
   natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
+  natsState.closeError = undefined;
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
@@ -1153,7 +1202,9 @@ const acceptOnce =
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
 /** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key as Dispatch's keyed layer does (`key`), which is what lets the client ask again under it. */
+ *  key (`key`) as Dispatch's keyed layer does. The resend ignores the echo: the client asks again
+ *  under its key whatever the answer carries, and reads the echo only to settle a fresh 4xx
+ *  refusal that echoes exactly its key. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
@@ -1249,13 +1300,6 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
-    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back and its
-    // /healthz says so, so a failed accept is asked again under its key.
-    if (url.pathname === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok", idempotency_keys: true }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {
@@ -1275,7 +1319,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card.
+      // read-back would keep the card. Such a call from a session whose row has ended
+      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
+      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
@@ -1283,7 +1330,15 @@ async function bootDirectSession(
           if (replies.length >= waiter.count) waiter.resolve();
           else replyWaiters.push(waiter);
         }
-        return new Response(JSON.stringify({}), { status: 201 });
+        // Typed JSON carrying the request's key back, as Dispatch answers a keyed write
+        // (`acceptResponse`). An untyped 2xx is something in Dispatch's place (`foreign-2xx`,
+        // dispatch-http.ts), so the reply would fail and the session would post its failure as a
+        // second reply after the row had read the first.
+        const key = new Headers(init?.headers).get("Idempotency-Key");
+        return Response.json(
+          {},
+          { status: 201, ...(key !== null && { headers: { "Idempotency-Key": key } }) }
+        );
       }
       const read = await options.dispatch?.(url, init);
       if (read !== undefined) return read;
@@ -1295,7 +1350,7 @@ async function bootDirectSession(
   };
   // Query-string isolation gives each caller its own instance of this stateful extension, and a
   // restart its second one; the specifier is the caller's, so it cannot be a static import.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const waiters: { readonly count: number; readonly resolve: () => void }[] = [];
   const recordedWhenDelivered: number[] = [];
@@ -1313,7 +1368,7 @@ async function bootDirectSession(
     }
   };
   const run = options.sendUserInput;
-  envoyExtension({
+  await envoyExtension({
     ...fixture.pi,
     sendMessage: (message: never, sendOptions: unknown) => {
       options.beforeSend?.(message.content);
@@ -1360,7 +1415,10 @@ async function bootDirectSession(
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  // Inside the row's scope, so the session's work carries this row (`rowScope`).
+  await rowScope.run(currentRow, async () => {
+    await fixture.handlers.get("session_start")?.({}, context);
+  });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
   if (agent === undefined) throw new Error("agent subject was not subscribed");
   const delivered = (count: number): Promise<void> => {
@@ -1487,18 +1545,28 @@ function stubBroker(label: string) {
   };
 }
 
+/** One turn of the real event loop, from before any test fakes the timers: a file read the
+ *  settings make lands in such a turn, which no microtask flush reaches. */
+const realSetImmediate = globalThis.setImmediate;
+const realTurn = () => new Promise<void>((resolve) => realSetImmediate(() => resolve()));
+
 /**
  * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
  * second at a time: a write Dispatch keeps failing is asked again under its key until the
  * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ * The clock stands still until `waiting` says the work is waiting on it: before its first
+ * request, the accept reads the session's envoy.json, which is real I/O, while the accept's bound
+ * (an `AbortSignal.timeout`, on the test's clock) already runs, and a second moved then would be
+ * one the code under test never waited.
  */
-async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+async function onTestClock<T>(pending: () => Promise<T>, waiting: () => boolean): Promise<T> {
   jest.useFakeTimers();
   try {
     let settled = false;
     const watched = pending().finally(() => {
       settled = true;
     });
+    while (!settled && !waiting()) await realTurn();
     for (let second = 0; second < 60 && !settled; second++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
       jest.advanceTimersByTime(1_000);
@@ -1712,7 +1780,7 @@ async function bootSessionPod(
     if (launch.session !== undefined) process.env.ENVOY_SESSION_ROLE_SESSION = launch.session;
   }
   // Each caller's own query loads an instance of its own, so the specifier cannot be static.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const notices: string[] = [];
@@ -1732,7 +1800,7 @@ async function bootSessionPod(
       notify: (message: string, level: string) => notices.push(`${level}: ${message}`),
     },
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   return {
     fixture,
@@ -1888,7 +1956,7 @@ const ASK_REMINDER_TYPE = "dispatch-ask-reminder";
  * only verdict that reaches the visible steer.
  */
 async function bootAskNudge(
-  envoyExtension: (pi: TestPi) => void,
+  envoyExtension: (pi: TestPi) => Promise<void>,
   sessionID: string,
   snapshot: (since: string | undefined) => {
     readonly as_of?: string;
@@ -2003,7 +2071,7 @@ async function bootAskNudge(
     asked.push(input);
     return selfCheck === undefined ? Promise.resolve({ replyText: "WAITING" }) : selfCheck(input);
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   // A fresh TUI has no session yet at `session_start`; the host mints the id before the first
   // turn, and the extension's own `sessionID` heals only on the next heartbeat.
   let live = options.lazySessionID === true ? "" : sessionID;
@@ -2163,9 +2231,20 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
+// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
+// neither polls on after the row nor throws into a later one.
+async function until(
+  condition: () => boolean,
+  what: string,
+  timeoutMs = 2_000,
+  ended?: AbortSignal
+): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
+  for (;;) {
+    if (ended?.aborted === true) return;
+    if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
   }
@@ -2173,10 +2252,10 @@ async function until(condition: () => boolean, what: string, timeoutMs = 2_000):
 
 describe("envoy OMP extension", () => {
   test("discovers the bundled envoy skill from the repository root", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?resources-discover");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?resources-discover");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resourcesDiscover = fixture.handlers.get("resources_discover");
     if (resourcesDiscover === undefined) throw new Error("resources_discover was not registered");
 
@@ -2217,9 +2296,9 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-summary");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?open-ask-summary");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck(sessionContext("ses_reminder"));
     await fixture.handlers.get("session_start")?.({}, context);
     const beforeAgentStart = fixture.handlers.get("before_agent_start");
@@ -2240,9 +2319,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-unavailable");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?open-ask-unavailable"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck({
       ...sessionContext("ses_unknown"),
       ui: {
@@ -2283,9 +2364,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-availability-latch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?open-ask-availability-latch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck({
       ...sessionContext(),
       sessionManager: { ...topLevelSession, getSessionId: () => activeSessionID },
@@ -2318,7 +2401,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("nudges a WAITING stop, and its own reply-only continuation nudges nothing", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-fires");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-fires");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_fires", () => ({}));
 
     await session.userTurn();
@@ -2582,7 +2665,9 @@ describe("envoy OMP extension", () => {
   }
 
   test("runs the stop-time check on the managed timer, after agent_end has returned", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-after-handler");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-after-handler"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_after_handler", () => ({}), {
       holdTimers: true,
     });
@@ -2600,7 +2685,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a user turn between a stop and its timer leaves that stop unchecked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-turn-before-timer");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-turn-before-timer"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_turn_before_timer", () => ({}), {
       holdTimers: true,
     });
@@ -2626,7 +2713,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a woken run between a stop and its timer leaves that stop unchecked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-before-timer");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-before-timer"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_before_timer", () => ({}), {
       holdTimers: true,
     });
@@ -2642,7 +2731,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check answers PROCEEDING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-proceeding");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-proceeding"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_proceeding", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2656,7 +2747,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("the agent's next real work owes the period another check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2691,7 +2782,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("neither a dispatch command nor a failed tool call re-arms the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-excluded");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-rearm-excluded"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_no", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2727,7 +2820,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a rebutted dispatch command, recorded with its override as a trailing comment, does not re-arm the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-rebutted");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-rearm-rebutted"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_rebutted", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2756,7 +2851,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a bash command that is not a dispatch command owes a check, ledger or not", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-ls");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm-ls");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_ls", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2787,7 +2882,9 @@ describe("envoy OMP extension", () => {
       tool: "dispatch_ask",
       details: { ask: "ask-old" },
     });
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-resumed-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-resumed-ledger"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_resumed_ledger", () => ({}));
 
     await session.userTurn();
@@ -2803,7 +2900,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a malformed ledger line is logged with its file and line and never stalls the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-malformed-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-malformed-ledger"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_malformed_ledger", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2842,7 +2941,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("one armed period pays for at most five checks however much work happens", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-cap");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm-cap");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_cap", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2868,7 +2967,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a host that never answers the self-check is bounded by the extension's own clock", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-hangs");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-hangs");
     // A host that ignores the AbortSignal: the call it started never settles, ever. Without a
     // bound of its own the handler would hold the in-flight latch — and every later check with
     // it — for as long as that call hung.
@@ -2903,7 +3002,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("checks a fresh TUI whose session id the extension has not healed to yet", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-lazy-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-lazy-id");
     // `session_start` ran before the host minted an id, so the extension's own `sessionID` is
     // empty until the registration heartbeat heals it — up to 90 seconds of a brand-new
     // terminal. The period carries the id that armed it, which is the live one.
@@ -2918,7 +3017,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("work re-arms the check in a fresh TUI too", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-lazy-rearm");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-lazy-rearm"
+    );
     // The same drift window as above, now on the edge that re-arms: a `tool_result` that read
     // the module's own `sessionID` would match nothing until the heartbeat healed it, so a
     // brand-new terminal got one check for the whole window and none of the re-arming this
@@ -2944,7 +3045,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the heartbeat's drift heal leaves a fresh TUI's armed period alone", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-drift-heal");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-drift-heal"
+    );
     // The heal re-establishes the session the extension is already in — it is how a fresh TUI's
     // id reaches the registry at all — so it must not count as a session change. It fires every
     // `ENVOY_HEARTBEAT_MS` (90 s), and a first turn routinely runs longer than that.
@@ -2963,7 +3066,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the drift heal names the live id for the dispatch command and reads that id's ledger", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-drift-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-drift-ledger"
+    );
     // The host minted the id after `session_start` (a fresh TUI's first, or one it moved the
     // session file off to), with no session event after which it refreshes the shell's
     // environment: the heal names the id and refreshes that environment itself.
@@ -2991,7 +3096,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("re-establishing the same session during an Envoy outage keeps the armed period", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-nats-retry");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-nats-retry"
+    );
     // NATS is down when the session starts, so the extension retries `establishSession` every
     // `NATS_RETRY_INTERVAL_MS` for the whole outage, each attempt re-entering the restore path
     // a `/fork` uses. The nudge is not an Envoy feature — it reads Dispatch — so an outage must
@@ -3008,7 +3115,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a session change resets the period and aborts the check it invalidated", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-switch");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-switch");
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_switch", () => ({}), {
@@ -3070,10 +3177,12 @@ describe("envoy OMP extension", () => {
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-subagent");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?ask-nudge-subagent"
+      );
       const asked: string[] = [];
       const parent = createPi();
-      envoyExtension(parent.pi);
+      await envoyExtension(parent.pi);
       await parent.handlers.get("session_start")?.(
         {},
         {
@@ -3082,7 +3191,7 @@ describe("envoy OMP extension", () => {
         }
       );
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       const childContext: SessionContext = {
         ...sessionWithTranscript("ses_child", childFile, []),
         runEphemeralTurn: async () => {
@@ -3106,7 +3215,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check answers anything but WAITING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unparsed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-unparsed");
     let verdict = "I think I am probably waiting on Sami here.";
     const session = await bootAskNudge(envoyExtension, "ses_nudge_unparsed", () => ({}), {
       selfCheck: async () => ({ replyText: verdict }),
@@ -3135,7 +3244,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check fails, and logs it once per session", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-selfcheck-fails");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-selfcheck-fails"
+    );
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
@@ -3172,7 +3283,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges on a host that cannot ask ephemerally", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-no-ephemeral");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-no-ephemeral"
+    );
     // The same OMP builds that cannot serve a Dispatch BTW: with no self-check there is no
     // trigger, so the session does not pay the arming round trip either.
     const session = await bootAskNudge(envoyExtension, "ses_nudge_no_ephemeral", () => ({}), {
@@ -3186,7 +3299,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when a new user turn arrives while the self-check is in flight", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-selfcheck-stale");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-selfcheck-stale"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_selfcheck_stale", () => ({}), {
@@ -3212,7 +3327,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("drops the verdict when the agent opened the ask itself while the check was in flight", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-ask-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-ask-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_midflight", () => ({}), {
@@ -3242,7 +3359,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a slow arming query does not let a superseded check steer the turn just typed", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-slow-arming");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-slow-arming"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_slow_arming", () => ({}), {
@@ -3283,7 +3402,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that starts while the check is open is not steered, and its own settle is checked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_midflight", () => ({}), {
@@ -3314,7 +3435,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that settles while the check is open is checked once the open check ends", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_midflight", () => ({}), {
@@ -3344,7 +3467,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a recorded settle that a newer turn has overtaken is not re-checked into that turn", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-overtaken");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-overtaken"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_overtaken", () => ({}), {
@@ -3387,7 +3512,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a recorded settle is not re-checked while the turn that overtook it is still arming", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-arming");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-arming"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_arming", () => ({}), {
@@ -3430,7 +3557,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that starts while Dispatch answers the stop pays for no check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-during-query");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-during-query"
+    );
     const query = Promise.withResolvers<void>();
     const queryOut = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_during_query", () => ({}), {
@@ -3457,7 +3586,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a check this extension aborts is not logged as a failure", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-abort-quiet");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-abort-quiet"
+    );
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
@@ -3502,7 +3633,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("nudges a WAITING session even when it already holds an open ask", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-waiting");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-waiting"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_held_waiting", () => ({
       asks: [{ question: "Which deployment window should I use?" }],
     }));
@@ -3517,7 +3650,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("leaves a held ask silent when the self-check answers PROCEEDING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-proceeding");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-proceeding"
+    );
     const session = await bootAskNudge(
       envoyExtension,
       "ses_nudge_held_proceeding",
@@ -3533,7 +3668,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("names no open asks or the first five held ask questions in the self-check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-prompt-asks");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-prompt-asks"
+    );
     const longQuestion = `A held question that exceeds the prompt limit: ${"x".repeat(130)}`;
     const heldQuestions = [
       "First held question",
@@ -3573,7 +3710,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("the ask the agent opens itself spends the check the period owed", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-opens-ask");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-opens-ask");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_opens", () => ({}));
 
     await session.userTurn();
@@ -3602,7 +3739,9 @@ describe("envoy OMP extension", () => {
   // opener is a block depends on where it lands, as code or inside a blockquote or a list item.
   test("a dispatch doc-edit spends the check exactly when the server reports a decision block it added", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-block");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-document-block"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_block", () => ({}));
     const editThenStop = async (
       markdown: string,
@@ -3649,7 +3788,7 @@ describe("envoy OMP extension", () => {
   test("an eval cell during which the ledger grew owes no check, and an ask it opened spends one", async () => {
     // An eval cell reaches `dispatch` only through a shell its code starts, which no scan of the
     // code can read, so the ledger growing during the cell is what says it ran one.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-eval");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-eval");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_eval", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -3693,7 +3832,9 @@ describe("envoy OMP extension", () => {
   // call opens no ask: it must not spend the check the turn owes.
   test("dispatch ask --help or dispatch request-approval --help spends no check", async () => {
     for (const command of ["ask", "request-approval"]) {
-      const { default: envoyExtension } = await import(`./envoy.ts?ask-nudge-help-${command}`);
+      const { default: envoyExtension }: EnvoyModule = await import(
+        `./envoy.ts?ask-nudge-help-${command}`
+      );
       const session = await bootAskNudge(envoyExtension, `ses_nudge_help_${command}`, () => ({}));
       await session.userTurn();
       await session.toolResult({
@@ -3712,7 +3853,9 @@ describe("envoy OMP extension", () => {
 
   test("a document written through dispatch issue or dispatch artifact spends the check only when it holds a decision block", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-upload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-document-upload"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_upload", () => ({}));
 
     // The server's count, which a `--path` upload carries too, not the command's text.
@@ -3747,7 +3890,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the five-check period budget applies while the session holds open asks", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-budget");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-budget"
+    );
     const session = await bootAskNudge(
       envoyExtension,
       "ses_nudge_held_budget",
@@ -3772,7 +3917,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("waits for the real stop when OMP has already scheduled a continuation", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-will-continue");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-will-continue"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_continue", () => ({}));
 
     await session.userTurn();
@@ -3784,7 +3931,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a Legion-managed session", async () => {
-    const extension = await import("./envoy.ts?ask-nudge-legion");
+    const extension: EnvoyModule = await import("./envoy.ts?ask-nudge-legion");
     const session = await bootAskNudge(extension.default, "ses_nudge_legion", () => ({}));
     await claimEnvoyRole("ses_nudge_legion", "legion-project-issue-worker", session.context);
 
@@ -3808,7 +3955,9 @@ describe("envoy OMP extension", () => {
     // transcript into a newly minted id while the session stays Legion-driven, so the entry is
     // never matched against the id the guard runs under.
     for (const recordedID of ["ses_nudge_restored", "ses_nudge_before_the_fork"]) {
-      const extension = await import(`./envoy.ts?ask-nudge-legion-resume-${recordedID}`);
+      const extension: EnvoyModule = await import(
+        `./envoy.ts?ask-nudge-legion-resume-${recordedID}`
+      );
       const session = await bootAskNudge(extension.default, "ses_nudge_restored", () => ({}), {
         branch: [
           {
@@ -3828,7 +3977,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when Dispatch could not be reached this turn", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unreachable");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-unreachable"
+    );
     let reachable = false;
     const session = await bootAskNudge(envoyExtension, "ses_nudge_offline", () => {
       if (!reachable) throw new Error("network offline");
@@ -3843,7 +3994,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("does not arm a period for a turn that carries no user text", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-synthetic");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-synthetic");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_synthetic", () => ({}));
 
     await session.userTurn();
@@ -3858,7 +4009,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a session that starts cold cannot nudge until a user turn arms a period", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-resume");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-resume");
     // The arming period never reaches the transcript, so a resumed session restores none: it
     // begins at period 0, which the stop guard refuses outright — it does not even ask
     // Dispatch. A prior process's own nudge in the branch changes nothing.
@@ -3883,7 +4034,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a second stop inside one Dispatch round trip is one nudge and one query", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-race");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-race");
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_race", () => ({}), {
       holdStopQuery: () => held,
@@ -3908,7 +4059,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a headless run the host gave no UI context", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-headless");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-headless");
     // `omp -p`: the host disposes the session when its one run ends and has already printed its
     // output, so a steered continuation is either aborted or billed for text nobody reads.
     const session = await bootAskNudge(envoyExtension, "ses_nudge_headless", () => ({}), {
@@ -3925,7 +4076,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a stop the run did not settle normally", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unsettled");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-unsettled");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_unsettled", () => ({}));
 
     await session.userTurn();
@@ -3990,10 +4141,10 @@ describe("envoy OMP extension", () => {
         trace_id: "trace_1",
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
 
     expect(
@@ -4269,8 +4420,10 @@ describe("envoy OMP extension", () => {
     const fixture = createPi({ zod: injected });
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?injected-zod-identity");
-    envoyExtension(fixture.pi);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?injected-zod-identity"
+    );
+    await envoyExtension(fixture.pi);
 
     for (const tool of fixture.tools) {
       const parameters = tool.parameters as z.ZodObject<z.ZodRawShape>;
@@ -4283,9 +4436,11 @@ describe("envoy OMP extension", () => {
   });
 
   test("uses the shared metadata schema to reject an invalid urgency", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?shared-metadata-validation");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shared-metadata-validation"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     const spec = envoyToolSpecs.find((candidate) => candidate.name === "envoy_send");
     if (send === undefined || spec === undefined) throw new Error("envoy_send was not registered");
@@ -4301,9 +4456,11 @@ describe("envoy OMP extension", () => {
   test("registers every Envoy tool with lenient host validation so execute is the one error surface", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?lenient-arg-validation");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?lenient-arg-validation"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
     expect(fixture.tools.filter((tool) => tool.lenientArgValidation !== true)).toEqual([]);
@@ -4315,9 +4472,9 @@ describe("envoy OMP extension", () => {
       requests += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?envoy-tool-one-pass");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?envoy-tool-one-pass");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     requests = 0;
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
@@ -4356,9 +4513,11 @@ describe("envoy OMP extension", () => {
         status: 404,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?missing-target-error");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?missing-target-error"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     if (send === undefined) throw new Error("envoy_send was not registered");
@@ -4393,9 +4552,9 @@ describe("envoy OMP extension", () => {
         { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
       );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sender-rate-limited");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     const publish = fixture.tools.find((tool) => tool.name === "envoy_publish");
@@ -4443,9 +4602,11 @@ describe("envoy OMP extension", () => {
     process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
     process.env.SLACK_POST_API_URL = `http://127.0.0.1:${slack.port}/api`;
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import(`./envoy.ts?slack-post-${slack.port}`);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      `./envoy.ts?slack-post-${slack.port}`
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const tool = fixture.tools.find((candidate) => candidate.name === "slack_post");
     if (tool === undefined) throw new Error("slack_post was not registered");
@@ -4508,10 +4669,12 @@ describe("envoy OMP extension", () => {
 
   test("rejects malformed wildcard bases before opening subscriptions", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?malformed-wildcard-base");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?malformed-wildcard-base"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribe === undefined) throw new Error("subscription tool was not registered");
@@ -4552,10 +4715,10 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?interest-recovery");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?interest-recovery");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resumed = {
       ...sessionContext(),
       sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
@@ -4623,12 +4786,12 @@ describe("envoy OMP extension", () => {
       };
       // A fresh module per row, as every test here loads one: the extension keeps its state in
       // module scope, so a static import would carry one row's hold into the next.
-      const { default: envoyExtension } = await import(
+      const { default: envoyExtension }: EnvoyModule = await import(
         `./envoy.ts?old-form-role-record-${rewrite ? "rewritten" : "kept"}`
       );
       const fixture = createPi();
 
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const resumed = {
         ...sessionContext(),
         sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
@@ -4665,10 +4828,10 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-rebind");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-rebind");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4726,10 +4889,10 @@ describe("envoy OMP extension", () => {
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-memory-rebind");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-memory-rebind");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_memory"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4775,10 +4938,12 @@ describe("envoy OMP extension", () => {
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-new-resume-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-new-resume-switch"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_outgoing"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4828,16 +4993,16 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: firstLife } = await import("./envoy.ts?role-reaped-life-1");
+    const { default: firstLife }: EnvoyModule = await import("./envoy.ts?role-reaped-life-1");
     const first = createPi();
-    firstLife(first.pi);
+    await firstLife(first.pi);
     await first.handlers.get("session_start")?.({}, sessionContext("ses_reaped"));
     await first.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role: "sre" });
     expect(roleClaims).toEqual([{ session_id: "ses_reaped", role: "sre" }]);
 
-    const { default: secondLife } = await import("./envoy.ts?role-reaped-life-2");
+    const { default: secondLife }: EnvoyModule = await import("./envoy.ts?role-reaped-life-2");
     const second = createPi();
-    secondLife(second.pi);
+    await secondLife(second.pi);
     const resumed = {
       ...sessionContext("ses_reaped"),
       sessionManager: {
@@ -4885,9 +5050,9 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-no-steal");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-no-steal");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resumedParent = {
       ...sessionContext("ses_fork_parent"),
       sessionManager: {
@@ -4920,10 +5085,10 @@ describe("envoy OMP extension", () => {
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?no-dispatch-tools");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?no-dispatch-tools");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.filter((tool) => tool.name.startsWith("dispatch_"))).toEqual([]);
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
@@ -4960,9 +5125,9 @@ describe("envoy OMP extension", () => {
 
   test("names the top-level session in DISPATCH_SESSION_ID at start and after a switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?dispatch-session-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?dispatch-session-id");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dispatch_env"));
     expect(process.env.DISPATCH_SESSION_ID).toBe("ses_dispatch_env");
@@ -4988,7 +5153,7 @@ describe("envoy OMP extension", () => {
       const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
       const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
       const { handlers, pi } = createStandInHost();
-      envoyExtension(pi);
+      await envoyExtension(pi);
       await handlers.get("session_start")?.({}, {
         cwd: process.cwd(),
         hasUI: true,
@@ -5047,9 +5212,9 @@ describe("envoy OMP extension", () => {
 
   test("the main agent's tool call finds the session's current title in its title file", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-main");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-main");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let title: string | undefined = "Saved carts";
     const context = titledContext("main", () => title);
     await fixture.handlers.get("session_start")?.({}, context);
@@ -5079,9 +5244,9 @@ describe("envoy OMP extension", () => {
 
   test("a task subagent's shell command writes no title file: the session it names is its parent's", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-sub");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-sub");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       titledContext("main", () => "Parent")
@@ -5098,9 +5263,11 @@ describe("envoy OMP extension", () => {
 
   test("a registration heartbeat writes the session's title file with no tool call at all", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-heartbeat");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-heartbeat"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5121,9 +5288,9 @@ describe("envoy OMP extension", () => {
 
   test("a heartbeat while the host answers no name leaves the title file standing", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-no-name");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-no-name");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let name: string | undefined = "Saved carts";
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
@@ -5163,9 +5330,11 @@ describe("envoy OMP extension", () => {
         },
       })
     );
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-envoy-off");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-envoy-off"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5192,9 +5361,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, []);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-write-throws");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-write-throws"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5216,9 +5387,11 @@ describe("envoy OMP extension", () => {
 
   test("a title write that throws leaves the main agent's tool call returning", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-tool-call-throws");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-tool-call-throws"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = titledContext("main", () => "Saved carts");
     await fixture.handlers.get("session_start")?.({}, context);
     const toolCall = fixture.handlers.get("tool_call");
@@ -5238,9 +5411,11 @@ describe("envoy OMP extension", () => {
     delete process.env.DISPATCH_TOKEN;
     process.env.HOME = "/nonexistent-home-for-dispatch-gating";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?native-dispatch-disabled");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?native-dispatch-disabled"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
     const notifications: string[] = [];
@@ -5291,9 +5466,11 @@ describe("envoy OMP extension", () => {
         return new Response("no request belongs here", { status: 500 });
       };
       try {
-        const { default: envoyExtension } = await import("./envoy.ts?envoy-json-profile");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?envoy-json-profile"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const file = join(agentDirectory, "envoy.json");
         const notifications: string[] = [];
         const context = notifying("ses_profile", notifications);
@@ -5343,9 +5520,11 @@ describe("envoy OMP extension", () => {
         hosts.push(new URL(input.toString()).host);
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-envoy-only");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-envoy-only"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, notifying("ses_envoy_only", notifications));
 
@@ -5384,9 +5563,11 @@ describe("envoy OMP extension", () => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-credentials");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-credentials"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
@@ -5409,9 +5590,11 @@ describe("envoy OMP extension", () => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-pane-credentials");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-pane-credentials"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pane_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
@@ -5436,9 +5619,9 @@ describe("envoy OMP extension", () => {
         })
       );
       process.env.ENVOY_CONFIG_FILE = handed;
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-handed");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?envoy-json-handed");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       expect(process.env.ENVOY_CONFIG_FILE).toBe(handed);
       expect(fixture.tools).toEqual([]);
@@ -5452,9 +5635,11 @@ describe("envoy OMP extension", () => {
     test("envoy.json: a relative XDG_CONFIG_HOME still loads the plugin, with both sections off and said once", async () => {
       delete process.env.ENVOY_CONFIG_FILE;
       process.env.XDG_CONFIG_HOME = "relative/config";
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-relative-xdg");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-relative-xdg"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, notifying("ses_relative", notifications));
 
@@ -5581,9 +5766,9 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-on");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-on");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5616,9 +5801,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-envoy-json");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-envoy-json"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5647,9 +5834,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-rules-notice");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-rules-notice"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5732,9 +5921,9 @@ console.log(JSON.stringify(args));
     // a shell or kernel started before it still acts as the old session, and removed at shutdown.
     test("session_start writes the session's record, a switch writes the new one's and keeps the old, and shutdown removes both", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-record");
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       const first = recordOf("ses_askgate");
@@ -5770,9 +5959,11 @@ console.log(JSON.stringify(args));
     // process removed it, and stops at shutdown.
     test("while it keeps a record, the instance touches its store every beat and makes it again when it is gone", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-beat");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-beat"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       jest.useFakeTimers();
       try {
@@ -5801,9 +5992,11 @@ console.log(JSON.stringify(args));
     // posted in that window. A rebind of the same session id keeps the block that session recorded.
     test("a rebind of the same session keeps a block it recorded, never turning it back to warn", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-rebind");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-rebind"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5822,9 +6015,11 @@ console.log(JSON.stringify(args));
     // the user is told at once, as at session start, and not only in the log.
     test("a record that cannot be written after a switch reaches the user as a notice", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-switch-fails");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-switch-fails"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       expect(notifications).toEqual([]);
@@ -5856,18 +6051,18 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const off = await import("./envoy.ts?askgate-record-off");
+      const off: EnvoyModule = await import("./envoy.ts?askgate-record-off");
       const offFixture = createPi();
-      off.default(offFixture.pi);
+      await off.default(offFixture.pi);
       await offFixture.handlers.get("session_start")?.({}, gateContext([]));
       expect(recordOf("ses_askgate")).toBeNull();
       // Dispatch off.
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       delete process.env.DISPATCH_URL;
       delete process.env.DISPATCH_TOKEN;
-      const noDispatch = await import("./envoy.ts?askgate-record-no-dispatch");
+      const noDispatch: EnvoyModule = await import("./envoy.ts?askgate-record-no-dispatch");
       const noDispatchFixture = createPi();
-      noDispatch.default(noDispatchFixture.pi);
+      await noDispatch.default(noDispatchFixture.pi);
       await noDispatchFixture.handlers.get("session_start")?.({}, gateContext([]));
       expect(recordOf("ses_askgate")).toBeNull();
       // A task subagent: its instance binds no session id, so it writes no record.
@@ -5876,16 +6071,16 @@ console.log(JSON.stringify(args));
       try {
         const parentFile = transcripts.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
         const childFile = transcripts.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl");
-        const sub = await import("./envoy.ts?askgate-record-subagent");
+        const sub: EnvoyModule = await import("./envoy.ts?askgate-record-subagent");
         const child = createPi();
-        sub.default(child.pi);
+        await sub.default(child.pi);
         await child.handlers.get("session_start")?.(
           {},
           sessionWithTranscript("ses_child", childFile, [])
         );
         expect(recordOf("ses_child")).toBeNull();
         const parent = createPi();
-        sub.default(parent.pi);
+        await sub.default(parent.pi);
         await parent.handlers.get("session_start")?.(
           {},
           sessionWithTranscript("ses_parent", parentFile, [])
@@ -5905,9 +6100,11 @@ console.log(JSON.stringify(args));
         delete process.env.DISPATCH_STATE_DIR;
         process.env.XDG_STATE_HOME = stateHome;
         gateOn();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-state-dir");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-state-dir"
+        );
         const fixture = allHandlers();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         const root = join(stateHome, "dispatch");
         expect(process.env.DISPATCH_STATE_DIR).toBe(root);
@@ -5920,9 +6117,9 @@ console.log(JSON.stringify(args));
         await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
 
         process.env.DISPATCH_STATE_DIR = preset;
-        const again = await import("./envoy.ts?askgate-state-dir-set");
+        const again: EnvoyModule = await import("./envoy.ts?askgate-state-dir-set");
         const fixtureAgain = allHandlers();
-        again.default(fixtureAgain.pi);
+        await again.default(fixtureAgain.pi);
         await fixtureAgain.handlers.get("session_start")?.({}, gateContext([]));
         expect(process.env.DISPATCH_STATE_DIR).toBe(preset);
         expect(askgateState(sessionDirectory(process.env, "ses_askgate")).kind).toBe("on");
@@ -5935,9 +6132,9 @@ console.log(JSON.stringify(args));
     }, 30_000);
     test("a gated write the CLI logged as unmarked becomes an advisor-gate entry the report counts", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-unmarked");
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       const dir = sessionDirectory(process.env, "ses_askgate");
@@ -6072,12 +6269,12 @@ console.log(JSON.stringify(args));
      * appended.
      */
     const unmarkedRun = async (
-      envoyExtension: (pi: TestPi) => void,
+      envoyExtension: (pi: TestPi) => Promise<void>,
       argv: readonly string[],
       wanted = 1
     ) => {
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInRecordProject();
@@ -6141,7 +6338,9 @@ console.log(JSON.stringify(args));
     // token and nothing else counts the asks that went out, or were refused, unreviewed.
     test("an unmarked dispatch ask in warn mode publishes one record of it, with its ask count and no ask text", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-warn");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-warn"
+      );
       const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
       expect(run.records).toMatchObject([
         {
@@ -6169,7 +6368,9 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE = "block";
       try {
         gateOn();
-        const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-block");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?unmarked-record-block"
+        );
         const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
         expect(run.records).toMatchObject([
           {
@@ -6189,7 +6390,9 @@ console.log(JSON.stringify(args));
 
     test("an unmarked dispatch comment publishes no record: no person waits on it", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-comment");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-comment"
+      );
       const run = await unmarkedRun(
         envoyExtension,
         ["comment", "--issue", "DSP-1", "--body", "The rollout landed."],
@@ -6208,7 +6411,9 @@ console.log(JSON.stringify(args));
         asks,
         ":::ask{#window}\nWhich deployment window?\n:::\n\n:::ask{#owner}\nWho owns the rollout?\n:::\n"
       );
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-upload");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-upload"
+      );
       const run = await unmarkedRun(envoyExtension, [
         "artifact",
         "--issue",
@@ -6246,9 +6451,9 @@ console.log(JSON.stringify(args));
       return { reached: reached.promise };
     };
     /** The session's gate bound, an unmarked `dispatch ask` logged, and nothing read yet. */
-    const unmarkedWriteLogged = async (envoyExtension: (pi: TestPi) => void) => {
+    const unmarkedWriteLogged = async (envoyExtension: (pi: TestPi) => Promise<void>) => {
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       const dispatch = hangingRecordProject();
@@ -6288,7 +6493,9 @@ console.log(JSON.stringify(args));
 
     test("an unmarked write's tool result returns while its record still waits on Dispatch", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-hangs");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-hangs"
+      );
       const run = await unmarkedWriteLogged(envoyExtension);
       const handled = run.readLedger();
       // The record is in flight against a Dispatch that will never answer it.
@@ -6307,7 +6514,9 @@ console.log(JSON.stringify(args));
 
     test("a record the session could not write lands as an advisor-gate-record follow-up keyed on the unmarked entry", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-follow-up");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-follow-up"
+      );
       const run = await unmarkedWriteLogged(envoyExtension);
       await run.readLedger();
       await run.reached;
@@ -6332,7 +6541,9 @@ console.log(JSON.stringify(args));
     // by replacing it: the first recorder's records are dropped. One recorder serves both.
     test("an unmarked ask and a gated call in one session share the decision document: it is created once and both records append", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?record-one-document");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?record-one-document"
+      );
       standInDispatch();
       const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
       expect(run.records).toMatchObject([{ outcome: "unmarked", asksCarried: 1 }]);
@@ -6390,9 +6601,11 @@ console.log(JSON.stringify(args));
     // neither an allow that resets a target's revises nor a verdict that resets the halt's count.
     test("an unmarked entry leaves the breaker as it was: the third attempt after two revises still trips it", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked-breaker");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unmarked-breaker"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInDispatch();
@@ -6410,9 +6623,11 @@ console.log(JSON.stringify(args));
     }, 30_000);
     test("an unmarked entry leaves the halt's count as it was: the third call without a verdict still halts", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked-halt");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unmarked-halt"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInDispatch();
@@ -6451,9 +6666,11 @@ console.log(JSON.stringify(args));
         cfgSkills: { get: () => ({}) },
         cfgExtensionHandlersToolCallTimeoutMs: { get: () => 30_000 },
       }));
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-short-deadline");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-short-deadline"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
 
@@ -6479,9 +6696,11 @@ console.log(JSON.stringify(args));
         );
         process.chdir(checkout);
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-checkout-disable");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-checkout-disable"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const notifications: string[] = [];
         const context = gateContext(notifications);
         await fixture.handlers.get("session_start")?.({}, context);
@@ -6507,9 +6726,9 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-off");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-off");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6532,9 +6751,11 @@ console.log(JSON.stringify(args));
       delete process.env.DISPATCH_URL;
       delete process.env.DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-dispatch");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-dispatch"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6563,9 +6784,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unparsable");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unparsable"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6589,9 +6812,11 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-load-fails");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-load-fails"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const notifications: string[] = [];
         const context = gateContext(notifications);
         await fixture.handlers.get("session_start")?.({}, context);
@@ -6637,9 +6862,11 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-load-fails-block");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-load-fails-block"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         // The gate did not load, so it records no mode; the record carries the session's choice,
         // and a gated write the gate never saw is refused by the CLI, not posted with a warning.
@@ -6680,9 +6907,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-config-path");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-config-path"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6717,10 +6946,12 @@ console.log(JSON.stringify(args));
         },
       ]);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?invalid-session-machine");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?invalid-session-machine"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const sessionsTool = fixture.tools.find((tool) => tool.name === "envoy_sessions");
     if (sessionsTool === undefined) throw new Error("envoy_sessions was not registered");
 
@@ -6757,9 +6988,11 @@ console.log(JSON.stringify(args));
       },
     ];
     globalThis.fetch = async () => response(sessions);
-    const { default: envoyExtension } = await import("./envoy.ts?sessions-machine-filter");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?sessions-machine-filter"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const sessionsTool = fixture.tools.find((tool) => tool.name === "envoy_sessions");
     if (sessionsTool === undefined) throw new Error("envoy_sessions was not registered");
     const listed = async (machine: string) => {
@@ -6788,10 +7021,12 @@ console.log(JSON.stringify(args));
       number: 42,
     };
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-structured-payload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-structured-payload"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6832,10 +7067,12 @@ console.log(JSON.stringify(args));
 
   test("injects a non-JSON envelope payload as raw text without serializing its envelope", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-plain-text-payload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-plain-text-payload"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6876,10 +7113,10 @@ console.log(JSON.stringify(args));
 
   test("names the sender and injects a reply instruction for a peer agent message", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?sender-reply-hint");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sender-reply-hint");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6921,10 +7158,10 @@ console.log(JSON.stringify(args));
   });
 
   test("renders a human envelope without reply metadata", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?human-rendering");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?human-rendering");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6963,10 +7200,10 @@ console.log(JSON.stringify(args));
 
   test("renders a message this session sent to itself as an ordinary delivery", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?self-echo");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?self-echo");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7006,10 +7243,10 @@ console.log(JSON.stringify(args));
     });
   });
   test("deduplicates a webhook redelivery without suppressing a later envelope", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?dispatch-echo");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?dispatch-echo");
     const fixture = createPi();
     const afterEcho = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7056,10 +7293,10 @@ console.log(JSON.stringify(args));
   });
 
   test("keeps a valid event id when a frame's dedupe key is empty", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?empty-dedupe-key");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?empty-dedupe-key");
     const fixture = createPi();
     const sentinel = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7108,10 +7345,10 @@ console.log(JSON.stringify(args));
   });
 
   test("an empty event id identifies nothing, so two distinct frames that carry one both arrive", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?empty-event-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?empty-event-id");
     const fixture = createPi();
     const sentinel = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7142,10 +7379,12 @@ console.log(JSON.stringify(args));
 
   test("never exposes a malformed envelope frame", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-malformed-envelope");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-malformed-envelope"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7193,10 +7432,10 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-agent-delivery");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-agent-delivery");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7265,9 +7504,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-set-keeps-bound-role");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-set-keeps-bound-role"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_role_bound");
     await fixture.handlers.get("session_start")?.({}, context);
     await claimEnvoyRole("ses_role_bound", role, context);
@@ -7359,10 +7600,12 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?controller-notice-lane");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?controller-notice-lane"
+    );
     const fixture = createPi();
     let shown = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7451,9 +7694,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?controller-lane-unheld");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?controller-lane-unheld"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_no_role");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -7485,9 +7730,11 @@ console.log(JSON.stringify(args));
         paths.push(new URL(input.toString()).pathname);
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?outage-still-registers");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?outage-still-registers"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
@@ -7524,9 +7771,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?background-confirm");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?background-confirm"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
@@ -7593,9 +7842,11 @@ console.log(JSON.stringify(args));
           });
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?one-bound-per-pass");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?one-bound-per-pass"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       // A connection that answers no round trip at all, rather than rejecting one: every flush
       // this pass takes waits its bound out.
@@ -7642,9 +7893,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?reconnect-clears-mark");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?reconnect-clears-mark"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
@@ -7688,9 +7941,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?background-clears-mark");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?background-clears-mark"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
@@ -7733,9 +7988,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?shutdown-stops-asking");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?shutdown-stops-asking"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
@@ -8007,9 +8264,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${label}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${label}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // The host's one session manager. Every context it hands out reads the manager as it stands:
     // a session event moves its id first, and a `/new` its transcript too, so a reclaim reads the
     // transcript as of its read. The first context to establish keeps the heartbeat the extension
@@ -11592,18 +11849,22 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtensionA } = await import("./envoy.ts?role-agent-takeover-a");
+    const { default: envoyExtensionA }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-takeover-a"
+    );
     const fixtureA = createPi();
-    envoyExtensionA(fixtureA.pi);
+    await envoyExtensionA(fixtureA.pi);
     await fixtureA.handlers.get("session_start")?.({}, sessionContext("ses_role_a"));
     const roleToolA = fixtureA.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleToolA === undefined) throw new Error("role tool was not registered for session A");
     await roleToolA.execute("", { role });
 
-    const { default: envoyExtensionB } = await import("./envoy.ts?role-agent-takeover-b");
+    const { default: envoyExtensionB }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-takeover-b"
+    );
     const fixtureB = createPi();
     const injectedB = Promise.withResolvers<void>();
-    envoyExtensionB({
+    await envoyExtensionB({
       ...fixtureB.pi,
       sendMessage: (message, options) => {
         fixtureB.pi.sendMessage(message, options);
@@ -11651,10 +11912,12 @@ console.log(JSON.stringify(args));
       if (!listenerAvailable) throw new Error("listener API unavailable");
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-agent-listener-down");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-listener-down"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -11716,7 +11979,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-claim-heartbeat");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-claim-heartbeat"
+    );
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
@@ -11724,7 +11989,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(intervals).toHaveLength(1);
     expect(registrations).toHaveLength(1);
@@ -12178,14 +12443,16 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-preserves-role");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?unsubscribe-preserves-role"
+    );
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
       ...sessionContext("ses_unsubscribe"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
@@ -12247,9 +12514,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?uncaptured-subscribe"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A resumed session, which is what reads its stored interest row again and follows what it
     // holds (`recoverRegisteredInterests`).
     const base = sessionContext("ses_uncaptured");
@@ -12293,6 +12562,264 @@ console.log(JSON.stringify(args));
     expect(registered).toContain("notifications.team.deploys");
   });
 
+  // An edge listener refuses a whole registration that names a topic of no project of the
+  // session's token, naming each refused topic. The session drops exactly those, says which in
+  // the tool's answer, and its next heartbeat registers the rest rather than being refused again.
+  test("a topic the edge refuses for the session's projects is dropped, named, and never registered again", async () => {
+    const refusedRoot = "notifications.github.acme.priv";
+    const registrations: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        registrations.push(topics);
+        const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refused.length > 0) return Response.json(projectRefusal(refused), { status: 403 });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?edge-refused-topic");
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext("ses_edge_refused"),
+      setInterval: (callback) => intervals.push(callback),
+    };
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+
+    const subscribed = await subscribeTool.execute("", {
+      topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
+    });
+
+    expect(subscribed.isError).toBeFalsy();
+    // The tool reports each concrete subject it follows: a named `X.>` is `X` and `X.>`.
+    expect(subscribed.details).toMatchObject({
+      added: ["notifications.dispatch.issue.PRIV-1", "notifications.dispatch.issue.PRIV-1.>"],
+      refused: [refusedRoot, `${refusedRoot}.>`],
+    });
+    expect(subscribed.content[0]?.text).toContain(
+      `Refused by the listener for this session's projects: ${refusedRoot}, ${refusedRoot}.>`
+    );
+    expect(await followedTopics(fixture.tools, context)).not.toContain(`${refusedRoot}.>`);
+    const refusedAt = registrations.findIndex((topics) =>
+      topics.some((topic) => topic.startsWith(refusedRoot))
+    );
+    expect(refusedAt).toBeGreaterThanOrEqual(0);
+    // The next heartbeat carries the rest, and no registration after the refusal names it again.
+    intervals[0]?.();
+    for (let tick = 0; tick < 300 && registrations.length < refusedAt + 3; tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const carriedAgain = registrations
+      .slice(refusedAt + 1)
+      .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)));
+    if (carriedAgain.length > 0) {
+      throw new Error(
+        `a registration carried a refused topic again: ${JSON.stringify(carriedAgain)}`
+      );
+    }
+    expect(registrations.length).toBeGreaterThanOrEqual(refusedAt + 3);
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining(["notifications.dispatch.issue.PRIV-1.>"])
+    );
+  });
+
+  // The edge can start refusing a topic it accepted before, as when the broker's answer for the
+  // token's projects stops naming a repository: the heartbeat's registration is refused, the topic
+  // is dropped, and the session is told once, in its transcript, naming the topic and the edge's
+  // reason, rather than going on believing it follows it.
+  test("a topic the edge refuses at a heartbeat is told to the session once, naming it and the reason", async () => {
+    const refusedRoot = "notifications.github.acme.priv";
+    let refusing = false;
+    const registrations: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        registrations.push(topics);
+        const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refusing && refused.length > 0) {
+          return Response.json(projectRefusal(refused), { status: 403 });
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?edge-refused-at-heartbeat"
+    );
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext("ses_edge_refused_later"),
+      setInterval: (callback) => intervals.push(callback),
+    };
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const told = () =>
+      fixture.entries
+        .map((entry) => ("data" in entry ? entry.data : undefined))
+        .map((data) =>
+          typeof data === "object" &&
+          data !== null &&
+          "content" in data &&
+          typeof data.content === "string"
+            ? data.content
+            : ""
+        )
+        .filter((content) => content.includes(refusedRoot));
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+    try {
+      const subscribed = await subscribeTool.execute("", {
+        topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
+      });
+      expect(subscribed.details).not.toHaveProperty("refused");
+      expect(told()).toEqual([]);
+
+      refusing = true;
+      const refusedAt = registrations.length;
+      intervals[0]?.();
+      await until(
+        () => registrations.length >= refusedAt + 2,
+        "the heartbeat's refused registration and the one after it",
+        10_000
+      );
+      intervals[0]?.();
+      await until(
+        () => registrations.length >= refusedAt + 3,
+        "the next heartbeat's registration",
+        10_000
+      );
+      await settle();
+
+      expect(told()).toHaveLength(1);
+      expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`);
+      expect(told()[0]).toContain("repository_not_in_project");
+      expect(await followedTopics(fixture.tools, context)).not.toContain(`${refusedRoot}.>`);
+    } finally {
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    }
+  });
+
+  // Registrations are not serialized: the tool's and a heartbeat's can both carry a topic the edge
+  // refuses, and both be refused. The topic stops being followed once, so the session is told of
+  // it once, and the tool still names it, from its own registration's answer.
+  test("two registrations refused the same topic at once tell the session once, and the tool still names it", async () => {
+    const refusedRoot = "notifications.github.acme.priv";
+    const held: (() => void)[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refused.length > 0) {
+          // Answered only once both registrations are in flight.
+          const { promise, resolve } = Promise.withResolvers<void>();
+          held.push(resolve);
+          await promise;
+          return Response.json(projectRefusal(refused), { status: 403 });
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?edge-refused-twice-at-once"
+    );
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext("ses_edge_refused_twice"),
+      setInterval: (callback) => intervals.push(callback),
+    };
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const told = () =>
+      fixture.entries
+        .map((entry) => ("data" in entry ? entry.data : undefined))
+        .map((data) =>
+          typeof data === "object" &&
+          data !== null &&
+          "content" in data &&
+          typeof data.content === "string"
+            ? data.content
+            : ""
+        )
+        .filter((content) => content.includes(refusedRoot));
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+    try {
+      const subscribing = subscribeTool.execute("", {
+        topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
+      });
+      await until(() => held.length === 1, "the tool's registration in flight", 10_000);
+      intervals[0]?.();
+      await until(() => held.length === 2, "the heartbeat's registration in flight", 10_000);
+      for (const release of held.splice(0)) release();
+      const subscribed = await subscribing;
+      await settle();
+
+      expect(told()).toHaveLength(1);
+      expect(subscribed.details).toMatchObject({
+        added: ["notifications.dispatch.issue.PRIV-1", "notifications.dispatch.issue.PRIV-1.>"],
+        refused: [refusedRoot, `${refusedRoot}.>`],
+      });
+    } finally {
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    }
+  });
+
+  // The tool names as refused only what its own registration was refused: a topic the session
+  // stopped following meanwhile, by an unsubscribe or a session switch, was subscribed, not
+  // refused by the listener.
+  test("a topic unsubscribed while the tool's registration is in flight is reported subscribed, not refused", async () => {
+    const kept = "notifications.dispatch.issue.PRIV-1";
+    const held: (() => void)[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        if (topics.includes(`${kept}.>`) && held.length === 0) {
+          // The tool's registration, answered only once the unsubscribe has landed.
+          const { promise, resolve } = Promise.withResolvers<void>();
+          held.push(resolve);
+          await promise;
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?unsubscribed-in-flight"
+    );
+    const fixture = createPi();
+    const context = sessionContext("ses_unsubscribed_in_flight");
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
+    if (subscribeTool === undefined || unsubscribeTool === undefined) {
+      throw new Error("subscription tools were not registered");
+    }
+    try {
+      const subscribing = subscribeTool.execute("", { topics: [`${kept}.>`] });
+      await until(() => held.length === 1, "the tool's registration in flight", 10_000);
+      await unsubscribeTool.execute("", { topics: [kept, `${kept}.>`] });
+      for (const release of held.splice(0)) release();
+      const subscribed = await subscribing;
+
+      expect(subscribed.details).toMatchObject({ added: [kept, `${kept}.>`] });
+      expect(subscribed.details).not.toHaveProperty("refused");
+    } finally {
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    }
+  });
+
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;
@@ -12327,9 +12854,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-subscription-unsubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-subscription-unsubscribe"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_role_subscription");
     await fixture.handlers.get("session_start")?.({}, context);
 
@@ -12405,7 +12934,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-reassert");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-reassert");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12416,7 +12945,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_reassert"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("role tool was not registered");
@@ -12477,7 +13006,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-read-404");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-read-404");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const regainFired = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12490,7 +13019,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_lapsed_read"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("role tool was not registered");
@@ -12530,7 +13059,7 @@ console.log(JSON.stringify(args));
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-quiet");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-quiet");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12541,7 +13070,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_quiet"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     const claimEntries = () =>
@@ -12594,7 +13123,7 @@ console.log(JSON.stringify(args));
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-409");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-409");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12617,7 +13146,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -12674,7 +13203,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-outage-regain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-outage-regain"
+    );
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12696,7 +13227,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -12755,7 +13286,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-hung-hook");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-hung-hook");
     let hookCalls = 0;
     onEnvoyRoleRegained(async () => {
       hookCalls += 1;
@@ -12769,7 +13300,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     expect(registrations).toBe(1);
@@ -12819,7 +13350,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-pass");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-pass"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
@@ -12847,7 +13380,7 @@ console.log(JSON.stringify(args));
         }
         return registrations;
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(registrations).toBe(1);
 
@@ -12902,14 +13435,16 @@ console.log(JSON.stringify(args));
         if (url.pathname === "/v1/interests/subscribe") registrations += 1;
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-move");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-move"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_wedged_move"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
       expect(registrations).toBe(1);
@@ -12945,7 +13480,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-said-once");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-said-once"
+      );
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
@@ -12959,7 +13496,7 @@ console.log(JSON.stringify(args));
           setInterval: (callback) => intervals.push(callback),
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
 
         // A healthy tick before any stall is silent.
@@ -13029,14 +13566,16 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-new-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-new-session"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_stall_moved"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const switched = Promise.withResolvers<void>();
       try {
         await fixture.handlers.get("session_start")?.({}, context);
@@ -13110,7 +13649,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-regain");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-regain"
+      );
       const regained: { readonly role: string; readonly reason: string }[] = [];
       const hooked = Promise.withResolvers<void>();
       onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -13123,7 +13664,7 @@ console.log(JSON.stringify(args));
         ...sessionContext("ses_stall_regain"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -13193,13 +13734,15 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?abandoned-writes-nothing");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?abandoned-writes-nothing"
+      );
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
         // The first session's pass parks here, with its connection half made.
         natsState.heldConnect = connected.promise;
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_fenced_a"));
         natsState.heldConnect = undefined;
 
@@ -13271,11 +13814,11 @@ console.log(JSON.stringify(args));
     // that path. Only a connection closed for good makes the open give up; a rejection on a
     // connection that is not closed leaves it to go on, confirmed in the background.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?control-flush-fails");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?control-flush-fails");
     const fixture = createPi();
     const control = "agentstream.ses_control_flush.control";
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_control_flush");
     natsState.failFlushClosesConnection = true;
     natsState.failFlushOnSubject = control;
@@ -13303,13 +13846,15 @@ console.log(JSON.stringify(args));
     await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 200 }, async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
       // Each row loads its own instance of the extension, as every row in this file does.
-      const { default: envoyExtension } = await import("./envoy.ts?abandoned-dial-closed");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?abandoned-dial-closed"
+      );
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
         // The first session's pass parks in its dial and is abandoned at its deadline.
         natsState.heldConnect = connected.promise;
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dial_a"));
         natsState.heldConnect = undefined;
 
@@ -13363,7 +13908,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-role-read-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-role-read-failure"
+    );
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -13383,7 +13930,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -13433,7 +13980,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-late-regain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-late-regain"
+    );
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -13453,7 +14002,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     expect(registrations).toBe(1);
@@ -13500,10 +14049,10 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?register-session");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-session");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_register"));
 
     expect(requests).toContainEqual({
@@ -13541,9 +14090,9 @@ console.log(JSON.stringify(args));
       });
     };
     // Query isolation gives this stateful extension its own module state, as every test here does.
-    const { default: envoyExtension } = await import("./envoy.ts?register-bounded");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-bounded");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_bounded");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -13592,11 +14141,11 @@ console.log(JSON.stringify(args));
         topics: ["notifications.agent.ses_target"],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-btw");
     const fixture = createPi();
     const asked: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -13674,9 +14223,11 @@ console.log(JSON.stringify(args));
       return response({});
     };
     // Query-string isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-comment-btw");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-comment-btw"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -13702,6 +14253,113 @@ console.log(JSON.stringify(args));
         },
       },
     ]);
+  });
+
+  // A reply Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) is a reply
+  // posted: the attempt is answered with it. Each row boots a session whose reply route answers
+  // that, relays it one comment BTW and answers with what the session posted, what its log said
+  // and what it printed as a failure.
+  describe("a reply that landed with no answer", () => {
+    const REPLY = "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply";
+    const LANDED = "envoy: a reply landed on Dispatch, which gave no copy of its answer";
+
+    async function btwLanded(
+      name: string,
+      runEphemeralTurn?: () => Promise<{ replyText: string }>
+    ): Promise<{ replies: unknown[]; warnings: string[]; failures: string[] }> {
+      process.env.DISPATCH_URL = "http://dispatch.test";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
+      const replies: unknown[] = [];
+      globalThis.fetch = async (input, init) => {
+        const path = new URL(input.toString()).pathname;
+        if (path === "/v1/interests/subscribe") {
+          return response({
+            session_id: "ses_delivery",
+            machine_id: "test",
+            dir: "/tmp",
+            topics: ["notifications.agent.ses_delivery"],
+            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+          });
+        }
+        if (path === REPLY) {
+          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+          return new Response(
+            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
+            { status: 409, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return response({});
+      };
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const printed = spyOn(console, "warn").mockImplementation(() => undefined);
+      const failures = () =>
+        printed.mock.calls
+          .map((call) => String(call[0]))
+          .filter((line) => line.includes("failed to deliver"));
+      try {
+        // Query-string isolation gives this stateful extension its own NATS subscription.
+        const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${name}`);
+        const fixture = createPi();
+        await envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.(
+          {},
+          {
+            ...sessionContext("ses_delivery"),
+            ...(runEphemeralTurn === undefined ? {} : { runEphemeralTurn }),
+          }
+        );
+        const agent = natsState.controls.get("notifications.agent.ses_delivery");
+        if (agent === undefined) throw new Error("agent subject was not subscribed");
+        agent.push(targetedCommentEnvelope("btw", name));
+        // Settled either way: the line that says the reply landed, or a second reply on the
+        // attempt, or the failure the delivery prints.
+        await until(
+          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0,
+          "the reply's outcome"
+        );
+        await settle();
+        return { replies, warnings, failures: failures() };
+      } finally {
+        stopSink();
+        printed.mockRestore();
+      }
+    }
+
+    test("a BTW's reply is taken as posted, and no error reply follows it on the attempt", async () => {
+      const { replies, warnings, failures } = await btwLanded("btw-reply-landed", async () => ({
+        replyText: "Comment reply.",
+      }));
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          body: "Comment reply.",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
+
+    test("an error reply that landed is no failure to deliver the frame", async () => {
+      // A host with no side turn refuses the BTW, and that refusal is the reply that lands.
+      const { replies, warnings, failures } = await btwLanded("btw-refusal-landed");
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          error: "This OMP host does not support BTW delivery",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
   });
 
   test("delivers a targeted Steer card and an Aside each as an aside, a turn running or not", async () => {
@@ -13894,7 +14552,10 @@ console.log(JSON.stringify(args));
           path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
         },
       ]);
-      expect(fixture.userMessages).toEqual([{ content: DIRECT_MESSAGE_BODY, options: undefined }]);
+      // A person's own turn from outside the session, which ends a cyber-policy hold.
+      expect(fixture.userMessages).toEqual([
+        { content: DIRECT_MESSAGE_BODY, options: { origin: "outside" } },
+      ]);
       expect(fixture.deliveries).toEqual([]);
       expect(posts).toEqual([]);
       // The attempt is in the transcript before the turn goes out, so no crash in between leaves
@@ -13921,13 +14582,14 @@ console.log(JSON.stringify(args));
     });
 
     // Send is Enter at the terminal (no deliverAs); Aside lands at the next step. The frame's
-    // mode and text are what any publisher wrote, so Dispatch's answer decides both.
+    // mode and text are what any publisher wrote, so Dispatch's answer decides both. Either is the
+    // person's own turn, from outside the session, whatever the frame says.
     for (const [index, [frameMode, storedMode, options]] of (
       [
-        ["steer", "steer", undefined],
-        ["aside", "aside", { deliverAs: "aside" }],
-        ["steer", "aside", { deliverAs: "aside" }],
-        ["aside", "steer", undefined],
+        ["steer", "steer", { origin: "outside" }],
+        ["aside", "aside", { deliverAs: "aside", origin: "outside" }],
+        ["steer", "aside", { deliverAs: "aside", origin: "outside" }],
+        ["aside", "steer", { origin: "outside" }],
       ] as const
     ).entries()) {
       test(`a frame saying ${frameMode} whose stored attempt is ${storedMode} is delivered as ${storedMode}`, async () => {
@@ -14041,10 +14703,13 @@ console.log(JSON.stringify(args));
         const { accepts, agent, delivered, fixture, posts, recordedWhenDelivered } =
           await bootDirectSession(`direct-accept-refused-${name}`, { accept: () => answer });
 
-        await onTestClock(() => {
-          agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
-          return delivered(1);
-        });
+        await onTestClock(
+          () => {
+            agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
+            return delivered(1);
+          },
+          () => accepts.length > 0
+        );
 
         expect(accepts).toHaveLength(attempts);
         expect(new Set(accepts.map((accept) => accept.key)).size).toBe(1);
@@ -14058,6 +14723,44 @@ console.log(JSON.stringify(args));
       });
     }
 
+    // An accept Dispatch recorded and gave no copy of its answer for (`409 KEY_COMMITTED`) spent
+    // the attempt as this session's, and the stored body a turn is made of is not in hand: the
+    // frame keeps its card, and the line says the accept was recorded and why no turn follows,
+    // never that Dispatch did not accept it.
+    test("stays a card, saying the accept was recorded, when the accept landed with no answer", async () => {
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const { accepts, agent, delivered, fixture, posts } = await bootDirectSession(
+          "direct-accept-landed",
+          { accept: () => ({ code: IDEMPOTENCY_KEY_COMMITTED, status: 409 }) }
+        );
+
+        await onTestClock(
+          () => {
+            agent.push(directDispatchEnvelope("steer", "direct-accept-landed"));
+            return delivered(1);
+          },
+          () => accepts.length > 0
+        );
+
+        expect(accepts).toHaveLength(1);
+        expect(fixture.userMessages).toEqual([]);
+        expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+          "envoy-message",
+        ]);
+        expect(posts).toEqual([]);
+        expect(warnings).toContain(
+          "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card"
+        );
+        expect(warnings.filter((warning) => warning.includes("did not accept"))).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
+
     // A failure that can clear is no answer: the accept asks again under its key, and Dispatch's
     // answer to the retry decides, so a Send whose first answer was lost is still the person's turn.
     test("is the user's turn when the accept's first attempt fails in transport and its retry is accepted", async () => {
@@ -14066,10 +14769,13 @@ console.log(JSON.stringify(args));
         { accept: (count) => (count === 1 ? { reject: "fetch failed" } : { accepted: true }) }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
 
       expect(accepts.map((accept) => accept.path)).toEqual([
         `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
@@ -14077,7 +14783,9 @@ console.log(JSON.stringify(args));
       ]);
       expect(accepts[1]?.key).toBe(accepts[0]?.key as string);
       expect(fixture.deliveries).toEqual([]);
-      expect(fixture.userMessages).toEqual([{ content: DIRECT_MESSAGE_BODY, options: undefined }]);
+      expect(fixture.userMessages).toEqual([
+        { content: DIRECT_MESSAGE_BODY, options: { origin: "outside" } },
+      ]);
     });
 
     // The ways a session could otherwise make a person's message a fresh user turn (Deep's
@@ -14168,10 +14876,13 @@ console.log(JSON.stringify(args));
         }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
       // The person's retry is an attempt of its own, which the session has not delivered.
       agent.push(directDispatchEnvelope("aside", "direct-carded-retry-2", { attempt: 2 }));
       await delivered(2);
@@ -14184,7 +14895,7 @@ console.log(JSON.stringify(args));
       expect(accepts[4]?.key).not.toBe(accepts[0]?.key as string);
       expect(fixture.deliveries).toHaveLength(1);
       expect(fixture.userMessages).toEqual([
-        { content: DIRECT_MESSAGE_BODY, options: { deliverAs: "aside" } },
+        { content: DIRECT_MESSAGE_BODY, options: { deliverAs: "aside", origin: "outside" } },
       ]);
     });
 
@@ -14339,26 +15050,128 @@ console.log(JSON.stringify(args));
       });
     }
 
+    // The live view draws the Envoy cards the session displays from its stream, and a person's
+    // Dispatch message from Dispatch's store (dispatch://INFRA-5271, R1). So a card that delivers
+    // a Dispatch message to the session names that message in its `details`, and the stream
+    // leaves the card out; every other card is streamed as the terminal shows it.
+    const cardFrames = () =>
+      natsState.published
+        .filter((published) => published.subject === "agentstream.ses_delivery.frames")
+        .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
+        .filter((frame) => frame.kind === "message");
+
+    /** Hands the session `envelope` while a viewer watches, and writes the card it shows as the
+     *  host does, through `message_start` and `message_end`. */
+    async function writeCard(query: string, envelope: string) {
+      const { agent, context, delivered, fixture } = await bootDirectSession(query, {
+        accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+      });
+      natsState.controls
+        .get("agentstream.ses_delivery.control")
+        ?.push(JSON.stringify({ type: "watch", v: 1 }));
+      agent.push(envelope);
+      await delivered(1);
+      const [card] = fixture.deliveries;
+      if (card === undefined) throw new Error("the session showed no card");
+      const message = { ...card, role: "custom", timestamp: 10 };
+      await fixture.handlers.get("message_start")?.({ message }, context);
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      return card;
+    }
+
+    for (const [name, envelope, messageID] of [
+      [
+        "an issue message to the session",
+        targetedDispatchEnvelope("steer", "card-stream-issue"),
+        "11111111-1111-4111-8111-111111111111",
+      ],
+      [
+        "a person's direct message Dispatch did not accept as a turn",
+        directDispatchEnvelope("steer", "card-stream-direct"),
+        DIRECT_MESSAGE_ID,
+      ],
+    ] as const) {
+      test(`${name} keeps its card, which names the message, out of the live stream`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).toMatchObject({ dispatchMessageId: messageID });
+        expect(cardFrames()).toEqual([]);
+      });
+    }
+
+    const peerWords = "Two findings:\n\n1. one\n2. two";
+    for (const [name, envelope, text] of [
+      [
+        "a comment that mentions the session",
+        targetedCommentEnvelope("aside", "card-stream-comment"),
+        (content: string) => `Envoy message from dispatch:\n\n\`\`\`\n${content}\n\`\`\``,
+      ],
+      [
+        "another agent's message",
+        JSON.stringify({
+          event_id: "evt-card-stream-peer",
+          source: "agent",
+          source_event_id: "source-card-stream-peer",
+          source_session: "ses_peer",
+          topic: "notifications.agent.ses_delivery",
+          dedupe_key: `agent.ses_peer.${createHash("sha256").update("card-stream-peer").digest("hex").slice(0, 32)}`,
+          issued_at: 1,
+          payload: peerWords,
+          payload_summary: "Two findings: …",
+          trace_id: "trace-card-stream-peer",
+        }),
+        () => `Envoy message from ses_peer:\n\n${peerWords}`,
+      ],
+    ] as const) {
+      test(`${name} reaches the live stream as one user message saying who sent it`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).not.toHaveProperty("dispatchMessageId");
+        const frames = cardFrames();
+        // The card's start and its end, one message.
+        expect(frames).toHaveLength(2);
+        expect(new Set(frames.map((frame) => frame.message.id)).size).toBe(1);
+        expect(frames[1]?.message).toMatchObject({
+          at: 10,
+          parts: [{ text: text(card.content), type: "text" }],
+          role: "user",
+          streaming: false,
+        });
+        expect(frames[1]?.message.dispatchMessageId).toBeUndefined();
+      });
+    }
+
     // On a host with `pi.sendUserInput` (our fork, can1357/oh-my-pi#14323) a person's accepted
     // Send or Aside runs as typed at the terminal: a command, a skill, a template or a prompt.
     // Whatever a command printed, or why it did not run, is the session's reply on Dispatch, which
     // the conversation shows; a turn the model now works on is its own answer.
     describe("on a host that runs typed input", () => {
+      // Each is the person's own turn, from outside the session, which ends a cyber-policy hold.
       for (const [name, frameMode, acceptedMode, inputOptions] of [
-        ["a Send accepted as a Send", "steer", "steer", { tag: DIRECT_MESSAGE_ID }],
+        [
+          "a Send accepted as a Send",
+          "steer",
+          "steer",
+          { tag: DIRECT_MESSAGE_ID, origin: "outside" },
+        ],
         [
           "an Aside accepted as an Aside",
           "aside",
           "aside",
-          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID },
+          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID, origin: "outside" },
         ],
         [
           "a frame claiming Send accepted as Aside",
           "steer",
           "aside",
-          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID },
+          { deliverAs: "aside", tag: DIRECT_MESSAGE_ID, origin: "outside" },
         ],
-        ["a frame claiming Aside accepted as Send", "aside", "steer", { tag: DIRECT_MESSAGE_ID }],
+        [
+          "a frame claiming Aside accepted as Send",
+          "aside",
+          "steer",
+          { tag: DIRECT_MESSAGE_ID, origin: "outside" },
+        ],
       ] as const) {
         test(`runs the stored body as typed in ${name}`, async () => {
           const { agent, delivered, fixture, inputs } = await bootDirectSession(
@@ -14841,11 +15654,43 @@ console.log(JSON.stringify(args));
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
+      /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
+       *  the row returned or bun failed it at its timeout with a wait still parked. */
+      const rowEnds: AbortController[] = [];
       afterEach(() => {
+        for (const ended of rowEnds.splice(0)) ended.abort();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
       });
+
+      /** The timeout bun holds each row that waits on its command to, and how long before it the
+       *  row's wait gives up (`rowWait`). */
+      const SHELL_ROW_TIMEOUT_MS = 20_000;
+      const SHELL_ROW_MARGIN_MS = 1_000;
+      /**
+       * Starts the waits of a row on its command, measured from this call, which is the row's
+       * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
+       * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
+       * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
+       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
+       * and answers false, and the row returns, so nothing of it polls or throws after it ended.
+       */
+      const rowWait = () => {
+        const started = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
+        return async (condition: () => boolean, what: string): Promise<boolean> => {
+          await until(
+            condition,
+            what,
+            SHELL_ROW_TIMEOUT_MS - SHELL_ROW_MARGIN_MS - (performance.now() - started),
+            ended.signal
+          );
+          return !ended.signal.aborted;
+        };
+      };
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -14976,6 +15821,35 @@ console.log(JSON.stringify(args));
         );
       }, 20_000);
 
+      // A host busy with a turn as the command ends queues the agent's copy for its next prompt
+      // and fires `message_start` and `message_end` for it then (dispatch://INFRA-5271 review).
+      // The live view holds the report already, keyed on the person's message, so the copy names
+      // that message and the stream leaves it out: the report is drawn once.
+      test("the agent's copy of the report, written by a busy host at its next prompt, adds nothing to the live stream", async () => {
+        const { agent, context, fixture, replied } = await bootShellSession(
+          "shell-command-copy-written",
+          { accept: () => ({ accepted: true, body: "!printf hi" }) }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-copy-written"));
+        await replied(1);
+        const copy = fixture.deliveries.at(-1);
+        if (copy === undefined) throw new Error("the agent was handed no copy of the report");
+
+        const message = { ...copy, role: "custom", timestamp: Date.now() + 1 };
+        await fixture.handlers.get("message_start")?.({ message }, context);
+        await fixture.handlers.get("message_end")?.({ message }, context);
+
+        // The report's own frame, once, and no frame of the copy.
+        expect(
+          streamFrames().map((frame) => [frame.message.dispatchMessageId, frame.message.parts])
+        ).toEqual([[DIRECT_MESSAGE_ID, [{ text: "!printf hi\n\n```\nhi\n```", type: "text" }]]]);
+        expect(copy.details).toEqual({
+          ...LOCAL_ENVOY_NOTICE,
+          dispatchMessageId: DIRECT_MESSAGE_ID,
+        });
+      }, 20_000);
+
       test("runs it in the directory the session's context names", async () => {
         const { agent, delivered, replied, replies, work } = await bootShellSession(
           "shell-command-cwd",
@@ -15024,34 +15898,95 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({ body: answer });
       }, 20_000);
 
+      // The limit is the module's own timer, so the row holds it on Bun's fake clock from before
+      // the message is pushed, and judges it from both sides: once the command has printed and
+      // written its mark, the clock moves to 1 ms short of the limit and the command must still
+      // answer a ping, and only then does the clock move past the limit. A limit that fires early
+      // - at half of it, say - kills the command before that answer, and the row fails naming it.
+      // The message, Dispatch's answers and the command itself still run on the real event loop
+      // (`@legion/test-fixtures/fake-clock`). On the real clock a 1,000 ms limit decided this row:
+      // a shell that starts later than that is stopped before it has printed anything. The one
+      // wait's bound is the row's deadline, read before the clock is held.
       test("stops a command past its limit and says when, keeping what it printed", async () => {
-        const { agent, delivered, replied, replies } = await bootShellSession(
-          "shell-command-stopped",
-          { accept: () => ({ accepted: true, body: "!printf early; sleep 600" }), limitMs: 1_000 }
-        );
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-        await delivered(1);
-        await replied(1);
-
-        expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+        const command =
+          "!printf early; : > printed;" +
+          " while :; do if [ -f ping ]; then rm -f ping; : > pong; fi; sleep 0.01; done";
+        const { agent, replies, work } = await bootShellSession("shell-command-stopped", {
+          accept: () => ({ accepted: true, body: command }),
+          limitMs: 1_000,
         });
-      }, 20_000);
+        const boundMs = Math.floor(timeLeft());
+        const moments = [
+          "the command's mark that it printed",
+          "the command's answer to a ping 1 ms short of its limit",
+        ];
+        let taken = 0;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
+          await turnsUntil(() => replies.length > 0, "the reply to the command", {
+            boundMs,
+            state: () => `waiting for ${moments[taken] ?? "the reply after its limit"}`,
+            each: () => {
+              if (taken === 0 && existsSync(join(work, "printed"))) {
+                taken = 1;
+                jest.advanceTimersByTime(999);
+                writeFileSync(join(work, "ping"), "");
+              } else if (taken === 1 && existsSync(join(work, "pong"))) {
+                taken = 2;
+                jest.advanceTimersByTime(1);
+              }
+            },
+          });
+        } finally {
+          // A wait that failed leaves the command running: its held limit ends it.
+          if (replies.length === 0) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
+
+        if (taken < moments.length) {
+          throw new Error(
+            `the command was answered before ${moments[taken]}: ${Bun.inspect(replies[0]?.body)}`
+          );
+        }
+        expect(replies[0]?.body).toMatchObject({
+          body: `${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
+        });
+      });
 
       // One command runs for a session at a time. The pump hands one frame at a time, so the
-      // second message is taken while the first command still runs.
+      // second message is taken while the first command still runs. The first command's limit is
+      // held on Bun's fake clock until the second has been answered, so the first is still running
+      // then however late the second is taken; the clock then moves to the limit, and the first is
+      // answered as stopped. On the real clock a 1,000 ms limit could end the first command before
+      // the second was taken.
       test("answers a second command naming the one still running", async () => {
-        const { agent, replied, replies } = await bootShellSession("shell-command-busy", {
+        const { agent, replies } = await bootShellSession("shell-command-busy", {
           accept: (count) => ({ accepted: true, body: count === 1 ? "!sleep 600" : "!printf hi" }),
           limitMs: 1_000,
         });
-
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
-        agent.push(
-          directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
-        );
-        await replied(2);
+        const boundMs = Math.floor(timeLeft());
+        let limited = false;
+        jest.useFakeTimers();
+        try {
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-1"));
+          agent.push(
+            directDispatchEnvelope("steer", "shell-command-busy-2", { messageID: NEXT_MESSAGE_ID })
+          );
+          await turnsUntil(() => replies.length >= 2, "the replies to both commands", {
+            boundMs,
+            state: () => (limited ? "the first's limit had passed" : "the second had no reply"),
+            each: () => {
+              if (limited || !replies.some((reply) => reply.path.includes(NEXT_MESSAGE_ID))) return;
+              limited = true;
+              jest.advanceTimersByTime(1_000);
+            },
+          });
+        } finally {
+          // A wait that failed leaves the first command running: its held limit ends it.
+          if (replies.length < 2) jest.runOnlyPendingTimers();
+          jest.useRealTimers();
+        }
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
           body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
@@ -15061,7 +15996,7 @@ console.log(JSON.stringify(args));
             body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
-      }, 20_000);
+      });
 
       test("cuts output past the bound and says so", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession("shell-command-cut", {
@@ -15148,53 +16083,60 @@ console.log(JSON.stringify(args));
       // report is that first session's - its line, its working directory, its output - and the
       // session the host moved to must not be handed it as its own, while the person is answered
       // and the live view of the session that ran it still shows the report.
-      test("hands the agent no copy when the session moved on while the command ran", async () => {
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-switched",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
+      test(
+        "hands the agent no copy when the session moved on while the command ran",
+        async () => {
+          const wait = rowWait();
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-switched",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          // A `/new` while the command runs. The viewer follows the session the host moved to, as
+          // the relay's watch does, so the publisher is armed again and the frame this command
+          // still records on the session it was asked of goes out.
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            sessionContext("ses_after_shell")
+          );
+          natsState.controls
+            .get("agentstream.ses_after_shell.control")
+            ?.push(JSON.stringify({ type: "watch", v: 1 }));
+          for (let index = 0; index < 10; index += 1) await Promise.resolve();
 
-        // A `/new` while the command runs. The viewer follows the session the host moved to, as
-        // the relay's watch does, so the publisher is armed again and the frame this command
-        // still records on the session it was asked of goes out.
-        await fixture.handlers.get("session_switch")?.(
-          { reason: "new" },
-          sessionContext("ses_after_shell")
-        );
-        natsState.controls
-          .get("agentstream.ses_after_shell.control")
-          ?.push(JSON.stringify({ type: "watch", v: 1 }));
-        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        // The person is answered, and the live view of the session that ran the command carries
-        // the report, keyed on the Dispatch message it answers.
-        expect(replies[0]?.body).toMatchObject({
-          body: expect.stringContaining("```\nhi\n```"),
-        });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([
-          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
-        ]);
-        // The session the host moved to reads nothing of a command it was never asked for.
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-      }, 20_000);
+          // The person is answered, and the live view of the session that ran the command carries
+          // the report, keyed on the Dispatch message it answers.
+          expect(replies[0]?.body).toMatchObject({
+            body: expect.stringContaining("```\nhi\n```"),
+          });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([
+            { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+          ]);
+          // The session the host moved to reads nothing of a command it was never asked for.
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15202,48 +16144,55 @@ console.log(JSON.stringify(args));
       // plugin's own `sessionID` still reads the session the command was asked of while the host
       // is already on another conversation. The agent's copy follows the host's live id, so the
       // conversation the host is on is handed nothing here either.
-      test("hands the agent no copy when the host moved on with no session event", async () => {
-        let live = "ses_delivery";
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-host-moved",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
-            hostSessionID: () => live,
+      test(
+        "hands the agent no copy when the host moved on with no session event",
+        async () => {
+          const wait = rowWait();
+          let live = "ses_delivery";
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-host-moved",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+              hostSessionID: () => live,
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          // The host is on another conversation now. No handler is fired for it, so the plugin's
+          // own `sessionID` still reads ses_delivery.
+          live = "ses_after_shell";
+          for (let index = 0; index < 10; index += 1) await Promise.resolve();
 
-        // The host is on another conversation now. No handler is fired for it, so the plugin's
-        // own `sessionID` still reads ses_delivery.
-        live = "ses_after_shell";
-        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        // The person is answered, and the live view of the session that ran the command carries
-        // the report, keyed on the Dispatch message it answers.
-        expect(replies[0]?.body).toMatchObject({
-          body: expect.stringContaining("```\nhi\n```"),
-        });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([
-          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
-        ]);
-        // The conversation the host moved to reads nothing of a command it was never asked for.
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-      }, 20_000);
+          // The person is answered, and the live view of the session that ran the command carries
+          // the report, keyed on the Dispatch message it answers.
+          expect(replies[0]?.body).toMatchObject({
+            body: expect.stringContaining("```\nhi\n```"),
+          });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([
+            { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+          ]);
+          // The conversation the host moved to reads nothing of a command it was never asked for.
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -15680,6 +16629,12 @@ console.log(JSON.stringify(args));
       // resolved for the session open when it goes out (`currentSessionID`) would be signed
       // with the token minted for ses_after_shell, and the person's own message would be
       // answered under the credential of the conversation they never wrote to.
+      //
+      // The row waits for its reply up to its own deadline rather than under a 20 s guard of its
+      // own: a shell that starts later than that ran the command past the guard, bun failed the
+      // row and started the next while this row's session still ran, and the command then
+      // answered into the row below, under the same session id - a third trade on that row's
+      // broker, or a second reply presented to it - and this row's cleanup never ran.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
@@ -15706,7 +16661,7 @@ console.log(JSON.stringify(args));
           process.env.ENVOY_TOKEN = LISTENER_TOKEN;
           let live = "ses_delivery";
           let switched: Promise<unknown> | undefined;
-          const { accepts, agent, fixture, replied, replies } = await bootShellSession(
+          const { accepts, agent, fixture, replies } = await bootShellSession(
             "shell-command-broker-signed-reply",
             {
               accept: () => ({ accepted: true, body: "!printf hi" }),
@@ -15761,7 +16716,11 @@ console.log(JSON.stringify(args));
           };
 
           agent.push(directDispatchEnvelope("steer", "shell-command-broker-signed-reply"));
-          await replied(1);
+          await until(
+            () => replies.length >= 1,
+            "the reply to the command",
+            Math.floor(timeLeft())
+          );
           // The hand-over happened, so the move was made in the window this row is about and
           // not after the reply had gone out.
           expect(switched).toBeDefined();
@@ -15790,13 +16749,97 @@ console.log(JSON.stringify(args));
           expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
             "ses_delivery",
           ]);
+          // One trade, for this session: a reply under way when the move's pass runs keeps the
+          // client the accept traded for (`underWay`), so the pass forgets it only after.
           expect(traded).toEqual(["ses_delivery"]);
         } finally {
           restore();
           // A token this process traded is held under its session for the life of the process.
           forgetBrokerClients();
         }
-      }, 20_000);
+      });
+
+      // The window between the accept and the reply: the host leaves while the command runs, and
+      // the move's pass runs to its end before the command does. The session the message was
+      // addressed to is one this process has left by then, and the pass forgets the broker client
+      // of each such session once its role move has run (`leftSessions`); the reply, which signs
+      // as that session, must still go out on the token the accept traded for, rather than trade
+      // again under a session this process no longer runs.
+      test("trades once for the addressed session when the host leaves while its command runs", async () => {
+        const broker = stubBroker("shell-left-while-running");
+        const other = otherSessionDirectory();
+        const gate = mkdtempSync(join(tmpdir(), "envoy-shell-gate-"));
+        workDirectories.push(gate);
+        const started = join(gate, "started");
+        const go = join(gate, "go");
+        // The delivery's own end. Its command's work ends by recording the message as taken and
+        // settling its claim (`runShellCommandTurn`), and the host has left the session by then, so
+        // the record cannot reach that session's transcript, and the last step says so in the log.
+        // (The frame's own answer on its inbox is no such sign here: the move's pass closed the
+        // session's relay, which answered the frame `nak` then.)
+        const ended = Promise.withResolvers<void>();
+        const stopSink = logger.registerLogSink((entry) => {
+          if (
+            entry.level === "warn" &&
+            entry.message ===
+              "envoy: a delivery was not recorded in the session it was addressed to"
+          ) {
+            ended.resolve();
+          }
+        });
+        try {
+          const { agent, fixture, replied, replies } = await bootShellSession(
+            "shell-command-broker-left-while-running",
+            {
+              accept: () => ({
+                accepted: true,
+                body: `!touch '${started}'; while [ ! -e '${go}' ]; do sleep 0.02; done; printf hi`,
+              }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+            }
+          );
+          broker.watch();
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-left-while-running"));
+          // The command is running: the host leaves, and the move's pass runs to its end, before
+          // the command is let go.
+          await until(() => existsSync(started), "the command to be running", 10_000);
+          await moveHost(fixture, other);
+          writeFileSync(go, "");
+          await replied(1);
+
+          // The reply names the session the person wrote to and is signed as it.
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              signedAs: "ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // And on the one token the accept traded for.
+          expect(broker.traded).toEqual(["ses_delivery"]);
+
+          // Held only while the delivery ran: once it has ended, a later pass forgets the
+          // session's client like any other session this process left, so a call for it trades
+          // afresh. The hold ends with the command's work, in the same run of microtasks as that
+          // log line and with no I/O between, so one turn of the event loop after it runs that
+          // end, and then one pass.
+          await ended.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            { ...sessionContext("ses_later"), cwd: other }
+          );
+          await brokerTokenFor(process.env, "ses_delivery")();
+          expect(broker.traded.filter((one) => one === "ses_delivery")).toHaveLength(2);
+        } finally {
+          stopSink();
+          broker.stop();
+        }
+      }, 30_000);
 
       // The same credential, on an accept Dispatch answers twice. The row above moves the host
       // after its one accept attempt has gone out, so that attempt traded before the move
@@ -15871,10 +16914,10 @@ console.log(JSON.stringify(args));
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
-          // Two trades, both under the session the person wrote to: the first attempt's, and
-          // the retry's, since leaving a session drops the key pair and token this process held
-          // for it (`forgetBrokerSession`); the refusal goes out on what the retry traded.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client its first attempt traded for
+          // (`underWay`), and the retry and the refusal go out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           broker.stop();
         }
@@ -15891,102 +16934,117 @@ console.log(JSON.stringify(args));
       // and is answered as that session. A single slot for the whole instance answered this
       // second message with the first session's command, which was neither this session's
       // command nor a command this session was running.
-      test("runs a command for the session the host moved to while another session's still runs", async () => {
-        const other = otherSessionDirectory();
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-busy-other-session",
-          {
-            accept: (count) => ({
-              accepted: true,
-              body:
-                count === 1
-                  ? "!touch running; until [ -f go ]; do sleep 0.05; done; printf first"
-                  : "!touch ran; printf second",
-            }),
+      test(
+        "runs a command for the session the host moved to while another session's still runs",
+        async () => {
+          const wait = rowWait();
+          const other = otherSessionDirectory();
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-busy-other-session",
+            {
+              accept: (count) => ({
+                accepted: true,
+                body:
+                  count === 1
+                    ? "!touch running; until [ -f go ]; do sleep 0.05; done; printf first"
+                    : "!touch ran; printf second",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
+          if (
+            !(await wait(
+              () => existsSync(join(work, "running")),
+              "the first session's command to be running"
+            ))
+          ) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
-        await until(
-          () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
-        );
+          // A `/new` to a conversation of its own, with ses_delivery's command still running.
+          await moveHost(fixture, other);
+          const moved = natsState.controls.get("notifications.agent.ses_after_shell");
+          if (moved === undefined) throw new Error("the new agent subject was not subscribed");
+          moved.push(
+            directDispatchEnvelope("steer", "shell-command-busy-other-2", {
+              messageID: NEXT_MESSAGE_ID,
+            })
+          );
+          await replied(1);
 
-        // A `/new` to a conversation of its own, with ses_delivery's command still running.
-        await moveHost(fixture, other);
-        const moved = natsState.controls.get("notifications.agent.ses_after_shell");
-        if (moved === undefined) throw new Error("the new agent subject was not subscribed");
-        moved.push(
-          directDispatchEnvelope("steer", "shell-command-busy-other-2", {
-            messageID: NEXT_MESSAGE_ID,
-          })
-        );
-        await replied(1);
+          // The second command is this conversation's own: it ran, in this conversation's
+          // directory, and its answer names this session and nothing of the other's command.
+          expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
+            actor: { id: "ses_after_shell", kind: "session" },
+            attempt: 1,
+            body: "!touch ran; printf second\n\n```\nsecond\n```",
+          });
+          expect(existsSync(join(other, "ran"))).toBe(true);
+          expect(existsSync(join(work, "ran"))).toBe(false);
 
-        // The second command is this conversation's own: it ran, in this conversation's
-        // directory, and its answer names this session and nothing of the other's command.
-        expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
-          actor: { id: "ses_after_shell", kind: "session" },
-          attempt: 1,
-          body: "!touch ran; printf second\n\n```\nsecond\n```",
-        });
-        expect(existsSync(join(other, "ran"))).toBe(true);
-        expect(existsSync(join(work, "ran"))).toBe(false);
-
-        // The first command ends on its own and answers its own message, as the session it was
-        // addressed to, naming nothing of the second command. Its agent was handed no copy: the
-        // host left ses_delivery while it ran, which the report says.
-        writeFileSync(join(work, "go"), "");
-        await replied(2);
-        expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
-          actor: { id: "ses_delivery", kind: "session" },
-          attempt: 1,
-          body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
-        });
-      }, 20_000);
+          // The first command ends on its own and answers its own message, as the session it was
+          // addressed to, naming nothing of the second command. Its agent was handed no copy: the
+          // host left ses_delivery while it ran, which the report says.
+          writeFileSync(join(work, "go"), "");
+          await replied(2);
+          expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
+            actor: { id: "ses_delivery", kind: "session" },
+            attempt: 1,
+            body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          });
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
       // live view's frame carry the sentence, so neither reads as output the agent went on to
       // act on.
-      test("says the agent was handed no output when the session moved on while the command ran", async () => {
-        const other = otherSessionDirectory();
-        const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
-          "shell-command-withheld-copy",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
+      test(
+        "says the agent was handed no output when the session moved on while the command ran",
+        async () => {
+          const wait = rowWait();
+          const other = otherSessionDirectory();
+          const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
+            "shell-command-withheld-copy",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          await moveHost(fixture, other);
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        await moveHost(fixture, other);
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
-        expect(replies[0]?.body).toMatchObject({ body: report });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([{ text: report, type: "text" }]);
-        // What the sentence says: no agent read the output, here or in the conversation the
-        // host moved to.
-        expect(
-          sends.filter((send) => String(send.content).includes("A person ran this shell command"))
-        ).toEqual([]);
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-        expect(movedSessionFrames()).toEqual([]);
-      }, 20_000);
+          const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
+          expect(replies[0]?.body).toMatchObject({ body: report });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([{ text: report, type: "text" }]);
+          // What the sentence says: no agent read the output, here or in the conversation the
+          // host moved to.
+          expect(
+            sends.filter((send) => String(send.content).includes("A person ran this shell command"))
+          ).toEqual([]);
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+          expect(movedSessionFrames()).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -15994,33 +17052,48 @@ console.log(JSON.stringify(args));
       // shutdown ends the running command, which the person's reply says in its own words. That
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
-      test("ends a running command when the session shuts down", async () => {
-        const { agent, context, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-shutdown-kill",
-          // Written in the session's own working directory, which the command runs in: the pid
-          // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
-          { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
-        );
-        const pidFile = join(work, "pid");
+      test(
+        "ends a running command when the session shuts down",
+        async () => {
+          const wait = rowWait();
+          const { agent, context, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-shutdown-kill",
+            // Written in the session's own working directory, which the command runs in: the pid
+            // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
+            { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
+          );
+          const pidFile = join(work, "pid");
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
-        // The command itself, not the agent's copy of its report: nothing is sent until the
-        // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
-        // The command is still running: nothing but the shutdown below ends it.
-        expect(alive(pid)).toBe(true);
+          agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
+          // The command itself, not the agent's copy of its report: nothing is sent until the
+          // command ends, and this one would run for ten minutes. The shell creates `pid` when it
+          // opens it for `echo`, before `echo` writes to it, so the file can be there and empty; the
+          // pid is read once the file holds it as one whole line, as `echo` writes it. An empty read
+          // is pid 0, and `alive(0)` asks about this process's own group, not the command: Linux
+          // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
+          // the group, can answer EPERM.
+          let written = "";
+          const read = await wait(() => {
+            written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+            return /^\d+\n$/u.test(written);
+          }, "the command to write its pid");
+          if (!read) return;
+          const pid = Number(written);
+          expect(pid).toBeGreaterThan(0);
+          // The command is still running: nothing but the shutdown below ends it.
+          expect(alive(pid)).toBe(true);
 
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
 
-        // The reply is posted only once the command's own promise has settled, so its arrival
-        // is the end of the command, and its words are the stop rather than an exit status.
-        await replied(1);
-        expect(replies[0]?.body).toMatchObject({
-          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
-        });
-      }, 20_000);
+          // The reply is posted only once the command's own promise has settled, so its arrival
+          // is the end of the command, and its words are the stop rather than an exit status.
+          await replied(1);
+          expect(replies[0]?.body).toMatchObject({
+            body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
+          });
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
@@ -16109,7 +17182,9 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-no-mark"));
         await delivered(1);
 
-        expect(inputs).toEqual([{ options: { tag: DIRECT_MESSAGE_ID }, text: "printf hi" }]);
+        expect(inputs).toEqual([
+          { options: { tag: DIRECT_MESSAGE_ID, origin: "outside" }, text: "printf hi" },
+        ]);
         expect(sends.map((send) => send.options)).not.toContainEqual({
           deliverAs: "nextTurn",
           triggerTurn: false,
@@ -16202,7 +17277,7 @@ console.log(JSON.stringify(args));
 
           expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
           expect(inputs).toEqual([
-            { options: { tag: DIRECT_MESSAGE_ID }, text: DIRECT_MESSAGE_BODY },
+            { options: { tag: DIRECT_MESSAGE_ID, origin: "outside" }, text: DIRECT_MESSAGE_BODY },
           ]);
         } finally {
           stopSink();
@@ -16346,6 +17421,46 @@ console.log(JSON.stringify(args));
         });
       }
 
+      // The host runs a person's typed input off the relay (`runTypedInput`) after the delivery
+      // has returned, and leaves while it runs, so the move's pass runs before the reply: the reply
+      // must still go out on the one token the accept traded for.
+      test("trades once for a typed input's session when the host leaves while it runs the input", async () => {
+        const broker = stubBroker("typed-input-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession(
+            "typed-input-moved",
+            {
+              accept: () => ({ accepted: true, body: "/new" }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+              sendUserInput: async () => {
+                await move.fire?.();
+                return { handled: "terminal-only" };
+              },
+            }
+          );
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_typed_input")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("steer", "typed-input-moved"));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
+
       // Between the accept and the send: the accept itself. The attempt is spent by the time
       // Dispatch answers it, so this one is no release - a re-send of a taken message is
       // refused - and the person is answered instead. The host is handed nothing: the line
@@ -16426,10 +17541,10 @@ console.log(JSON.stringify(args));
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
             { signedAs: "ses_delivery", path: replyPath },
           ]);
-          // Two trades, both under the session the person wrote to: the accept's, and the
-          // refusal's own, since leaving a session drops the key pair and token this process
-          // held for it (`forgetBrokerSession`) and a reply signed as it trades afresh.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client the accept traded for (`underWay`),
+          // and the refusal goes out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           stopSink();
           broker.stop();
@@ -16606,6 +17721,52 @@ console.log(JSON.stringify(args));
           broker.stop();
         }
       });
+
+      // A BTW's whole body is read inside the delivery, and its side turn and answer run off the
+      // relay (`offWorker`) after the delivery has returned. The host leaves inside the side turn,
+      // so the move's pass runs while that work is under way: the answer must still go out on the
+      // one token the whole-body read traded for, rather than trade again under the session the
+      // host has left.
+      test("trades once for a BTW's session when the host leaves inside its side turn, after the delivery returned", async () => {
+        const broker = stubBroker("btw-whole-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession("btw-whole-moved", {
+            dispatch: async (url, init) => {
+              if (url.pathname === `/api/v1/messages/${DIRECT_MESSAGE_ID}`) {
+                return response({
+                  message: { body: "Can this ship?", id: DIRECT_MESSAGE_ID },
+                  replies: [],
+                });
+              }
+              return broker.trade(url, init);
+            },
+            dispatchCredential: "broker",
+            sideTurn: async () => {
+              await move.fire?.();
+              return "This session's answer.";
+            },
+          });
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_btw_whole")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("btw", "btw-whole-moved", { bodyTruncated: true }));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
     });
 
     // A host without `pi.sendUserInput` would hand a command to the model as words, so the
@@ -17879,7 +19040,7 @@ console.log(JSON.stringify(args));
     });
 
     // An ACP host serves several top-level sessions in one process, each with its own pi-envoy,
-    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1922-1943
+    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1957-1978
     // at the pin). The fork's instance leaving the source id must not forget the turns the source
     // session's own instance sent in: that instance still serves the id and still asks under it.
     test("a typed turn's note survives another instance in the process passing through its session", async () => {
@@ -17892,9 +19053,9 @@ console.log(JSON.stringify(args));
       await delivered(1);
 
       const forkQuery = "typed-note-acp-fork-instance";
-      const { default: forkExtension } = await import(`./envoy.ts?${forkQuery}`);
+      const { default: forkExtension }: EnvoyModule = await import(`./envoy.ts?${forkQuery}`);
       const fork = createPi();
-      forkExtension(fork.pi);
+      await forkExtension(fork.pi);
       await fork.handlers.get("session_start")?.({}, sessionContext("ses_fork_fresh"));
       await fork.handlers.get("session_switch")?.({}, sessionContext("ses_delivery"));
       await fork.handlers.get("session_switch")?.({}, sessionContext("ses_forked"));
@@ -18187,9 +19348,11 @@ console.log(JSON.stringify(args));
         const [from, to] = [`ses_pictures_${reason}_from`, `ses_pictures_${reason}_to`];
         const addresses = transcriptAddresses(reason);
         globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-        const { default: envoyExtension } = await import(`./envoy.ts?pictures-${reason}`);
+        const { default: envoyExtension }: EnvoyModule = await import(
+          `./envoy.ts?pictures-${reason}`
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext(from));
         shownPictures(from).add(`dispatch://LEGION-1/artifact/${reason}-earlier-png@v1`);
 
@@ -18212,9 +19375,9 @@ console.log(JSON.stringify(args));
     test("a session started on its transcript counts the pictures that transcript shows as shown", async () => {
       const addresses = transcriptAddresses("restart");
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-restart");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-restart");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       const started = sessionContext("ses_pictures_restarted");
       await fixture.handlers.get("session_start")?.(
@@ -18230,11 +19393,246 @@ console.log(JSON.stringify(args));
       );
     });
 
+    /**
+     * `entry` with its body, a message entry's `message` or a custom message entry's `content`,
+     * behind a getter: while `cut` answers true (always, by default) the entry stands before the
+     * live context's cut, and a read of its body is recorded in `reads` and throws.
+     */
+    const withBody = (
+      entry: Record<string, unknown>,
+      field: "message" | "content",
+      body: unknown,
+      reads: string[],
+      cut: () => boolean = () => true
+    ): Record<string, unknown> =>
+      Object.defineProperty(entry, field, {
+        enumerable: true,
+        get: () => {
+          if (!cut()) return body;
+          reads.push(`${String(entry.id)}.${field}`);
+          throw new Error(`the ${field} of ${String(entry.id)}, before the cut, was read`);
+        },
+      });
+
+    /** A person's turn whose image block shows `address`, as Oh My Pi keeps it. */
+    const pictureTurn = (address: string) => ({
+      role: "user",
+      content: [{ type: "text", text: `Look:\n\n![shot.png](${address})` }, image],
+    });
+    const assistantReply = { role: "assistant", content: [{ type: "text", text: "Seen." }] };
+
+    // A long session's start read every message of its branch for the pictures it was shown:
+    // about 28,600 bodies for a controller, which raised its resume's peak from 924.7 MiB to
+    // 1,564.4 MiB, and it counted as shown the pictures a compaction had taken from the model.
+    // Only the live context counts (`liveContext`), so a picture before the cut is sent again.
+    // The rest of the restore reads custom entries, and the `details` of the Envoy cards the
+    // plugin wrote, on both sides of the cut, so no body before it is read.
+    test("a session started on a compacted transcript counts only its live context's pictures as shown, and restores its ledger and handled attempts from both sides of the cut without reading a body before it", async () => {
+      const earlySlug = "live-context-early";
+      const early = `dispatch://LEGION-1/artifact/${earlySlug}@v1`;
+      const kept = "dispatch://LEGION-1/artifact/live-context-kept@v1";
+      const late = "dispatch://LEGION-1/artifact/live-context-late@v1";
+      const handledBefore = "66666666-6666-4666-8666-666666666666";
+      const handledAfter = "88888888-8888-4888-8888-888888888888";
+      const handled = (id: string, messageID: string) => ({
+        type: "custom",
+        id,
+        customType: "envoy-dispatch-handled-attempt",
+        data: { attempt: 1, message_id: messageID },
+      });
+      const recorded = (id: string, key: string) => ({
+        type: "custom",
+        id,
+        customType: REPLAY_DELIVERED_ENTRY,
+        data: { event_id: `dispatch-${key}`, dedupe_key: key, at: Date.now() },
+      });
+      const reads: string[] = [];
+      const file = [
+        withBody({ type: "message", id: "e0" }, "message", pictureTurn(early), reads),
+        handled("e1", handledBefore),
+        // A card the host wrote, whose `details` name its frame as `handCard` writes them.
+        withBody(
+          {
+            type: "custom_message",
+            id: "e2",
+            customType: "envoy-message",
+            display: true,
+            details: { event_id: "dispatch-live-context-card", dedupe_key: "live-context-card" },
+            timestamp: new Date().toISOString(),
+          },
+          "content",
+          [{ type: "text", text: "envoy:\n  id: dispatch-live-context-card" }],
+          reads
+        ),
+        withBody(
+          { type: "custom_message", id: "e3", customType: "legion-notice", display: true },
+          "content",
+          "Another extension's message.",
+          reads
+        ),
+        recorded("e4", "live-context-recorded-before"),
+        withBody({ type: "message", id: "e5" }, "message", assistantReply, reads),
+        // The compaction's first kept entry: the model still sees the picture it shows.
+        {
+          type: "message",
+          id: "e6",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "dispatch_read",
+            content: [
+              {
+                type: "text",
+                text: `Pictures:\n- image 1: ${kept} (kept.png, image/png, 10 bytes)`,
+              },
+              image,
+            ],
+          },
+        },
+        {
+          type: "compaction",
+          id: "e7",
+          summary: "The session so far.",
+          firstKeptEntryId: "e6",
+          tokensBefore: 150_000,
+        },
+        handled("e8", handledAfter),
+        recorded("e9", "live-context-recorded-after"),
+        { type: "message", id: "e10", message: pictureTurn(late) },
+      ];
+      // A new process: it knows no picture any session was shown.
+      forgetShownPictures("ses_delivery");
+      const { accepts, agent, fixture } = await bootDirectSession("live-context-start", {
+        accept: () => ({ accepted: true }),
+        dispatch: pictureRoutes(earlySlug),
+        entries: file,
+      });
+
+      expect([...shownPictures("ses_delivery")].sort()).toEqual([kept, late].sort());
+
+      const carded = (key: string) =>
+        fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery.content).includes(`dispatch-${key}`)
+        );
+      // Frames the ledger holds, from the card and the records on either side of the cut.
+      for (const key of [
+        "live-context-card",
+        "live-context-recorded-before",
+        "live-context-recorded-after",
+      ]) {
+        agent.push(commentNotification(key, `Comment ${key}`));
+      }
+      // Attempts recorded handled on either side of the cut.
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-before", {
+          messageID: handledBefore,
+        })
+      );
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-after", { messageID: handledAfter })
+      );
+      agent.push(
+        commentNotification(
+          "live-context-pictures",
+          `Look:\n\n![shot.png](${early})\n![kept.png](${kept})\n![late.png](${late})`
+        )
+      );
+      await until(() => fixture.deliveries.length >= 3, "the three cards");
+      await settle();
+
+      // The ledger passed over every frame it holds; each handled attempt is a card with no accept.
+      expect(fixture.deliveries).toHaveLength(3);
+      expect(carded("live-context-handled-before")).toHaveLength(1);
+      expect(carded("live-context-handled-after")).toHaveLength(1);
+      expect(accepts).toEqual([]);
+      expect(fixture.userMessages).toEqual([]);
+      // The picture before the cut is sent again; the two the live context shows are named.
+      const [pictured] = carded("live-context-pictures");
+      expect(pictured?.content).toEqual([
+        {
+          type: "text",
+          text: expect.stringContaining(`- image 1: ${early} (shot.png, image/png, 10 bytes)`),
+        },
+        image,
+      ]);
+      const text = JSON.stringify(pictured?.content);
+      for (const address of [kept, late]) {
+        expect(text).toContain(`- not shown: ${address} (shown earlier this session;`);
+      }
+      expect(reads).toEqual([]);
+    });
+
+    // The pictures a compaction cut off are in no later request, so the session's shown set is
+    // what its new live context shows, replaced rather than added to, and the entries before the
+    // new cut are not read.
+    test("a compaction makes the session's shown pictures its new live context's, reading no body before the cut", async () => {
+      const address = (slug: string) =>
+        `dispatch://LEGION-1/artifact/live-context-compact-${slug}@v1`;
+      const reads: string[] = [];
+      let compacted = false;
+      const cut = () => compacted;
+      const file: unknown[] = [
+        withBody(
+          { type: "message", id: "c0" },
+          "message",
+          pictureTurn(address("first")),
+          reads,
+          cut
+        ),
+        withBody({ type: "message", id: "c1" }, "message", assistantReply, reads, cut),
+      ];
+      const { context, fixture } = await bootDirectSession("live-context-compaction", {
+        entries: file,
+      });
+      expect(shownPictures("ses_delivery").has(address("first"))).toBe(true);
+
+      // The session goes on: a card the host took and wrote, then a turn the compaction keeps,
+      // and the host compacts, which writes the compaction entry before it tells extensions.
+      shownPictures("ses_delivery").add(address("carded"));
+      file.push(
+        withBody(
+          {
+            type: "custom_message",
+            id: "c2",
+            customType: "envoy-message",
+            display: true,
+            details: {
+              event_id: "dispatch-live-context-compact",
+              dedupe_key: "live-context-compact",
+            },
+          },
+          "content",
+          [
+            {
+              type: "text",
+              text: `envoy: card\n\nPictures:\n- image 1: ${address("carded")} (carded.png, image/png, 10 bytes)`,
+            },
+            image,
+          ],
+          reads,
+          cut
+        ),
+        { type: "message", id: "c3", message: pictureTurn(address("kept")) },
+        {
+          type: "compaction",
+          id: "c4",
+          summary: "The session so far.",
+          firstKeptEntryId: "c3",
+          tokensBefore: 150_000,
+        }
+      );
+      compacted = true;
+      await fixture.handlers.get("session_compact")?.({}, context);
+
+      expect([...shownPictures("ses_delivery")]).toEqual([address("kept")]);
+      expect(reads).toEqual([]);
+    });
+
     test("a session that shuts down forgets the pictures it was shown", async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-shutdown");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-shutdown");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pictures_shutdown"));
       shownPictures("ses_pictures_shutdown").add("dispatch://LEGION-1/artifact/shut-png@v1");
 
@@ -18248,9 +19646,11 @@ console.log(JSON.stringify(args));
     // the registry; its shutdown forgets that id, not the empty one.
     test("a subagent instance that shuts down forgets the id its tool calls carried", async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-subagent-shutdown");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?pictures-subagent-shutdown"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       shownPictures("ses_pictures_subagent").add("dispatch://LEGION-1/artifact/sub-png@v1");
 
       await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_subagent"));
@@ -18261,10 +19661,10 @@ console.log(JSON.stringify(args));
 
   test("deduplicates targeted Dispatch frames by dedupe key", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-dedupe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-dedupe");
     const fixture = createPi();
     const distinctDelivery = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -18300,9 +19700,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-rejection");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-btw-rejection"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -18347,10 +19749,10 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-btw-retry");
     const fixture = createPi();
     let sideTurns = 0;
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -18406,10 +19808,12 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-shutdown");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-btw-shutdown"
+    );
     const fixture = createPi();
     const calls: string[] = [];
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context: SessionContext = {
       ...sessionContext("ses_delivery"),
       runEphemeralTurn: async () => {
@@ -18450,9 +19854,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-malformed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-malformed");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_delivery"));
     const agent = natsState.controls.get("notifications.agent.ses_delivery");
     if (agent === undefined) throw new Error("agent subject was not subscribed");
@@ -18510,7 +19914,7 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?always-register");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?always-register");
     const fixture = createPi();
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
@@ -18518,7 +19922,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => heartbeats.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(registrations).toHaveLength(1);
@@ -18572,19 +19976,19 @@ console.log(JSON.stringify(args));
       const parentFile = fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
       const childFile = fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl");
       const registrations = recordingRegistrations();
-      const { default: envoyExtension } = await import("./envoy.ts?subagent-session");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?subagent-session");
       const connectsBefore = natsState.connectedNames.length;
       const heartbeats: (() => void)[] = [];
 
       // The parent and the subagent each load their own instance of the extension.
       const parent = createPi();
-      envoyExtension(parent.pi);
+      await envoyExtension(parent.pi);
       await parent.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_parent", parentFile, heartbeats)
       );
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       await child.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_child", childFile, heartbeats)
@@ -18655,11 +20059,11 @@ console.log(JSON.stringify(args));
     parentID: string,
     transcript: (name: string) => string
   ) {
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const heartbeats: (() => void)[] = [];
     const boot = async (id: string, file: string) => {
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionWithTranscript(id, file, heartbeats);
       await fixture.handlers.get("session_start")?.({}, context);
       return { ...fixture, context };
@@ -18808,9 +20212,9 @@ console.log(JSON.stringify(args));
 
   test("the context handler appends what people wrote to the session after the request's last message", async () => {
     const { reads, item } = answeringDispatch("Go the second way.");
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-top");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-answers-top");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_top");
     await fixture.handlers.get("session_start")?.({}, context);
     const conversation = [
@@ -18873,9 +20277,11 @@ console.log(JSON.stringify(args));
       new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
         : responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-malformed");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-malformed"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_malformed");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
@@ -18914,9 +20320,11 @@ console.log(JSON.stringify(args));
         { status: 404 }
       );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-no-route");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-no-route"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_no_route");
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -18963,9 +20371,11 @@ console.log(JSON.stringify(args));
       failing && new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
         : answering(input, init);
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-kept-failure"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => "ses_answers_kept_failure");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = {
@@ -19052,9 +20462,9 @@ console.log(JSON.stringify(args));
             { status: 503 }
           );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-503");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-answers-503");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => id);
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -19151,9 +20561,11 @@ console.log(JSON.stringify(args));
         items: [{ ...item, text }],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-recorded");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-recorded"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => live);
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -19317,10 +20729,12 @@ console.log(JSON.stringify(args));
       const posted = recordingMessages();
       // Nothing ever ran a top-level session_start here: no Envoy config, so no identity to
       // inherit. The tool must say so rather than name the subagent's unreachable host id.
-      const { default: envoyExtension } = await import("./envoy.ts?identityless-subagent");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?identityless-subagent"
+      );
       fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       const context = sessionWithTranscript(
         "ses_child",
         fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl"),
@@ -19586,10 +21000,10 @@ console.log(JSON.stringify(args));
       recordBootstrappedSession(fixture.transcript("2026-09-23T00-00-00-000Z_ses_first.jsonl"));
       const rotatedFile = fixture.transcript("2026-09-23T00-01-00-000Z_ses_second.jsonl");
       const registrations = recordingRegistrations();
-      const { default: envoyExtension } = await import("./envoy.ts?rotated-top-level");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?rotated-top-level");
       const heartbeats: (() => void)[] = [];
       const reloaded = createPi();
-      envoyExtension(reloaded.pi);
+      await envoyExtension(reloaded.pi);
       await reloaded.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_second", rotatedFile, heartbeats)
@@ -19615,16 +21029,16 @@ console.log(JSON.stringify(args));
       { id: "Scout", kind: "sub", session: liveSession("ses_sql_child"), sessionFile: childFile }
     );
     const registrations = recordingRegistrations();
-    const { default: envoyExtension } = await import("./envoy.ts?sql-subagent");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sql-subagent");
     const heartbeats: (() => void)[] = [];
     const parent = createPi();
-    envoyExtension(parent.pi);
+    await envoyExtension(parent.pi);
     await parent.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_sql_parent", parentFile, heartbeats)
     );
     const child = createPi();
-    envoyExtension(child.pi);
+    await envoyExtension(child.pi);
     await child.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_sql_child", childFile, heartbeats)
@@ -19649,10 +21063,10 @@ console.log(JSON.stringify(args));
       }
     );
     const registrations = recordingRegistrations();
-    const { default: envoyExtension } = await import("./envoy.ts?no-session-parent");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?no-session-parent");
     const heartbeats: (() => void)[] = [];
     const parent = createPi();
-    envoyExtension(parent.pi);
+    await envoyExtension(parent.pi);
     await parent.handlers.get("session_start")?.(
       {},
       {
@@ -19661,7 +21075,7 @@ console.log(JSON.stringify(args));
       }
     );
     const child = createPi();
-    envoyExtension(child.pi);
+    await envoyExtension(child.pi);
     await child.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_ephemeral_child", childFile, heartbeats)
@@ -19687,7 +21101,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?register-title");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-title");
     const fixture = createPi();
     // Titles are assigned by omp after the first turn, so session_start
     // registers before one exists; the heartbeat must pick it up later.
@@ -19706,7 +21120,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: () => undefined },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(subscribeTitles).toEqual([""]);
 
@@ -19748,7 +21162,7 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+      const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
       const fixture = createPi();
       const heartbeats: (() => void)[] = [];
       const context: SessionContext = {
@@ -19757,7 +21171,7 @@ console.log(JSON.stringify(args));
           heartbeats.push(callback);
         },
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,
@@ -19957,7 +21371,7 @@ console.log(JSON.stringify(args));
       }
       return response({ session_id: "ses_registry", machine_id: "test", dir: "/tmp", topics: [] });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?live-registration");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?live-registration");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
@@ -19965,7 +21379,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -20042,10 +21456,12 @@ console.log(JSON.stringify(args));
       }
       return response({ session_id: "ses_list", machine_id: "test", dir: "/tmp", topics: [] });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?list-live-subscriptions");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?list-live-subscriptions"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_list"));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const listTool = fixture.tools.find((tool) => tool.name === "envoy_list");
@@ -20070,11 +21486,11 @@ console.log(JSON.stringify(args));
   });
 
   test("reports the active session directory through envoy_whoami", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-directory");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-directory");
     const fixture = createPi();
     const context = sessionContext("ses_whoami");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const whoami = fixture.tools.find((tool) => tool.name === "envoy_whoami");
     if (whoami === undefined) throw new Error("envoy_whoami was not registered");
@@ -20115,11 +21531,11 @@ console.log(JSON.stringify(args));
   });
 
   test("registers /whoami and copies the current session ID to the clipboard", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-command");
     const fixture = createPi();
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_command"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
     if (whoami === undefined) throw new Error("/whoami was not registered");
@@ -20132,11 +21548,13 @@ console.log(JSON.stringify(args));
   });
 
   test("copies the new session identity from /whoami after an in-process switch", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?whoami-command-switch"
+    );
     const fixture = createPi();
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_command"));
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_command"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
@@ -20150,11 +21568,13 @@ console.log(JSON.stringify(args));
   });
 
   test("still displays the current session ID when clipboard copy fails", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command-copy-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?whoami-command-copy-failure"
+    );
     const fixture = createPi({ clipboardError: new Error("clipboard unavailable") });
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_clipboard_unavailable"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
     if (whoami === undefined) throw new Error("/whoami was not registered");
@@ -20176,10 +21596,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?unconfigured");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?unconfigured");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
@@ -20202,10 +21622,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?seed-refused");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-refused");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
@@ -20264,11 +21684,11 @@ console.log(JSON.stringify(args));
     const bothSubscribesRefuse = async (instance: string): Promise<void> => {
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       configure(file);
-      const { default: envoyExtension } = await import(
+      const { default: envoyExtension }: EnvoyModule = await import(
         `./envoy.ts?inbound-off-${slug}-${instance}`
       );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext("ses_inbound_off");
       await fixture.handlers.get("session_start")?.({}, context);
       const refusal = `inbound messages are off for this session: ${why(file)}`;
@@ -20340,9 +21760,11 @@ console.log(JSON.stringify(args));
           topics: [`notifications.role.${body.role ?? ""}`],
         });
       };
-      const { default: envoyExtension } = await import(`./envoy.ts?claim-inbound-off-${slug}`);
+      const { default: envoyExtension }: EnvoyModule = await import(
+        `./envoy.ts?claim-inbound-off-${slug}`
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext("ses_claim_inbound_off");
       await fixture.handlers.get("session_start")?.({}, context);
 
@@ -20365,10 +21787,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?retry");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications.some((message) => message.includes("retrying in the background"))).toBe(
@@ -20383,7 +21805,7 @@ console.log(JSON.stringify(args));
     // service under NATS_AUTH=broker says so and what to unset), not only the refusal it led to.
     expect(
       notifications.some((message) =>
-        message.includes("because its NATS connection failed: CONNECTION_REFUSED")
+        message.includes("because its relay subject could not be opened: CONNECTION_REFUSED")
       )
     ).toBe(true);
     expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(false);
@@ -20425,19 +21847,690 @@ console.log(JSON.stringify(args));
       setInterval: () => {},
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?seed-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       notifications.some((message) =>
         message.includes(
-          "because its NATS connection failed: getaddrinfo EAI_AGAIN); retrying in the background"
+          "because its relay subject could not be opened: getaddrinfo EAI_AGAIN); retrying in the background"
         )
       )
     ).toBe(true);
     expect(notifications.join("\n").toLowerCase()).not.toContain(seed.toLowerCase());
   });
+
+  // The hub closes a dial whose CONNECT came after its 2 s authentication timeout, which a busy
+  // start of Oh My Pi causes, and answers the next one: the pass dials again rather than register
+  // with no relay.
+  test("a first NATS dial that fails once is dialed again, and the session_start pass registers with its relay", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    natsState.failError = () =>
+      new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
+    setNatsConnectForTests(natsStandInConnect, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
+    try {
+      const notifications: string[] = [];
+      const context: SessionContext = {
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: { ...topLevelSession, getSessionId: () => "ses_redial" },
+        setInterval: () => {},
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+
+      expect(natsState.failConnects).toBe(0);
+      expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_redial")).toBe(true);
+      expect(
+        notifications.filter((message) => message.includes("inbound messages are unavailable"))
+      ).toEqual([]);
+      expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
+    } finally {
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  });
+
+  // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
+  // start blocks the event loop as a fresh one does, and its pass also reads the interests the
+  // session registered before. The dial the hub closes is dialed again there too.
+  test("a session resumed in a new pod, whose first dial the hub closes, is dialed again and registers with its relay in its session_start pass", async () => {
+    const registrations: { readonly consumer: boolean }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly delivery?: { readonly consumer?: boolean };
+        };
+        registrations.push({ consumer: body.delivery?.consumer === true });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    natsState.failConnects = 1;
+    natsState.failError = () =>
+      new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
+    setNatsConnectForTests(natsStandInConnect, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
+    try {
+      const notifications: string[] = [];
+      const earlier = [
+        { type: "message", message: { role: "user", content: "the task", timestamp: 1 } },
+        { type: "message", message: { role: "assistant", content: "working on it", timestamp: 2 } },
+      ];
+      const context: SessionContext = {
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => "ses_woken",
+          getBranch: () => earlier,
+          getEntries: () => earlier,
+        },
+        setInterval: () => {},
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?redial-resumed-start"
+      );
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+
+      expect(natsState.failConnects).toBe(0);
+      expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_woken")).toBe(true);
+      expect(registrations.length).toBeGreaterThan(0);
+      expect(registrations.every((one) => one.consumer)).toBe(true);
+      expect(
+        notifications.filter((message) => message.includes("inbound messages are unavailable"))
+      ).toEqual([]);
+      expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
+    } finally {
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  });
+
+  // A pod whose first dial the hub closed registers on its next pass seconds later; without a word
+  // that it receives again, the session reads the outage notice as its state for its life.
+  test("a session told it receives nothing is told once it receives again, in every part of the notice", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    try {
+      const notifications: string[] = [];
+      const intervals: (() => void)[] = [];
+      const context: SessionContext = {
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: { ...topLevelSession, getSessionId: () => "ses_restored" },
+        setInterval: (callback) => intervals.push(callback),
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbound-restored");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      const transcript = () =>
+        fixture.entries
+          .map((entry) => ("data" in entry ? entry.data : undefined))
+          .map((data) =>
+            typeof data === "object" &&
+            data !== null &&
+            "content" in data &&
+            typeof data.content === "string"
+              ? data.content
+              : ""
+          );
+      expect(transcript().filter((content) => content.includes("Envoy inbound restored"))).toEqual(
+        []
+      );
+
+      // The background retry's pass dials, opens the relay and registers.
+      intervals.at(-1)?.();
+      await until(
+        () => notifications.some((m) => m.includes("inbound messages reach this session again")),
+        "the restored notice"
+      );
+      expect(warnings.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
+      expect(
+        transcript().filter((content) => content.includes("Envoy inbound restored"))
+      ).toHaveLength(1);
+    } finally {
+      stopSink();
+    }
+  });
+
+  test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {
+    // The relay subject opened at the start. Later its connection closes for good, as nats.js
+    // closes one on an authorization error it does not ignore, and the hub refuses every dial
+    // after that. The relay's own resubscribe fails once and then waits NATS_RETRY_INTERVAL_MS,
+    // and the agent stream's gives up, so here the heartbeat's pass is what opens them again.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_lost";
+    const relay = deliverSubject(id);
+    const control = `agentstream.${id}.control`;
+    const reason = "because its relay subject could not be opened: CONNECTION_REFUSED";
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const notifications: string[] = [];
+      const intervals: { readonly callback: () => void; readonly intervalMs: number }[] = [];
+      const context: SessionContext = {
+        ...sessionContext(id),
+        setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?relay-lost-mid-session"
+      );
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const heartbeat = () => {
+        for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
+      };
+      const transcript = () =>
+        fixture.entries
+          .map((entry) => ("data" in entry ? entry.data : undefined))
+          .map((data) =>
+            typeof data === "object" &&
+            data !== null &&
+            "content" in data &&
+            typeof data.content === "string"
+              ? data.content
+              : ""
+          );
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        expect(natsState.controls.get(relay)?.active()).toBe(true);
+        expect(natsState.controls.get(control)?.active()).toBe(true);
+        expect(natsState.connectedNames).toHaveLength(1);
+
+        // The connection closes for good: nats.js ends every subscription on it, and the hub
+        // refuses each dial from now on.
+        natsState.failConnects = 99;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(relay)?.end();
+        natsState.controls.get(control)?.end();
+        await until(() => natsState.failConnects < 99, "the relay's own redial");
+        await settle();
+
+        // A registration sent outside a pass while the subject is missing - here the one a new
+        // follow sends - is refused naming why, and the session is told so.
+        const told = () => ({
+          logged: warnings.filter((m) => m.includes("this session receives nothing")),
+          shown: notifications.filter((m) => m.includes("inbound messages are unavailable")),
+          written: transcript().filter((content) => content.includes("Envoy inbound unavailable")),
+        });
+        const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+        if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+        const followed = await subscribe.execute("", { topics: ["team.relay-lost"] });
+        expect(String(followed.details.registrationError)).toContain(reason);
+        for (const part of Object.values(told())) {
+          expect(part).toHaveLength(1);
+          expect(part[0]).toContain(reason);
+        }
+
+        // The heartbeat's pass dials to open the relay again, is refused, and sends a
+        // registration with no relay subject; that refusal tells the session nothing more.
+        const beforeHeartbeat = natsState.failConnects;
+        heartbeat();
+        await until(
+          () =>
+            natsState.failConnects < beforeHeartbeat &&
+            notifications.some((m) => m.includes("registry heartbeat failed")),
+          "the heartbeat's dial and its failure"
+        );
+        await settle();
+        for (const part of Object.values(told())) expect(part).toHaveLength(1);
+        expect(
+          transcript().filter((content) => content.includes("Envoy inbound restored"))
+        ).toEqual([]);
+
+        // The hub admits again. The next heartbeat dials a new connection, opens the relay and
+        // the control subject on it, registers, and tells the session once that it receives
+        // again.
+        natsState.failConnects = 0;
+        heartbeat();
+        await until(
+          () => notifications.some((m) => m.includes("inbound messages reach this session again")),
+          "the restored notice"
+        );
+        await settle();
+        expect(natsState.connectedNames).toHaveLength(2);
+        expect(natsState.controls.get(relay)?.active()).toBe(true);
+        expect(natsState.controls.get(control)?.active()).toBe(true);
+        expect(warnings.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
+        expect(
+          transcript().filter((content) => content.includes("Envoy inbound restored"))
+        ).toHaveLength(1);
+
+        natsState.controls
+          .get(`notifications.agent.${id}`)
+          ?.push(forwardedRoleEnvelope("legion-controller", "after the relay came back", "back"));
+        await until(
+          () => fixture.messages.some((m) => m.includes("after the relay came back")),
+          "the message relayed on the new connection"
+        );
+      } finally {
+        stopSink();
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+      }
+    });
+  });
+
+  test("a live view control subject whose own resubscribe failed is opened again by the next heartbeat", async () => {
+    // The control subscription ends under a connection that stays up, and its one resubscribe,
+    // one resubscribe delay later, is refused; nothing else would open it again.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_control_lost";
+    const control = `agentstream.${id}.control`;
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const intervals: { readonly callback: () => void; readonly intervalMs: number }[] = [];
+      const context: SessionContext = {
+        ...sessionContext(id),
+        setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+      };
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?control-lost-mid-session"
+      );
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        const first = natsState.controls.get(control);
+        expect(first?.active()).toBe(true);
+
+        natsState.failSubscribes = 1;
+        first?.end();
+        await until(() => natsState.failSubscribes === 0, "the control subject's own resubscribe");
+        await settle();
+        expect(natsState.controls.get(control)).toBe(first);
+
+        for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
+        await until(
+          () => natsState.controls.get(control) !== first,
+          "the heartbeat's open of the control subject"
+        );
+        expect(natsState.controls.get(control)?.active()).toBe(true);
+        expect(natsState.connectedNames).toHaveLength(1);
+      } finally {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+      }
+    });
+  });
+
+  /** A session for the relay-loss rows: its notices in all three places, and its heartbeat. */
+  async function relayLossSession(id: string, query: string) {
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    const notifications: string[] = [];
+    const intervals: { readonly callback: () => void; readonly intervalMs: number }[] = [];
+    const context: SessionContext = {
+      ...sessionContext(id),
+      setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    };
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const written = (word: string) =>
+      fixture.entries
+        .map((entry) => ("data" in entry ? entry.data : undefined))
+        .map((data) =>
+          typeof data === "object" &&
+          data !== null &&
+          "content" in data &&
+          typeof data.content === "string"
+            ? data.content
+            : ""
+        )
+        .filter((content) => content.includes(word));
+    return {
+      fixture,
+      /** The outage as told in the log, the UI and the transcript. */
+      outage: () => ({
+        logged: warnings.filter((m) => m.includes("this session receives nothing")),
+        shown: notifications.filter((m) => m.includes("inbound messages are unavailable")),
+        written: written("Envoy inbound unavailable"),
+      }),
+      restored: () => ({
+        logged: warnings.filter((m) => m.includes("this session receives again")),
+        shown: notifications.filter((m) => m.includes("inbound messages reach this session again")),
+        written: written("Envoy inbound restored"),
+      }),
+      heartbeat: () => {
+        for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
+      },
+      follow: async (topic: string) => {
+        const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+        if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+        return String((await subscribe.execute("", { topics: [topic] })).details.registrationError);
+      },
+      stop: async () => {
+        stopSink();
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+      },
+    };
+  }
+
+  test("a registration sent right after the connection closed names the close", async () => {
+    // nats.js ends each subscription of a connection it closes with no error of its own, and the
+    // relay's own redial has not failed yet: the close is the only reason there is.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_closed";
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-closed-reason");
+      const parked = Promise.withResolvers<void>();
+      try {
+        expect(natsState.controls.get(deliverSubject(id))?.active()).toBe(true);
+        // Every dial from now on waits, so the relay's own redial never ends during the row.
+        natsState.heldConnect = parked.promise;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(deliverSubject(id))?.end();
+        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        const reason = "because its relay subject could not be opened: the NATS connection closed";
+        expect(await session.follow("team.relay-closed")).toContain(reason);
+        for (const part of Object.values(session.outage())) {
+          expect(part).toHaveLength(1);
+          expect(part[0]).toContain(reason);
+        }
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
+  test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    natsState.failConnects = 99;
+    const id = "ses_start_dial_failed";
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "start-dial-failed-reason");
+      try {
+        // The start's dial failed before a relay existed; a follow outside any pass names it.
+        expect(await session.follow("team.start-dial-failed")).toContain(
+          "because its relay subject could not be opened: CONNECTION_REFUSED"
+        );
+      } finally {
+        await session.stop();
+      }
+    });
+  });
+
+  test("a registration sent once the connection closed with an error of its own names that error", async () => {
+    // nats.js settles `closed()` with the close's own error, which replaces the plugin's own words
+    // for the close once it settles.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_closed_error";
+    const closeError = NatsError.errorForCode(ErrorCode.AuthenticationExpired);
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-closed-error");
+      const parked = Promise.withResolvers<void>();
+      try {
+        natsState.heldConnect = parked.promise;
+        natsState.closeError = closeError;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(deliverSubject(id))?.end();
+        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        const reason = `because its relay subject could not be opened: ${natsFailureReason(closeError)}`;
+        expect(natsFailureReason(closeError)).not.toBe("the NATS connection closed");
+        expect(await session.follow("team.relay-closed-error")).toContain(reason);
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
+  test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_errored";
+    const relay = deliverSubject(id);
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-own-error");
+      try {
+        const first = natsState.controls.get(relay);
+        // The connection stays up; the relay's own resubscribe is refused, and waits 15 s.
+        natsState.failSubscribes = 1;
+        first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
+        await until(() => natsState.failSubscribes === 0, "the relay's own resubscribe");
+        const reason = "because its relay subject could not be opened: DISCONNECT";
+        expect(await session.follow("team.relay-errored")).toContain(reason);
+        for (const part of Object.values(session.outage())) {
+          expect(part).toHaveLength(1);
+          expect(part[0]).toContain(reason);
+        }
+        session.heartbeat();
+        await until(
+          () =>
+            natsState.controls.get(relay) !== first &&
+            natsState.controls.get(relay)?.active() === true,
+          "the heartbeat's open of the relay subject"
+        );
+        await until(() => session.restored().written.length === 1, "the restored notice");
+        for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
+        expect(natsState.connectedNames).toHaveLength(1);
+      } finally {
+        await session.stop();
+      }
+    });
+  });
+
+  test("two opens of the live view's control subject that race each other take it once", async () => {
+    // The control subject's own resubscribe and the heartbeat's pass both dial a closed
+    // connection; whichever lands second takes nothing.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_control_race";
+    const control = `agentstream.${id}.control`;
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "control-open-race");
+      const parked = Promise.withResolvers<void>();
+      try {
+        natsState.heldConnect = parked.promise;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(control)?.end();
+        await until(() => natsState.connectedNames.length === 2, "the control subject's own dial");
+        session.heartbeat();
+        await until(() => natsState.connectedNames.length === 3, "the heartbeat's dial");
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await until(
+          () => (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active()),
+          "the control subject opened again"
+        );
+        await settle();
+        // The first subscription ended with its connection; the stand-in still calls an ended
+        // subscription active, so only those taken after it are counted.
+        const live = (natsState.controlsByTopic.get(control) ?? [])
+          .slice(1)
+          .filter((c) => c.active());
+        expect(live).toHaveLength(1);
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
+  test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const bounds: number[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          bounds.push(options.timeout ?? Number.NaN);
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      try {
+        const context: SessionContext = {
+          cwd: "/tmp/envoy-omp-test",
+          sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
+          setInterval: () => {},
+          ui: sessionContext().ui,
+        };
+        const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
+        const fixture = createPi();
+        await envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.({}, context);
+        // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
+        expect(bounds).toHaveLength(1);
+        expect(bounds[0]).toBeLessThanOrEqual(7_500);
+        expect(bounds[0]).toBeGreaterThan(6_000);
+      } finally {
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
+  // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
+  // of connections lists: the image's build-commit stamp, else a packed build's release version,
+  // else none.
+  test("the connection name the server sees ends with the plugin's build", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const names: string[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          names.push(options.name ?? "");
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
+      try {
+        // An instance of its own (the query), as each row of this file loads one: the build source
+        // it is given is that instance's module state.
+        const entry = await import("./envoy.ts?connection-build");
+        // The query names no file, so `entry` is untyped; its factory is read through
+        // `EnvoyModule`, so a call of it left without `await` fails Biome's noFloatingPromises.
+        const { default: envoyExtension }: EnvoyModule = entry;
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const rows = [
+          { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
+          {
+            stamp: undefined,
+            packed: true,
+            want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}`,
+          },
+          { stamp: undefined, packed: false, want: "omp-ses_build" },
+        ];
+        for (const [index, row] of rows.entries()) {
+          const stamp = join(stampDirectory, `build-commit-${index}`);
+          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+          entry.setBuildSourceForTests({ stamp, packed: row.packed });
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const fixture = createPi();
+          await envoyExtension(fixture.pi);
+          names.length = 0;
+          await fixture.handlers.get("session_start")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
+          expect(names[0]).toBe(row.want);
+        }
+      } finally {
+        rmSync(stampDirectory, { recursive: true, force: true });
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
+  for (const { row, error, shown, withheld } of [
+    {
+      row: "names the NATS failure in the refused registration and in every part of the notice",
+      error: () => new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout),
+      shown: "Authentication Timeout",
+      withheld: [] as string[],
+    },
+    {
+      row: "withholds the text of a NATS failure that carries no code, in every part of the notice",
+      error: () => new Error("bad INFO from 10.9.8.7:4222 MARKER-7f3a"),
+      shown: "because its relay subject could not be opened:",
+      withheld: ["10.9.8.7", "MARKER-7f3a"],
+    },
+  ]) {
+    test(`a session whose dial fails ${row}`, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      natsState.failConnects = 99;
+      natsState.failError = error;
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const notifications: string[] = [];
+        const context: SessionContext = {
+          cwd: "/tmp/envoy-omp-test",
+          sessionManager: { ...topLevelSession, getSessionId: () => "ses_named_failure" },
+          setInterval: () => {},
+          ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+        };
+        const { default: envoyExtension }: EnvoyModule = await import(
+          `./envoy.ts?named-failure-${withheld.length}`
+        );
+        const fixture = createPi();
+        await envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.({}, context);
+
+        const parts = {
+          "the session_start notice": notifications.find((m) =>
+            m.includes("this session is not registered")
+          ),
+          "the UI notice": notifications.find((m) =>
+            m.includes("inbound messages are unavailable")
+          ),
+          // Held until the host is settled, and written to the transcript at once.
+          "the transcript notice": fixture.entries
+            .map((entry) => ("data" in entry ? entry.data : undefined))
+            .map((data) =>
+              typeof data === "object" &&
+              data !== null &&
+              "content" in data &&
+              typeof data.content === "string"
+                ? data.content
+                : ""
+            )
+            .find((content) => content.includes("Envoy inbound unavailable")),
+          "the log line": warnings.find((m) => m.includes("this session receives nothing")),
+        };
+        for (const [part, text] of Object.entries(parts)) {
+          expect(text, `${part} was not given`).toBeDefined();
+          expect(text, `${part} does not name the failure`).toContain(shown);
+          // Named once: the pass's own failure text is not added to a refusal that names it.
+          expect(
+            text?.split("because its relay subject could not be opened").length,
+            `${part} names the failure more than once`
+          ).toBe(2);
+          for (const secret of withheld)
+            expect(text, `${part} printed ${secret}`).not.toContain(secret);
+        }
+      } finally {
+        stopSink();
+      }
+    });
+  }
 
   // A failing row for #4140 at c8903b20b8, found by the acceptance (AcceptE2-2). Put it in
   // packages/pi-envoy/extensions/envoy.test.ts, inside `describe("envoy OMP extension", ...)`,
@@ -20482,9 +22575,11 @@ console.log(JSON.stringify(args));
         setTimeout: () => undefined,
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-no-trade"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(
         notifications.some((message) => message.includes("the trade for the session's token"))
@@ -20570,9 +22665,11 @@ console.log(JSON.stringify(args));
     const passMs = 30_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-503"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       // Timed from the start itself, not from before the module loads: a module slow to load on a
       // loaded machine is no slower start.
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
@@ -20602,9 +22699,9 @@ console.log(JSON.stringify(args));
     const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
     const started = Date.now();
     const { context, notifications } = timedContext("ses_broker_once_away", started);
-    const { default: envoyExtension } = await import("./envoy.ts?broker-away-once");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?broker-away-once");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       natsState.presented.map((token) => minted.get(token)),
@@ -20616,6 +22713,47 @@ console.log(JSON.stringify(args));
     ).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, context);
   }, 60_000);
+
+  test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
+    // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
+    // `hooks.credential`), so the dial drops a token the hub refused twice, as the keeper does on
+    // an open connection. The waits between the dials are recorded, not slept.
+    const { minted } = brokerPod(() => "grant");
+    natsState.failConnects = 2;
+    natsState.failError = () =>
+      new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation);
+    setNatsConnectForTests(
+      natsStandInConnect,
+      { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 30_000 },
+      { delay: async () => {}, random: () => 0 }
+    );
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    try {
+      const { context, notifications } = timedContext("ses_first_dial_refused", Date.now());
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?first-dial-refused-twice"
+      );
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(natsState.failConnects, notifications.map(({ message }) => message).join(" | ")).toBe(
+        0
+      );
+      // The start's token, and the trade the drop started.
+      await until(() => minted.size === 2, "the trade the drop started");
+      expect([...minted.values()]).toEqual(["ses_first_dial_refused", "ses_first_dial_refused"]);
+      expect(warnings.filter((message) => message.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(
+        1
+      );
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    } finally {
+      stopSink();
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  }, 30_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
@@ -20645,9 +22783,11 @@ console.log(JSON.stringify(args));
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
     // Each CONNECT presented a token the broker minted for the session it names here.
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
@@ -20675,9 +22815,9 @@ console.log(JSON.stringify(args));
     // session is told of as every other inbound outage is (the review of 2fa6fbf7cf, M2).
     const { minted } = brokerPod(() => "grant");
     const { context, notifications } = timedContext("ses_keeper_notice", Date.now());
-    const { default: envoyExtension } = await import("./envoy.ts?keeper-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?keeper-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
     const refused = () =>
@@ -20720,9 +22860,9 @@ console.log(JSON.stringify(args));
         return await pod(input, init);
       };
       const before = timedContext("ses_follow_from", started);
-      const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, before.context);
       const after = timedContext("ses_follow_to", started);
       const switchedAt = Date.now() - started;
@@ -20773,9 +22913,11 @@ console.log(JSON.stringify(args));
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-failed-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-failed-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
     const oldControl = "agentstream.ses_failed_from.control";
     expect(natsState.controls.get(oldControl)?.active()).toBe(true);
@@ -20808,9 +22950,11 @@ console.log(JSON.stringify(args));
     // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
     // is still open; what the host records then is A's, and B's viewer must be replayed only B's.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?agent-stream-ring-per-session");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-ring-per-session"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
@@ -20863,9 +23007,11 @@ console.log(JSON.stringify(args));
         expires_in: 2,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-keeper"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
     const [first] = minted;
     expect(first).toBeString();
@@ -20889,10 +23035,10 @@ console.log(JSON.stringify(args));
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?session-switch");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-switch");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_switch"));
     const beforeSwitch = natsState.controls.get("notifications.agent.ses_before_switch");
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_switch"));
@@ -20903,10 +23049,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a branch re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?branch-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?branch-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_branch"));
     await fixture.handlers.get("session_branch")?.(
       { previousSessionFile: "/tmp/old.jsonl" },
@@ -20923,10 +23071,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a fork re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?fork-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?fork-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_fork"));
     await fixture.handlers.get("session_switch")?.(
       { reason: "fork" },
@@ -20941,10 +23091,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a handoff re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?handoff-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?handoff-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // /handoff carries the agent's own words (and any identity it named)
     // into the new session, so the stale-identity notice must fire.
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_handoff"));
@@ -20960,10 +23112,12 @@ console.log(JSON.stringify(args));
 
   test("stays silent about identity when a switch replaces the transcript or keeps the id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?switch-identity-silent");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-identity-silent"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_original"));
     // A fresh conversation ("new") and a loaded one ("resume") both carry a
     // transcript that already matches its own id — no stale identity to flag.
@@ -20983,10 +23137,12 @@ console.log(JSON.stringify(args));
 
   test("stays silent about identity when the session gains its first id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?first-identity-silent");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?first-identity-silent"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI: session_start fires before any session exists, so the
     // transcript never carried an identity that could go stale.
     await fixture.handlers.get("session_start")?.({}, sessionContext(""));
@@ -21009,7 +23165,9 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?identity-notice-outage");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?identity-notice-outage"
+    );
     const fixture = createPi();
     const notifications: string[] = [];
     const context: SessionContext = {
@@ -21017,7 +23175,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     registryDown = true;
@@ -21037,10 +23195,12 @@ console.log(JSON.stringify(args));
   test("an in-process session switch leaves the session it left behind nothing to receive on", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?switch-no-resubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-no-resubscribe"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_left_behind"));
     const abandoned = natsState.controls.get("notifications.envoy.deliver.ses_left_behind");
     expect(abandoned?.active()).toBe(true);
@@ -21063,10 +23223,10 @@ console.log(JSON.stringify(args));
   test("envoy_unsubscribe is not undone by the resubscribe path", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-stays");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?unsubscribe-stays");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_unsub"));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -21090,10 +23250,12 @@ console.log(JSON.stringify(args));
   test("a subscription.removed notice drops the local follow so dead-connection recovery does not resurrect it", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?subscription-removed-drops-local");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?subscription-removed-drops-local"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_dropped");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -21134,12 +23296,12 @@ console.log(JSON.stringify(args));
   test("a subscription.removed notice naming a different session leaves this session's subscription and emits no notice", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import(
+    const { default: envoyExtension }: EnvoyModule = await import(
       "./envoy.ts?subscription-removed-other-session"
     );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_other");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -21202,10 +23364,12 @@ console.log(JSON.stringify(args));
         }
         return response({});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-awaiting-retry");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unsubscribe-awaiting-retry"
+      );
       const fixture = createPi();
 
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_awaiting_retry"));
       const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
       const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -21230,11 +23394,11 @@ console.log(JSON.stringify(args));
   test("a deliberately closed relay subject still recovers from a genuine death once it is back", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?marker-is-consumed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?marker-is-consumed");
     const fixture = createPi();
     const home = deliverSubject("ses_home");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_home"));
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_away"));
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -21274,7 +23438,7 @@ console.log(JSON.stringify(args));
   test("permits redelivery after a failed injection and warns with the envelope id", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?deliver-retry");
     const fixture = createPi();
     let throwNext = true;
     const failedInjection = Promise.withResolvers<void>();
@@ -21297,7 +23461,7 @@ console.log(JSON.stringify(args));
     };
 
     try {
-      envoyExtension(pi);
+      await envoyExtension(pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pump"));
       const controls = natsState.controls.get("notifications.agent.ses_pump");
       expect(controls).toBeDefined();
@@ -21347,10 +23511,10 @@ console.log(JSON.stringify(args));
   test("deduplicates a redelivery after successful injection", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-dedupe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?deliver-dedupe");
     const fixture = createPi();
     const deliveryAfterDuplicate = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -21396,10 +23560,12 @@ console.log(JSON.stringify(args));
   test("injects one publish once when two followed subscriptions both carry it", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-overlapping-copies");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?deliver-overlapping-copies"
+    );
     const fixture = createPi();
     const following = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -21455,11 +23621,11 @@ console.log(JSON.stringify(args));
   test("an ended subscription iterator resubscribes instead of going deaf", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?resubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?resubscribe");
     const fixture = createPi();
     const relay = deliverSubject("ses_deaf");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_deaf"));
     const first = natsState.controls.get(relay);
     expect(first).toBeDefined();
@@ -21498,7 +23664,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-blip");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-blip");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const notifications: string[] = [];
@@ -21517,7 +23683,7 @@ console.log(JSON.stringify(args));
       },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     // The healthy start must land on the heartbeat branch, not the NATS-retry
     // branch; a failed registration here would register the wrong interval.
@@ -21576,7 +23742,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-retry");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     // The host's managed timer, read rather than run: the delay is the assertion, and the call
@@ -21598,7 +23764,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(registrations).toBe(1);
 
@@ -21660,7 +23826,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?rebind-blip");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?rebind-blip");
     const fixture = createPi();
     const notifications: string[] = [];
     const context: SessionContext = {
@@ -21670,7 +23836,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     registryDown = true;
@@ -21702,10 +23868,10 @@ console.log(JSON.stringify(args));
         topics: ["notifications.agent.ses_shutdown"],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-deregister");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?shutdown-deregister");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
 
@@ -21718,10 +23884,10 @@ console.log(JSON.stringify(args));
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?shutdown-hang");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
@@ -21744,10 +23910,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-parallel-drain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-parallel-drain"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const shutdown = fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
     if (shutdown === undefined) throw new Error("session_shutdown handler was not registered");
@@ -21787,10 +23955,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-settles-registration");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-settles-registration"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const subscribing = fixture.tools
       .find((tool) => tool.name === "envoy_subscribe")
@@ -21841,10 +24011,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-bounds-settle");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-bounds-settle"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const subscribing = fixture.tools
       .find((tool) => tool.name === "envoy_subscribe")
@@ -21880,10 +24052,12 @@ console.log(JSON.stringify(args));
       requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
       return responseWithRegistration(input, init, []);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?switch-deregisters-old-id");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-deregisters-old-id"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before"));
     await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_after"));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -21914,10 +24088,12 @@ console.log(JSON.stringify(args));
         },
       ]);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?sessions-render-state");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?sessions-render-state"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_lister"));
     const listed = await fixture.tools
       .find((tool) => tool.name === "envoy_sessions")
@@ -21941,10 +24117,10 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-live-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-live-id");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI: session_start fires before any session exists.
     await fixture.handlers.get("session_start")?.({}, sessionContext(""));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
@@ -21976,7 +24152,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-drift");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-drift");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     let liveSessionID = "";
@@ -21987,7 +24163,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: () => undefined },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI has no direct subject and no registry row until the host
     // assigns an id, but it still starts the heartbeat that observes that id.
     await fixture.handlers.get("session_start")?.({}, context);
@@ -22029,10 +24205,10 @@ console.log(JSON.stringify(args));
         delivery: consumerDelivery(body.session_id ?? "ses_omp", { streamID: TEST_STREAM_ID }),
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?subscribe-warnings");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?subscribe-warnings");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     expect(subscribe).toBeDefined();
@@ -22048,11 +24224,11 @@ console.log(JSON.stringify(args));
 
   test("returns the 50 newest rendered deliveries from envoy_inbox", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?inbox");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbox");
     const fixture = createPi();
     const delivered = Promise.withResolvers<void>();
     let deliveryCount = 0;
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -22096,9 +24272,9 @@ console.log(JSON.stringify(args));
   });
 
   test("registers a plain-text renderer for envoy-message so inbound content never renders as a markdown code block", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?message-renderer");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?message-renderer");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     const renderer = fixture.renderers.get("envoy-message");
     if (renderer === undefined) throw new Error("envoy-message renderer was not registered");
@@ -22295,7 +24471,7 @@ describe("consumer delivery", () => {
       const data = natsState.published.at(-1)?.data;
       events.push(data === undefined ? subject : `${subject} ${new TextDecoder().decode(data)}`);
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const written: unknown[] = [];
@@ -22314,7 +24490,7 @@ describe("consumer delivery", () => {
         context
       );
     };
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message: SentCard, sendOptions: unknown) => {
         if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
@@ -22624,9 +24800,9 @@ describe("consumer delivery", () => {
   test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?connection-probe");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let inboxes = 0;
     /** Probes `controls` as the listener does; answers what the session replied on the inbox. */
     const probe = async (
@@ -22697,6 +24873,9 @@ describe("consumer delivery", () => {
   for (const refusal of [
     { status: 503, reason: "no_grant" },
     { status: 409, reason: "not_requested" },
+    // A consumer filter past the server's max payload, which the listener used to answer 503
+    // consumer_error and now answers 413: the session is told the same way.
+    { status: 413, reason: "too_large" },
   ] as const) {
     test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, and the next heartbeat asks again`, async () => {
       const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
@@ -22936,6 +25115,49 @@ describe("consumer delivery", () => {
     expect(session.replies(inbox)).toEqual(["received", "done"]);
     await session.tick();
     expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+  });
+
+  // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
+  // made the shared renderer throw in `deliver`, so every copy of the frame failed and went back
+  // to the stream. The card shows such a payload as the text its sender sent, the frame is taken,
+  // and the extension says so once, naming the message.
+  test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const session = await bootConsumer("consumer-deep-payload");
+    try {
+      const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+      const inbox = session.relay(
+        1,
+        JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
+      );
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      await until(
+        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
+        "the frame's settling answer",
+        30_000
+      );
+
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+      // TOON quotes the text as JSON quotes a string, so the card holds the sender's text whole.
+      expect(session.cards("evt-deep").map((card) => card.content)).toEqual([
+        expect.stringContaining(`\n  message: ${JSON.stringify(nested)}`),
+      ]);
+      expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
+        {
+          message: "envoy: a message's payload is shown as its text; the card could not lay it out",
+          context: {
+            event_id: "evt-deep",
+            error: "its layout is larger than the 1048576 bytes a card holds",
+          },
+        },
+      ]);
+    } finally {
+      stopSink();
+      await session.stop();
+    }
   });
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
@@ -23344,6 +25566,55 @@ describe("consumer delivery", () => {
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
     });
+
+    // The comment changed after its event was written. The card re-reads it, so it prints the
+    // comment as it stands: the deleted line every read prints in place of the body a delete
+    // cleared, or the words an edit wrote with the edited mark beside them. The part the event
+    // carried is in neither, nor the note that the body was cut.
+    test("is prompted with the deleted line for a comment deleted since", async () => {
+      const card = await cardForCutComment("cut-comment-deleted", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "",
+                deleted_at: "2026-11-03T00:00:00Z",
+                deleted_by: { kind: "user", id: "alice" },
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("Deleted by user alice at 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
+
+    test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
+      const card = await cardForCutComment("cut-comment-edited", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "The paragraph as edited.\n\nAnd a second one.",
+                edited_at: "2026-11-03T00:00:00Z",
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("The paragraph as edited.\n\nAnd a second one. · edited 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
   });
 });
 
@@ -23390,9 +25661,9 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     natsState.realConnect = true;
     const sessionID = `ses_stall_${crypto.randomUUID().replaceAll("-", "")}`;
     // A module instance of its own per mode: the extension keeps its session's state.
-    const { default: envoyExtension } = await import("./envoy.ts?nats-stall");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?nats-stall");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(sessionID);
     try {
       await fixture.handlers.get("session_start")?.({}, context);
@@ -23436,6 +25707,76 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   }, 120_000);
 });
 
+// The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
+// session's own connection authenticated as a session user holding the grant the NATS auth
+// service gives a session (`sessionGrantConfig`, `natsgrant.Session` itself): publish its replies
+// under `_INBOX.*.<session id>.>` alone. The scenario is the one claude-envoy's row runs too
+// (`runReplayGrantScenario`): a replay asked on a reply subject naming the session is answered;
+// one asked on nats.go's own request inbox, the subject Dispatch used before, is refused by the
+// server and reaches nobody; the session then answers on its own prefix again. This row keeps the
+// extension's own boot, connection and shutdown. Docker-backed: the pi-envoy job runs this suite
+// with LEGION_E2E=1, its NATS service having pulled the image.
+const replyGrantServerDirectory = useNatsServerDirectory();
+
+describe.skipIf(process.env.LEGION_E2E !== "1")(
+  "the replay answer under a session's own NATS grant",
+  () => {
+    const SESSION = "ses_reply_grant";
+    const sessionUser = nkeys.createUser();
+    const requesterUser = nkeys.createUser();
+    const server = natsServerWithConfig(
+      replyGrantServerDirectory,
+      sessionGrantConfig({
+        sessionID: SESSION,
+        sessionKey: sessionUser.getPublicKey(),
+        requesterKey: requesterUser.getPublicKey(),
+      })
+    );
+
+    beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
+    afterAll(() => server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)), NATS_STOP_HOOK_MS);
+
+    test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
+      const decoder = new TextDecoder();
+      const originalSeed = process.env.NATS_NKEY_SEED;
+      process.env.ENVOY_NATS_URL = server.url;
+      process.env.NATS_NKEY_SEED = decoder.decode(sessionUser.getSeed());
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+        responseWithRegistration(input, init, [])) as typeof fetch;
+      natsState.realConnect = true;
+      const requester = await realConnect({
+        ...natsConnectionOptions({
+          servers: [server.url],
+          name: "pi-envoy-reply-grant-requester",
+          credential: {
+            kind: "seed",
+            seed: {
+              value: decoder.decode(requesterUser.getSeed()),
+              source: "the row's requester user",
+            },
+          },
+        }),
+        reconnect: false,
+      });
+      // A module instance of its own, as every row here takes one: the extension keeps its
+      // session's state, so a static import would share it with every other row of the file.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?reply-grant");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const context = sessionContext(SESSION);
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        await runReplayGrantScenario({ requester, server, sessionID: SESSION });
+      } finally {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await requester.close();
+        if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
+        else process.env.NATS_NKEY_SEED = originalSeed;
+      }
+    }, 60_000);
+  }
+);
+
 // What the envoy_send and envoy_publish tools tell the model about where a message went
 // (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
 // other sessions it reaches, or says it reaches none.
@@ -23458,9 +25799,9 @@ describe("the send and publish answers", () => {
   async function bootTool(query: string, answer: unknown) {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       responseWithRegistration(input, init, answer)) as typeof fetch;
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
     await fixture.handlers.get("session_start")?.({}, context);
     return { fixture, stop: () => fixture.handlers.get("session_shutdown")?.({}, context) };
@@ -23553,6 +25894,233 @@ describe("the send and publish answers", () => {
       } finally {
         await session.stop();
       }
+    });
+  }
+
+  // The listener answers a repeat of another sender's key with that message's ids and times
+  // alone, its text fields empty: both tools report it as not delivered, naming that message's
+  // event id. The control is the envelope schema every answer was read by before, which throws
+  // on it.
+  for (const tool of ["envoy_send", "envoy_publish"] as const) {
+    test(`${tool} reports a key another sender's message holds as not delivered`, async () => {
+      const taken = {
+        event_id: "evt_alice",
+        source: "",
+        source_event_id: "",
+        topic: "notifications.team.test",
+        dedupe_key: "publish.key",
+        issued_at: 1,
+        payload_summary: "",
+        trace_id: "",
+        recipient: "ses_target",
+        duplicate: true,
+      };
+      expect(() => EnvelopeSchema.parse(taken)).toThrow();
+      const session = await bootTool(`answers-key-taken-${tool}`, taken);
+
+      try {
+        const result = await session.fixture.tools
+          .find((candidate) => candidate.name === tool)
+          ?.execute(
+            "",
+            tool === "envoy_send"
+              ? { session_id: "ses_target", message: "bob's words" }
+              : { topic: "notifications.team.test", message: "bob's words" }
+          );
+
+        expect(result?.content[0]?.text).toBe(
+          `not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; ${tool === "envoy_send" ? "send it again without an idempotency_key; Envoy gives it a new one" : "publish it again; Envoy gives every publish a new idempotency_key"}`
+        );
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_alice",
+          topic: "notifications.team.test",
+          delivered: false,
+          key_taken: true,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
+});
+
+// Every reader of an envelope a listener delivers in this extension, given one that carries
+// `role`: the field the listener stores on a message Dispatch's API sent to a role's holder for a
+// route to that role, and echoes in the answer to that send. Each row reads one envelope with the
+// field and without it, and checks that the reader reads every other field as before. No reader
+// here names the field: each parses with the shared renderer, the shared identity schema or the
+// shared transport (`@legion/envoy-client`), whose own rows are in its `transport.test.ts`.
+describe("an envelope that carries the role field", () => {
+  const SESSION = "ses_role_field";
+  const AGENT = `notifications.agent.${SESSION}`;
+  const ROLE = "legion-legion-legion-1-architect";
+  const ROLE_TOPIC = `notifications.role.${ROLE}`;
+  /** Every field `EnvelopeSchema` names except `role`, each one set, on `SESSION`'s own subject. */
+  const withoutRole = {
+    ...(envelopeWithoutRole as Omit<Envelope, "role">),
+    topic: AGENT,
+    dedupe_key: `agent.${SESSION}.0123456789abcdef0123456789abcdef`,
+  } satisfies Omit<Envelope, "role">;
+  const withRole = { ...withoutRole, role: ROLE };
+
+  /**
+   * Boots session `SESSION` on a listener that answers every registration with a consumer, every
+   * publish with `answer` and `status`, and every other request with `answer`.
+   */
+  async function boot(query: string, answer: unknown = {}, status = 200) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+      new URL(input.toString()).pathname === "/v1/messages/publish"
+        ? new Response(JSON.stringify(answer), {
+            headers: { "Content-Type": "application/json" },
+            status,
+          })
+        : responseWithRegistration(input, init, answer)) as typeof fetch;
+    // Each caller's own query loads an instance of its own, so the specifier cannot be static.
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const context = sessionContext(SESSION);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const agent = natsState.controls.get(AGENT);
+    if (agent === undefined) throw new Error("the session's own subject reaches no relay");
+    const cards = () =>
+      fixture.deliveries.filter((delivery) => delivery.customType === "envoy-message");
+    const tool = (name: string) => {
+      const found = fixture.tools.find((candidate) => candidate.name === name);
+      if (found === undefined) throw new Error(`${name} was not registered`);
+      return found;
+    };
+    return {
+      agent,
+      cards,
+      tool,
+      stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
+    };
+  }
+
+  test("the relay's frame reader (envoy.ts deliver: renderInbound, ClaimIdentitySchema, closeRemovedSubscriptions, noteInbox): a frame with the role field is shown the card and the inbox entry a frame without it is shown", async () => {
+    const shown = async (query: string, envelope: object) => {
+      const session = await boot(query);
+      try {
+        session.agent.push(JSON.stringify(envelope));
+        await until(() => session.cards().length === 1, "the frame's card");
+        const inbox = await session.tool("envoy_inbox").execute("", {});
+        // Each card's marker is minted fresh (`envoyCard`, src/card-wake.ts), so the row compares
+        // everything else the card holds.
+        const cards = session.cards().map(({ details, ...card }) => ({
+          ...card,
+          details: { ...(details as object), envoyCard: "minted" },
+        }));
+        return { cards, inbox: inbox.content[0]?.text };
+      } finally {
+        await session.stop();
+      }
+    };
+    const before = await shown("role-field-card-without", withoutRole);
+
+    expect(await shown("role-field-card-with", withRole)).toEqual(before);
+    expect(before.cards[0]?.content).toContain(`id: ${withoutRole.event_id}`);
+    expect(before.cards[0]?.content).toContain("message: Review the plan before noon.");
+    expect(JSON.parse(before.inbox ?? "[]")).toEqual([
+      {
+        event_id: withoutRole.event_id,
+        at: "2026-11-18T09:00:00Z",
+        from: "ses_sender (Planner)",
+        summary: "Review the plan",
+      },
+    ]);
+  });
+
+  test("the relay's repeat check (consumer-delivery.ts parseIdentity, envoy.ts ClaimIdentitySchema): a copy of a shown frame that carries the role field is the same delivery, shown once", async () => {
+    const session = await boot("role-field-copy");
+    try {
+      session.agent.push(JSON.stringify(withoutRole));
+      await until(() => session.cards().length === 1, "the first copy's card");
+      session.agent.push(JSON.stringify(withRole), "_INBOX.role-field-copy");
+      // A later message, so that its card says the copy before it has been read.
+      session.agent.push(
+        JSON.stringify({
+          ...withoutRole,
+          event_id: "evt-after-the-copy",
+          dedupe_key: "agent.ses_role_field.fedcba9876543210fedcba9876543210",
+        })
+      );
+      await until(() => session.cards().length === 2, "the later message's card");
+
+      expect(session.cards().map((card) => card.content.match(/\n {2}id: (\S+)/)?.[1])).toEqual([
+        withoutRole.event_id,
+        "evt-after-the-copy",
+      ]);
+      expect(
+        natsState.published
+          .filter((published) => published.subject === "_INBOX.role-field-copy")
+          .map((published) => new TextDecoder().decode(published.data))
+      ).toContain("done");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("envoy_send (envoy.ts: the transport's send answer, sendConfirmationText): an answer with the role field gives the tool result it gives without it", async () => {
+    const answer = { recipient: "ses_receiver", recipient_state: "live", state: "connected" };
+    const sent = async (query: string, envelope: object) => {
+      const session = await boot(query, { ...envelope, ...answer });
+      try {
+        return await session
+          .tool("envoy_send")
+          .execute("", { session_id: "ses_receiver", message: "Review the plan" });
+      } finally {
+        await session.stop();
+      }
+    };
+    const before = await sent("role-field-send-without", withoutRole);
+
+    expect(await sent("role-field-send-with", withRole)).toStrictEqual(before);
+    expect(before.content[0]?.text).toBe(`sent ${withoutRole.event_id} to ses_receiver (live)`);
+    expect(before.details).toMatchObject({
+      event_id: withoutRole.event_id,
+      recipient: "ses_receiver",
+      recipient_state: "live",
+      confirmed: true,
+      state: "connected",
+    });
+  });
+
+  for (const [label, status, answer] of [
+    ["stored for the role's live holder", 200, { holder: "ses_holder", holder_state: "live" }],
+    [
+      "kept for the role's next holder",
+      202,
+      {
+        holder: "ses_holder",
+        holder_state: "unresponsive",
+        last_seen: Date.parse("2026-11-18T08:50:00Z"),
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: Date.parse("2026-11-18T10:00:00Z"),
+      },
+    ],
+  ] as const) {
+    test(`envoy_publish (envoy.ts: the transport's publish answer, publishConfirmationText, publishResultDetails): an answer ${label} with the role field gives the tool result it gives without it`, async () => {
+      const published = async (query: string, envelope: object) => {
+        const session = await boot(query, { ...envelope, topic: ROLE_TOPIC, ...answer }, status);
+        try {
+          return await session
+            .tool("envoy_publish")
+            .execute("", { topic: ROLE_TOPIC, message: "Review the plan" });
+        } finally {
+          await session.stop();
+        }
+      };
+      const before = await published(`role-field-publish-${status}-without`, withoutRole);
+
+      expect(await published(`role-field-publish-${status}-with`, withRole)).toStrictEqual(before);
+      expect(before.details).toMatchObject({
+        event_id: withoutRole.event_id,
+        topic: ROLE_TOPIC,
+        holder: "ses_holder",
+        holder_state: answer.holder_state,
+      });
     });
   }
 });

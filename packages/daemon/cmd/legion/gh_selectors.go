@@ -13,11 +13,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
+	"unicode"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -361,7 +362,7 @@ func (s *selectors) fromOptions(cmd *ghCommand, parsed ghArgs) error {
 				var err error
 				switch flag.selects {
 				case "host":
-					if !strings.EqualFold(item, "github.com") {
+					if !isASCII(item) || strings.ToLower(item) != "github.com" {
 						err = cannotPlace(what, "names another host than github.com", s.api)
 					}
 				case "owner":
@@ -439,19 +440,23 @@ func (s *selectors) query(words []string) error {
 }
 
 // endpoint collects the owner a gh api endpoint names, and the repository where it names one:
-// repos/<owner>/<repo>, repos/<owner>/, orgs/<owner>/ or users/<owner>/, with or without the
-// API's host before it, and a search endpoint's q, reporting whether it is a search endpoint,
-// whose q field is its query too. A placeholder in the owner's place names none (GH_REPO's, or
-// the working directory's, fills it), and one in the repository's names the owner alone, since
-// what fills it is read where gh reads it (fromOwnRepository); a repository named by id
-// (repositories/<id>) and another host are errors. gh reads an endpoint holding "://" as a whole
-// URL.
+// repos/<owner>/<repo>, repos/<owner>/, orgs/<owner>/ or users/<owner>/, with or without an https
+// URL's host before it, one of ghAPIHosts, whose paths are read alike, and a search endpoint's q,
+// reporting whether it is a search endpoint, whose q field is its query too. A placeholder in the
+// owner's place names none (GH_REPO's, or the working directory's, fills it), and one in the
+// repository's names the owner alone, since what fills it is read where gh reads it
+// (fromOwnRepository); a repository named by id (repositories/<id>), any other host (isGhAPIHost)
+// and any other scheme, http among them, over which gh would send the owner's token unencrypted,
+// are errors. gh reads an endpoint holding "://" as a whole URL.
 func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	path := endpoint
 	if strings.Contains(endpoint, "://") {
 		parsed, err := url.Parse(endpoint)
-		if err != nil || !strings.EqualFold(parsed.Host, "api.github.com") {
-			return false, cannotPlace(endpoint, "names another host than api.github.com", true)
+		if err != nil || !isGhAPIHost(parsed.Host) {
+			return false, cannotPlace(endpoint, "names another host than "+strings.Join(ghAPIHosts, " or "), true)
+		}
+		if parsed.Scheme != "https" {
+			return false, cannotPlace(endpoint, "is no https URL", true)
 		}
 		path = parsed.Path
 		if parsed.RawQuery != "" {
@@ -486,6 +491,25 @@ func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	return false, nil
 }
 
+// ghAPIHosts are the hosts a gh api endpoint may name in a whole URL: GitHub's REST API, and the
+// host a release's assets are uploaded to (repos/<owner>/<repo>/releases/<id>/assets).
+var ghAPIHosts = []string{"api.github.com", "uploads.github.com"}
+
+// isGhAPIHost says whether host is one of ghAPIHosts, in any ASCII case and with no port: a host
+// spelled in ASCII alone (isASCII), lowered.
+func isGhAPIHost(host string) bool {
+	return isASCII(host) && slices.Contains(ghAPIHosts, strings.ToLower(host))
+}
+
+// isASCII says whether s holds no rune above unicode.MaxASCII: the test every comparison of a host
+// name here makes before it lowers the name with strings.ToLower, which on ASCII text lowers A-Z
+// alone. Unicode case mapping takes some letters onto ASCII ones, strings.ToLower `İ` (U+0130) to
+// `i` and the Kelvin sign (U+212A) to `k`, and strings.EqualFold `ſ` (U+017F) onto `s`, so
+// `gİthub.com` would compare as github.com and `uploadſ.github.com` as uploads.github.com.
+func isASCII(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return r > unicode.MaxASCII })
+}
+
 // ghPlaceholder is gh api's placeholder as gh reads it, in its endpoint and its typed fields'
 // values: :owner, :repo or :branch, or a name in braces, of which gh fills {owner}, {repo} and
 // {branch} and leaves any other as it is.
@@ -507,8 +531,14 @@ func isWebURL(s string) bool {
 }
 
 // isGitHubHost says whether host is github.com as gh reads a host: github.com, or one of its
-// subdomains (www.github.com, ssh.github.com), in any case.
+// subdomains (www.github.com, ssh.github.com), in any ASCII case. A host holding a rune above ASCII
+// is none (isASCII), though gh, which lowers a host with strings.ToLower, reads `gİthub.com` as
+// github.com: a caller that passes over a host this calls none, rather than refusing it, refuses
+// such a host first (ghRemote.repository).
 func isGitHubHost(host string) bool {
+	if !isASCII(host) {
+		return false
+	}
 	host = strings.ToLower(host)
 	return host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
@@ -618,7 +648,8 @@ func ghParseGitURL(raw string) (*url.URL, error) {
 // host (a local path) or on another host, and a marker line with no value, an empty one or
 // "base", whose remote's own URL is read beside it. The name is carried on as the line spells it,
 // `.git` and all, which the selector that records it normalizes (selectors.repository). why says
-// why a line is one this cannot read: a URL gh's parser refuses, an ssh remote on another host,
+// why a line is one this cannot read: a URL gh's parser refuses, a remote whose host holds a letter
+// beyond ASCII (isASCII), which gh's lowering may make github.com, an ssh remote on another host,
 // which gh may read as an alias of github.com from ssh's configuration, and a github.com one
 // naming no OWNER/REPO whose owner is a GitHub login.
 func (r ghRemote) repository() (owner, repo, why string) {
@@ -638,6 +669,8 @@ func (r ghRemote) repository() (owner, repo, why string) {
 		return "", "", "is a URL this cannot read as gh does"
 	case u.Hostname() == "":
 		return "", "", ""
+	case !isASCII(u.Hostname()):
+		return "", "", "is a remote whose host holds a letter beyond ASCII, which gh may lower to github.com"
 	case u.Scheme == "ssh" && !isGitHubHost(u.Hostname()):
 		return "", "", "is an ssh remote whose host gh may read as github.com through ssh's configuration"
 	case !isGitHubHost(u.Hostname()):
@@ -652,13 +685,13 @@ func (r ghRemote) repository() (owner, repo, why string) {
 
 // isPlainGitHubURL says whether the URL line names a github.com repository gh reads with nothing
 // the wrapper cannot read: gh's parser reads it (ghParseGitURL) as no ssh URL, whose host gh
-// rewrites through ssh's own configuration (go-gh pkg/ssh/ssh.go), on a host gh's
+// rewrites through ssh's own configuration (go-gh pkg/ssh/ssh.go), on an ASCII host (isASCII) gh's
 // normalizeHostname (cli/cli internal/ghrepo/repo.go: a leading lower-case `www.` stripped, then
 // lower-cased) makes github.com, the one host context/remote.go's FilterByHosts keeps, and it
 // names an OWNER/REPO whose owner is a GitHub login (repository).
 func (r ghRemote) isPlainGitHubURL() bool {
 	u, err := ghParseGitURL(r.url)
-	if err != nil || u.Scheme == "ssh" || strings.ToLower(strings.TrimPrefix(u.Hostname(), "www.")) != "github.com" {
+	if err != nil || u.Scheme == "ssh" || !isASCII(u.Hostname()) || strings.ToLower(strings.TrimPrefix(u.Hostname(), "www.")) != "github.com" {
 		return false
 	}
 	owner, _, _ := r.repository()
@@ -758,9 +791,9 @@ var ghRemoteLine = regexp.MustCompile(`(.+)\s+(.+)\s+\((push|fetch)\)`)
 // repository, or where no git runs, since gh then reads none either. A URL line is read only when
 // it has git's shape (gitRemoteLine, a filter on a fetch line alone) and gh's own reading of it
 // (ghRemoteLine) names the same remote, URL and kind; any other line is refused, since gh could
-// act on a repository this reading never counted.
-func readGitRemotes() ([]ghRemote, error) {
-	lines, err := gitLines("remote", "-v")
+// act on a repository this reading never counted. Both reads run under ctx (gitLines).
+func readGitRemotes(ctx context.Context) ([]ghRemote, error) {
+	lines, err := gitLines(ctx, "remote", "-v")
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +810,7 @@ func readGitRemotes() ([]ghRemote, error) {
 	if lines == nil {
 		return nil, nil
 	}
-	resolved, err := gitLines("config", "--get-regexp", `^remote\..*\.gh-resolved$`)
+	resolved, err := gitLines(ctx, "config", "--get-regexp", `^remote\..*\.gh-resolved$`)
 	if err != nil {
 		return nil, err
 	}
@@ -794,18 +827,26 @@ func readGitRemotes() ([]ghRemote, error) {
 // file or url.<base>.insteadOf of the caller's that gh's git never sees.
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
-// nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
-// dispatch://INFRA-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
-// stop to the two command runners of internal/workspace, whose git and jj do take locks, and
-// leaves a read that takes none as it is: this child needs neither the group nor the grace.
-func gitLines(args ...string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// nothing, so neither can leave a lock file behind for the next reader of the repository. It runs
+// under ctx, runGh's beforeGh, in a process group of its own that its bound or the end of ctx stops
+// whole (procgroup.Configure): a git, or a wrapper of it, whose child holds the output pipe would
+// otherwise keep the call waiting past the bound for as long as that child lives, since a stop of
+// git alone leaves the pipe open, and the terminal's signals reach that group only through ctx
+// (runGh's rule). A git that exits while a child still holds the pipe is waited for no longer than
+// procgroup's WaitDelay, and its read is then refused, since a remote list cut short could route
+// the call to another owner's directory.
+func gitLines(ctx context.Context, args ...string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
+	procgroup.Configure(cmd)
 	cmd.Env = append(ghChildEnviron(os.Environ(), nil), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return nil, fmt.Errorf("git %s exited, but something it started still held its output %s later, so what was read may be cut short", strings.Join(args, " "), procgroup.WaitDelayNow())
+	}
 	end := procgroup.Ended(err)
 	switch {
 	case errors.Is(err, exec.ErrNotFound):

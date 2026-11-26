@@ -17,16 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
-
-// winitWait bounds every wait a workspace-init test makes on another process, so a hung init
-// container fails the test instead of hanging it.
-const winitWait = 30 * time.Second
 
 const winitRepo = "acme/widgets"
 
@@ -40,11 +38,7 @@ const winitHelper = workspace.GitHubCredentialHelper
 // the pod's feed just before) opens the directory's `release` fifo, writes its pid to its `held`
 // fifo, waits on `release` until the test closes its end there, and exits without initializing. A
 // fresh provisioning's first jj command is that init, so a process held there is mid-provisioning.
-// With WINIT_CHECKOUT_DELAY set, the issue's checkout sleeps that many seconds before it runs and
-// then records the sleep as one more log line, so a case can make the checkout outlive a
-// provisioning budget shorter than it; the checkout is `jj sparse reset -R <workspace>`, whose
-// `sparse reset` is "$1 $2" once the pin is stripped. Both variables are empty for every other
-// case, which therefore holds and sleeps nowhere.
+// WINIT_HOLD is empty for every other case, which therefore holds nowhere.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -54,10 +48,6 @@ if [ -n "$WINIT_HOLD" ] && [ "$1 $2 $3" = "git init --colocate" ]; then
 	printf '%s' "$$" > "$WINIT_HOLD/held"
 	read _ <&3
 	exit 1
-fi
-if [ -n "$WINIT_CHECKOUT_DELAY" ] && [ "$1 $2" = "sparse reset" ]; then
-	sleep "$WINIT_CHECKOUT_DELAY"
-	printf '%s slept %ss before %s\n' "$WINIT_TAG" "$WINIT_CHECKOUT_DELAY" "$*" >> "$WINIT_JJ_LOG"
 fi
 PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
@@ -86,10 +76,7 @@ type issueVolume struct {
 
 func newIssueVolume(t *testing.T) *issueVolume {
 	t.Helper()
-	realJJ, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("workspace-init's tests drive a real jj: %v", err)
-	}
+	realJJ := fixturegit.CompiledJJ(t)
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("workspace-init's tests drive a real git: %v", err)
@@ -103,7 +90,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		}
 	}
 	for name, script := range map[string]string{"jj": fakeJJ, "git": fakeGit, "codegraph": fakeCodegraph} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -133,7 +120,6 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
-		"WINIT_CHECKOUT_DELAY": "",
 		"JJ_USER":              "Legion test",
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
@@ -222,6 +208,25 @@ func runWorkspaceInitHere(args []string) (code int, stdout, stderr string) {
 	return code, out.String(), errb.String()
 }
 
+// workspaceInitAnswered is runWorkspaceInitHere waited for with the test binary's deadline as its
+// only bound (testwait.Receive): a run whose stand-in never answers fails the case by name, where
+// the call alone would hang the package to its -timeout.
+func workspaceInitAnswered(t *testing.T, what string, args []string) (code int, stdout, stderr string) {
+	t.Helper()
+	type answer struct {
+		code           int
+		stdout, stderr string
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		var a answer
+		a.code, a.stdout, a.stderr = runWorkspaceInitHere(args)
+		answered <- a
+	}()
+	a := testwait.Receive(t, what, answered)
+	return a.code, a.stdout, a.stderr
+}
+
 // logLines is every invocation one of the volume's PATH stubs recorded to path, one call per
 // line; nil when the stub was never run.
 func logLines(t *testing.T, path string) []string {
@@ -304,6 +309,7 @@ func (v *issueVolume) commitAddingAFile(t *testing.T, gitDir, parent, ref, name,
 // token, which `fetch` alone holds; and the command refuses no subcommand, or another. A refusal
 // of its input exits 3, a cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -485,6 +491,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 // container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
 // container's launch path would.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 
@@ -533,6 +540,7 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 // init log names it, the workspace's parent is the remote's head of it, and the issue's bookmark
 // is the fresh working copy's.
 func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "release/v7.1")
 	v.fetch(t)
 
@@ -555,27 +563,42 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 }
 
 // The issue's checkout (`jj sparse reset`) writes every file of the repository's tree, so it runs
-// under workspace.CheckoutTimeout rather than provisionBudget (workspace.Provision,
+// under workspace.CheckoutTimeout rather than the runner's slow-command budget (workspace.Provision,
 // Request.CheckoutBound; workspace.CommandTimeout names which commands carry a bound of their
 // own): a pod whose checkout outlasts that budget provisions all the same, rather than exiting 1
-// on a killed checkout and spending one of the claim's launches (INFRA-1265). Here the volume's
-// jj holds the checkout eight seconds and the budget is five, which no other command of the run
-// comes near.
-func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T) {
-	const delay = 8 * time.Second
+// on a killed checkout and spending one of the claim's launches (INFRA-1265). The case reads the
+// bound each command of the provisioning was given (newProvisionRunner): the checkout's is
+// CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
+// clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
+// programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
+// a loaded machine makes slow is stopped by it.
+func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it sets the package variable newProvisionRunner; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
 	// a file for it to write there.
 	v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/main", "tree.txt", "tree\n")
-	v.env["WINIT_CHECKOUT_DELAY"] = strconv.Itoa(int(delay.Seconds()))
 	v.fetch(t)
-	// `provision` runs in this process, so the budget it reads is shortened here and put back
-	// after; the case takes no t.Parallel, as no case of this package does.
-	provisionBudget = 5 * time.Second
-	t.Cleanup(func() { provisionBudget = workspace.CommandTimeout })
+	budget := testwait.Bounded(t, 1<<60, 30*time.Second)
+	if budget == workspace.CheckoutTimeout {
+		// A budget equal to the checkout's bound could not tell the two apart.
+		budget--
+	}
+	// `provision` runs in this process, so its runner is wrapped here and put back after; the case
+	// takes no t.Parallel, as no case of this package does.
+	var commands []workspace.Command
+	saved := newProvisionRunner
+	newProvisionRunner = func(_ time.Duration, tools map[string]string) workspace.Runner {
+		return commandLog{Runner: saved(budget, tools), commands: &commands}
+	}
+	t.Cleanup(func() { newProvisionRunner = saved })
 
+	// The shared clone's steps share one bound, read through programbound when the clone starts:
+	// in this binary what is left of its deadline, so it is read here first, no less than the
+	// clone's own.
+	cloneBound := programbound.Of(&workspace.CloneBound)
 	started := time.Now()
-	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
+	code, stdout, stderr := workspaceInitAnswered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	elapsed := time.Since(started)
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
@@ -587,15 +610,36 @@ func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T
 	if _, err := os.Stat(filepath.Join(provisionedWorkspace, "tree.txt")); err != nil {
 		t.Fatalf("the workspace after provisioning: %v, want the tree the checkout writes", err)
 	}
-	// The delay is the point of the case, so the run proves it ran: the stub records the sleep it
-	// finished, and the whole provisioning took at least as long as it.
-	slept := " slept 8s before sparse reset -R " + provisionedWorkspace
-	if calls := strings.Join(v.jjCalls(t), "\n"); !strings.Contains(calls, slept) {
-		t.Fatalf("the volume's jj recorded %q, want a checkout holding %q", calls, slept)
+	checkouts, budgeted := 0, 0
+	for _, command := range commands {
+		argv := strings.Join(command.Argv, " ")
+		switch {
+		case strings.HasPrefix(argv, "jj sparse reset"):
+			checkouts++
+			if command.Timeout != workspace.CheckoutTimeout {
+				t.Errorf("the checkout %q ran under %s, want workspace.CheckoutTimeout's %s", argv, command.Timeout, workspace.CheckoutTimeout)
+			}
+		case command.Timeout == budget:
+			budgeted++
+		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
+			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
+		}
 	}
-	if elapsed < delay {
-		t.Fatalf("provisioning took %s, want at least the checkout's own %s", elapsed, delay)
+	if checkouts != 1 || budgeted == 0 {
+		t.Fatalf("the provisioning ran %d checkouts and %d commands under the runner's budget of its %d, want 1 and at least 1", checkouts, budgeted, len(commands))
 	}
+}
+
+// commandLog is a provisioning runner that records each command it is handed, with the bound the
+// command was given, before it runs it.
+type commandLog struct {
+	workspace.Runner
+	commands *[]workspace.Command
+}
+
+func (r commandLog) Run(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+	*r.commands = append(*r.commands, command)
+	return r.Runner.Run(ctx, command)
 }
 
 // staleLock leaves a git lock file at path, last written age ago, as a git or jj process killed or
@@ -638,6 +682,7 @@ func (v *issueVolume) provisioned(t *testing.T, issue string) string {
 // volume no other pod mounts, so nothing can hold a lock there: it removes the workspace's stale
 // index.lock, logging its path and age, and the update-stale that failed on it succeeds.
 func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -667,6 +712,7 @@ func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
 // the clone — an issue's that shared it, or a worktree an agent added — keeps its lock as it was,
 // however old.
 func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -693,6 +739,7 @@ func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
 // workspace: one per issue volume, which no other pod mounts. provision removes each stale one,
 // logging it, and provisions.
 func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.fetch(t)
 	v.provisioned(t, "LEGION-42")
@@ -720,6 +767,7 @@ func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
 // A stale lock provision cannot remove fails it, naming the file, before any git or jj runs on
 // the clone: it would fail the provisioning anyway, on a message that names the lock alone.
 func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	if os.Geteuid() == 0 {
 		t.Skip("root removes a file from a directory it cannot write")
 	}
@@ -750,6 +798,7 @@ func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
 // whose gitdir names the issue's workspace counts as the workspace's own. provision refuses it,
 // naming the symlink, before it removes anything or runs jj.
 func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, linked := range []string{".git", filepath.Join(".git", "worktrees")} {
 		t.Run(linked, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
@@ -789,13 +838,15 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 }
 
 // A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named, and exits 1: its cause is on the issue's volume.
+// with the failed command named, the shared clone of the feed, and exits 1: its cause is on the
+// issue's volume.
 func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.setenv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t)
 	v.setenv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
+	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout --shared "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming the failed clone", code, stdout, stderr)
 	}
 }
@@ -816,7 +867,7 @@ type lockedBuffer = testlog.Buffer
 func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *initProcess {
 	t.Helper()
 	p := &initProcess{lines: make(chan string, 16)}
-	p.cmd = exec.Command(os.Args[0], append([]string{"workspace-init"}, v.args(issue)...)...)
+	p.cmd = exec.Command(legionCopy(t), append([]string{"workspace-init"}, v.args(issue)...)...)
 	overrides := maps.Clone(v.env)
 	overrides[testMainEnv] = "1"
 	overrides["WINIT_TAG"] = tag
@@ -849,30 +900,35 @@ func (v *issueVolume) start(t *testing.T, tag, issue string, env ...string) *ini
 	t.Cleanup(func() {
 		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 		if !p.waited {
-			for range p.lines {
-			}
+			// The kill closes the process's stdout. The drain waits for that with the test binary's
+			// deadline as its only bound, so a stdout that never closes fails the test by name
+			// rather than hanging it to its -timeout.
+			drained := make(chan struct{})
+			go func() {
+				for range p.lines {
+				}
+				close(drained)
+			}()
+			testwait.Receive(t, "workspace-init's stdout to close once it was killed", drained)
 			_ = p.cmd.Wait()
 		}
 	})
 	return p
 }
 
-// wait is the process's exit status and the rest of its stdout, once it exits.
+// wait is the process's exit status and the rest of its stdout, once it exits, waited for with the
+// test binary's deadline as its only bound (testwait.Receive).
 func (p *initProcess) wait(t *testing.T) (code int, rest []string) {
 	t.Helper()
-	deadline := time.After(winitWait)
-	for done := false; !done; {
-		select {
-		case line, ok := <-p.lines:
-			if !ok {
-				done = true
-				break
-			}
-			rest = append(rest, line)
-		case <-deadline:
-			t.Fatalf("workspace-init did not exit within %s", winitWait)
+	closed := make(chan []string, 1)
+	go func() {
+		var lines []string
+		for line := range p.lines {
+			lines = append(lines, line)
 		}
-	}
+		closed <- lines
+	}()
+	rest = testwait.Receive(t, "workspace-init to exit", closed)
 	p.waited = true
 	err := p.cmd.Wait()
 	var exited *exec.ExitError
@@ -909,7 +965,7 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 			return
 		}
 		script := filepath.Join(v.bin, "jj")
-		testwait.Eventually(t, "the held jj to exit", func() bool {
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, "the held jj to exit", func() bool {
 			cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(jj) + "/cmdline")
 			return err != nil || !strings.Contains(string(cmdline), script)
 		})
@@ -923,7 +979,8 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 }
 
 // fifo opens one end of a fifo — which blocks until the holder opens the other — reads it to EOF
-// when reading, and closes it, bounded by winitWait and by the holder's staying alive and silent.
+// when reading, and closes it, bounded by the test binary's deadline less 30 s and by the holder's
+// staying alive and silent.
 func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	t.Helper()
 	type opened struct {
@@ -951,8 +1008,8 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 		return string(result.read)
 	case line, ok := <-holder.lines:
 		t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
-	case <-time.After(winitWait):
-		t.Fatalf("nothing opened the other end of %s within %s", path, winitWait)
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
+		t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 	}
 	return ""
 }
@@ -962,6 +1019,7 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 // volume, never holds it. Held mid-clone, it has written no one-shot credential to its TMPDIR, and
 // no file on the volume holds the token — nor after it was killed there.
 func TestWorkspaceInitProvisionHoldsNoToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.holder); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	first := v.holder(t)
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
@@ -1003,6 +1061,7 @@ func holdsNoToken(t *testing.T, dir, when string) {
 // release forever. Each scenario runs as a subtest, and once it has ended no process runs that
 // volume's fake jj.
 func TestWorkspaceInitHoldEndsWithItsTest(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (issueVolume.holder); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	if _, err := os.Stat("/proc/self/cmdline"); err != nil {
 		t.Skipf("no /proc to find a held jj in: %v", err)
 	}
@@ -1056,4 +1115,35 @@ func killProcessesRunning(t *testing.T, path string) []string {
 		}
 	}
 	return found
+}
+
+// workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
+// reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
+// wait ends in, each time with the error of the ask (workspace's askCache), which quotes
+// --cache-url with its user name and its query: each line keeps the cache's host and path, and
+// neither the user name nor the query reaches the init log. A cache that is never ready is a cause
+// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
+func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	v := newIssueVolume(t)
+	// A port nothing listens on, so every ask of the cache fails at its dial.
+	const cache = "127.0.0.1:1"
+	v.setenv(t)
+	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+	useInstantClock(t)
+
+	code, stdout, stderr := runWorkspaceInitHere(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
+	shown := "http://" + cache + "/widgets"
+	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
+		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
+	}
+	if want := "the repository cache " + shown + " was not ready within "; code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
+		t.Errorf("exit %d, stderr %q; want %d naming %q", code, stderr, workspace.InitExitOutsideVolume, want)
+	}
+	for _, credential := range []string{"legion-reader", "planted-query-token-7"} {
+		if strings.Contains(stdout+stderr, credential) {
+			t.Errorf("workspace-init fetch wrote stdout %q and stderr %q, which hold %q", stdout, stderr, credential)
+		}
+	}
 }

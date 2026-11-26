@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,16 +23,24 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/natshold"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // daemonAccount is the service account the rig's service tokens name, listed as a daemon.
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
+
+// operatorAccount is the service account the operator rig's service tokens name, listed as the
+// operator.
+const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
 
 // rig is a hub behind the real auth service, whose broker answers are the test's own.
 type rig struct {
@@ -54,6 +64,37 @@ type rig struct {
 func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.Introspection, error),
 	serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
 	t.Helper()
+	return startRig(t, "daemon/-/*="+daemonAccount, natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken})
+}
+
+// newOperatorRig starts a callout hub and the auth service in front of it, deciding services with
+// serviceToken, the one service listed being the operator on operatorAccount, and the writer
+// hold's row reading held: the hold view's read answers a row signed with a key of the rig's own,
+// whose public half it verifies against, so the operator is answered with
+// natsgrant.Operator(OperatorPhaseHeld).
+func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	// Cut to the microsecond, as the hold row's column keeps it, so the stub answers a row the
+	// broker could have read back.
+	signedAt := time.Now().UTC().Truncate(time.Microsecond)
+	held := string(natsgrant.OperatorPhaseHeld)
+	sig, err := signedrecord.Sign(private, signedrecord.HoldRow(1, held, "hold-1", signedAt))
+	require.NoError(t, err)
+	row := natshold.Reading{Gen: 1, Phase: held, HoldID: "hold-1", SignedAt: signedAt, Sig: sig}
+	read := func(context.Context) (natshold.Reading, bool, error) { return row, true, nil }
+	return startRig(t, "operator/-/*="+operatorAccount, natscallout.Deps{
+		ServiceToken: serviceToken,
+		Hold:         natscallout.NewHoldView(read, []ed25519.PublicKey{public}, nil, nil),
+	})
+}
+
+// startRig starts a callout hub and the auth service in front of it, listing services (in
+// BROKER_NATS_SERVICES' form) and answering with deps, whose log and decision counter are the
+// rig's own.
+func startRig(t *testing.T, services string, deps natscallout.Deps) *rig {
+	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
 	server, url := testnats.StartWithCalloutServer(t, keys)
 	dir := t.TempDir()
@@ -62,19 +103,20 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	listed, err := config.ParseNATSServices(services)
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()
+	deps.Log = slog.New(slog.NewTextHandler(log, nil))
+	deps.Metrics = natscallout.NewMetrics(registry)
 	r := &rig{
 		url: url, server: server, log: log, registry: registry,
 		settings: natscallout.Settings{
 			URLs:     []string{url},
 			SeedFile: write("service.seed", keys.ServiceSeed), IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-			XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
+			XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: listed,
 		},
-		deps: natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken, Log: slog.New(slog.NewTextHandler(log, nil)),
-			Metrics: natscallout.NewMetrics(registry)},
+		deps: deps,
 	}
 	r.startService(t)
 	return r
@@ -134,8 +176,8 @@ func liveFor(jkt string, tokens func(string) bool) func(context.Context, string)
 			return oauthwire.Introspection{}, nil
 		}
 		return oauthwire.Introspection{
-			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: brokertoken.ExchangeClientID,
-			ProjectScope: brokertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
+			Active: true, Session: "ses_a", Person: "person@example.com", ClientID: ciphertoken.ExchangeClientID,
+			ProjectScope: ciphertoken.ProjectScopePerson, Thumbprint: jkt, ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		}, nil
 	}
 }

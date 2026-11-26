@@ -201,7 +201,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// suppressed by its tree's linger, not by its own.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
-		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
+		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
@@ -226,7 +226,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// what the issue's three memory fields are read off (memoryOf).
 	drawn := record.Assignment{
 		Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random",
-		DrawnAt: &drawnAt, Carried: true,
+		DrawnAt: &drawnAt, Carried: true, Plan: "default",
 	}
 
 	token := claim.Token("legion-legion-legion-500-implementer")
@@ -262,25 +262,27 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1,
+		PluginContract: api.DaemonAPIVersion(), PluginRelaunchFor: api.DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
-		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
-		LastReady:        projectedAt.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:        projectedAt.Add(-30 * time.Second),
+		LastReady:          projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastDeathAt:        projectedAt.Add(-4 * time.Minute),
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: projectedAt.Add(-5 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
-		SessionLost: true,
+		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
@@ -292,8 +294,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
 	}
-	state, err := Project(context.Background(), nil, store,
-		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{
+		Store: store, Project: "LEGION",
+		Claims: []supervise.Claim{current}, Now: projectedAt,
+	})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -306,7 +310,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		document := wire(t, worker.Claim)
 		// `capabilities` is no field of the claim record — it is what the claim's session last
 		// reported — so the claim built here carries none and the view's keys are the record's.
-		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, nil, wire(t, state.Issues[root]))
+		// `updateState` is no one field's either: it is a reading over several of the update
+		// columns (api.UpdateStateOf), so no entry of the table names it and it is named here.
+		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, []string{"updateState"}, wire(t, state.Issues[root]))
 
 		want := wire(t, map[string]any{
 			"session":           current.Session,
@@ -317,14 +323,17 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateRound":       current.UpdateRound,
 			"updateHead":        current.UpdateHead,
 			"updateReasons":     current.UpdateReasons,
+			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates them: the view
-			// carries each as the record holds it.
-			"lastTurnStart":    current.LastTurnStart,
-			"lastTurnEnd":      current.LastTurnEnd,
-			"lastReady":        current.LastReady,
-			"lastDeathCause":   current.LastDeathCause,
-			"lastStartFailure": current.LastStartFailure,
+			// The turn times, the ready and the two causes, each with the time the daemon recorded
+			// it, LastDeathAt dating the death: the view carries each as the record holds it.
+			"lastTurnStart":      current.LastTurnStart,
+			"lastTurnEnd":        current.LastTurnEnd,
+			"lastReady":          current.LastReady,
+			"lastDeathCause":     current.LastDeathCause,
+			"lastDeathAt":        current.LastDeathAt,
+			"lastStartFailure":   current.LastStartFailure,
+			"lastStartFailureAt": current.LastStartFailureAt,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many sends failed and the last send error.
@@ -381,6 +390,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
+			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
+			"priority": 1,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,
@@ -391,7 +402,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"memoryDrawnAt":  drawn.DrawnAt,
 			"assignments": []map[string]any{{
 				"experiment": drawn.Experiment, "variant": drawn.Variant,
-				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt, "plan": drawn.Plan,
 			}},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
@@ -413,7 +424,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 
 		want := wire(t, map[string]any{
 			"experiment": drawn.Experiment, "variant": drawn.Variant,
-			"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+			"mode": drawn.Mode, "drawnAt": drawn.DrawnAt, "plan": drawn.Plan,
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the assignment view is %s, want the record's own values, %s", got, wanted)

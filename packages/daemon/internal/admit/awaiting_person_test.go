@@ -90,8 +90,8 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: issue, Project: testProject, Status: "in_progress", Seq: 8}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue, Project: testProject, Seq: 8,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("record the Dispatch mirror of %s: %v", issue, err)
 		}
 		if err := records.PutDispatchClaim(context.Background(), tx, issue, holder, 9); err != nil {
@@ -101,10 +101,10 @@ func seedDispatchClaim(t *testing.T, pool *pgxpool.Pool, issue, holder string) {
 }
 
 // awaitingRig is a slotted root whose architect handed question ask-q back, with a second root
-// waiting in line behind it, and the admission that decides them on every fact. cap is that
-// admission's cap, which counts the issues the daemon has started rather than the trees: a test
-// about the root alone takes 1, and one whose tree also starts a child of its own takes one row
-// an issue.
+// waiting in line behind it, and the admission that decides them on every pass (the pass rule,
+// Admission.Apply). cap is that admission's cap, which counts the issues the daemon has started
+// rather than the trees: a test about the root alone takes 1, and one whose tree also starts a
+// child of its own takes one row an issue.
 func awaitingRig(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 	t.Helper()
 	seedSlotted(t, pool, "LEGION-208", "U")
@@ -173,7 +173,7 @@ func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 }
 
 // A person's answer resumes the root in the pass that reads it, with the cap full. The root
-// stands in the line among the issues whose work came back, oldest first, holding the row it
+// stands in the line within its priority, among the issues whose work came back, oldest first, holding the row it
 // took at its admission and kept through the wait, so its promotion takes no second row and
 // the cap holds it back for nothing. The resume is a handout: what it handed back before is
 // cleared, so only its next hand-back starts the next wait.
@@ -336,8 +336,7 @@ func TestAHandBackNoLongerWithThePersonIsTakenIn(t *testing.T) {
 func TestAHeldRootIsNotDecidedBeforeTheConsumerCatchesUp(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)
-	admission.pending = map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}
-	admission.target = 100
+	admission.holdDeferred(map[string]intake.DispatchIssue{"LEGION-208": {Key: "LEGION-208", Status: "todo", Seq: 20}}, 100)
 	tick(t, pool, admission, "tick-held")
 	if got := issue(t, pool, "LEGION-208").Phase; got != phase.Admitted {
 		t.Fatalf("phase = %s, want the held root left where it stands", got)

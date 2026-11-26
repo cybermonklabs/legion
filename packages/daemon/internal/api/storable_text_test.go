@@ -13,13 +13,13 @@ import (
 )
 
 // nulText is a string whose second character is a NUL (U+0000), which PostgreSQL's text and jsonb
-// cannot hold: a statement that stores it fails.
+// cannot hold: the daemon's store keeps U+FFFD in its place.
 const nulText = "a\x00b"
 
 // nulError is the decoder's error for a string at place whose NUL is its at-th character, counted
 // from 1 in code points.
 func nulError(place string, at int) string {
-	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, at)
+	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD", place, at)
 }
 
 // The decoder of every request body refuses a string holding a NUL character, in strict mode and
@@ -78,8 +78,8 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 // GitHub is read, with nothing recorded and the issue where it was, so the agent sends it again
 // corrected and that is taken. The workflow decides the fact here, writing the summary on the
 // implementer's phase row as the whole daemon does: a summary holding a NUL that reached that
-// write would fail it, and the completion would be answered 500 FACT_APPLY_FAILED, naming no
-// field.
+// write would be stored with U+FFFD in its place and the completion answered 200, so the agent
+// would never learn that its summary was not kept as written.
 func TestACompletionSummaryWithANulIsRefusedAsInput(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
@@ -162,10 +162,11 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	noString := nulRow{unread, `json: unknown field "note"`}
 	noBody := nulRow{unread, ""}
 	rows := map[string]nulRow{
-		"/":                    noBody,
-		"GET /legion/v1/state": noBody,
-		"GET /healthz":         noBody,
-		"GET /readyz":          noBody,
+		"/":                                  noBody,
+		"GET /legion/v1/state":               noBody,
+		"GET /legion/v1/issues/{key}/record": noBody,
+		"GET /healthz":                       noBody,
+		"GET /readyz":                        noBody,
 
 		"POST /legion/v1/claims/register":                        reads("bootToken"),
 		"POST /legion/v1/claims/ready":                           reads("sessionId"),
@@ -184,13 +185,17 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
+		"POST /legion/v1/plans/register":                         reads("artifactId"),
+		"POST /legion/v1/tasks/stop":                             reads("task"),
 		"POST /legion/v1/waves/release":                          {map[string]any{"issues": []string{nulText}}, nulError("issues[0]", 2)},
 		"POST /legion/v1/phase/backward":                         reads("reason"),
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
-		"POST /legion/v1/children/park":                          reads("issue"),
+		"POST /legion/v1/children/park":                          noBody,
 		"POST /legion/v1/children/rerun":                         reads("issue"),
+		"POST /legion/v1/intake/replay":                          reads("consumer"),
+		"POST /legion/v1/intake/discard":                         reads("reason"),
 		"POST /legion/v1/operator/claims":                        reads("tree"),
 		"GET /legion/v1/operator/claims":                         noBody,
 		"POST /legion/v1/operator/claims/{token}/deliver":        reads("task"),
@@ -202,6 +207,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/claims/{token}/forget-session": reads("session"),
 		"POST /legion/v1/operator/claims/{token}/release-names":  noBody,
 		"POST /legion/v1/operator/claims/{token}/close":          noBody,
+		"POST /legion/v1/operator/intake/replay":                 reads("consumer"),
+		"POST /legion/v1/operator/intake/discard":                reads("reason"),
 		"POST /legion/v1/operator/project/pause":                 reads("reason"),
 		"POST /legion/v1/operator/project/resume":                noString,
 	}

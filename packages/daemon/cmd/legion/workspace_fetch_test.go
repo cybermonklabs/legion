@@ -78,6 +78,7 @@ exec "$WINIT_REAL_GIT" "$@"
 // created, and no one-shot credential is left in its TMPDIR. A refusal of its input exits 3, a
 // cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -228,6 +229,7 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 // handed as a one-shot credential on the container's own filesystem (its TMPDIR) and which is gone
 // once it returns; the feed never holds it.
 func TestWorkspaceInitFetchFillsTheFeed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.setenv(t)
 	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
@@ -354,6 +356,7 @@ func useInstantClock(t *testing.T) *instantClock {
 // clone fails; this git leaves a partial clone there anyway, so the test holds the fetch to removing
 // whatever a failed attempt left before it clones again.
 func TestWorkspaceInitFetchRetriesATransientCloneFailure(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, curl92Failure, http408Failure)
 	clock := useInstantClock(t)
@@ -395,6 +398,7 @@ func TestWorkspaceInitFetchRetriesATransientCloneFailure(t *testing.T) {
 // fifth failure fails the fetch: the four retries on stdout, the failure and the limit on stderr.
 // GitHub's failure is outside the issue's volume, so the fetch exits 3.
 func TestWorkspaceInitFetchGivesUpAfterItsLastRetry(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, http408Failure, http408Failure, http408Failure, http408Failure, http408Failure, http408Failure)
 	clock := useInstantClock(t)
@@ -421,6 +425,7 @@ func TestWorkspaceInitFetchGivesUpAfterItsLastRetry(t *testing.T) {
 // outside the issue's volume. Which failures are permanent is workspace.Fetch's to tell; this is
 // what the command does with one.
 func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	notFound := "remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"
 	attempts := v.failClones(t, notFound, notFound)
@@ -444,8 +449,10 @@ func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 }
 
 // Neither a retried attempt's log line nor the final failure carries the provisioning token, even
-// where git echoes it: each says *** in its place.
+// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
+// redact.Writer), and anywhere else the token says *** in its place.
 func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.failClones(t,
 		"fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n",
@@ -462,10 +469,10 @@ func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("the fetch logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://x-access-token:***@github.com/acme/widgets/'"} {
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://github.com/acme/widgets/'"} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}
@@ -663,6 +670,7 @@ func (v *issueVolume) linkToDevFull(entry string) error {
 // says both, with each source's bytes. A relaunch, whose feed on the issue volume holds the
 // repository already, fetches the delta alone and says so.
 func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	cache, length := v.cacheTarServer(t, cacheFault{})
 	head := v.advanceRemote(t)
@@ -708,6 +716,7 @@ func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
 // A cache that never becomes ready fails the fetch, exit 3, naming the cache and its last answer,
 // after one waiting line per change of that answer: nothing is cloned from GitHub instead.
 func TestWorkspaceInitFetchFailsWhenTheCacheIsNeverReady(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(workspace.CacheRepositoryHeader, "acme/widgets")
@@ -746,6 +755,7 @@ func TestWorkspaceInitFetchFailsWhenTheCacheIsNeverReady(t *testing.T) {
 // volume fails inside the copy, or whose pack fails its checksum, exits 1. A bad flag exits
 // workspace.InitExitUsage, the usage exit of every legion command.
 func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variables fetchBound and fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
 	// failing is a fetch into a feed that holds the repository, whose every fetch from GitHub
 	// fails with stderr and status.
@@ -767,6 +777,13 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return v.fetchArgs()
 		}
 	}
+	// timedOut is how the error of a fetch that ran out of its time begins: its git command, whose
+	// first flags are the four pack settings (workspace.PackWindowConfig) as `-c` pairs.
+	timedOut := "command timed out: git"
+	for _, pair := range workspace.PackWindowConfig() {
+		timedOut += " -c " + pair[0] + "=" + pair[1]
+	}
+	timedOut += " -c gc.auto=0 -c maintenance.auto=false --git-dir="
 	for _, tc := range []struct {
 		name string
 		// fetch prepares the volume, its git, its cache, the clock and the environment, and
@@ -793,13 +810,15 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return failing("fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111\nerror: file://"+v.env["WINIT_REMOTE"]+" did not send all necessary objects\n", 1)(t, v, clock)
 		}, code: 1, says: "fatal: bad object refs/jj/keep/1111111111111111111111111111111111111111"},
 		{name: "an attempt that runs out of its time", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
-			v.env["WINIT_FETCH_SLEEP"] = "30"
+			// The fetch from GitHub sleeps past any test binary's deadline, so only the bound's stop
+			// ends it: a stop a loaded machine makes late still comes before the sleep ends.
+			v.env["WINIT_FETCH_SLEEP"] = "86400"
 			args := v.refetchArgs(t)
 			saved := fetchBound
 			fetchBound = time.Second
 			t.Cleanup(func() { fetchBound = saved })
 			return args
-		}, code: 3, says: "command timed out: git -c gc.auto=0 -c maintenance.auto=false --git-dir="},
+		}, code: 3, says: timedOut},
 		{name: "a read of the provisioning token before a retry that fails", fetch: func(t *testing.T, v *issueVolume, clock *instantClock) []string {
 			args := failing(http408Failure, 128)(t, v, clock)
 			clock.atFirstWait = func() {
@@ -849,7 +868,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			clock := useInstantClock(t)
 			v := newIssueVolume(t).withRemote(t, "main")
 			args := tc.fetch(t, v, clock)
-			code, stdout, stderr := runWorkspaceInitHere(args)
+			code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch ("+tc.name+")", args)
 			if code != tc.code || !strings.Contains(stderr, tc.says) {
 				t.Fatalf("exit %d, stderr %q, stdout %q; want %d naming %q", code, stderr, stdout, tc.code, tc.says)
 			}

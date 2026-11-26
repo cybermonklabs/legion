@@ -7,19 +7,24 @@
 // a final refusal of their sign-in, and Dispatch's `401 MEMBERSHIP_HELD` to a broker token marks
 // nothing stale.
 
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, setDefaultTimeout, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS } from "@legion/broker-client/token-client";
-import { isFinalRefusal, TradeRetryingError } from "@legion/broker-client/token-errors";
+import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
+import { isFinalRefusal, TradeRetryingError } from "@legion/cipher-client/token-errors";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 afterEach(forgetBrokerClients);
 
@@ -106,9 +111,11 @@ function podEnvironment(brokerUrl: string, dispatchUrl: string): DispatchEnviron
 }
 
 /** A Dispatch client of `env` for a caller acting as `session`. */
-function dispatchOf(env: DispatchEnvironment, session: string): DispatchClient {
-  const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-  const resolution = dispatchSettings(env, config, { session });
+async function dispatchOf(env: DispatchEnvironment, session: string): Promise<DispatchClient> {
+  const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+    cwd: tempDir(),
+  });
+  const resolution = await dispatchSettings(env, config, { session });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   return new DispatchClient(resolution.url, resolution.credential);
 }
@@ -144,7 +151,7 @@ test("membership_held keeps a sign-in broker credential", async () => {
   };
 
   // A call that fails fast is told the hold while the retry loop trades on, never as final.
-  const during = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  const during = await failureOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}));
   expect(during).toBeInstanceOf(TradeRetryingError);
   expect(String(during)).toContain(`HTTP 400 membership_held: ${HELD}`);
   expect(
@@ -177,7 +184,9 @@ test("membership_held keeps a sign-in broker credential", async () => {
     state,
     each: () => {
       if (calling !== undefined) return;
-      calling = failureOf(dispatchOf(env, "ses_01a9").listAllIssues({})).then((failure) => {
+      calling = failureOf(
+        dispatchOf(env, "ses_01a9").then((client) => client.listAllIssues({}))
+      ).then((failure) => {
         after = failure;
         settled = failure === null || !(failure instanceof TradeRetryingError);
         calling = undefined;

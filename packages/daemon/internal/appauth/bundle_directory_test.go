@@ -27,12 +27,12 @@ import (
 // installation on sjawhar makes that account an owner in its own right, and the repository the
 // pair moved is reached through the directory of the owner GitHub holds it under.
 func TestEveryDirectoryHoldsTheLeaseOfTheOwnerItsNameMeans(t *testing.T) {
-	served := []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"}
-	repos := projectRepos(served...)
+	names := []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"}
+	served := servesOneOf(names...)
 	renames := ghrepo.MustRenames(legionRename)
 	for _, rec := range []string{"sjawhar/tools", "sjawhar/legion", "cybermonklabs/tools", "cybermonklabs/legion"} {
 		t.Run("an issue recorded on "+rec, func(t *testing.T) {
-			credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), repos,
+			credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), served,
 				renames, nil, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse(rec))
 			if err != nil {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // The reads the guard makes when gh's REST read of a visibility fails on its connection to GitHub
@@ -24,9 +25,7 @@ import (
 
 // transportError is a read that failed on its connection to GitHub before GitHub answered
 // anything: a visibility read, or cmd/legion's fork read (CurlResponse.Unreached). program is the
-// program that made the read (gh or curl), and said is what it printed about the failure, with the
-// repository's name masked where the read masks it: the visibility read does, and the fork read,
-// which names the repository anyway, does not.
+// program that made the read (gh or curl), and said is what it printed about the failure.
 type transportError struct {
 	program string
 	said    string
@@ -92,7 +91,7 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 	}
 	for _, failure := range ghTransportFailures {
 		if strings.HasSuffix(cause, failure) {
-			return &transportError{program: "gh", said: strings.ReplaceAll(line, slug, maskPath(slug))}
+			return &transportError{program: "gh", said: line}
 		}
 	}
 	return nil
@@ -103,8 +102,15 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 // the real gh took 0.72 to 0.88 s on 2026-11-18. A gh whose TLS handshake cannot finish takes far
 // longer to fail: about 42 s in the busy one-CPU pod, which is longer than the whole bound some
 // callers give a read (`legion gh` gives the shared check's own read 15 s). Stopping gh sooner leaves
-// the rest of the caller's bound to curl. It is a variable so that a test can shorten it.
+// the rest of the caller's bound to curl. It is a variable so that a test can shorten it, and so
+// that cmd/legion's tests, whose `legion gh` runs this read on a stand-in gh, can give it their own
+// deadline (programbound): a stand-in slower than 8 s, as a loaded machine can make one, is stopped
+// here and the read goes on to curl.
 var ghReadBound = 8 * time.Second
+
+func init() {
+	programbound.Register(&ghReadBound, &curlBound)
+}
 
 // curlReserve is how much of a caller's bound the guard keeps for the curl read when it bounds gh's
 // REST read (ghReadContext): 5 s. In the pod where gh could not finish a handshake, curl answered
@@ -116,7 +122,7 @@ var curlReserve = 5 * time.Second
 // curlReserve or less, gh runs under ctx alone, as it did before this bound: what time there is is
 // the caller's, and a stop is the caller's.
 func ghReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	bound := ghReadBound
+	bound := programbound.Of(&ghReadBound)
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - curlReserve
 		if left <= 0 {
@@ -137,13 +143,13 @@ func stoppedByItsOwnBound(ctx context.Context, err error) (*stoppedError, bool) 
 	return stopped, errors.As(err, &stopped) && ctx.Err() == nil
 }
 
-// ghStoppedByItsBound is the transport failure of a gh REST read of slug that the guard's own bound
+// ghStoppedByItsBound is the transport failure of a gh REST read that the guard's own bound
 // (ghReadContext) stopped: err is run's error, printed what gh printed before the stop, and ctx the
 // caller's context. It is one only where the stop was the guard's own bound (stoppedByItsOwnBound)
 // and where gh printed no status line, so GitHub sent no response. Anything else is nil: a stop by
 // the caller's deadline or by its cancel stays the error it is, since no bound is left for another
 // read, and so does a gh that heard GitHub's status line and then hung.
-func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *transportError {
+func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transportError {
 	stopped, own := stoppedByItsOwnBound(ctx, err)
 	if !own {
 		return nil
@@ -155,7 +161,7 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *
 	if line := strings.TrimSpace(printed); line != "" {
 		message += ": " + line
 	}
-	return &transportError{program: "gh", said: strings.ReplaceAll(message, slug, maskPath(slug))}
+	return &transportError{program: "gh", said: message}
 }
 
 // errNoCurlRead is a read through curl that the guard could not make: no curl at the guard's curl,
@@ -210,8 +216,10 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 // curlBound is the longest the curl read runs, its token read included (Guard.curlVisibility). In
 // the pod where every gh call failed its TLS handshake, curl answered GitHub's REST API in under a
 // second. A curl read that takes longer than this leaves the rest of the caller's bound to
-// ls-remote.
-const curlBound = 20 * time.Second
+// ls-remote. It is a variable so that cmd/legion's tests, whose `legion gh` runs this read on a
+// stand-in curl, can give it their own deadline (programbound): a stand-in slower than 20 s is
+// stopped here, and the read goes on to ls-remote.
+var curlBound = 20 * time.Second
 
 // curlMargin is how much sooner than its read's deadline curl's --max-time ends, so that curl
 // stops itself and says why before the deadline kills it.
@@ -245,7 +253,7 @@ const curlProgram = "/usr/bin/curl"
 // errNoCurlRead. A curl that its own bound stops is a *transportError. A curl or a token read that
 // the caller's bound stops is the *stoppedError run answers.
 func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, error) {
-	bounded, cancel := context.WithTimeout(ctx, curlBound)
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&curlBound))
 	defer cancel()
 	deadline, _ := bounded.Deadline()
 	if _, ok := curlTime(deadline); !ok {
@@ -373,13 +381,12 @@ func (r CurlResponse) RateLimit() error {
 
 // Unreached is the *transportError of a curl that got no answer from GitHub (curlUnreached), and
 // nil for any other: a curl that printed a status line heard GitHub, whatever its exit. Its text
-// quotes curl as it printed, unmasked, for a caller that names the repository it read anyway; the
-// visibility read masks it (curlAnswer).
+// quotes curl as it printed, as the visibility read's does (curlAnswer).
 func (r CurlResponse) Unreached() error {
 	if httpStatus, _ := r.Status(); !curlUnreached(r.Exit, httpStatus) {
 		return nil
 	}
-	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, strings.TrimSpace(strings.TrimSpace(r.Body())+" "+strings.TrimSpace(r.Stderr)))}
+	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, said(r.Body(), r.Stderr))}
 }
 
 // curlInherits is which names of the caller's environment the curl read keeps: those a program
@@ -443,14 +450,13 @@ func curlUnreached(exit, httpStatus int) bool {
 // whose body's visibility is public, private or internal, read as gh's is, is the answer. Anything
 // else is an error.
 func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
-	masked := maskPath(slug)
 	body := visibilityBody(stdout)
 	httpStatus, _ := responseHeaders(stdout)
 	if status != 0 {
 		if curlUnreached(status, httpStatus) {
-			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr, slug))}
+			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr))}
 		}
-		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", masked, status, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
@@ -459,19 +465,19 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 		return "", &notFoundError{slug: slug}
 	}
 	if httpStatus != http.StatusOK {
-		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", masked, err)
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", shownText(slug), err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", masked)
+		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 
@@ -517,7 +523,7 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 		return "", procgroup.Said(err, stderr.String())
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String(), slug))
+		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String()))
 	}
 	// git's credential protocol takes the last value of a key, as git itself reads gh's answer.
 	token := ""

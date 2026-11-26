@@ -29,7 +29,7 @@ func TestDecodeJSONCutsALongPlace(t *testing.T) {
 	}{
 		{"a value of another type under a long name of a map", `{"c1":{` + jsonLongName + `:7}}`, &map[string]map[string][]int{},
 			`it is not in the form <form>: the value at "/c1/KEY\n` + y(42) + `…` + y(46) + `\tEND" is of another type`},
-		{"a long member that the format does not name", `{"nodes":[{` + jsonLongName + `:1}]}`, &ApprovedFile{},
+		{"a long member that the format does not name", `{"nodes":[{` + jsonLongName + `:1}]}`, &approvedFile{},
 			`member "/nodes/0/KEY\n` + y(37) + `…` + y(46) + `\tEND" is not in the format`},
 		{"a long name that one object gives two times", `{` + jsonLongName + `:1,` + jsonLongName + `:2}`, &map[string]int{},
 			`member "/KEY\n` + y(45) + `…` + y(46) + `\tEND" is in one object two times`},
@@ -69,7 +69,7 @@ func TestDecodeJSONRefusesNullAtEachPlace(t *testing.T) {
 			`it is not in the form <form>: the value at "/c1/packages~1envoy~1go.mod" is null`},
 		{"a map of a map", `{"c1":null}`, &map[string]map[string]string{}, `it is not in the form <form>: the value at "/c1" is null`},
 		{"an element of a list", `["a",null]`, &[]string{}, `it is not in the form <form>: the value at "/1" is null`},
-		{"the whole text", `null`, &ApprovedFile{}, `it is not in the form <form>: it is null`},
+		{"the whole text", `null`, &approvedFile{}, `it is not in the form <form>: it is null`},
 		{"a member of an element that the reader keeps as JSON text", `[{"job":"go-checks","leg":null}]`, &[]jsontext.Value{},
 			`it is not in the form <form>: the value at "/0/leg" is null`},
 		{"a null under a long name of a map", `{"c1":{` + jsonLongName + `:null}}`, &map[string]map[string]string{},

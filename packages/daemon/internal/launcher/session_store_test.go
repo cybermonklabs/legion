@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,7 +15,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -35,6 +38,7 @@ func shortenResumeLookup(t *testing.T) {
 // refused before anything starts, even when a file of that name is on disk, and a session the table
 // holds starts with no file on disk at all.
 func TestStartUnderSQLStorageResumesOnlyASessionTheTableHolds(t *testing.T) {
+	t.Parallel()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_test")
 	g := newRig(t)
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -82,9 +86,145 @@ func TestStartUnderSQLStorageResumesOnlyASessionTheTableHolds(t *testing.T) {
 	g.stop(7)
 }
 
+// startByID starts generation naming session by its id alone (ResumeSession) under SQL session
+// storage in the database dsnFile names, with `--resume=<session>` in its argv as the daemon sends
+// it. The child is a shell that writes each argument it was started with after its own name, one
+// per line, to told, and waits.
+func (g *rig) startByID(generation uint64, dsnFile, session, told string) shimwire.LauncherStartResult {
+	g.t.Helper()
+	return g.start(shimwire.LauncherStart{
+		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
+		Argv: []string{"/bin/sh", "-c", `printf '%s\n' "$@" > "$TOLD.tmp" && mv "$TOLD.tmp" "$TOLD"; exec sleep 600`,
+			"omp", "--mode", "rpc", "--resume=" + session},
+		Env: []string{"TOLD=" + told, "LEGION_WORKSPACE=" + filepath.Join(g.t.TempDir(), "workspace"),
+			ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + dsnFile},
+		ResumeSession: session,
+	})
+}
+
+// resumesTold waits for startByID's child to write the arguments it was started with, and answers
+// those of them that name a session to resume.
+func resumesTold(t *testing.T, told string) []string {
+	t.Helper()
+	var said string
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
+		body, err := os.ReadFile(told)
+		if err != nil {
+			return false
+		}
+		said = string(body)
+		return true
+	}) {
+		t.Fatal("the child never said what it was started with")
+	}
+	var resumes []string
+	for _, arg := range strings.Split(said, "\n") {
+		if strings.HasPrefix(arg, "--resume") {
+			resumes = append(resumes, arg)
+		}
+	}
+	return resumes
+}
+
+// Under SQL session storage, a start that names its session by its id alone (ResumeSession: the
+// daemon records no file of it) resumes the newest row of the session table whose path ends
+// `_<id>.jsonl` (ompsessions.FindByID): its child is started with `--resume=` that row's path in
+// place of the argv's `--resume=<id>`, and never with the id itself, which Oh My Pi would resolve
+// on its own. The table also holds a subagent's file of the session and a session whose id shares
+// the first 30 characters, written later, and neither is taken. A table holding no row of the
+// session answers that it holds no such session (shimwire.SessionGone), and one that cannot be
+// asked answers so (shimwire.SessionStoreUnreachable); neither starts a child.
+func TestStartUnderSQLStorageResumesASessionNamedByItsIDAlone(t *testing.T) {
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
+	const (
+		sessions = "/home/legion/.omp/profiles/legion/agent/sessions"
+		folder   = sessions + "/--legion-workspaces-cybermonklabs-legion-infra-4108--"
+		session  = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	)
+	older := folder + "/2026-11-19T22-12-27-829Z_" + session + ".jsonl"
+	newest := sessions + "/--state-workspaces-cybermonklabs-legion-infra-4108--/2026-11-19T23-12-27-829Z_" + session + ".jsonl"
+	written := time.Date(2026, 11, 19, 22, 12, 27, 829_000_000, time.UTC)
+	nearMisses := map[string]time.Time{
+		strings.TrimSuffix(older, ".jsonl") + "/0-scout.jsonl":                     written.Add(2 * time.Hour),
+		folder + "/2026-11-20T00-12-27-829Z_" + session[:30] + "28aa01" + ".jsonl": written.Add(2 * time.Hour),
+	}
+	table := func(t *testing.T, rows map[string]time.Time) string {
+		t.Helper()
+		_, dsnFile := testdb.DSNFile(t, "legion_launcher_by_id_test")
+		conn, err := ompsessions.Connect(context.Background(), dsnFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(context.Background())
+		for path, at := range rows {
+			if _, err := ompsessions.Import(context.Background(), conn, path, []byte("{}\n"), at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dsnFile
+	}
+	refused := func(t *testing.T, got shimwire.LauncherStartResult, g *rig, told string) {
+		t.Helper()
+		if got.OK {
+			resumes := resumesTold(t, told)
+			g.stop(1)
+			t.Fatalf("the start of session %s ran generation 1 with %q, want it refused", session, resumes)
+		}
+		if _, err := os.Stat(told); !errors.Is(err, os.ErrNotExist) {
+			t.Error("a refused start started the child")
+		}
+	}
+
+	t.Run("the newest row of the session", func(t *testing.T) {
+		rows := map[string]time.Time{older: written, newest: written.Add(time.Hour)}
+		for path, at := range nearMisses {
+			rows[path] = at
+		}
+		dsnFile := table(t, rows)
+		g := newRig(t)
+		told := filepath.Join(t.TempDir(), "told")
+		if got := g.startByID(1, dsnFile, session, told); !got.OK {
+			t.Fatalf("the start of session %s = %#v, want generation 1 to run", session, got)
+		}
+		if resumes := resumesTold(t, told); len(resumes) != 1 || resumes[0] != "--resume="+newest {
+			t.Errorf("the child was started with %q, want --resume=%s alone", resumes, newest)
+		}
+		g.stop(1)
+	})
+
+	t.Run("no row of the session", func(t *testing.T) {
+		dsnFile := table(t, nearMisses)
+		g := newRig(t)
+		told := filepath.Join(t.TempDir(), "told")
+		got := g.startByID(1, dsnFile, session, told)
+		refused(t, got, g, told)
+		if got.Session != shimwire.SessionGone || !strings.Contains(got.Error, session) ||
+			!strings.Contains(got.Error, "the session table holds no such session") {
+			t.Errorf("the refusal = %#v, want SessionGone naming %s and saying the table holds no such session", got, session)
+		}
+	})
+
+	t.Run("a session table that cannot be asked", func(t *testing.T) {
+		shortenResumeLookup(t)
+		dsnFile := filepath.Join(t.TempDir(), "session-database-url")
+		if err := os.WriteFile(dsnFile, []byte("postgres://legion@127.0.0.1:1/none?sslmode=disable&connect_timeout=1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g := newRig(t)
+		told := filepath.Join(t.TempDir(), "told")
+		got := g.startByID(1, dsnFile, session, told)
+		refused(t, got, g, told)
+		if got.Session != shimwire.SessionStoreUnreachable {
+			t.Errorf("the refusal = %#v, want SessionStoreUnreachable", got)
+		}
+	})
+}
+
 // A generation with no URL file is refused before it starts, naming the variable: the launcher
 // cannot look where Oh My Pi would.
 func TestStartRefusesAResumeWithNoURLFile(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	command := g.childStart(3, filepath.Join(t.TempDir(), "marker"), nil)
 	command.ResumeFile = "/sessions/absent.jsonl"
@@ -103,6 +243,7 @@ func TestStartRefusesAResumeWithNoURLFile(t *testing.T) {
 // container killed mid-write can leave, only decides the notice: the resume starts, told "false",
 // and the launcher logs the record.
 func TestAResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheTableWroteItsSession(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	t.Setenv(WorkspaceRecreatedVariable, "true")
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_recreated_test")
 	g := newRig(t)
@@ -158,6 +299,8 @@ func TestAResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheTableWroteItsSessio
 // asked again after each backoff wait, reading the URL file afresh, until the table answers. One
 // that stays unreachable past resumeLookupTimeout refuses the start, naming how often it asked.
 func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T) {
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
 	dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_retry_test")
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0003.jsonl")
 	conn, err := ompsessions.Connect(context.Background(), dsnFile)
@@ -239,7 +382,9 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 // holds the agent's spelling of the endpoint, which pgx does not read: a launcher that looked there
 // would reach no database at all.
 func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
-	dsn := testdb.Database(t, "legion_launcher_proxy_test")
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
+	dsn := testdb.PlainDatabase(t, "legion_launcher_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	shortenResumeLookup(t)
 	g := newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
@@ -316,7 +461,8 @@ func (s *identityStub) present() error {
 // here mints on demand instead. The agent's own client is Bun's, and pgx through the same socket
 // stands in for it, which is also the client the launcher itself looks a resume up with.
 func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
-	database, dialer := sessionDatabaseAt(t, testdb.Database(t, "legion_launcher_expiry_test"))
+	// Not parallel: it sets environment variables of the whole process (sessionDatabaseAt).
+	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_expiry_test"))
 	identity := &identityStub{}
 	identity.mint()
 	dialer.check = identity.present
@@ -328,7 +474,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 	child := publishedAll(t, marker)
 	endpoint := ompsessions.Endpoint{SocketDir: g.generationDir(2), Database: database.Name, User: database.User}
 	ask := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 		defer cancel()
 		conn, err := ompsessions.ConnectURL(ctx, endpoint.ClientURL())
 		if err != nil {
@@ -361,6 +507,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 // the fixed root its own namespaces bind the role's private directory back at, and never the
 // launcher's path under the roles directory, where the socket is really bound.
 func TestAnIssuePodsSessionURLNamesTheSocketAsTheRoleSeesIt(t *testing.T) {
+	// Not parallel: it writes the package variable roleFixedRoot, which parallel tests read.
 	fixed := t.TempDir()
 	saved := roleFixedRoot
 	roleFixedRoot = fixed
@@ -396,7 +543,7 @@ func TestAnIssuePodsSessionURLNamesTheSocketAsTheRoleSeesIt(t *testing.T) {
 	if err := os.MkdirAll(bound, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	proxy, clientURL, err := m.startSession(context.Background(), generation, bound)
+	proxy, clientURL, err := m.startSession(context.Background(), shimwire.LauncherStart{Generation: generation}, nil, bound)
 	if err != nil {
 		t.Fatalf("startSession: %v; the launcher's log: %s", err, m.stderr)
 	}

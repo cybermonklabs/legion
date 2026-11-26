@@ -107,7 +107,7 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 // bound it states, and it says nothing about how many times NATS delivered the message.
 //
 // The bound is what makes the row a proof rather than a restatement of what NATS does anyway. A
-// message the take-over did not carry over is redelivered when intakeAckWait() expires --
+// message the take-over did not carry over is redelivered when tuningFor(t).ackWait() expires --
 // intakeMaxAckPending (4) times intakeMessageTimeout (1 min) plus a minute, five minutes here --
 // and it holds one of the keeper's four in-flight slots for every second of it, which is longer
 // than the five-minute reconcile this intake exists to beat. A handling well inside that wait is
@@ -273,8 +273,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	holderFetches, releaseHolder, holderGitHub := writingGitHub(t, true)
 	keeperFetches, _, keeperGitHub := writingGitHub(t, false)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := newIntake(tuningFor(t), holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(tuningFor(t), keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 
 	runIntake(t, holder)
 	waitFor(t, 30*time.Second, func() bool {
@@ -497,7 +497,7 @@ const (
 // process started. holderFake is what the holder's fake GitHub does with a fetch.
 func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *connectionEventProcesses {
 	t.Helper()
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	// A NATS server of this row's own rather than the package's shared one (testnats.URL): the
 	// row reads the server's monitoring endpoint for the subscribers on one deliver subject, and
 	// on the shared server that endpoint answers for every test running beside this one.
@@ -511,8 +511,8 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	holderFetches, holderHeld, holderGitHub := holderFakeGitHub(t, holderFake)
 	keeperFetches, keeperGitHub := countingGitHub(t)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := newIntake(tuningFor(t), holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(tuningFor(t), keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 
 	// The holder goes first and has the durable before the keeper starts, so the row knows whose
 	// connection to drop. Its own subscription is waited for as well as the server's PushBound:

@@ -557,11 +557,12 @@ describe("a card the host folds into the context with no turn", () => {
   });
 });
 
-// Oh My Pi's RPC mode awaits every send an extension starts during startup, the run an idle card's
-// `triggerTurn` starts included, before it reads any command, so a card that reaches an idle host
-// in the startup phase starts no turn: it goes as a follow-up, and its own `message_end`, which the
-// host emits only after startup released the send, arms the check that wakes the session for it
-// once the host is idle.
+// Oh My Pi's RPC mode holds every command that starts a turn until its startup is over
+// (`rpc-mode.ts` `waitsForStartup`, released at `startupSettled`), and starts the sends an
+// extension makes during startup only once startup discovery is done, so a card that reaches an
+// idle host in the startup phase starts no turn: it goes as a follow-up, and its own
+// `message_end`, which the host emits only after startup released the send, arms the check that
+// wakes the session for it once the host is idle.
 describe("in the startup phase", () => {
   for (const targeted of [false, true]) {
     test(`sends ${targeted ? "a targeted Aside" : "a card"} that finds an RPC host idle as a follow-up that starts no turn`, () => {
@@ -577,7 +578,8 @@ describe("in the startup phase", () => {
 
   // Print and JSON mode prompt right after their own post-startup awaits, and a turn a wake started
   // there makes that prompt fail; a terminal reads input only once its startup is over. Only RPC
-  // mode reads nothing while the host drains the startup sends.
+  // mode, or any mode while the start-turn mark holds, keeps the startup phase (card-wake.ts's
+  // note on the startup phase says why).
   for (const mode of ["print", "json", "tui", null] as const) {
     test(`sends a card that finds the host idle as an aside in ${mode ?? "a context with no"} mode`, () => {
       const host = harness({ mode });
@@ -1094,12 +1096,12 @@ describe("a card sent while the host sets up a prompt", () => {
     expect(host.sent).toEqual([]);
   });
 
-  // A switch to a new or resumed session (`agent-session.ts` `newSession` 13231-13233,
-  // `switchSession` 15047-15048, at the pinned tag) and a manual or extension compaction
-  // (`session-maintenance.ts` 1311-1312 at the pinned tag) disconnect the host from the agent
+  // A switch to a new or resumed session (`agent-session.ts` `newSession` 14298-14300,
+  // `switchSession` 16165-16166, at the pinned tag) and a manual or extension compaction
+  // (`session-maintenance.ts` 2000-2001 at the pinned tag) disconnect the host from the agent
   // before they abort a running run, so that run's `agent_end` never reaches an extension, and
   // the abort leaves the host idle at the `session_switch` or `session_compact` after it
-  // (13143-13165 at the pinned tag). A run the host drops with
+  // (14210-14232 at the pinned tag). A run the host drops with
   // neither (a switch or a compaction that fails after its abort) is over by the next prompt sent
   // from idle, whose `input` event finds the host idle. The extension tells the wake of each such
   // event (`noteIfIdle`), and a host idle there has no run, whatever the switch's reason. Each row
@@ -1158,7 +1160,7 @@ describe("a card sent while the host sets up a prompt", () => {
   });
 
   // A fork neither disconnects the agent nor aborts the run (`agent-session.ts` `fork`,
-  // 13369-13463 at the pinned tag), an automatic compaction runs while the host is busy with
+  // 14439-14540 at the pinned tag), an automatic compaction runs while the host is busy with
   // the run (between its steps, or in its post-run maintenance), and a steer typed into a running
   // turn finds it busy too: the run goes on, and its cards keep their wake.
   // A compaction between a run's steps hands its

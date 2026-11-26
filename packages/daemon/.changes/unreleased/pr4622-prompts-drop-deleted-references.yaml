@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The merge-forward message no longer asks the implementer or the merger for the working-copy check of
+  `foreign-path.md`, the merger's prompt no longer asks for that check before its own forward
+  merge, and the implementer's prompt no longer has it read every commit ahead of the base as
+  `default-branch-check.md` lists them: this release deletes both references.

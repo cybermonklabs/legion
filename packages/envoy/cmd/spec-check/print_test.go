@@ -102,7 +102,7 @@ func testPrint(t *testing.T, binary string) {
 			current, _ := a.Current()
 			args := []string{"print", "--approved", approved}
 			for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
-				if !*a.Nodes[id].Removed {
+				if !a.Nodes[id].Removed {
 					args = append(args, "--id", id)
 				}
 			}
@@ -149,7 +149,7 @@ func TestPrintedFilesPassTheComparison(t *testing.T) {
 	a := readApprovedFile(t, approved)
 	var all, statements []string
 	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
-		if *a.Nodes[id].Removed {
+		if a.Nodes[id].Removed {
 			continue
 		}
 		all = append(all, "--id", id)
@@ -1003,7 +1003,7 @@ func (g *printSet) approve(id string, node any) {
 	}
 	n, held := g.spec.Nodes[id]
 	if !held {
-		n = specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false)}
+		n = specgraph.ApprovedNode{ID: id}
 	}
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC).Add(time.Duration(len(n.Versions)) * time.Hour)
 	n.Versions = append(slices.Clone(n.Versions), specgraph.ApprovedVersion{Version: len(n.Versions) + 1, At: at, Document: document})

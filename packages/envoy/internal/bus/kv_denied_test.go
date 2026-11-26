@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -172,11 +173,11 @@ func TestAConsumerCreateAndDeleteTheGrantRefusesEndAtOnceNamingTheRefusal(t *tes
 	}
 }
 
-// A watch of the bucket that the grant refuses ends at once with the server's refusal (refusedOn).
-// A read and a write of a key the grant refuses name the refusal too, after their own wait: they
-// are the calls the bus makes on every request it serves, so they read the record only when the
-// server left them unanswered (refusedAfterOn), and a call the server answers costs what it cost
-// before. At main each of them reported a bare timeout.
+// A watch of the bucket that the grant refuses ends at once with the server's refusal
+// (watchRefused). A read and a write of a key the grant refuses name the refusal too, after their
+// own wait: they are the calls the bus makes on every request it serves, so they read the record
+// only when the server left them unanswered (refusedAfterOn), and a call the server answers costs
+// what it cost before. At main each of them reported a bare timeout.
 func TestAKeyReadWriteAndWatchTheGrantRefusesNameTheRefusal(t *testing.T) {
 	const bucket = "envoy_denied_write"
 	stream := "KV_" + bucket
@@ -366,7 +367,7 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	relay.arm(1 << 30)
 	recorded := make(chan error, 1)
 	go func() { recorded <- refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject) }()
-	_, err := ensureKeyValue(context.Background(), refusalGuard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), refusalGuard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	denial := <-recorded
 
 	if denial == nil {
@@ -451,10 +452,24 @@ func refusalOfAnotherSubject(t *testing.T, relay *unansweredRelay, owner *Client
 		t.Errorf("flush the publishes the server refuses: %v", err)
 		return nil
 	}
-	var denial error
-	awaitRefusal(func() bool {
-		denial = owner.deniedPublish(subject, sentAt)
-		return denial != nil
-	})
-	return denial
+	// Both refusals must be in the record before one is taken: nats.go hands each -ERR to the
+	// client's error handler on its own callback goroutine (nc.ach), so the flush above can return
+	// with the second refusal not yet recorded. A row that judged the record then would read the
+	// missing refusal as one the step took (besideRefusal's requireLeft); it did, under load, in CI.
+	awaitRefusal(func() bool { return owner.recordedDenials(subject, sentAt) >= 2 })
+	return owner.deniedPublish(subject, sentAt)
+}
+
+// recordedDenials is how many refusals of subject the record holds that were recorded at or after
+// sentAt, read without taking any (deniedPublish takes one).
+func (c *Client) recordedDenials(subject string, sentAt time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	recorded := 0
+	for _, denial := range c.deniedPublishes[subject] {
+		if !denial.at.Before(sentAt) {
+			recorded++
+		}
+	}
+	return recorded
 }

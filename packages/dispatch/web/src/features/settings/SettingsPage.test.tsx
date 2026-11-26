@@ -1,28 +1,28 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SettingsPage } from "./SettingsPage";
 
-/** Renders the page, and hands back its query client, which a case that stops a late write
- *  reaches as the shell's indicator does. */
-function renderPage(): QueryClient {
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <SettingsPage />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return queryClient;
 }
 
 /** Every query `SettingsPage` and its child sections issue besides the credential pending and
@@ -37,7 +37,6 @@ function stubUnrelatedQueries() {
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
-    listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
     whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
       event_head: "0",
       kind: "user",
@@ -244,123 +243,6 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     cleanup();
     getCredentialPending.mockRestore();
     getCredentialGrants.mockRestore();
-    for (const spy of Object.values(unrelated)) {
-      spy.mockRestore();
-    }
-  }
-});
-
-// A mapping's removal the reader stopped may have been made. The page keeps what it says of a
-// failed mapping write from the write's own error handler (`onError`), so a stopped one is told
-// apart there: the page says what Retry does with it, not that the removal failed.
-test("a mapping removal the reader stopped says Retry makes it again, not that it failed", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const unrelated = stubUnrelatedQueries();
-  unrelated.listProjects.mockResolvedValue([
-    {
-      created_at: "2026-09-01T00:00:00Z",
-      gated_steps: [],
-      key: "CORE",
-      name: "Core",
-      open_asks: 0,
-    },
-  ]);
-  unrelated.listRepoProjects.mockResolvedValue([
-    {
-      created_at: "2026-09-01T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
-      default: true,
-      project: "CORE",
-      renamed_to: null,
-      repo: "acme/api",
-    },
-  ]);
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
-  const deleteRepoProject = spyOn(api, "deleteRepoProject").mockRejectedValue(
-    new NetworkError("/api/v1/repo-projects/acme/api", new TypeError("Failed to fetch"))
-  );
-
-  try {
-    const queryClient = renderPage();
-    // The identity reaches a page already drawn, which it updates at once, so inside `act`.
-    act(() => {
-      queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-    });
-    await user.click(await screen.findByRole("button", { name: "Delete mapping for acme/api" }));
-    await stopTheLateWrite(queryClient);
-
-    // The alert's paragraph, without its Retry button's name.
-    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("the removal of acme/api's mapping", "made", {
-        method: "DELETE",
-        stopped: new SendStoppedError(),
-      })
-    );
-  } finally {
-    realClock();
-    cleanup();
-    getCredentialPending.mockRestore();
-    deleteRepoProject.mockRestore();
-    for (const spy of Object.values(unrelated)) {
-      spy.mockRestore();
-    }
-  }
-});
-
-// A mapping's save the reader stopped may have been made: the page says so, and that its Retry
-// sends the same `PUT` again, which is the same however often it is made.
-test("a mapping save the reader stopped says Retry sends it again, not that it failed", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const unrelated = stubUnrelatedQueries();
-  unrelated.listProjects.mockResolvedValue([
-    {
-      created_at: "2026-09-01T00:00:00Z",
-      gated_steps: [],
-      key: "CORE",
-      name: "Core",
-      open_asks: 0,
-    },
-  ]);
-  unrelated.listRepoProjects.mockResolvedValue([
-    {
-      created_at: "2026-09-01T00:00:00Z",
-      created_by: { id: "alice", kind: "user" },
-      default: false,
-      project: "CORE",
-      renamed_to: null,
-      repo: "acme/api",
-    },
-  ]);
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
-  const putRepoProject = spyOn(api, "putRepoProject").mockRejectedValue(
-    new NetworkError("/api/v1/repo-projects/acme/api", new TypeError("Failed to fetch"))
-  );
-
-  try {
-    const queryClient = renderPage();
-    // The identity reaches a page already drawn, which it updates at once, so inside `act`.
-    act(() => {
-      queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-    });
-    await user.click(
-      await screen.findByRole("radio", { name: "Default repository of CORE: acme/api" })
-    );
-    await stopTheLateWrite(queryClient);
-
-    // The alert's paragraph, without its Retry button's name.
-    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("the mapping of acme/api", "saved", {
-        method: "PUT",
-        stopped: new SendStoppedError(),
-      })
-    );
-  } finally {
-    realClock();
-    cleanup();
-    getCredentialPending.mockRestore();
-    putRepoProject.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

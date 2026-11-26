@@ -90,10 +90,10 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 	deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener})
 	deps.PublishFailures = registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that did not reach NATS")
-	stop := runDeps(t, deps, time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
-	waitFor(t, 7*time.Second, "the event marked published past its refused destination", func() bool {
+	waitFor(t, "the event marked published past its refused destination", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	attempts, published := publisher.snapshot()

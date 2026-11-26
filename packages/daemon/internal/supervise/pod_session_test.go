@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -119,14 +119,18 @@ func (r *renewalTimers) fire() {
 // clientRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as the
 // daemon's adapter wires it, on the test's renewal timers.
 type clientRegistrar struct {
-	client *agentsecrets.Client
+	client *cipher.Client
 	timers *renewalTimers
 }
 
 func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func(), error) {
-	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+	return c.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.timers.after, Bound: s.Bound,
 	})
+}
+
+func (c clientRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return c.client.ReleasePodSessions(ctx, names)
 }
 
 // TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite: a role relaunched in its pod (a new
@@ -155,7 +159,7 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 	h := newHarness(t)
 	h.withSecrets()
 	timers := &renewalTimers{}
-	h.deps.Registrar = clientRegistrar{client: &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile}, timers: timers}
+	h.deps.Registrar = clientRegistrar{client: &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile}, timers: timers}
 	h.start(h.store.load(h.token))
 	h.conn.SetAgentSecretsToken(testIdentity.PodToken)
 	inPod := func(generation uint64) fake.SpawnResult {
@@ -246,6 +250,8 @@ func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), e
 	return func() {}, nil
 }
 
+func (*keyRecorder) ReleasePodSessions(context.Context, []string) error { return nil }
+
 func (r *keyRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -260,7 +266,7 @@ func (r *keyRecorder) generations() []uint64 {
 
 // TestEachProcessRegistersAtItsLaunchGeneration: every registration carries the launch generation
 // of the process it registers — the claim's generation, which each launch raises and stores before
-// it starts the process (launchNow), and which the locator records (SandboxLocator.Generation) — so
+// it starts the process (launchTries), and which the locator records (SandboxLocator.Generation) — so
 // the broker can order two processes' writes of one (pod, session) row. A relaunch in the same pod
 // registers at a higher generation than the process it replaced, and a daemon restart, which
 // registers the running process again at its shim's first hello, sends that process's own

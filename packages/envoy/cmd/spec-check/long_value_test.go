@@ -90,7 +90,7 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 	workUnit := term("work-unit", "work unit", "A work unit is work.")
 	addNode := func(id string, removed bool, documents ...string) func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 		return func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-			n := specgraph.ApprovedNode{ID: id, Removed: new(removed), PartlyChecked: new(false)}
+			n := specgraph.ApprovedNode{ID: id, Removed: removed}
 			for i, document := range documents {
 				n.Versions = append(n.Versions, specgraph.ApprovedVersion{Version: i + 1, At: scenarioApproval, Document: document})
 			}

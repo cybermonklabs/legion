@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Two envoy-mode rigs on the shared LEGSMOKE project cross-admit each other's issues; a branch behind main's plugin contract runs its rig on a dedicated OMP profile built from the branch"
@@ -62,23 +62,20 @@ identity and to keep every stateful test resource under one fixture owner.
 
 ## A branch behind main's daemon API contract
 
-The daemon refuses to start unless the installed `@sjawhar/pi-legion-envoy` manifest's
-`legion.daemonApiVersion` equals the branch's `LEGION_DAEMON_API_VERSION`
+The daemon of the time refused to start unless the installed `@sjawhar/pi-legion-envoy` manifest's
+`legion.daemonApiVersion` equalled the branch's `LEGION_DAEMON_API_VERSION`
 (`verifyLegionPluginContract`; see
-`docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md`). When main bumps the contract
-under a long-lived branch, the `legion` profile's plugin is ahead of the branch, and rebasing to catch
-up is forbidden unless GitHub reports CONFLICTING (Sami, 2026-09-11).
+`docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md`). When main bumped the contract
+under a long-lived branch, the `legion` profile's plugin was ahead of the branch, and a rebase to
+catch up was not done without a merge conflict.
 
 The attempted remediation built a dedicated OMP profile with the plugin from the branch. That exact
 profile-building procedure is suspended because it existed only to launch the retired rig. The
-durable compatibility invariant remains: the installed plugin's `legion.daemonApiVersion` must equal
-the daemon's `LEGION_DAEMON_API_VERSION`; a mismatched contract must fail explicitly rather than
+durable compatibility invariant remains: the installed plugin declares the daemon's own contract,
+which the Go daemon's `legion version --contracts` prints on its first line and the plugin's pack
+step writes into the plugin's manifest; a mismatched contract must fail explicitly rather than
 falling back to a profile or a different build. The daemon test harness and real-process fixtures
 cover pre-merge behavior, and a live observation is recorded for the next authorized restart.
-
-When the contract is *equal* after a rebase — as it was for the tester's round — no dedicated
-profile is needed; check `jq .legion.daemonApiVersion ~/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-legion-envoy/package.json`
-against `packages/contracts/src/legion-daemon-api.ts` before deciding.
 
 ## Pane-environment lesson
 

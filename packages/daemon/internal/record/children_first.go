@@ -104,11 +104,12 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // Nothing here is stored. The wait ends when every open child is released and leaves the
 // workflow, is closed, is moved to icebox, is moved to another parent, or is moved out from
 // under its parent to no parent at all — Dispatch reports the last two the same way, as the
-// issue's parent now, and the mirror takes both (Store.PutDispatchIssue). Each of those is a
-// change to a mirror row or a record that the next pass reads. A flag would have to be cleared by
+// issue's parent now, and the copy takes both from the first reading that shows them at a higher
+// sequence than the parent it holds (Store.PutDispatchIssue). Each of those is a change to a row
+// of the copy or to a record that the next pass reads. A flag would have to be cleared by
 // whichever of them happened, and a missed clear would hold a parent for ever; a judgement made
-// again each pass costs one pass when a mirror row is stale, and the boot listing and the
-// controller tick both rewrite the mirror.
+// again each pass costs one pass when a row of the copy is stale, and the boot listing and the
+// controller tick both read Dispatch again and write each value a newer reading shows.
 //
 // The wait is only as complete as the mirror is. A child in backlog or triage that the daemon has
 // never recorded reaches the mirror only from a Dispatch listing of the whole project — the boot
@@ -190,9 +191,9 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 // (ChildrenFirstCandidates) and judges them (ChildWaits). It is one query whatever the number of
 // parents, because every judgement the daemon makes about children-first runs inside a
 // transaction that performs no I/O of its own and under the one fact lock every fact takes
-// (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue on every fact
-// of every consumer. facts are the pass's own, which carry the gates each candidate is read
-// against and the records above the pass that its cycle walk crosses.
+// (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue on every pass
+// (the pass rule on admit's Admission.Apply). facts are the pass's own, which carry the gates each
+// candidate is read against and the records above the pass that its cycle walk crosses.
 func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
 	children, err := store.DispatchChildren(ctx, tx, project, ChildrenFirstCandidates(issues, facts.Gates))
 	if err != nil {

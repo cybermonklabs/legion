@@ -138,13 +138,15 @@ func testForm(t *testing.T, binary string) {
 	})
 }
 
-// writeApproved writes an approved.json (specgraph.ApprovedFile) of one version of each node, its
-// document, and answers its path.
+// writeApproved writes an approved.json of one version of each node, its document, and answers
+// its path.
 func writeApproved(t *testing.T, documents map[string]string) string {
 	t.Helper()
-	file := specgraph.ApprovedFile{Nodes: []specgraph.ApprovedNode{}}
+	file := struct {
+		Nodes []specgraph.ApprovedNode `json:"nodes"`
+	}{}
 	for id, document := range documents {
-		file.Nodes = append(file.Nodes, specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false),
+		file.Nodes = append(file.Nodes, specgraph.ApprovedNode{ID: id,
 			Versions: []specgraph.ApprovedVersion{{Version: 1, At: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Document: document}}})
 	}
 	path := filepath.Join(t.TempDir(), "approved.json")

@@ -18,7 +18,7 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 ## The database your tests use
 
 - Never give a test, a migration or anything that creates or drops a database the URL in `OMP_SESSION_SQL_DSN_FILE`: it is the live sessions database every pod shares.
-- Give `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL` the value of `$LEGION_TEST_PG_DSN`, your pod's own server. Most suites make their own database per test. These migrate the database the URL names, so give each a database of your own: `packages/envoy/internal/broker/store` and `packages/envoy/internal/dispatch/{store,delivery,redeliver}`, the Dispatch browser suite's `DATABASE_URL` and the stage scripts' `LEGION_E2E_PG_DSN`. Make one with `createdb -h 127.0.0.1 -p 5433 -U legion_test "e2e_$(date +%s)"`.
+- Give `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `BROKER_TEST_DATABASE_URL` the value of `$LEGION_TEST_PG_DSN`, your pod's own server. Most suites make their own database per test. These migrate the database the URL names, so give each a database of your own: `packages/envoy/internal/cipher/store` and `packages/envoy/internal/dispatch/{store,delivery,redeliver}`, the Dispatch browser suite's `DATABASE_URL` and the stage scripts' `LEGION_E2E_PG_DSN`. Make one with `createdb -h 127.0.0.1 -p 5433 -U legion_test "e2e_$(date +%s)"`.
 - Empty a database by dropping your own schemas and objects, never `public`, which takes `vector` with it.
 - Connection refused: the launcher runs `legion-testpg ensure` every 15 seconds, so wait and retry, and never start a second server. Still refused: report the error, the port and `tail -n 200 "$LEGION_TEST_PG_LOG"` as a fault of the pod. A connect with no `connection received` log line never reached the server: open fewer connections at once.
 - `LEGION_TEST_PG_DSN` unset, with `legion-testpg` on `PATH`: `export LEGION_TESTPG_DIR=$XDG_DATA_HOME/testpg LEGION_TEST_PG_DSN='postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable'`, then `legion-testpg ensure`.
@@ -48,7 +48,7 @@ Read the source at the fork tag `.omp-pin` names (`git ls-remote --tags https://
 Cite CI's run at the head for these and name each package the pod could not run. A failure not listed is yours to explain.
 
 - Read what your work wrote, never a Kubernetes Job's phase: `Succeeded` means the container exited 0, and `Running` can mean zero pods under a full quota (`kubectl get pods -l batch.kubernetes.io/job-name=<job>`). A Job's harness detects the failure in the text its tool prints and exits non-zero itself, rather than passing a wrapper's exit code on, and writes a verdict that matters to durable storage as it is produced, not at the end: a node can vanish soon after its pod ends.
-- gVisor lacks `SO_PEERPIDFD` and some terminal ioctls, so `cmd/agent-secrets`, `cmd/agent-secrets-helper` and `internal/broker/helper` of `packages/envoy` fail; `internal/dispatch/pmdoc`'s timing tests read `+Inf times`.
+- gVisor lacks `SO_PEERPIDFD` and some terminal ioctls, so `cmd/cipher`, `cmd/cipher-helper` and `internal/cipher/helper` of `packages/envoy` fail; `internal/dispatch/pmdoc`'s timing tests read `+Inf times`.
 - Before you walk a path with `openat`, trust a tool's binary, set a stack limit, or report a duration measured in the pod: read `skill://legion-worker/references/gvisor.md`.
 - No Docker: testcontainers panic. `DISPATCH_TEST_NO_CONTAINERS=1` skips `internal/dispatch/files`. For the daemon's NATS tests run one server per test binary and set both variables:
 

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { Server } from "bun";
 
 // Shared fixtures for the multi-repository acceptance observer's tests:
 // scripts/e2e/multi-repo-acceptance.sh reads only structured sources — the daemon's state JSON (a
@@ -300,19 +301,24 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
     pendingStatusWrites: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: [], mapped: [], refused: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     ...overrides,
   });
 }
 export const stateBody = makeStateBody();
 
-export function daemonStub(body: string = stateBody): Server {
+// healthBody is what the daemon's `GET /healthz` answers from contract 193 on (`api.Health`):
+// its status and the project it serves. The stub answers the whole typed body, so the script's
+// own health check is exercised against a body that carries more than `status`.
+const healthBody = { project: "legion", status: "ok" };
+
+export function daemonStub(body: string = stateBody): Server<undefined> {
   return servers.track(
     Bun.serve({
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -327,7 +333,7 @@ export function daemonStub(body: string = stateBody): Server {
 // against, so a test that must change the daemon's answer between `before` and `after` needs the
 // same server, not a fresh one on a new port.
 export function mutableDaemonStub(initial: string): {
-  server: Server;
+  server: Server<undefined>;
   setBody: (body: string) => void;
 } {
   let body = initial;
@@ -336,7 +342,7 @@ export function mutableDaemonStub(initial: string): {
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -357,7 +363,7 @@ export function mutableDaemonStub(initial: string): {
 export function dispatchStub(
   issues: Record<string, string>,
   events: Record<string, string> = {}
-): Server {
+): Server<undefined> {
   return servers.track(
     Bun.serve({
       port: 0,
@@ -437,5 +443,6 @@ export function issueUpdatedEvent(
   };
 }
 
+// noneNote is the daemon's note on an issue of project ACME whose repository resolves to none.
 export const noneNote =
-  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.";
+  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project ACME, in Dispatch, and move it to todo again.";

@@ -24,12 +24,42 @@ func TestScenarioRefusals(t *testing.T) {
 	replace := func(file, old, new string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) { replaceIn(t, filepath.Join(dir, file), old, new) }
 	}
+	// noMatrixAtM2 makes silent-leg's job run at m2 one run of no matrix that ended, and sets the
+	// members of set on result i+1, one of its runs of leg linux at c1.
+	noMatrixAtM2 := func(i int, set map[string]any) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			writeJSONFile(t, filepath.Join(dir, "jobs.json"), []any{map[string]any{"job": "go-checks", "leg": "", "commit": "m2", "ended": true}})
+			var results []map[string]any
+			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+			if r := results[i]; r["kind"] != "run" || r["commit"] != "c1" || r["leg"] != "linux" {
+				t.Fatalf("result %d of silent-leg is no run of leg linux at c1: %v", i+1, r)
+			}
+			for member, v := range set {
+				results[i][member] = v
+			}
+			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+		}
+	}
+	// approvedParent sets the parent of a-message-survives-a-restart in wait-cycle's approved.json.
+	approvedParent := func(parent string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			value := parent
+			if value == " " {
+				value = "' '"
+			}
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				v := &approvedNode(t, nodes, "a-message-survives-a-restart").Versions[0]
+				v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+value+"\n", 1)
+				return nodes
+			})
+		}
+	}
 	const failingExample = "failing_example:\n  - A listener that deletes its stored messages when it starts.\n"
 	const firstOutcome = `"outcome": "pass",`
-	serving := "id: messages-reach-sessions\nkind: behavior\n"
-	loop := "id: messages-reach-sessions\nkind: behavior\nserves:\n  - a-stored-message-survives-a-restart\n"
+	serving := "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\n"
+	loop := "---\ntype: requirement\nid: messages-reach-sessions\nkind: behavior\nserves:\n  - a-stored-message-survives-a-restart\n"
 	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
-	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>","planted_on":"<commit>","fault_paths":["<repository path>", …]}`
 	const unitForm = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 	const jobRunForm = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
@@ -64,15 +94,22 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a loop of parent and support relations in the approved spec", "carry", func(t *testing.T, dir string) {
 			looping := specgraph.Statement{ID: "messages-reach-sessions", Kind: specgraph.KindBehavior,
 				Serves: []string{"a-stored-message-survives-a-restart"}, Text: "Envoy delivers each message to the session that it is for."}
-			document, err := looping.Print()
+			block, err := looping.Print()
 			if err != nil {
 				t.Fatal(err)
 			}
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = document
+				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = block
 				return nodes
 			})
-		}, "approved.json", loopDetail},
+		}, "approved.json", "specgraph: approved spec: " + loopDetail},
+		{"a statement of the approved spec that is its own parent", "wait-cycle", approvedParent("a-message-survives-a-restart"),
+			"approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		// A change of the approved spec is a new version of a node, so the loop rule reads the newest
+		// text of each node (TestALoopThatOnlyAnOlderVersionOfTheApprovedSpecMadeIsTaken, the control).
+		{"a statement that version 2 of its two approved versions makes its own parent", "wait-cycle", func(t *testing.T, dir string) {
+			withSecondVersion(t, dir, "a-message-survives-a-restart", "parent: envoy-delivers-messages\n", "parent: a-message-survives-a-restart\n", 2)
+		}, "approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		// The one strict JSON reader: RFC 8259 "JSON text … MUST be encoded using UTF-8", and a member
 		// is the format's, in its own letters, one time in its object.
 		{"a field name in capitals", "carry", replace("results.json", firstOutcome, `"OUTCOME": "pass",`),
@@ -161,10 +198,8 @@ func TestScenarioRefusals(t *testing.T) {
 			"notes.txt", "the format of a scenario holds no such file"},
 		{"no subjects.json", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "subjects.json")) },
 			"subjects.json", "does not exist"},
-		{"a spec file that does not read", "carry", write(filepath.Join("files", "c2", "spec.yaml"), "A line that is no node.\n"),
+		{"a spec file that does not parse", "carry", write(filepath.Join("files", "c2", "spec.yaml"), "A YAML value that is no node.\n"),
 			filepath.Join("files", "c2", "spec.yaml") + ":1", "-: schema: node: got string, want object"},
-		{"a spec file that is not YAML", "carry", write(filepath.Join("files", "c2", "spec.md"), "A spec file of the block format.\n"),
-			filepath.Join("files", "c2", "spec.md"), "the spec files of a commit are *.yaml files directly in its directory"},
 		{"a subject whose commit has no spec files", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "files", "c4")) },
 			filepath.Join("files", "c4"), "does not exist, and subject 4 reads the spec files of its commit there"},
 		{"spec files that no subject reads", "carry", func(t *testing.T, dir string) {
@@ -208,6 +243,55 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a run of a check of production with no deploy", "carry",
 			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
 			"results.json", "result 1: it sets no deploy, the subject that a check of production reads"},
+		// A check of production or of the graph reads no commit, and the commit of its result is the
+		// commit of its test, test_commit, so a commit on such a result would be a second reading of
+		// that commit.
+		{"a failing example of a check of production that names a commit", "carry",
+			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"failing_example","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
+			"results.json", `result 1: it sets the commit "c1", which a check of production does not read`},
+		// A failing example of a program check of the code counts from planted_on, the commit that
+		// the step planted its fault on, and only where each of its fault_paths is a source file in
+		// the tie: a planted_on that names no commit, or a fault path that is no repository path,
+		// which no tie covers, would read as a real one, so the reader refuses each.
+		{"a failing example whose planted_on holds only blanks", "carry", replace("results.json", `"planted_on": "c1"`, `"planted_on": " \t "`),
+			"results.json", "result 2: it sets a planted_on of no letter and no digit, which names no commit"},
+		{"a failing example whose fault path is no repository path", "carry",
+			replace("results.json", `"fault_paths": ["packages/envoy/cmd/listener/main.go"]`, `"fault_paths": ["./packages/envoy/cmd/listener/main.go"]`),
+			"results.json", `result 2: it sets the fault path "./packages/envoy/cmd/listener/main.go", which is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
+		// The derivation reads a relation of an approved node only to a node of its kind, so a parent
+		// that names no node of the approved spec, or a check, would read as no parent: in wait-cycle,
+		// envoy-delivers-messages would then read met, where the scenario has it not met (R22: "Dispatch
+		// refuses the approval of a change request that puts a statement under a parent that the
+		// approved spec does not hold").
+		{"an approved block whose parent is no id", "wait-cycle", approvedParent(" "),
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent " " is no id (line 1 of its document)`},
+		{"an approved block whose parent names no node", "wait-cycle", approvedParent("no-such-statement"),
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
+		{"an approved block whose parent is a check", "wait-cycle", approvedParent("a-restart-keeps-the-message"),
+			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its document)`},
+		// A node that the approved spec removed is one that it holds, and a relation to it is taken
+		// only where its kind is right: a removed check is no parent.
+		{"an approved block whose parent is a check that the approved spec removed", "wait-cycle", func(t *testing.T, dir string) {
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				removed := *approvedNode(t, nodes, "a-late-session-gets-the-message")
+				removed.ID, removed.Removed = "an-old-check", true
+				removed.Versions = []specgraph.ApprovedVersion{removed.Versions[0]}
+				removed.Versions[0].Document = strings.Replace(removed.Versions[0].Document, "id: a-late-session-gets-the-message\n", "id: an-old-check\n", 1)
+				return append(nodes, removed)
+			})
+			approvedParent("an-old-check")(t, dir)
+		}, "approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "an-old-check" names a check, not a statement (line 1 of its document)`},
+		// R6: a check's claim is "narrower than its statement", so a check serves one statement: one
+		// whose approved block leaves out serves names none, and its failure would count under no
+		// statement, so envoy-delivers-messages would read met (with a second, passing check beside
+		// it) where the files hold the failing check under it.
+		{"an approved check block that leaves out serves", "wait-cycle", func(t *testing.T, dir string) {
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				v := &approvedNode(t, nodes, "a-restart-keeps-the-message").Versions[0]
+				v.Document = strings.Replace(v.Document, "serves: a-message-survives-a-restart\n", "", 1)
+				return nodes
+			})
+		}, "approved.json", `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-document: serves "" names no node of the approved spec (line 1 of its document)`},
 		{"a run of a program check with no job", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},
@@ -235,9 +319,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"jobs.json", "job run 1: it sets no commit"},
 		// A commit of the history with no files would read as an empty tree, and two such trees as
 		// one, so a result would carry between them (R8); so would a tree with no path, {}, since a
-		// test reads at least one file, and a content label "" at two commits, since a label names
-		// the content of a file. A history.json that does not set commits would read as no commit,
-		// which its writer may mean: it sets [] for that.
+		// test reads at least one file, and a content label "" or " " at two commits, since a label
+		// names the content of a file and one of no letter and no digit names none. A history.json
+		// that does not set commits would read as no commit, which its writer may mean: it sets []
+		// for that.
 		{"a commit of the history with no files", "carry", write("history.json", `{"commits":[{"id":"m1"}]}`),
 			"history.json", `specgraph: history: commit "m1": it sets no files`},
 		{"a commit of the history whose tree holds no path", "carry",
@@ -245,7 +330,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"history.json", `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
 		{"a content label of the history that is empty", "carry",
 			replace("history.json", `"packages/envoy/cmd/listener/main.go": "2"`, `"packages/envoy/cmd/listener/main.go": ""`),
-			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" is empty, and a label has at least one character`},
+			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" has no letter and no digit, so it names no content`},
+		{"a content label of the history of no letter and no digit", "carry",
+			replace("history.json", `"packages/envoy/cmd/listener/main.go": "2"`, `"packages/envoy/cmd/listener/main.go": " "`),
+			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" has no letter and no digit, so it names no content`},
 		// R48: a refusal of CI names the rule that refused the check; an empty rule names none.
 		{"a rule of uncited.json that is empty", "carry", write("uncited.json", `{"c2":{"a-restart-loses-no-message":""}}`),
 			"uncited.json", `commit "c2": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},
@@ -263,6 +351,8 @@ func TestScenarioRefusals(t *testing.T) {
 			"units.json", `it is not in the form [` + unitForm + `, …]: the value at "/0/waits_on" is null`},
 		{"a unit with no id", "wait-cycle", write("units.json", `[{"serves":[],"needs":[],"waits_on":[]}]`),
 			"units.json", "unit 1 has no id"},
+		{"a unit two times", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":[]},{"id":"u-a","serves":[],"needs":[],"waits_on":[]}]`),
+			"units.json", `unit "u-a" is in the list two times`},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
@@ -325,12 +415,25 @@ func TestScenarioRefusals(t *testing.T) {
 		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
 		// another." One job at one commit has legs or it has none, "" being the leg of no matrix: a
 		// run of no matrix beside a run of leg linux, or a run result of no matrix where the job's runs
-		// there have legs, would be answered by an older run result of the leg "" that counts there
-		// (TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs).
+		// there have legs, would be answered by an older run result of the leg "" at that commit. The
+		// reader reads a run result of a check of the code at its commit, so a test_commit, which such
+		// a result does not need, changes no refusal: one of no commit of the history, or m2, where
+		// the job runs with no matrix (the control below reads that run alone).
 		{`runs of one job at one commit in the leg "" and in a named leg`, "silent-leg", replace("jobs.json", `"leg": "arm"`, `"leg": ""`),
 			"jobs.json", `job run 2: it sets the leg "", and job run 1 of its job "go-checks" at the commit "m2" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{`a run result in the leg "" where the runs of its job at its commit name legs`, "carry", write("jobs.json", `[{"job":"go-checks","leg":"linux","commit":"c1","ended":true}]`),
 			"results.json", `result 1: it sets the leg "", and job run 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a run result of no matrix at c1 beside run results of leg linux there`, "silent-leg", noMatrixAtM2(0, map[string]any{"leg": ""}),
+			"results.json", `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a run result of no matrix at c1 beside run results of leg linux there, with a test_commit of no commit of the history`, "silent-leg",
+			noMatrixAtM2(0, map[string]any{"leg": "", "test_commit": "c9"}),
+			"results.json", `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a later run result of no matrix at c1 after one of leg linux there, with a test_commit of no commit of the history`, "silent-leg",
+			noMatrixAtM2(2, map[string]any{"leg": "", "test_commit": "c9"}),
+			"results.json", `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a later run result of no matrix at c1 after one of leg linux there, with test_commit m2, where the job runs with no matrix`, "silent-leg",
+			noMatrixAtM2(2, map[string]any{"leg": "", "test_commit": "m2"}),
+			"results.json", `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -339,6 +442,14 @@ func TestScenarioRefusals(t *testing.T) {
 			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, row.file) + ": " + row.fault + "\n"})
 		})
 	}
+	t.Run("control: silent-leg with its job's run at m2 one of no matrix is read", func(t *testing.T) {
+		t.Parallel()
+		dir := copyScenario(t, "silent-leg")
+		noMatrixAtM2(0, map[string]any{})(t, dir)
+		if got := runBinary(t, binary, "", "state", "--scenario", dir); got.code != 0 || got.stderr != "" {
+			t.Errorf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+		}
+	})
 	t.Run("a scenario directory that does not exist", func(t *testing.T) {
 		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "missing")

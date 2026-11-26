@@ -1,0 +1,1213 @@
+// packages/envoy/cmd/cipher/secret_gcp.go
+//
+// The GCP side of the secret forms: the Secret Manager calls they make, under the Google credential
+// of the first source this command finds present, in the order newGCPBackend gives (gcp_source.go):
+// CLOUDSDK_AUTH_ACCESS_TOKEN, GOOGLE_APPLICATION_CREDENTIALS, CLOUDSDK_ACTIVE_CONFIG_NAME
+// or CLOUDSDK_CORE_ACCOUNT, the well-known credentials file, the active gcloud account, the
+// metadata server - whatever identity that is, a person's or a machine's: Secret Manager's own
+// IAM decides what it may read and write. GCP, unlike AWS, needs no wrong-project read check:
+// every call already names the project explicitly, so the API itself refuses one in another
+// project.
+//
+// GCP Secret Manager has no soft-delete-with-recovery-window the way AWS does. Instead delete sets
+// the secret's own expire_time, which GCP uses as a TTL: the secret (and every version it holds)
+// stays readable and restorable - clear expire_time to bring it back - until that moment, and GCP
+// deletes it for good once it passes, with no further restore. delete therefore sets expire_time
+// to now plus recoveryWindowDays (the same window AWS's delete schedules), and restore clears it;
+// the moment delete sets is both "when it is deleted" and "the last moment it can be restored",
+// unlike AWS's separate DeletedDate and 7-day minimum recovery window, so secretView.EarliestPurge
+// is left unset here (list/show print only the deletion moment).
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+
+	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/oauth2adapt"
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// checkSettingsKMSKeyName refuses, before any GCP call, settings whose secrets_prefix is not a
+// Secret Manager prefix, whose gcp_project does not match the project number secrets_prefix
+// itself names (the broker derives gcp_project from secrets_prefix the same way,
+// internal/cipher/api handlers_secrets.go, secrets.GCPProject), or whose kms_key_name is not a
+// global-location CMEK key name (secrets.ValidGCPKeyName: automatic replication, the only
+// replication the store serves, takes a global key). This is the GCP counterpart of
+// checkSettingsKeyARN: it ties the project a write lands in to the resource-name prefix the
+// broker itself derived it from, not to a separately-sent field a spoofed or plain-http broker
+// could set on its own to steer a write. Each field a refusal names, and each validator's words,
+// which quote the field, print as the broker's address lets its answer print (Settings.words).
+func checkSettingsKMSKeyName(settings Settings) error {
+	if err := secrets.ValidGCPPrefix(settings.SecretsPrefix); err != nil {
+		return fmt.Errorf("the broker's settings name an invalid secrets_prefix: %s", settings.words(err.Error()))
+	}
+	if project := secrets.GCPProject(settings.SecretsPrefix); settings.GCPProject != project {
+		return fmt.Errorf("the broker's settings name project %s, but its secrets prefix %s is in project %s: the broker's settings are inconsistent", settings.words(settings.GCPProject), settings.words(settings.SecretsPrefix), settings.words(project))
+	}
+	if err := secrets.ValidGCPKeyName(settings.KMSKeyName); err != nil {
+		return fmt.Errorf("the broker's settings name an invalid KMS key name: %s", settings.words(err.Error()))
+	}
+	return nil
+}
+
+// gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
+// Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
+// file. The file is checked first, in the machine source's words, before any reader reads it
+// (cipherclient.CredentialsFileFailure): one that repeats a key, or an X.509 certificate's whose
+// files cannot be used, is refused before Google's library reads a configuration that would make
+// it start an enterprise certificate proxy's signer. An external_account file is loaded by
+// externalAccountCredentials. A file it cannot read is the os error, one the check refuses a
+// fileRefusal, and one it cannot load errUnloadableCredentials, never a library's or
+// encoding/json's error, which quote the file's fields (credentialsFileRefusal). Tests replace it.
+var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if reason := cipherclient.CredentialsFileFailure(data); reason != "" {
+		return nil, fileRefusal(reason)
+	}
+	var file struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(data, &file) != nil {
+		return nil, errUnloadableCredentials
+	}
+	if file.Type == string(google.ExternalAccount) {
+		return externalAccountCredentials(data)
+	}
+	creds, err := google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
+	if err != nil {
+		return nil, errUnloadableCredentials
+	}
+	return creds, nil
+}
+
+// externalAccountCredentials loads an external_account credentials file (workload identity
+// federation) that gcpCredentialsFile checked, with cloud.google.com/go/auth, which reads every
+// credential_source, an X.509 certificate's among them (golang.org/x/oauth2 reads none), as the
+// x/oauth2 credentials the Secret Manager client and gcpUserinfo take. The file's own exchange and
+// its impersonation URL mint the account's access token. The library logs nothing, whatever
+// GOOGLE_SDK_GO_LOGGING_LEVEL says: its log of the exchange and the impersonation holds both
+// tokens.
+func externalAccountCredentials(data []byte) (*google.Credentials, error) {
+	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data, &credentials.DetectOptions{
+		Scopes: secretmanager.DefaultAuthScopes(),
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		return nil, errUnloadableCredentials
+	}
+	return oauth2adapt.Oauth2CredentialsFromAuthCredentials(creds), nil
+}
+
+// fileRefusal is why a credentials file must not be loaded, in words that print no path and no part
+// of it (cipherclient.CredentialsFileFailure).
+type fileRefusal string
+
+func (r fileRefusal) Error() string { return string(r) }
+
+// errUnloadableCredentials is a credentials file gcpCredentialsFile read but could not load: not
+// JSON, or no credential Google's libraries make a token source of.
+var errUnloadableCredentials = errors.New("holds no Google Cloud credential this command can load")
+
+// credentialsFileRefusal is the refusal of the credentials file file names (a phrase, such as
+// "the credentials file GOOGLE_APPLICATION_CREDENTIALS names") whose load failed with err
+// (gcpCredentialsFile): fixed text for a file it could not load, the check's reason for one it
+// refused, else the system's reason alone (redact.File), which drops the path. The file holds a
+// credential, and a variable meant for its path is where a person who pasted the credential itself
+// puts it.
+func credentialsFileRefusal(file string, err error) error {
+	var refusal fileRefusal
+	switch {
+	case errors.Is(err, errUnloadableCredentials):
+		return fmt.Errorf("%s %w", file, errUnloadableCredentials)
+	case errors.As(err, &refusal):
+		return fmt.Errorf("%s: %w", file, refusal)
+	}
+	return fmt.Errorf("read %s: %w", file, redact.File(err))
+}
+
+// metadataGenericPrincipal is how a refusal and the "using" line name the metadata server's
+// credential when its email read did not answer in time (gcpMetadataPrincipal): the identity is
+// this machine's or this pod's, named no more exactly, so a slow or failed email read never
+// keeps the command from signing in under the token.
+const metadataGenericPrincipal = "this machine's or this pod's identity"
+
+// gcpMetadataToken answers the machine's own credentials, whose access tokens come from the
+// metadata server (googleidentity.AccessTokenSource), reading the first token at once so the
+// source is available exactly when the server yields one. googleidentity.ErrNoMetadataServer - no
+// connection within googleidentity.ProbeTimeout, no answer within the token read's bound, or an
+// answer that is not Google's - is the absence newGCPBackend skips; any other error is a Google
+// server that is present but could not mint a token, which stops the command. It never reads the
+// email: that is gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
+var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
+	source := googleidentity.AccessTokenSource()
+	first, err := source.Token()
+	if err != nil {
+		return nil, err
+	}
+	return &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, source)}, nil
+}
+
+// gcpMetadataPrincipal is the account the metadata server names for this machine
+// (googleidentity.Probe, within ProbeTimeout), best effort: "" where the read fails or is slow,
+// so the refusal falls back to metadataGenericPrincipal rather than making a flaky email read
+// decide whether a command runs. Tests replace it.
+var gcpMetadataPrincipal = func(ctx context.Context) string {
+	email, err := googleidentity.Probe(ctx)
+	if err != nil {
+		return ""
+	}
+	return email
+}
+
+// googleUserinfoURL is Google's userinfo endpoint, which gcpUserinfo reads.
+const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+// gcpUserinfo reads the email of the account behind creds from Google's userinfo endpoint, which
+// answers only a token that carries an email scope. Only --owner me asks for it
+// (gcpBackend.personEmail). A failure names the endpoint and its status and registered code
+// (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
+// words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
+// the error a refused refresh answers. Tests replace it so no form makes a network call for it.
+var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
+	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
+	resp, err := httpClient.Get(googleUserinfoURL)
+	if err != nil {
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body))
+	}
+	var userinfo struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&userinfo); err != nil {
+		return "", fmt.Errorf("decode the Google sign-in's email: %w", err)
+	}
+	return userinfo.Email, nil
+}
+
+// gcpClientDial builds the Secret Manager client for creds, every call it makes through
+// interceptor (storeInterceptor, which words each failure). Tests replace it to dial a local fake
+// Secret Manager server instead of the real API, and a replacement installs interceptor too:
+// a client it builds on a connection it dialled itself ignores the dial options given here.
+// option.WithLogger discards the SDK's own debug log (GOOGLE_SDK_GO_LOGGING_LEVEL): at debug
+// level the SDK logs every request as protojson, which for AddSecretVersion includes the secret's
+// value, base64-encoded, in Payload.Data (the broker's own GCP store takes the same precaution,
+// internal/cipher/secrets/gcp.go).
+var gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+	return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
+		option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor)))
+}
+
+// gcloudTokenLife is how long this command takes an access token `gcloud auth print-access-token`
+// prints to last, counted from the moment it starts gcloud: gcloud prints the token alone, never
+// its expiry, and refreshes a token that would expire within 300 seconds before it prints one
+// (_CREDENTIALS_EXPIRY_WINDOW in the Cloud SDK's googlecloudsdk/core/credentials/store.py), so
+// every token it prints lasts at least this long. oauth2.ReuseTokenSource asks gcloud again once
+// it has passed, and gcloud answers the token it holds until that one nears its own expiry.
+const gcloudTokenLife = 5 * time.Minute
+
+// gcloudCommand is the gcloud a source runs: the path of the first gcloud on PATH. gcloud reads
+// the configuration and account to use from the environment this command passes it (gcloudEnv:
+// CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as the caller set them), never a flag of
+// this command's.
+type gcloudCommand struct {
+	path string
+}
+
+// findGcloud is the first gcloud on PATH.
+func findGcloud() (gcloudCommand, error) {
+	path, err := exec.LookPath("gcloud")
+	if err != nil {
+		return gcloudCommand{}, errors.New("no gcloud is on PATH: install the Google Cloud CLI, then sign in once with `gcloud auth login`")
+	}
+	return gcloudCommand{path: path}, nil
+}
+
+// gcloudLogins is every login `gcloud auth list` names, and the one it marks active (its
+// core/account property, under gcloud's configuration): the first of a gcloud source's three
+// calls, which decides whether the source is present. It runs under storeCallDeadline, as the
+// token's refresh does (gcloudToken.Token), so a gcloud that never answers stops the command at
+// that deadline rather than holding it. A list gcloud cannot make is an error.
+func gcloudLogins(ctx context.Context, gcloud gcloudCommand) (accounts []string, active string, err error) {
+	ctx, cancel := withStoreDeadline(ctx)
+	defer cancel()
+	out, err := runGcloud(ctx, gcloud, "auth", "list", "--format=json")
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, "", fmt.Errorf("`gcloud auth list` did not answer within %s", storeCallDeadlineText())
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("`gcloud auth list` failed: %w", err)
+	}
+	var listed []struct {
+		Account string `json:"account"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(out, &listed); err != nil {
+		return nil, "", fmt.Errorf("`gcloud auth list --format=json` answered something other than a list of accounts: %w", err)
+	}
+	for _, entry := range listed {
+		accounts = append(accounts, entry.Account)
+		if entry.Status == "ACTIVE" {
+			active = entry.Account
+		}
+	}
+	return accounts, active, nil
+}
+
+// gcloudSettings are the auth properties of gcloud's effective configuration that change whose
+// token `gcloud auth print-access-token` prints - impersonation, an access token file and a
+// credential file override - as `gcloud config list --format=json` shows them, environment
+// overrides included: the second of a gcloud source's three calls. gcloud applies them itself, so
+// they only name whom the token acts as (principal). The account a chosen configuration names is
+// read from the configuration itself (gcloudConfigurationAccount), never from here, where gcloud
+// on a Compute Engine VM fills a missing one in with the machine's.
+type gcloudSettings struct {
+	Auth struct {
+		ImpersonateServiceAccount string `json:"impersonate_service_account"`
+		AccessTokenFile           string `json:"access_token_file"`
+		CredentialFileOverride    string `json:"credential_file_override"`
+	} `json:"auth"`
+}
+
+// gcloudSettingsDeadline bounds readGcloudSettings. The read only names whom a login's token acts
+// as, which R2 makes best effort, so a gcloud that has not answered by then leaves the principal
+// unknown (unreadPrincipal) and the command goes on; each gcloud run starts a Python interpreter,
+// which on a loaded machine takes seconds, so the bound leaves room for that. Tests lengthen it.
+var gcloudSettingsDeadline = 5 * time.Second
+
+// readGcloudSettings runs `gcloud config list` under gcloudSettingsDeadline. Its error is never
+// the command's (signInWithGcloud).
+func readGcloudSettings(ctx context.Context, gcloud gcloudCommand) (gcloudSettings, error) {
+	var settings gcloudSettings
+	ctx, cancel := context.WithTimeout(ctx, gcloudSettingsDeadline)
+	defer cancel()
+	out, err := runGcloud(ctx, gcloud, "config", "list", "--format=json")
+	if err != nil {
+		return settings, fmt.Errorf("`gcloud config list` failed: %w", err)
+	}
+	if err := json.Unmarshal(out, &settings); err != nil {
+		return settings, fmt.Errorf("`gcloud config list --format=json` answered something other than gcloud's properties: %w", err)
+	}
+	return settings, nil
+}
+
+// principalUnknown is the principal a refusal and the "using" line name where the credential
+// does not say whose it is: a lent access token, an authorized_user credentials file, and a gcloud
+// login whose token comes from an access token file or a credential file override. The CLI asks
+// for no email scope to learn it.
+const principalUnknown = "principal unknown"
+
+// principal is who account's gcloud token acts as, by settings: account, or account impersonating
+// the service account gcloud is set to impersonate, or principalUnknown where an access token
+// file or a credential file override replaces account's own token.
+func (settings gcloudSettings) principal(account string) string {
+	switch {
+	case settings.Auth.AccessTokenFile != "" || settings.Auth.CredentialFileOverride != "":
+		return principalUnknown
+	case settings.Auth.ImpersonateServiceAccount != "":
+		return account + " impersonating " + settings.Auth.ImpersonateServiceAccount
+	}
+	return account
+}
+
+// unreadPrincipal is who account's gcloud token acts as where readGcloudSettings failed or did not
+// answer in time: the login is named, and whether gcloud's settings make its token act as another
+// principal is unknown.
+func unreadPrincipal(account string) string {
+	return account + " (" + principalUnknown + ": gcloud's auth settings could not be read)"
+}
+
+// personAccount reports whether email, as Google's userinfo endpoint names an account, is a
+// person's: a plain email the broker accepts as a person owner (policy.ValidPersonOwner,
+// lowercased), and no service account's (one ending in .gserviceaccount.com, such as a machine's
+// own). --owner me takes only a person's (gcpBackend.personEmail).
+func personAccount(email string) bool {
+	lower := strings.ToLower(email)
+	return policy.ValidPersonOwner(lower) && !strings.HasSuffix(lower, ".gserviceaccount.com")
+}
+
+// chooseGcloudAccount picks, of accounts, the login gcloud itself would use, whatever kind of
+// account it is, as `gcloud auth list` names it (an email, or a principal:// identifier for a
+// workload or workforce identity federation login): the one gcloud's own CLOUDSDK_CORE_ACCOUNT
+// names; else, where the caller chose a configuration (chosen, by CLOUDSDK_ACTIVE_CONFIG_NAME),
+// the account that configuration itself names (configured,
+// gcloudConfigurationAccount); else the one gcloud marks active, else the only one. An account or
+// a configuration the caller chose is the caller's choice, so where it names no login gcloud holds
+// the command is refused, naming it and each login gcloud holds, rather than run as another login -
+// a configuration that names no account at all included, for which gcloud on a Compute Engine VM
+// would lend the machine's own login. It also refuses no login at all, and several of which none
+// is active, naming each.
+func chooseGcloudAccount(chosen string, accounts []string, active, configured string) (string, error) {
+	held := "none"
+	if len(accounts) > 0 {
+		held = strings.Join(accounts, ", ")
+	}
+	if named := os.Getenv("CLOUDSDK_CORE_ACCOUNT"); named != "" {
+		if !slices.Contains(accounts, named) {
+			// The account is not printed: an account gcloud holds no login for is the caller's
+			// text, and a variable meant for an account is where a pasted credential lands.
+			return "", fmt.Errorf("CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds %s): sign in as that account with `gcloud auth login`, or name another login gcloud holds", held)
+		}
+		return named, nil
+	}
+	if chosen != "" {
+		switch {
+		case configured == "":
+			return "", fmt.Errorf("it names no account, so no login is chosen (gcloud holds logins for %s): sign in to it with `gcloud auth login --configuration=%s`, or name a login gcloud holds with `gcloud config set account ACCOUNT --configuration=%s`", held, chosen, chosen)
+		case !slices.Contains(accounts, configured):
+			return "", fmt.Errorf("it names %s, and gcloud holds no login for it (it holds %s): sign in to it with `gcloud auth login --configuration=%s`", configured, held, chosen)
+		}
+		return configured, nil
+	}
+	switch {
+	case active != "":
+		return active, nil
+	case len(accounts) == 1:
+		return accounts[0], nil
+	case len(accounts) == 0:
+		return "", errors.New("gcloud holds no login: sign in once with `gcloud auth login`")
+	}
+	return "", fmt.Errorf("gcloud holds several logins (%s) and none is active: run the command again with CLOUDSDK_CORE_ACCOUNT set to the one to use", strings.Join(accounts, ", "))
+}
+
+// gcloudToken is the oauth2.TokenSource of one gcloud login: each Token runs
+// `gcloud auth print-access-token` for its account and takes the token to last gcloudTokenLife.
+// No error carries the token: a failure names the account and gcloud's exit status, never what
+// gcloud wrote on its standard error, which runGcloud discards.
+type gcloudToken struct {
+	ctx     context.Context
+	gcloud  gcloudCommand
+	account string
+}
+
+// gcloudTokenArgs is the `gcloud auth print-access-token` command line for account, less gcloud:
+// the third of a gcloud source's three calls. gcloud prints a command's output through its logger,
+// whose file handler keeps a copy in its log file (calliope/display.py's printer writes to
+// log.out); the format's private attribute writes the token to the console stream alone
+// (core/resource/resource_printer_base.py). gcloud's own impersonation, access token file and
+// credential file override apply as its settings say, as they do for gcloud itself, and
+// gcloudSettings.principal names what they make the token act as.
+func gcloudTokenArgs(account string) []string {
+	return []string{"auth", "print-access-token", "--format=value[private](token)", account}
+}
+
+// Token runs `gcloud auth print-access-token` for the account under a deadline of its own,
+// storeCallDeadline: a refresh runs inside a store call, under that call's context only where
+// oauth2 passes one, which it does not, so without its own bound a gcloud that never answered would
+// hold the call past its deadline.
+func (s gcloudToken) Token() (*oauth2.Token, error) {
+	started := time.Now()
+	ctx, cancel := withStoreDeadline(s.ctx)
+	defer cancel()
+	out, err := runGcloud(ctx, s.gcloud, gcloudTokenArgs(s.account)...)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("`gcloud auth print-access-token` did not answer within %s for %s", storeCallDeadlineText(), s.account)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("`gcloud auth print-access-token` failed for %s: %w", s.account, err)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return nil, fmt.Errorf("`gcloud auth print-access-token` answered something other than one access token for %s", s.account)
+	}
+	return &oauth2.Token{AccessToken: token, TokenType: "Bearer", Expiry: started.Add(gcloudTokenLife)}, nil
+}
+
+// gcloudEnv is the environment gcloud runs in: this command's, less CLOUDSDK_AUTH_ACCESS_TOKEN,
+// which would make gcloud print that token rather than the login's; with prompts
+// off, so gcloud fails rather than waits on one, file logging off (core/disable_file_logging:
+// log.py's AddLogsDir adds no file handler), so no run leaves a log file behind, and HTTP logging
+// off (core/log_http), whatever this command's environment or gcloud's configuration sets: with
+// it on, and its token redaction off, a failed refresh writes its request body, the refresh token
+// in it, on gcloud's standard error, which runGcloud discards but which a person who runs the same
+// gcloud command to read its message sees. A variable outranks the configuration file, and given
+// twice takes its last value.
+func gcloudEnv() []string {
+	dropped := []string{"CLOUDSDK_AUTH_ACCESS_TOKEN"}
+	env := slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(dropped, name)
+	})
+	return append(env, "CLOUDSDK_CORE_DISABLE_PROMPTS=1", "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1", "CLOUDSDK_CORE_LOG_HTTP=false")
+}
+
+// gcloudWaitDelay is how long runGcloud waits for a killed gcloud's output to close before it gives
+// the call up: a second, its standard error discarded and nothing else.
+const gcloudWaitDelay = time.Second
+
+// runGcloud runs gcloud with args in gcloudEnv and answers what it wrote on its standard output.
+// gcloud reads the configuration and account to use from that environment
+// (CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as the caller set them), and the account
+// to print a token for is named on the command line (gcloudTokenArgs), so no flag of this
+// command's picks a configuration.
+// gcloud reads /dev/null, never this command's standard input, which can be a secret's value on
+// its way in. What it writes on its standard error is discarded, never printed: a refresh the
+// token endpoint refuses writes that endpoint's error_description there, which the server writes
+// what it likes in, so a failure is its exit status and the advice to run the same gcloud command
+// to read gcloud's own message. Once ctx ends, gcloud is killed with its whole process group where
+// the platform has them (killGroupOnCancel), not the gcloud process alone, since the gcloud on PATH
+// can be a script whose child, gcloud's Python, holds the output open and outlives a kill of the
+// script; the output is then waited for no more than gcloudWaitDelay, for a process that left the
+// group.
+// The whole group is killed too where a signal ends this command while gcloud runs: gcloud, in a
+// group of its own, gets no signal sent to this command's group, such as a terminal's interrupt,
+// so runGcloud records each gcloud it runs (runRecorded) and an end by a signal kills each
+// recorded one first (exitBySignal, killRunningGcloud).
+func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, gcloud.path, args...)
+	cmd.Env = gcloudEnv()
+	killGroupOnCancel(cmd)
+	cmd.WaitDelay = gcloudWaitDelay
+	var stdout bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, io.Discard
+	if err := runRecorded(cmd); err != nil {
+		return nil, fmt.Errorf("%w: run the same gcloud command yourself to see its message", err)
+	}
+	return stdout.Bytes(), nil
+}
+
+// runningGcloud holds the pid of each gcloud runRecorded has started and not yet waited for.
+var runningGcloud = struct {
+	sync.Mutex
+	pids map[int]bool
+}{pids: map[int]bool{}}
+
+// formWatchesSignals counts the form watches of createSignals running now (watchCreateSignals),
+// each of which ends the form by a signal through exitBySignal itself.
+var formWatchesSignals atomic.Int32
+
+// gcloudStarted and gcloudWaited name the two moments of runRecorded at which onGcloudStep runs.
+const (
+	gcloudStarted = "started" // gcloud has started; its pid is not recorded yet
+	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
+)
+
+// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
+// to send a signal at one of those moments, which no timing of the test's own can hit on every
+// run.
+var onGcloudStep = func(step string) {}
+
+// runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
+// has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
+// form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns) from before cmd
+// starts until what cmd left is killed, so that no signal in that span takes its default action
+// and ends this process with cmd's group still running; one caught while cmd starts is handled
+// once cmd's pid is recorded, since killRunningGcloud waits on runningGcloud's lock. Once cmd has
+// been waited for, on every outcome, it kills what is left of cmd's group (killGroupLeft): a
+// gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
+// the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
+// a process is left in it its id names no other group.
+// It runs on one OS thread from before cmd starts until cmd has been waited for: where gcloud's
+// parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that started
+// gcloud ends, not this process, and the Go runtime ends a thread only when a goroutine locked to
+// it returns locked.
+func runRecorded(cmd *exec.Cmd) error {
+	stop := watchSignalsWhileGcloudRuns()
+	defer stop()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	runningGcloud.Lock()
+	if err := cmd.Start(); err != nil {
+		runningGcloud.Unlock()
+		return err
+	}
+	pid := cmd.Process.Pid
+	onGcloudStep(gcloudStarted)
+	runningGcloud.pids[pid] = true
+	runningGcloud.Unlock()
+	err := cmd.Wait()
+	onGcloudStep(gcloudWaited)
+	killGroupLeft(pid)
+	runningGcloud.Lock()
+	delete(runningGcloud.pids, pid)
+	runningGcloud.Unlock()
+	return err
+}
+
+// killRunningGcloud kills each gcloud runRecorded is running, with its group (killGcloudGroup),
+// for a command that is ending by a signal. It keeps runningGcloud locked, so no gcloud starts
+// after it.
+func killRunningGcloud() {
+	runningGcloud.Lock()
+	for pid := range runningGcloud.pids {
+		killGcloudGroup(pid)
+	}
+}
+
+// watchSignalsWhileGcloudRuns catches each of createSignals this process did not inherit as
+// ignored, until stop is called, where no form watches them (formWatchesSignals), and ends the
+// process by the first that comes (exitBySignal, which kills the running gcloud first), as the
+// signal's default action would have, once the value prompt, where it reads, has finished
+// (promptBusy). stop never returns once the watch has taken a signal, since the process is ending
+// by it, as watchCreateSignals' stop does; a signal that came with the stop still ends the
+// process.
+func watchSignalsWhileGcloudRuns() (stop func()) {
+	if formWatchesSignals.Load() > 0 {
+		return func() {}
+	}
+	var watched []os.Signal
+	for _, sig := range createSignals {
+		if !signal.Ignored(sig) {
+			watched = append(watched, sig)
+		}
+	}
+	if len(watched) == 0 {
+		return func() {}
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, watched...)
+	end := func(sig os.Signal) {
+		promptBusy.Lock()
+		exitBySignal(sig)
+	}
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		select {
+		case sig := <-signals:
+			end(sig)
+		case <-done:
+			close(exited)
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+		signal.Stop(signals)
+		select {
+		case sig := <-signals:
+			end(sig)
+		default:
+		}
+	}
+}
+
+// newGCPBackend signs every form, a read and a write alike, in with the credential of the first
+// source present, in this order (gcpSource), and dials the Secret Manager client under it
+// (gcpClientDial):
+//
+//  1. CLOUDSDK_AUTH_ACCESS_TOKEN, a lent access token;
+//  2. GOOGLE_APPLICATION_CREDENTIALS, the credentials file it names;
+//  3. CLOUDSDK_ACTIVE_CONFIG_NAME or CLOUDSDK_CORE_ACCOUNT, the gcloud configuration or login they
+//     name;
+//  4. the well-known credentials file (wellKnownCredentialsFile);
+//  5. the active gcloud account, where gcloud is on PATH and holds a login;
+//  6. the metadata server, where it yields a token (gcpMetadataToken).
+//
+// A source that is absent is skipped. One that is present but fails - a file it cannot parse, a
+// refresh that fails, an account gcloud does not hold - stops the command with its error, and no
+// later source is tried; with none present the error names each and why it had nothing. A
+// gcloud source runs gcloud with gcloud's own settings for its configuration and account
+// (gcloudEnv). It refuses no credential for the identity it is: Secret Manager's IAM decides what
+// each may read and write, and a refusal of the store's names the credential (identity). The
+// read of whom a credential acts as is best effort (R2): it makes no userinfo or tokeninfo call,
+// since only --owner me needs an email (personEmail), and a read of the metadata server's email or
+// of gcloud's auth settings that fails or is slow names the principal less exactly and never
+// stops the command.
+func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) {
+	b := &gcpBackend{settings: settings}
+	if err := b.signIn(ctx); err != nil {
+		return nil, err
+	}
+	client, err := gcpClientDial(ctx, b.storeCredentials(), b.storeInterceptor)
+	if err != nil {
+		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
+	}
+	b.client = client
+	return b, nil
+}
+
+// storeCredentials is the credential the Secret Manager client signs its calls with: b.creds's,
+// through storeTokens (b.tokens), which keeps the token source's last failure for storeFailure,
+// and for a credentials file through redactedTokens too, so its token source - Google's
+// libraries' own - fails as the failure's class alone. Those libraries keep the body of the token
+// endpoint's answer in the error a refused refresh answers (x/oauth2's RetrieveError, and
+// cloud.google.com/go/auth's Error, into which oauth2adapt turns any error that wraps one), and
+// gRPC prints that error into the call's status message with %v, so by the time a form prints the
+// store's error the body is text no redaction can tell apart; the status code stays gRPC's. The
+// other sources' token sources fail in this program's own words already: gcloudToken's,
+// googleidentity's, and a lent token that never refreshes. b.creds itself is unchanged, so
+// gcpUserinfo still classifies a refused refresh by its RetrieveError.
+func (b *gcpBackend) storeCredentials() *google.Credentials {
+	tokens := b.creds.TokenSource
+	if b.source == sourceCredentialsFile || b.source == sourceWellKnownFile {
+		tokens = redactedTokens{tokens}
+	}
+	b.tokens = &storeTokens{TokenSource: tokens}
+	return &google.Credentials{
+		ProjectID: b.creds.ProjectID, TokenSource: b.tokens, JSON: b.creds.JSON,
+		UniverseDomainProvider: b.creds.GetUniverseDomain,
+	}
+}
+
+// redactedTokens is a token source whose failure is its class alone (redact.Class), as text that
+// wraps nothing: an error that still wrapped the *oauth2.RetrieveError would be turned back into
+// one that prints the token endpoint's body (storeCredentials).
+type redactedTokens struct{ oauth2.TokenSource }
+
+func (s redactedTokens) Token() (*oauth2.Token, error) {
+	token, err := s.TokenSource.Token()
+	if err != nil {
+		return nil, errors.New("fetch an access token with the credentials file: " + redact.Class(err).Error())
+	}
+	return token, nil
+}
+
+// signIn sets b's credential from the first source present (newGCPBackend).
+func (b *gcpBackend) signIn(ctx context.Context) error {
+	var absent []string
+	skip := func(source gcpSource, why string) { absent = append(absent, source.name()+": "+why) }
+
+	if token := os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN"); token != "" {
+		b.source, b.sourcePhrase, b.principal = sourceLentToken, "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN", principalUnknown
+		b.creds = &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})}
+		return nil
+	}
+	skip(sourceLentToken, "unset")
+
+	// The file holds a credential, so neither its refusal nor the phrase that names it in the
+	// "using" line and a store's refusal spells its path (credentialsFileRefusal). A command printed
+	// for running again does carry the path, as an absolute one (signInPrefix): it is the file this
+	// sign-in read and signed in with, so it is no credential a person pasted.
+	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
+		const file = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names"
+		creds, err := gcpCredentialsFile(ctx, path)
+		if err != nil {
+			return credentialsFileRefusal(file, err)
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		b.source, b.sourcePhrase, b.principal, b.creds, b.credentialsFile = sourceCredentialsFile, file, credentialsFilePrincipal(creds), creds, path
+		return nil
+	}
+	skip(sourceCredentialsFile, "unset")
+
+	if config, account := os.Getenv("CLOUDSDK_ACTIVE_CONFIG_NAME"), os.Getenv("CLOUDSDK_CORE_ACCOUNT"); config != "" || account != "" {
+		// A configuration this machine does not hold is refused before anything reads or prints
+		// it: its name is the caller's text, and a variable meant for a name is where a pasted
+		// credential lands. A configuration it holds is a label, and prints as one.
+		if config != "" && !slices.Contains(gcloudConfigurations(), config) {
+			return fmt.Errorf("CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: %s)", gcloudConfigurationList())
+		}
+		phrase := fmt.Sprintf("the gcloud configuration %s (CLOUDSDK_ACTIVE_CONFIG_NAME)", config)
+		if account != "" {
+			phrase = "the gcloud account (CLOUDSDK_CORE_ACCOUNT)"
+		}
+		gcloud, err := findGcloud()
+		if err != nil {
+			return fmt.Errorf("%s: %w", phrase, err)
+		}
+		return b.signInWithGcloud(ctx, sourceChosenGcloud, phrase, gcloud, config, nil)
+	}
+	skip(sourceChosenGcloud, "both unset")
+
+	if path := wellKnownCredentialsFile(); path == "" {
+		skip(sourceWellKnownFile, "no gcloud configuration directory (CLOUDSDK_CONFIG and HOME are unset)")
+	} else if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		skip(sourceWellKnownFile, "absent")
+	} else {
+		creds, err := gcpCredentialsFile(ctx, path)
+		if err != nil {
+			return credentialsFileRefusal(wellKnownCredentialsName(), err)
+		}
+		b.source, b.sourcePhrase, b.principal, b.creds = sourceWellKnownFile, wellKnownCredentialsName(), credentialsFilePrincipal(creds), creds
+		return nil
+	}
+
+	if gcloud, err := findGcloud(); err != nil {
+		skip(sourceActiveGcloud, "no gcloud on PATH")
+	} else {
+		accounts, active, err := gcloudLogins(ctx, gcloud)
+		if err != nil {
+			return fmt.Errorf("%s: %w", sourceActiveGcloud.name(), err)
+		}
+		if len(accounts) == 0 {
+			skip(sourceActiveGcloud, "gcloud holds no login")
+		} else {
+			return b.signInWithGcloud(ctx, sourceActiveGcloud, fmt.Sprintf("the active gcloud account (gcloud configuration %s)", activeGcloudConfiguration()), gcloud, "", &gcloudLoginList{accounts, active})
+		}
+	}
+
+	creds, err := gcpMetadataToken(ctx)
+	switch {
+	case errors.Is(err, googleidentity.ErrNoMetadataServer):
+		skip(sourceMetadata, err.Error())
+	case err != nil:
+		return fmt.Errorf("ask the metadata server for this machine's access token: %w", err)
+	default:
+		// The metadata server's answer prints only where it is a service account's: it is any
+		// text whoever answers at GCE_METADATA_HOST writes, line breaks included.
+		principal := gcpMetadataPrincipal(ctx)
+		if !cipherclient.ServiceAccountShaped(principal) {
+			principal = metadataGenericPrincipal
+		}
+		b.source, b.sourcePhrase, b.principal, b.creds = sourceMetadata, "the metadata server", principal, creds
+		return nil
+	}
+	return fmt.Errorf("found no Google credential: this command takes the first of these that is present, and none is: %s. Sign in with `gcloud auth login`, or set one of the variables named", strings.Join(absent, "; "))
+}
+
+// gcloudLoginList is what `gcloud auth list` answered, for a source that read it to learn
+// whether gcloud holds any login at all.
+type gcloudLoginList struct {
+	accounts []string
+	active   string
+}
+
+// signInWithGcloud sets b's credential from gcloud's login, as source names it in phrase, under
+// the configuration the caller chose (chosen; "" for gcloud's own): it reads which logins gcloud
+// holds (gcloudLogins, unless listed already holds that answer), the account a chosen
+// configuration names (gcloudConfigurationAccount), gcloud's auth settings (readGcloudSettings),
+// which login to use (chooseGcloudAccount), and asks for the first token at once, so a login
+// gcloud cannot lend is refused here, before any call is made under it; gcloudToken then runs
+// `gcloud auth print-access-token` again as each token nears its end, gcloud refreshing the login
+// as it does for itself, through the interface gcloud offers for that, never its credential files.
+// The settings only name whom the token acts as, so a read of them that fails or does not answer
+// in time names the login with the principal unknown (unreadPrincipal) and stops nothing.
+func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phrase string, gcloud gcloudCommand, chosen string, listed *gcloudLoginList) error {
+	if listed == nil {
+		accounts, active, err := gcloudLogins(ctx, gcloud)
+		if err != nil {
+			return fmt.Errorf("%s: %w", phrase, err)
+		}
+		listed = &gcloudLoginList{accounts, active}
+	}
+	configured := ""
+	if chosen != "" {
+		var err error
+		if configured, err = gcloudConfigurationAccount(chosen); err != nil {
+			return fmt.Errorf("%s: %w", phrase, err)
+		}
+	}
+	settings, settingsErr := readGcloudSettings(ctx, gcloud)
+	account, err := chooseGcloudAccount(chosen, listed.accounts, listed.active, configured)
+	if err != nil {
+		return fmt.Errorf("%s: %w", phrase, err)
+	}
+	tokens := gcloudToken{ctx: ctx, gcloud: gcloud, account: account}
+	first, err := tokens.Token()
+	if err != nil {
+		return fmt.Errorf("%s: %w", phrase, err)
+	}
+	principal := settings.principal(account)
+	if settingsErr != nil {
+		principal = unreadPrincipal(account)
+	}
+	b.source, b.sourcePhrase, b.principal, b.gcloudAccount = source, phrase, principal, account
+	b.creds = &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, tokens)}
+	return nil
+}
+
+// credentialsFilePrincipal is who a credentials file's credentials act as, by what the file says,
+// never by a call: a key file's client_email, the service account an impersonating file names in
+// its service_account_impersonation_url (an external_account workload identity federation
+// credential, such as a dev box's, or an impersonated_service_account file), else
+// principalUnknown (an authorized_user file, a federation credential that impersonates no one).
+// Either names an account as cipherclient.ServiceAccountWords does, as the token client's
+// external_account identity does: whole only where it has a service account's shape, since the
+// file is a credential's place and a field of it that is no service account's prints as fixed
+// words.
+func credentialsFilePrincipal(creds *google.Credentials) string {
+	var parsed struct {
+		ClientEmail      string `json:"client_email"`
+		ImpersonationURL string `json:"service_account_impersonation_url"`
+	}
+	if err := json.Unmarshal(creds.JSON, &parsed); err != nil {
+		return principalUnknown
+	}
+	account := parsed.ClientEmail
+	if _, rest, ok := strings.Cut(parsed.ImpersonationURL, "/serviceAccounts/"); account == "" && ok {
+		account, _, _ = strings.Cut(rest, ":")
+	}
+	if account == "" {
+		return principalUnknown
+	}
+	return cipherclient.ServiceAccountWords(account, "the credentials file")
+}
+
+// gcpBackend is the secretBackend for store "gcp-secret-manager": GCP Secret Manager under the
+// credential of the first Google credential source present (newGCPBackend), pinned to
+// settings.GCPProject.
+type gcpBackend struct {
+	settings Settings
+	client   *secretmanager.Client
+	creds    *google.Credentials
+	// source is the source creds came from, sourcePhrase names it, and principal is who creds act
+	// as, or principalUnknown (identity).
+	source       gcpSource
+	sourcePhrase string
+	principal    string
+	// gcloudAccount is the gcloud login a gcloud source signed in with: a command the form prints
+	// for running again carries it (gcloudPin), so it signs in as this one did.
+	gcloudAccount string
+	// credentialsFile is the absolute path of the file GOOGLE_APPLICATION_CREDENTIALS named, which
+	// a credentials file source read and signed in with: a command the form prints for running
+	// again carries it (signInPrefix, gcloudPin).
+	credentialsFile string
+	// tokens is the token source the Secret Manager client signs with (storeCredentials).
+	tokens *storeTokens
+}
+
+// id is the Secret Manager resource name of the secret whose name under the prefix is slug.
+func (b *gcpBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
+
+func (b *gcpBackend) parent() string { return "projects/" + b.settings.GCPProject }
+
+// secretID is id(slug) with the parent's "projects/<project>/secrets/" stripped, the bare id
+// CreateSecretRequest.SecretId takes.
+func (b *gcpBackend) secretID(slug string) string {
+	return strings.TrimPrefix(b.id(slug), b.parent()+"/secrets/")
+}
+
+func (b *gcpBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
+
+// requireAccount is a no-op for GCP, unlike AWS's: every call this backend makes already names
+// projects/<gcp_project>/... explicitly in the resource, so a wrong-project sign-in gets a real
+// PermissionDenied or NotFound from the API itself rather than silently reading another
+// project's secrets - AWS's ListSecrets takes no project parameter at all, which is the hazard
+// requireAccount guards there. A sign-in's own project (its quota project, set from a credentials
+// file's project_id, which a person's sign-in does not carry) is in any case not reliably
+// comparable with the broker's gcp_project without a Resource Manager call this CLI does not
+// make.
+func (b *gcpBackend) requireAccount(context.Context) error { return nil }
+
+// checkTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
+// character and no per-value limit, only one of under 16 KiB for every key and value of the secret
+// together (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
+// annotations), which the API holds an update to itself.
+func (b *gcpBackend) checkTagValues(map[string]string) error { return nil }
+
+// personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
+// Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
+// userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
+// without an email scope (an access token minted for cloud-platform alone, as a lent token or a
+// machine's commonly is), and an account that is no person's (personAccount): a service account's
+// email names no person.
+func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
+	email, err := gcpUserinfo(ctx, b.creds)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.sourcePhrase, err)
+	case email == "":
+		return "", fmt.Errorf("Google's userinfo endpoint names no email for %s", b.sourcePhrase)
+	case !personAccount(email) && cipherclient.ServiceAccountShaped(email):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as the service account %s, which is no person's email", b.sourcePhrase, email)
+	case !personAccount(email):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as an account that is no person's email (not printed: it has neither a person's email's shape nor a service account's)", b.sourcePhrase)
+	}
+	return strings.ToLower(email), nil
+}
+
+// identity names the credential this backend signs in with, as `<source>: <principal>`: the
+// source newGCPBackend took it from, and who it acts as, or that the principal is unknown.
+func (b *gcpBackend) identity() string { return b.sourcePhrase + ": " + b.principal }
+
+// chooseAnother is how a refusal of the store's says to sign in with another credential, built
+// from the source that signed in and from what outranks what: a lent token outranks every other
+// source, so only unsetting it or lending another chooses another; a credentials file outranks the
+// gcloud variables, so they choose only once it is unset; under every later source the gcloud
+// variables and a credentials file choose. CLOUDSDK_CORE_ACCOUNT, where it is set, outranks the
+// account of any configuration CLOUDSDK_ACTIVE_CONFIG_NAME names (chooseGcloudAccount), so a
+// configuration chooses only once that variable is unset too, and the advice says so. Where a
+// gcloud variable can choose, it lists the gcloud configurations here.
+func (b *gcpBackend) chooseAnother() string {
+	configurations := " (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	account := os.Getenv("CLOUDSDK_CORE_ACCOUNT") != ""
+	switch {
+	case b.source == sourceLentToken:
+		return "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
+	case b.source == sourceCredentialsFile && account:
+		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or, with CLOUDSDK_CORE_ACCOUNT unset too, a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME" + configurations
+	case b.source == sourceCredentialsFile:
+		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT" + configurations
+	case account:
+		return "choose another with an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting CLOUDSDK_CORE_ACCOUNT to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME" + configurations
+	}
+	return "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS" + configurations
+}
+
+// signInPrefix is the shell assignments a command line a form prints for running again
+// (pipeCommand) needs to sign in as this one did, each shell-quoted, where a variable chose the
+// source and may have been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file
+// it named, as the absolute path of the file this sign-in read (credentialsFile), so the command
+// signs in with that same file in any shell and from any directory, and CLOUDSDK_ACTIVE_CONFIG_NAME
+// and CLOUDSDK_CORE_ACCOUNT, as set, for the gcloud login they chose; "" for every other source.
+// It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a printed command carries no token.
+func (b *gcpBackend) signInPrefix() string {
+	prefix := ""
+	switch b.source {
+	case sourceCredentialsFile:
+		prefix = "GOOGLE_APPLICATION_CREDENTIALS=" + shellWord(b.credentialsFile) + " "
+	case sourceChosenGcloud:
+		for _, name := range []string{"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT"} {
+			if value := os.Getenv(name); value != "" {
+				prefix += name + "=" + shellWord(value) + " "
+			}
+		}
+	}
+	return prefix
+}
+
+// hasCurrentVersion reports whether id is served while versions/latest is ENABLED.
+func (b *gcpBackend) hasCurrentVersion(ctx context.Context, id string) (bool, error) {
+	version, err := b.client.GetSecretVersion(ctx, &secretmanagerpb.GetSecretVersionRequest{Name: id + "/versions/latest"})
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return version.GetState() == secretmanagerpb.SecretVersion_ENABLED, nil
+}
+
+// viewOf is secret as a secretView, less its versions, which only show reads.
+func (b *gcpBackend) viewOf(ctx context.Context, secret *secretmanagerpb.Secret) (secretView, error) {
+	hasValue, err := b.hasCurrentVersion(ctx, secret.GetName())
+	if err != nil {
+		return secretView{}, err
+	}
+	view := secretView{
+		Name: b.displayName(secret.GetName()), SecretName: secret.GetName(),
+		HasValue: hasValue,
+	}.withTags(secret.GetAnnotations())
+	if t := secret.GetCreateTime(); t != nil {
+		created := t.AsTime()
+		view.Created = &created
+	}
+	if t := secret.GetExpireTime(); t != nil {
+		deleted := t.AsTime()
+		view.Deleted = &deleted
+	}
+	return view, nil
+}
+
+func (b *gcpBackend) list(ctx context.Context) ([]secretView, error) {
+	views := []secretView{}
+	it := b.client.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{Parent: b.parent()})
+	for {
+		secret, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list the agent secrets: %w", err)
+		}
+		if !strings.HasPrefix(secret.GetName(), b.settings.SecretsPrefix) {
+			continue // the parent held more than the namespace
+		}
+		view, err := b.viewOf(ctx, secret)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", secret.GetName(), err)
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+// versionsOf maps each of id's version numbers to its one-element state, the GCP counterpart of
+// AWS's version-to-stages map.
+func (b *gcpBackend) versionsOf(ctx context.Context, id string) (map[string][]string, error) {
+	versions := map[string][]string{}
+	it := b.client.ListSecretVersions(ctx, &secretmanagerpb.ListSecretVersionsRequest{Parent: id})
+	for {
+		v, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		number := v.GetName()[strings.LastIndex(v.GetName(), "/")+1:]
+		versions[number] = []string{v.GetState().String()}
+	}
+	return versions, nil
+}
+
+func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) {
+	id := b.id(slug)
+	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
+	if err != nil {
+		return secretView{}, err
+	}
+	view, err := b.viewOf(ctx, secret)
+	if err != nil {
+		return secretView{}, err
+	}
+	versions, err := b.versionsOf(ctx, id)
+	if err != nil {
+		return secretView{}, err
+	}
+	view.Versions = versions
+	return view, nil
+}
+
+func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
+	return b.addVersion(ctx, b.id(slug), value)
+}
+
+func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
+	_, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+		Parent:  parent,
+		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
+	})
+	return err
+}
+
+func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
+	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
+	if err != nil {
+		return heldTags{}, err
+	}
+	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
+}
+
+// readValue reads the secret's value with AccessSecretVersion on versions/latest, the version the
+// broker serves, and refuses one that is empty or not valid UTF-8, as the broker's own read does
+// (secrets.GCP.Read). Its error never holds the value's bytes.
+func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error) {
+	latest := b.id(slug) + "/versions/latest"
+	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})
+	if err != nil {
+		return "", err
+	}
+	data := out.GetPayload().GetData()
+	if len(data) == 0 || !utf8.Valid(data) {
+		return "", errors.New("its value is not a non-empty UTF-8 string")
+	}
+	return string(data), nil
+}
+
+// valueReadPermission is what AccessSecretVersion needs of a person's sign-in. The roles people
+// hold on the broker's secrets commonly lack it: they add versions and change annotations, and
+// read none.
+func (b *gcpBackend) valueReadPermission() string {
+	return "secretmanager.versions.access on the secret"
+}
+
+// tagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
+// that secret's annotations first, so a write grant that does not carry this read fails `secret
+// set` before anything is written.
+func (b *gcpBackend) tagReadPermission() string {
+	return "secretmanager.secrets.get on the secret"
+}
+
+// setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
+// in one UpdateSecret that keeps every annotation it does not name. An UpdateSecret whose mask names
+// "annotations" replaces the whole map, so each sends held's annotations, changed, with held's
+// etag: the write lands only on the annotations the retag checked, and a write another writer made
+// since held was read refuses it with FAILED_PRECONDITION (errTagsChanged), naming the change,
+// rather than being merged into annotations no one checked.
+func (b *gcpBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
+	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
+}
+
+func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
+	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) {
+		for _, key := range keys {
+			delete(annotations, key)
+		}
+	})
+}
+
+// updateAnnotations sends held's annotations, as change leaves a copy of them, with held's etag.
+// The client makes one attempt (UpdateSecret's default call options retry nothing), so
+// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other code that is no
+// gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may follow an
+// update the store applied: it is answered as tagsUnknown.
+func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held heldTags, change func(map[string]string)) error {
+	annotations := maps.Clone(held.tags)
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	change(annotations)
+	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+		Secret: &secretmanagerpb.Secret{
+			Name:        b.id(slug),
+			Annotations: annotations,
+			Etag:        held.etag,
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
+	})
+	switch {
+	case status.Code(err) == codes.FailedPrecondition:
+		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
+	case err != nil && !gcpDefiniteRefusal(err):
+		return tagsUnknown{err}
+	}
+	return err
+}
+
+func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
+	expire := time.Now().UTC().Add(time.Duration(recoveryWindowDays) * 24 * time.Hour)
+	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+		Secret: &secretmanagerpb.Secret{
+			Name:       b.id(slug),
+			Expiration: &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(expire)},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &expire, nil
+}
+
+// restore clears expire_time: the field mask names it with no value in the body, which Secret
+// Manager reads as unsetting it.
+func (b *gcpBackend) restore(ctx context.Context, slug string) error {
+	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
+	})
+	return err
+}
+
+func (b *gcpBackend) isAccessDenied(err error) bool {
+	return status.Code(err) == codes.PermissionDenied
+}
+
+// close releases the Secret Manager client's underlying gRPC connection.
+func (b *gcpBackend) close() error { return b.client.Close() }
+
+var _ secretBackend = (*gcpBackend)(nil)

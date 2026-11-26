@@ -4,13 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-)
 
-var externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+)
 
 // issueRefResolved is the body GET /api/v1/issues/resolve answers.
 type issueRefResolved struct {
@@ -31,6 +30,10 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 
 // resolveIssueRef resolves an existing native key or external GitHub link.
 // Creating a missing external issue is the responsibility of POST /issues.
+//
+// An external reference finds a link stored under either name of its repository's rename pair
+// (refs.Renames.URLSpellings), so `sjawhar/legion#1955` and `cybermonklabs/legion#1955` reach
+// the same issue, whichever name its link was stored under.
 func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if issueKeyPattern.MatchString(ref) {
@@ -45,9 +48,13 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 	if err != nil {
 		return "", err
 	}
+	var urls []string
+	for _, link := range externalURLs(repo, number) {
+		urls = append(urls, s.deps.Renames.URLSpellings(link)...)
+	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
-	`, externalURLs(repo, number))
+	`, urls)
 	if err != nil {
 		return "", err
 	}
@@ -88,18 +95,14 @@ func validateExternalURL(raw string) error {
 	return nil
 }
 
+// externalRef reads ref, an `owner/name#number` reference, by the one rule (refs.ParseExternalRef),
+// and refuses one of another shape 400 INVALID_ISSUE_REF.
 func externalRef(ref string) (repo string, number string, err error) {
-	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
-	if match == nil {
+	repo, number, ok := refs.ParseExternalRef(ref)
+	if !ok {
 		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
 	}
-	return canonicalRepo(match[1], match[2]), match[3], nil
-}
-
-func canonicalRepo(owner, repo string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	repo = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(repo)), ".git")
-	return owner + "/" + repo
+	return repo, number, nil
 }
 
 func externalURL(repo, number string) string {

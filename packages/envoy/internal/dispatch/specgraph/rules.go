@@ -44,9 +44,21 @@ type Options struct {
 // The rule no-parent is a parent of a statement that the files do not hold as a statement, and
 // leaf-without-check is a statement that is the parent of no statement and that no check serves.
 func Validate(t Tree, o Options) []Problem {
-	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
+	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{},
+		checked: map[string]bool{}, parents: map[string]bool{}, servedBy: map[string]bool{}}
 	for _, id := range o.Retired {
 		v.retired[id] = true
+	}
+	for _, c := range t.Checks {
+		v.checked[c.Serves] = true
+	}
+	for _, s := range t.Statements {
+		v.parents[s.Parent] = true
+		for _, id := range s.Serves {
+			if id != s.ID {
+				v.servedBy[id] = true
+			}
+		}
 	}
 	v.ids()
 	for _, s := range t.Statements {
@@ -73,15 +85,40 @@ func Validate(t Tree, o Options) []Problem {
 }
 
 // validator is the state of one Validate: the kind and the first position of each id, the
-// relations the loop finder walks, and the problems found so far.
+// relations the loop finder walks, each id that a check serves, that a statement names as its
+// parent and that another statement serves, read once so that a statement's rules read no list of
+// the tree, and the problems found so far.
 type validator struct {
 	tree     Tree
-	kinds    map[string]string // id -> "statement", "check", "component" or "interface", of its first node
+	kinds    map[string]string // id -> kindOf its first node
 	first    map[string]Position
 	retired  map[string]bool
 	edges    map[string][]edge
+	checked  map[string]bool // each id that a check serves
+	parents  map[string]bool // each id that a statement names as its parent
+	servedBy map[string]bool // each id that a statement other than itself serves
 	problems []Problem
 }
+
+// relationRule is one relation that a node of one kind sets: its member, and the kinds of node that
+// it may name. Each is a named value below, the one rule of its relation, which Validate reads in
+// the files and the approved reader in the approved spec (relationFault); a rule is read by its
+// name, so a misspelt one does not compile, where a misspelt key of a map would read no kind and
+// refuse every such relation.
+type relationRule struct {
+	member string
+	kinds  []string
+}
+
+// The relations of each kind of node, by the kind that sets them and the member.
+var (
+	statementParent = relationRule{member: "parent", kinds: []string{"statement"}}
+	statementServes = relationRule{member: "serves", kinds: []string{"statement"}}
+	statementAbout  = relationRule{member: "about", kinds: []string{"component", "interface"}}
+	checkServes     = relationRule{member: "serves", kinds: []string{"statement"}}
+	componentParent = relationRule{member: "parent", kinds: []string{"component"}}
+	componentJoins  = relationRule{member: "joins", kinds: []string{"component"}}
+)
 
 // ruleKind is one kind of problem that Validate gives, an index of ruleKinds.
 type ruleKind int
@@ -167,11 +204,7 @@ func (v *validator) ids() {
 		all = append(all, held{c.ID, "check", c.Pos})
 	}
 	for _, c := range v.tree.Components {
-		kind := "component"
-		if c.Interface {
-			kind = "interface"
-		}
-		all = append(all, held{c.ID, kind, c.Pos})
+		all = append(all, held{c.ID, kindOf(c), c.Pos})
 	}
 	for _, term := range v.tree.Terms {
 		all = append(all, held{term.ID, "term", term.Pos})
@@ -222,39 +255,33 @@ func (v *validator) statement(s Statement) {
 		v.problem(s.Pos, s.ID, ruleNoText)
 	}
 	if isIDShape(s.Parent) {
-		if v.kinds[s.Parent] == "statement" {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
+		if slices.Contains(statementParent.kinds, v.kinds[s.Parent]) {
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: statementParent.member})
 		} else {
 			v.problem(s.Pos, s.ID, ruleNoParent, Cut(s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
-		if v.target(s.Pos, s.ID, "serves", id, "statement") {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: "serves"})
+		if v.target(s.Pos, s.ID, statementServes.member, id, statementServes.kinds...) {
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: statementServes.member})
 		}
 	}
 	for _, id := range s.About {
-		v.target(s.Pos, s.ID, "about", id, "component", "interface")
+		v.target(s.Pos, s.ID, statementAbout.member, id, statementAbout.kinds...)
 	}
-	if isIDShape(s.ID) && len(v.tree.ChecksOf(s.ID)) == 0 {
+	if isIDShape(s.ID) && !v.checked[s.ID] {
 		switch {
-		case len(v.tree.Children(s.ID)) == 0:
+		case !v.parents[s.ID]:
 			v.problem(s.Pos, s.ID, ruleLeafWithoutCheck)
-		case v.served(s.ID):
+		case v.servedBy[s.ID]:
 			v.problem(s.Pos, s.ID, ruleSupportedWithoutCheck)
 		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
 }
 
-// served reports whether another statement serves the statement id: one that other statements
-// support still has checks of its own (R5).
-func (v *validator) served(id string) bool {
-	return slices.ContainsFunc(v.tree.Statements, func(s Statement) bool { return s.ID != id && slices.Contains(s.Serves, id) })
-}
-
 func (v *validator) check(c Check) {
-	if isIDShape(c.Serves) && v.kinds[c.Serves] != "statement" {
+	if isIDShape(c.Serves) && !slices.Contains(checkServes.kinds, v.kinds[c.Serves]) {
 		v.problem(c.Pos, c.ID, ruleCheckServes)
 	}
 	for _, part := range []struct {
@@ -325,15 +352,15 @@ func (v *validator) component(c Component) {
 		v.problem(c.Pos, c.ID, ruleBadComponent)
 	}
 	if isIDShape(c.Parent) {
-		if v.kinds[c.Parent] == "component" {
-			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
+		if slices.Contains(componentParent.kinds, v.kinds[c.Parent]) {
+			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: componentParent.member})
 		} else {
 			v.problem(c.Pos, c.ID, ruleComponentParent, Cut(c.Parent))
 		}
 	}
 	if c.Interface {
 		for _, id := range c.Joins {
-			if isIDShape(id) && v.kinds[id] != "component" {
+			if isIDShape(id) && !slices.Contains(componentJoins.kinds, v.kinds[id]) {
 				v.problem(c.Pos, c.ID, ruleBadInterface, Cut(id))
 			}
 		}

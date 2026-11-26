@@ -1,0 +1,35 @@
+kind: Added
+body: |-
+  The new secret type `github-installations` serves GitHub installation tokens that a minter
+  outside the broker minted and stores, so the broker holds no App key for them. Its value is
+  `{"shapeVersion": 1, "installations": {"<account login>": {"installation_id", "token",
+  "expires_at", "permissions", "repository_selection"}}}`; beside `"repository_selection":
+  "selected"` it holds the token's own list `"repositories"`, with the installation's own
+  selection `"installation_repositories"` for a token the minter asked for with no repositories,
+  or the seed minter's marker `"repository_scope": "all-except-protected"`. The broker reads
+  `shapeVersion` 1 alone, refusing another or none whole and naming the secret, the version read
+  and the versions it knows, and reads the rest strictly: a field it does not know or one in
+  another case, a key twice in any object, or any other malformed part refuses the value
+  `value-malformed`. It needs a `github-owners` tag, is served only through profiles with a
+  `github` block on those accounts (one no profile names is refused
+  `github-installations-no-profile`), and is released in the github-app release's form. The
+  broker mints nothing for it and holds each stored token to what its minter declared beside it:
+  a token holding a permission past the profile's, or none but `metadata`, is refused
+  `422 PROFILE_MINT_REFUSED`, and a token holding less than the profile is served with the cut
+  named in `github_left_out`. A profile naming repositories is served only a token whose own list
+  is the same; a profile naming none is served a token of every repository, the marked admin
+  token, or a token whose own list equals the installation's selection, and refused any other. A
+  target of such a profile names its account alone: one naming a repository is refused with the
+  new code `400 TARGET_REPOSITORIES_REFUSED` (`403` at the proxy). A stored token is handed over
+  only while more than 20 minutes of its own life are left, else `502 MINT_FAILED`
+  (`class=upstream`); the margin does not bound the grant, so a token, whose life GitHub fixes at
+  an hour, can outlive its grant by up to an hour, and no revocation is added. The check before an
+  approval reads the stored tokens as a release does, and its bound's skip reason now reads `this
+  enrollment has made more checks than its bound allows`. Such a token is never given back to
+  GitHub. A profile may now take the name of a stored secret that carries the tag
+  `superseded-by` whose value is exactly the profile's source: the profile is served by the name
+  and the stored secret is not; any other value, or none, leaves the profile refused
+  `profile-name-taken` as before.
+time: 2026-11-22T12:02:39Z
+custom:
+    Issue: broker-github-installations

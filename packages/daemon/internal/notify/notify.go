@@ -18,6 +18,8 @@ import (
 
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 const requestTimeout = 10 * time.Second
@@ -140,8 +142,12 @@ const RoleTopicPrefix = "notifications.role."
 // ending in a provider error (`provider-errors`, supervise's tellControllerOfProviderErrors), a
 // tree of the project that has stopped (`tree-stalled`, admit's tellStalledTrees, once for each
 // stall), a root whose own architect is not taking the work the daemon states it is owed
-// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), and
-// the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
+// (`architect-stalled`, admit's wakeStalledArchitects, once for each arm and run of its tree), one
+// of the controller's own programs its pod's memory guard ended (`memory-guard-kill`, workflow's
+// controllerMemoryGuardKill, once for each kill), the messages the intake gave up, counted in one
+// notice that waits a minute for the give-ups after its first (`intake-gave-up`, record's
+// Postgres.GiveUpIntakeMessage), and the slot wakes admission sends through wakeController,
+// `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
@@ -257,13 +263,13 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if keep && response.StatusCode == http.StatusAccepted {
 		return true, nil
 	}
-	answered, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
 		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
 	}
-	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(answered)))
+	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, excerpt(answered, cut))
 	return false, publishRefusal(response.StatusCode, answered, refusal)
 }
 
@@ -398,9 +404,9 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	case http.StatusNotFound:
 		return SessionRegistration{}, nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	body, cut, _ := redact.ReadBounded(response.Body, refusalBodyLimit)
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
-		session, response.Status, strings.TrimSpace(string(body)))
+		session, response.Status, excerpt(body, cut))
 }
 
 // RoleHolder reads the session the listener names as role's holder, with that holder's state (GET
@@ -439,17 +445,17 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
 	}
 	if response.StatusCode == http.StatusOK {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
+		body, cut, readErr := redact.ReadBounded(response.Body, answerBodyLimit)
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
 		var answer listenerwire.RoleHolder
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", refused("the listener's answer names no holder: " + excerpt(body))
+			return "", "", refused("the listener's answer names no holder: " + excerpt(body, cut))
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	body, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
@@ -457,7 +463,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		var refusal listenerwire.RoleRefusal
 		if json.Unmarshal(body, &refusal) != nil {
-			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body))
+			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body, cut))
 		}
 		switch {
 		case refusal.Holder != "":
@@ -465,11 +471,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		case refusal.Reason == roleholder.Unclaimed:
 			return "", "", nil
 		}
-		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body)))
+		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body))
+		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
 	}
-	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body)))
+	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
@@ -487,9 +493,18 @@ func (e *RoleLookupRefused) Error() string {
 	return fmt.Sprintf("the Envoy listener refuses the role lookup (status %d): %s", e.Status, e.Reason)
 }
 
-// excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.
-func excerpt(body []byte) string {
-	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
+// excerpt is body as an error names it, where cut says whether its read was cut
+// (redact.ReadBounded): trimmed, and no longer than refusalBodyLimit. The body is the listener's,
+// so it is cut only once the URL rule has read it: redact.Read drops the run a read that was cut
+// stopped inside where it holds a "://", as a URL whose "@" was never read does, and redact.Bytes
+// cuts what the rule leaves where that is longer than refusalBodyLimit, as only a 200's body read
+// to answerBodyLimit can be.
+func excerpt(body []byte, cut bool) string {
+	text := redact.Read(string(body), cut)
+	if len(text) > refusalBodyLimit {
+		text, _ = redact.Bytes(text, refusalBodyLimit)
+	}
+	return strings.TrimSpace(text)
 }
 
 // unreadAnswer is a listener answer of status whose body could not be read to its end (err), for
@@ -590,6 +605,6 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	case http.StatusNoContent, http.StatusNotFound:
 		return SessionDeleted{Deleted: true}, nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
+	body, cut, _ := redact.ReadBounded(response.Body, refusalBodyLimit)
+	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, excerpt(body, cut))
 }

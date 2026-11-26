@@ -143,6 +143,7 @@ func (s *ignoredContextStep) firstReturn() (deadline time.Time, hadDeadline bool
 // limit, which is just as true of a cut that lands at the deadline, and so would prove nothing
 // about which of the two ended the handling.
 func TestTheCutEndsAHandlerOnceItsStepHonoursTheCancelledContext(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}

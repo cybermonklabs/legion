@@ -14,7 +14,13 @@
 import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import {
+  type DeviceLoginBrokerOptions,
+  stubDeviceLoginBroker,
+  writeDeviceLoginFile,
+} from "@legion/cipher-client/test/device-logins";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
+import { HEADER_DPOP_HOLDER } from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -42,10 +48,12 @@ function standInScope(prefix: string) {
   return { servers, tempDir };
 }
 
-/** One trade the stub broker was asked, and the access token it answered. */
+/** One trade the stub broker was asked, and the access token it answered: its form, its DPoP
+ *  proof's claims, and its holder proof (`DPoP-Holder`) as sent, "" where it sent none. */
 export interface Trade {
   readonly form: URLSearchParams;
   readonly proof: Record<string, unknown>;
+  readonly holder: string;
   readonly token: string;
 }
 
@@ -65,7 +73,7 @@ export function brokerStandIns(prefix: string) {
   const { servers, tempDir } = standInScope(prefix);
 
   /** The config a caller with no envoy.json reads: the neutral file, which does not exist. */
-  function noFile(env: DispatchEnvironment) {
+  async function noFile(env: DispatchEnvironment) {
     return readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
   }
 
@@ -81,6 +89,7 @@ export function brokerStandIns(prefix: string) {
         trades.push({
           form: new URLSearchParams(await request.text()),
           proof: JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
+          holder: request.headers.get(HEADER_DPOP_HOLDER) ?? "",
           token,
         });
         return Response.json({
@@ -166,7 +175,7 @@ export function natsBrokerStandIns(prefix: string) {
    * every trade it was sent, answered or not. While `down` is set the exchange answers 503, as a
    * broker that is away; while `unregistered` is set it refuses each trade as the broker refuses a
    * pod session no registration names yet (`registeredPodSession`,
-   * packages/envoy/internal/broker/oauth/exchange.go), in its own words. `state.seconds`, at first
+   * packages/envoy/internal/cipher/oauth/exchange.go), in its own words. `state.seconds`, at first
    * `lifeSeconds`, is how long the next token lives: a row may change it, as a broker that is back mints tokens of their
    * usual life. A token in `revoked` introspects as not active, as one a revoke ended before it
    * lapsed. A trade whose DPoP proof is missing or whose header is no JSON is answered as the
@@ -271,4 +280,49 @@ export function natsBrokerStandIns(prefix: string) {
   }
 
   return { servers, tempDir, stubBroker, podEnvironment };
+}
+
+/**
+ * The stand-ins of a file that drives a device login (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`,
+ * `dispatch login --device`). Call it once, at the test file's module scope, with the prefix of the
+ * file's temporary directories: it registers that file's cleanup ({@link standInScope}).
+ */
+export function deviceLoginStandIns(prefix: string) {
+  const { servers, tempDir } = standInScope(prefix);
+
+  /** A secrets broker serving the device grant, the refresh and the exchange
+   *  (`stubDeviceLoginBroker`), stopped after the test. */
+  function broker(options: DeviceLoginBrokerOptions = {}) {
+    const stub = stubDeviceLoginBroker(options);
+    servers.push(stub);
+    return stub;
+  }
+
+  /** A device login's file, in a directory of this test's own, made at `brokerUrl`. */
+  function loginFile(brokerUrl: string, fields: Record<string, unknown> = {}) {
+    return writeDeviceLoginFile(
+      path.join(tempDir(), "legion", "device-login.json"),
+      brokerUrl,
+      fields
+    );
+  }
+
+  /** The environment of a laptop whose identity is the device login at `file`, at `brokerUrl`,
+   *  with no Dispatch bearer at all. */
+  function laptopEnvironment(
+    brokerUrl: string,
+    dispatchUrl: string,
+    file: string
+  ): DispatchEnvironment {
+    return {
+      HOME: tempDir(),
+      DISPATCH_URL: dispatchUrl,
+      ENVOY_URL: dispatchUrl,
+      AGENT_SECRETS_URL: brokerUrl,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+    };
+  }
+
+  return { servers, tempDir, broker, loginFile, laptopEnvironment };
 }

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -109,12 +109,13 @@ func (enrollsEveryPod) Carried(context.Context, []string) ([]supervise.CarriedEn
 // TestRegistrationsAreRenewedBeforeTheyLapse runs a role of an issue pod under the daemon's own
 // registrar (newRegistrar, with exchange_audience set) for 25 hours on the test's clock, against a
 // broker that holds each registration to the day past its last write. The daemon writes the
-// registration when the agent registers and again every agentsecrets.RegistrationRenewal, each
+// registration when the agent registers and again every cipher.RegistrationRenewal, each
 // time under its own ServiceAccount token, bound to the thumbprint the role's hello named and
 // presenting the token the pod's shim reads then, so at 25 hours — past the first write's day —
 // the broker still admits the pod's exchange under its session. Once the claim ends, nothing more
 // is written.
 func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
+	t.Parallel()
 	const (
 		pod        = "pod-uid-renewed"
 		session    = "ses_renewed"
@@ -129,7 +130,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
+	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
 	if registrar == nil {
 		t.Fatal("newRegistrar answered no registrar with exchange_audience set")
 	}
@@ -148,7 +149,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar:      registrar,
 		RefreshGate:    supervise.NewRefreshGate(0),
@@ -165,7 +166,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	for _, ev := range []supervise.Event{
 		supervise.RequestSpawn{Claim: token},
 		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}},
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {
@@ -188,8 +189,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		if write.pod != pod || write.session != session || write.thumbprint != thumbprint || write.bearer != "Bearer the-daemon's-token" {
 			t.Errorf("write %d registered pod %s for session %s bound to %q under %q, want pod %s for %s bound to the hello's thumbprint %q under the daemon's own token", i, write.pod, write.session, write.thumbprint, write.bearer, pod, session, thumbprint)
 		}
-		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > agentsecrets.RegistrationRenewal {
-			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), agentsecrets.RegistrationRenewal)
+		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > cipher.RegistrationRenewal {
+			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), cipher.RegistrationRenewal)
 		}
 	}
 
@@ -205,8 +206,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 }
 
 // foreignBroker is POST /v1/oauth/exchange/pod-sessions answering a write at the generation it
-// sent, until it is set to answer at a fixed one, as a broker holding a row another claim or
-// another service login wrote at that generation answers.
+// sent, until it is set to answer at a fixed one, as a broker holding a row another claim of this
+// daemon or another process of the daemon's account wrote at that generation answers.
 type foreignBroker struct {
 	mu     sync.Mutex
 	answer int64
@@ -240,6 +241,7 @@ func (b *foreignBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // logs at Error an error saying it never made that registration, naming the pod, the session and
 // the generations, and writes it no more.
 func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
+	t.Parallel()
 	const (
 		pod        = "pod-uid-foreign"
 		session    = "ses_foreign"
@@ -255,7 +257,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	}
 	var logged syncBuffer
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
 
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-840", claim.RoleTester)
@@ -271,7 +273,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar:      registrar,
 		RefreshGate:    supervise.NewRefreshGate(0),
@@ -288,7 +290,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	for _, ev := range []supervise.Event{
 		supervise.RequestSpawn{Claim: token},
 		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}},
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {
@@ -299,9 +301,9 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	broker.mu.Lock()
 	broker.answer = 9
 	broker.mu.Unlock()
-	clock.advance(agentsecrets.RegistrationRenewal)
+	clock.advance(cipher.RegistrationRenewal)
 	for range 3 {
-		clock.advance(agentsecrets.RegistrationRenewal)
+		clock.advance(cipher.RegistrationRenewal)
 	}
 
 	const foreign = "at generation 9, above this claim's generation 1 (this write's was generation 1): a registration this daemon never made"

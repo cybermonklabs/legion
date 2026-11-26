@@ -3,11 +3,14 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -273,7 +276,7 @@ func TestARefusedClaimWriteFreesNoNameOfARelease(t *testing.T) {
 	}
 }
 
-// unlistedAnswer is the broker client's answer that was too long to read whole (agentsecrets'
+// unlistedAnswer is the broker client's answer that was too long to read whole (cipher's
 // CarriedAnswerTooLargeError), as the machine sees it (UnlistedCarryError).
 type unlistedAnswer struct{}
 
@@ -282,15 +285,16 @@ func (unlistedAnswer) Error() string {
 }
 func (unlistedAnswer) UnlistedCarry() bool { return true }
 
-// lostAnswerStore commits a release and then answers an error, as a commit whose answer the
-// claim-write deadline or a dropped connection cut off does.
+// lostAnswerStore commits a release and then answers it as a write the claim-write bound cut
+// after the database was handed it (cutAfterTheBegin), as a commit whose answer the deadline cut
+// off is: the one answer write would make a call again for.
 type lostAnswerStore struct{ Store }
 
 func (s lostAnswerStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
 	if _, err := s.Store.ReleaseHolds(ctx, c, holds); err != nil {
 		return nil, err
 	}
-	return nil, errors.New("the commit's answer was lost")
+	return nil, cutAfterTheBegin
 }
 
 // A release whose commit's answer is lost freed its names all the same, so it drops them from the
@@ -298,7 +302,9 @@ func (s lostAnswerStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold
 // would let the claim register it again without asking the store, after another claim took it.
 // Here the freed name is the base name of an earlier file of the current session, which does not
 // contain the id; with the answer lost, the claim's next registration of that file is still
-// refused, as it is with the answer delivered.
+// refused, as it is with the answer delivered. And the lost answer is a cut write would make again
+// for, yet the release is made once and answered as the cut: it is the exception to the retry
+// (Machine.write), since a second try would free nothing and answer the names freed as none.
 //
 // The control (the pull request records the run): ReleaseNames returning on the error before it
 // drops the names: "the re-registration of /state/sessions/implementer.jsonl, whose name
@@ -314,15 +320,30 @@ func TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
+			var counted *countingStore
 			if lost {
-				h.deps.Store = lostAnswerStore{h.store}
+				counted = &countingStore{Store: h.store}
+				h.deps.Store = lostAnswerStore{counted}
 				h.start(h.store.load(h.token))
 			}
 			h.reach(StateReady)
 			h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: second,
 				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
-			if _, err := h.m.ReleaseNames(h.ctx); (err != nil) != lost {
+			attempted := 0
+			if lost {
+				attempted = counted.mark()
+			}
+			_, err := h.m.ReleaseNames(h.ctx)
+			if (err != nil) != lost {
 				t.Fatalf("the release = %v, want an error only when its answer is lost", err)
+			}
+			if lost {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("the release whose answer the bound cut = %v, want the cut", err)
+				}
+				if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"ReleaseHolds"}) {
+					t.Fatalf("the release asked for %v, want one ReleaseHolds: a second try would answer the names freed as none", asked)
+				}
 			}
 			if holder, held := h.store.holdOf(earlier); held {
 				t.Fatalf("%s is still held for %s after the release committed", earlier.Name, holder)
@@ -330,7 +351,7 @@ func TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached(t *testing.T) {
 			if holders, err := h.store.HoldSessions(h.ctx, "", other, []Hold{earlier}); err != nil || len(holders) != 1 || holders[0] != other {
 				t.Fatalf("another claim's hold of the freed %s = %v, %v; want it %s's", earlier.Name, holders, err, other)
 			}
-			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			err = h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
 			if refusal := (claim.Refusal{}); !errors.As(err, &refusal) {
 				t.Fatalf("the re-registration of %s, whose name %s now holds, = %v, want the hold's refusal", sessionFile, other, err)
@@ -372,5 +393,87 @@ func TestAReleaseKeepsTheSessionALaunchChoseAndRegistered(t *testing.T) {
 	}
 	if holder, _ := h.store.holdOf(sessionID("ses_chosen")); holder != h.token {
 		t.Fatalf("ses_chosen is held for %q after the release, want %s", holder, h.token)
+	}
+}
+
+// A release by a daemon that registers pod sessions (Deps.Registrar) has the secrets broker
+// release the session names it would free before it frees any (releaseSessions): the names of
+// kind session alone, since no registration holds a file's name. A broker that does not answer
+// that it released them is asked three times, a second and then two apart, each failure logged at
+// Warn with the attempt and the broker's reason, and the release frees nothing: it answers
+// ErrReleaseUnanswered for a 5xx, and for a 404 from a broker of a build before the route, and
+// ErrReleaseRefused for any other 4xx but a 408 or a 429, a refusal a retry cannot change. A broker
+// that answers at the third attempt lets every name free.
+//
+// The control (the pull request records the run): releaseSessions reading every permanent refusal
+// as one for good fails the 404 row, which answers ErrReleaseRefused.
+func TestAReleaseFreesNoNameTheBrokerHasNotReleased(t *testing.T) {
+	unavailable := &cipher.APIError{Status: http.StatusServiceUnavailable, Code: "UNKNOWN", Message: "no healthy upstream"}
+	unserved := &cipher.APIError{Status: http.StatusNotFound, Code: "UNKNOWN", Message: "404 page not found"}
+	unlisted := &cipher.APIError{Status: http.StatusForbidden, Code: "ACCOUNT_NOT_LISTED", Message: "the account is not listed"}
+	for _, tc := range []struct {
+		name      string
+		answers   []error
+		want, not error
+	}{
+		{"a broker that does not answer", []error{unavailable, unavailable, unavailable}, ErrReleaseUnanswered, ErrReleaseRefused},
+		{"a broker from before the route", []error{unserved, unserved, unserved}, ErrReleaseUnanswered, ErrReleaseRefused},
+		{"a broker that refuses the release for good", []error{unlisted, unlisted, unlisted}, ErrReleaseRefused, ErrReleaseUnanswered},
+		{"a broker that answers at the third attempt", []error{unavailable, errors.New("dial tcp: connection refused")}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withSecrets()
+			recorder := &sessionRecorder{releaseErrs: slices.Clone(tc.answers)}
+			h.deps.Registrar = recorder
+			h.start(h.store.load(h.token))
+			h.reach(StateReady)
+			h.store.fillHolds(h.token, 2)
+			h.store.setHold(Hold{Kind: HoldFileName, Name: "earlier.jsonl"}, h.token)
+			held := h.store.heldBy(h.token)
+			h.clock.mu.Lock()
+			sleptBefore := len(h.clock.slept)
+			h.clock.mu.Unlock()
+
+			released, err := h.m.ReleaseNames(h.ctx)
+
+			asked := recorder.released()
+			if len(asked) != releaseAttempts {
+				t.Fatalf("the release asked the broker %d times (%v), want %d", len(asked), asked, releaseAttempts)
+			}
+			for i, names := range asked {
+				if slices.Sort(names); !slices.Equal(names, []string{"ses_earlier_0", "ses_earlier_1"}) {
+					t.Fatalf("attempt %d asked the broker to release %v, want the two earlier session ids alone", i+1, names)
+				}
+			}
+			h.clock.mu.Lock()
+			slept := slices.Clone(h.clock.slept[sleptBefore:])
+			h.clock.mu.Unlock()
+			if want := []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(slept, want) {
+				t.Fatalf("the release waited %v between its attempts, want %v", slept, want)
+			}
+			warned := h.logs.lines("level=WARN", "supervise: the secrets broker did not release a claim's session names; they stay held")
+			if len(warned) != len(tc.answers) {
+				t.Fatalf("the release logged %d Warn lines, want one for each of the %d failed attempts:\n%s", len(warned), len(tc.answers), strings.Join(warned, "\n"))
+			}
+			for i, line := range warned {
+				if !strings.Contains(line, fmt.Sprintf("attempt=%d", i+1)) || !strings.Contains(line, "names=2") || !strings.Contains(line, tc.answers[i].Error()) {
+					t.Errorf("the Warn line of attempt %d is %q, want it to name the attempt, the 2 names and the broker's reason %q", i+1, line, tc.answers[i])
+				}
+			}
+
+			if tc.want == nil {
+				if err != nil || len(released.Freed) != 3 || h.store.heldBy(h.token) != held-3 {
+					t.Fatalf("the release the broker answered at the third attempt = %+v, %v; want the 3 earlier names freed", released, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) || errors.Is(err, tc.not) || !strings.Contains(err.Error(), tc.answers[len(tc.answers)-1].Error()) {
+				t.Fatalf("the release = %v, want %v naming the broker's reason, never %v", err, tc.want, tc.not)
+			}
+			if got := h.store.heldBy(h.token); got != held {
+				t.Fatalf("the release the broker did not answer left the claim holding %d names, want the %d it held", got, held)
+			}
+		})
 	}
 }

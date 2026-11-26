@@ -5,10 +5,11 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryAttemptState,
   type MessageDeliveryMode,
-  RECEIPT_TIMEOUT_CAUSE,
+  POSSIBLY_DELIVERED_CAUSES,
 } from "@legion/contracts";
 
 import type { AgentPart } from "../refs/AgentName";
+import type { PostDeletion } from "../refs/post-marks";
 
 /**
  * Each delivery mode as a person reads it, the one mapping every surface names a mode with: the
@@ -222,8 +223,27 @@ export function isSafeRetry(attempt: DeliveryOutcome, now: number = Date.now()):
   );
 }
 
+/**
+ * Whether a surface may offer to send a post again - the same-mode Retry of one of its attempts,
+ * or a send in another mode - given the post's deletion (`postDeletion`): never once its author
+ * deleted it. Dispatch refuses every new delivery of a deleted post, `409 POST_DELETED`, and the
+ * delete ended each of its sends still pending with `DELETED_POST_DELIVERY_ERROR`. So an attempt
+ * of a deleted post offers no Retry and no mode change, and earns none of the guidance that
+ * names them: the one a delete ended reads the delete's words and nothing else. Every surface
+ * that offers either asks this first, and asks `isSafeRetry` and `failureGuidance` only of an
+ * attempt whose post it holds for.
+ */
+export function resendable(deleted: PostDeletion | null | undefined): boolean {
+  return deleted === null || deleted === undefined;
+}
+
 /** What a duplicate attempt reads as: an earlier attempt landed, so this one added nothing. */
 export const duplicateText = `Delivered by an earlier attempt, so not delivered again ${unlessRestarted}`;
+
+/** What an attempt the post's delete ended reads as (`DELETED_POST_DELIVERY_ERROR`): the delete
+ *  ended the send, so it did not fail. The targeted message card and the Conversation tab's
+ *  mention list both say it in these words. */
+export const endedByDeleteText = "Ended by the post's delete";
 
 /** What a queued attempt's session is and when it gets the message, said after the session's
  *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention
@@ -246,13 +266,16 @@ export function queuedParts(session: AgentPart): AgentPart[] {
  * "Retry won't deliver it twice" holds for any in-window failure but a restarted session's: if
  * the send landed, its repeat is recognised and dropped, and if it never landed there is nothing
  * to duplicate. The second clause does not. "Sending in a different mode delivers it again" is
- * only true of a send that may already have reached the recipient — a receipt timeout — so it is
- * keyed on that cause. It is also withheld on the mention surface, which has no mode-change
- * button to name.
+ * only true of a send that may already have reached the recipient — a receipt timeout, or a send
+ * whose store the listener could not confirm (`POSSIBLY_DELIVERED_CAUSES`) — so it is keyed on
+ * those causes. It is also withheld on the mention surface, which has no mode-change button to
+ * name.
  */
 export function safeRetryGuidance(surface: "card" | "mention", cause?: string | null): string {
   const safe = `Retry won't deliver it twice ${unlessRestarted}`;
-  if (surface === "mention" || cause !== RECEIPT_TIMEOUT_CAUSE) return `${safe}.`;
+  if (surface === "mention" || cause == null || !POSSIBLY_DELIVERED_CAUSES.includes(cause)) {
+    return `${safe}.`;
+  }
   return `${safe}; sending in a different mode delivers it again.`;
 }
 

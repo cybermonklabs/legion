@@ -46,13 +46,13 @@ const (
 
 // refreshParked is the window a plugin wave leaves most of a fleet in: a live claim whose plugin
 // this daemon does not speak, with the lane's relaunch reserved and waiting its paced turn over
-// the process the claim still runs (refreshPlugin, relaunchStale, parkWake). It answers the
+// the process the claim still runs (refreshPlugin, relaunchStale, waitOnMachine). It answers the
 // harness and the wake that waits.
 //
 // The walk to the state asked for spends the limiter's burst, so the relaunch raised after it
 // is one the pacing holds rather than one that runs where it is raised, which is the whole of
 // what these tests are about. The claim keeps the process it records and the state it is in,
-// because the park writes neither (parkWake). PluginRelaunchable is left as the harness leaves
+// because the park writes neither (waitOnMachine). PluginRelaunchable is left as the harness leaves
 // it, false: the lane's own pass never reads it — the daemon's pass and the registration path
 // do (refreshStalePlugins, staleRegistration) — so a test that walks a relaunched claim back to
 // ready has its registration accepted rather than refused for a contract this harness gives it
@@ -330,7 +330,7 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 	// The window the refusal's retry answers: the claim live with no process of its own, which
-	// is where a park that launched nothing leaves one (parkWake).
+	// is where a park that launched nothing leaves one (waitOnMachine).
 	h.m.claim.State, h.m.claim.Locator = StateLaunching, nil
 
 	h.advance(waiting.At.Sub(h.clock.Now()))
@@ -352,12 +352,12 @@ func TestTheRetryOfARefusedRefreshWaitsUnderTheLanesOwnKind(t *testing.T) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim().PluginRelaunchFor; got != 0 {
 		t.Fatalf("the claim whose retry waits its turn is marked for %d, want no mark until that turn starts the process", got)
 	}
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.claim().PluginRelaunchFor; got != refreshContract {
@@ -381,10 +381,10 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 	queueAhead(h, 4)
 	h.advance(testProbe)
 
-	retry := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 	h.wantStarts(h.token, 1)
 
-	h.advance(retry.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	if got := h.store.load(h.token).PluginRelaunchFor; got != refreshContract {
@@ -402,7 +402,7 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 // refreshRetryArmed is the opening every road to a retry of this lane takes: the lane's relaunch
 // parked over a stale idle claim, its turn met by a store that takes no claim write, and the
 // retry that failed write arms waiting on the probe interval over a claim recording no process
-// (refreshParkedIdle, launchNow, relaunchLater). That retry holds the intent the launch had
+// (refreshParkedIdle, launchTries, relaunchLater). That retry holds the intent the launch had
 // already committed, which is what each road below reads at the wake its own retry parks
 // (retryHolding). The write lands again before this returns, so what the retry meets when it
 // runs is each road's own to set up.
@@ -433,7 +433,7 @@ func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
 // the machine drives to it. The refresh's turn passes its lifecycle recheck, lets the stale
 // process go, and the claim write that records StateLaunching fails: the launch has started
 // nothing, it keeps in memory the mark it had already committed, and it tries the same launch
-// again at the probe interval (launchNow, relaunchLater). That retry is a launch from the top
+// again at the probe interval (launchTries, relaunchLater). That retry is a launch from the top
 // and reserves afresh, and the intent the failed launch took off the machine goes back on it
 // where the retry runs, so the wake it parks is the lane's rather than a plain launch
 // (retryHolding, reserveWake). Counted by its kind, a refresh that lost its wake to `launch`
@@ -445,7 +445,7 @@ func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
 // the case above can only put a claim in: this one reaches it from a stale idle claim and the
 // lane's own pass.
 //
-// The negative control is the wrapping reverted (launchNow handing relaunchLater the bare
+// The negative control is the wrapping reverted (relaunchAtProbe handing relaunchLater the bare
 // closure): the retry then parks under `launch`, which this case reads at the kind of the wake
 // waiting and again at the lines its turns write.
 func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *testing.T) {
@@ -503,9 +503,9 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 	queueAhead(h, 4)
 	h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its issue's phase"})
 
-	resumed := h.wantWaitingWake(WakeLaunch)
+	h.wantWaitingWake(WakeLaunch)
 
-	h.advance(resumed.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 2)
 	h.wantWakeLine(h.token, "kind=launch", "waited=true")
@@ -525,7 +525,7 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 //
 // The road is the one the case above drives: the refresh's turn runs, the claim write that
 // records StateLaunching fails, and the retry that failure arms puts the intent back and raises
-// the same launch anew from the top, where its own lifecycle check is refused (launchNow,
+// the same launch anew from the top, where its own lifecycle check is refused (launchTries,
 // launchAfter).
 //
 // A refresh that lost its wake to `launch` at this second refusal is lost to the operator
@@ -583,19 +583,19 @@ func TestTheRetryOfARefusedRefreshTurnRefusedAgainWaitsUnderTheLanesOwnKind(t *t
 	h, _ := refreshRetryArmed(t)
 	// A wave of a daemon's own claims is queued ahead of the first retry, so the launch it
 	// raises waits a turn of its own: the refresh wake over a claim recording no process that
-	// this road is driven through (launchAfter, parkWake).
+	// this road is driven through (launchAfter, waitOnMachine).
 	queueAhead(h, 4)
 
 	h.advance(testProbe)
 
-	parked := h.wantWaitingWake(WakePluginRefresh)
+	h.wantWaitingWake(WakePluginRefresh)
 
 	// The store cannot answer the lifecycle check that wake's turn makes: the turn starts
 	// nothing and the retry it arms holds the intent the wake carried (runWake, retryHolding).
 	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
 	h.m.deps.Store = store
 
-	h.advance(parked.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantStarts(h.token, 1)
 	if held := h.m.View().WakeWaiting; held != nil {

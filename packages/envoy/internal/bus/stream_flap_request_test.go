@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The other half of the flap TestAFlapRunsTheSecondDisconnectHookAtOnce makes: the second outage
@@ -40,24 +42,10 @@ func TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce(t *testin
 	client.AddDisconnectHook(func() { disconnects <- time.Now() })
 
 	proxy.cutAndArm(time.Second)
-	select {
-	case <-disconnects:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first disconnect hook did not run within 10s of the first outage")
-	}
-	var dropped time.Time
-	select {
-	case dropped = <-proxy.dropped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no stream request reached the proxy within 30s of the first outage: the reconnect's ensure never asked")
-	}
-	select {
-	case ran := <-disconnects:
-		if late := ran.Sub(dropped); late > 2*time.Second {
-			t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine on its unanswered stream request", late)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the second disconnect hook did not run within 20s of the second outage")
+	testwait.Receive(t, "the first disconnect hook to run after the first outage", disconnects)
+	dropped := testwait.Receive(t, "a stream request of the reconnect's ensure to reach the proxy", proxy.dropped)
+	if late := testwait.Receive(t, "the second disconnect hook to run", disconnects).Sub(dropped); late > 2*time.Second {
+		t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine on its unanswered stream request", late)
 	}
 }
 
@@ -79,7 +67,7 @@ type flapProxy struct {
 
 func newFlapProxy(t *testing.T, upstream string) *flapProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}

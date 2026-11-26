@@ -10,11 +10,14 @@
 # comment is public on the pull request's page from the moment it is posted. A hit is reported as
 # `title:<line>`, `body:<line>`, `branch:<line>`, `commits:<line>`, `comment:<id>:<line>`,
 # `review:<id>:<line>` or `review-comment:<id>:<line>` (the id GitHub gives that issue comment,
-# review or review comment), never its text.
+# review or review comment), never its text. That run reads the third rule's form for a pull
+# request's own text too (PRIVATE_NAME_BARE_HOSTS=yes): a host that ends in `.internal`, which a
+# run over the tree passes (check-private-names.sh's header says why).
 #
-# Then it holds the pull request's new text to check-private-names.sh's rules 6 and 7 (an issue key
-# of the deployment's own projects, and a Dispatch link), from a cutoff it derives at each run: the
-# section "THE ISSUE-KEY RULE" below says how, and which text. A hit there is reported as
+# Then it holds the pull request's new text to check-private-names.sh's rule 6 (an issue key of the
+# deployment's own projects), from a cutoff it derives at each run: the section "THE ISSUE-KEY
+# RULE" below says how, and which text. No rule refuses a Dispatch link for being one; a name,
+# term or issue key in it is still refused. A hit there is reported as
 # `title:<line>`, `body:<line>`, `<kind>:<id>:<line>`, `commit:<sha>:<line>` for a
 # commit's message, `commit:<sha>:<path>:<line>` for a line a commit adds, or
 # `files:<path>:<line>` for a line of the pull request's net diff, which is read in place of a
@@ -29,25 +32,26 @@
 # It reads the event payload GitHub writes to GITHUB_EVENT_PATH, never the step's environment,
 # which the runner prints in the job log. A pull_request payload carries
 # the pull request: its number, and the base and head sha the run checks, which is the head the
-# event names rather than whatever head the pull request has by the time a route is read, since a
+# event names rather than whatever head the pull request has by the time GitHub is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
-# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY). The title, body and branch name come
-# from the pull request route as the pull request has them now, not from the payload: ci.yaml's
-# `pr-title` job checks at a push and can finish long after a later edit's pr-title.yaml run, and
-# both carry pr-title on the head, so a check of the push's own text would report a pass over
-# the edit's refusal. The commits come from the compare route between the event's base and head,
-# which pages through every commit and reports their total, so a list that comes back shorter
-# than that total is refused loudly here instead of silently scanning part of it; and the issue
-# comments, reviews and review comments from their list routes, which report no total, so each
-# is read 100 at a time until a page comes back short. There is no total to cross-check those
-# lists against, and none is
-# needed: a list that changes while a run reads it is read again by the next push or edit run and
-# by ci.yaml's `pr-title` job's next run (ci.yaml says when it runs), and those runs'
-# checks are the ones the merge reads. A NUL byte in any of them, which would make `grep -I`
-# treat the file as binary and skip it, is stripped first.
+# The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY) through GitHub's GraphQL API, whose
+# budget is its own, apart from the REST budget the rest of CI spends (THE READ below says what it
+# asks for and how it reads every page), each call through gh-read.sh's gh_wait_reset, which waits
+# out a spent API budget (REST's or GraphQL's) within the JOB_TIMEOUT_MINUTES both jobs that run
+# this script set, and fails by name past it. The title, body and branch name are the pull request's
+# as it has them now, not the payload's: `.github/workflows/ci.yaml#pr-title` job checks at a push and can finish
+# long after a later edit's pr-title.yaml run, and both carry pr-title on the head, so a check of
+# the push's own text would report a pass over the edit's refusal. The commits are those from the
+# base branch to the event's head, and the issue comments, reviews and review comments every one
+# the pull request holds. GitHub reports a total for each list, and a list read short of its total
+# is refused loudly here, naming the list, instead of silently scanning part of it. A list that
+# changes between two pages of one run's read can miss its total that way too; the next push or
+# edit run and `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again, and
+# those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
+# `grep -I` treat the file as binary and skip it, is stripped first.
 #
 # Usage: GITHUB_EVENT_PATH=<payload> GITHUB_REPOSITORY=<owner>/<repo> .github/scripts/check-pr-text.sh
-# CI runs it in ci.yaml's `pr-title` job at every push to a pull request that is not a draft, when
+# CI runs it in `.github/workflows/ci.yaml#pr-title` job at every push to a pull request that is not a draft, when
 # a draft is marked ready, and on the merge queue's group, where that job finds the queued pull
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
 # each. It runs in pr-title.yaml when a pull request is edited, the event ci.yaml does not run on
@@ -64,6 +68,8 @@ set -euo pipefail
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 script_dir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=.github/scripts/gh-read.sh
+source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$text" "$work"' EXIT
@@ -76,40 +82,251 @@ fi
 number=$(jq -er '.number' "$pull")
 base=$(jq -er '.base.sha' "$pull")
 head=$(jq -er '.head.sha' "$pull")
+cutoff_file=.github/issue-key-cutoff
+
+# THE READ. One GraphQL query, PrText, asks for the pull request's title, body, branch names,
+# creation time and diff totals; the commits of GitHub's comparison of its base branch with the
+# event's head; the commits on the base branch that touch the issue-key rule's marker (THE
+# ISSUE-KEY RULE below); and its issue comments, reviews and review threads, each thread with its
+# review comments. Every list comes as a page of 100 with its total, but a thread's comments come
+# 20 to a thread at first, so that one answer holds at most 2,000 review comments however many
+# threads anyone signed in opens. While a page says more follow, the same query is asked again for
+# those lists alone, each from its own cursor, so a pull request with no more than 100 of each (and
+# no thread of more than 20 comments) costs one call; a review thread's later comments are read 100
+# at a time by the thread's id (ThreadComments). An answer that is no page of its list (no list of
+# nodes, no whole-number total, or a next page with no cursor), or a list whose pages add up to
+# other than its total, is refused, naming the list; the commits are the one exception, below.
+# GitHub's comparison takes a branch for its base, not a commit, so its commits run from the base
+# branch as it now is to the event's head, not from the payload's base sha: the two give the same
+# commits unless the head holds commits the base branch gained after that sha (the branch leaves
+# out those, which are the base branch's own) or the base branch was rewritten (the branch adds
+# those the pull request's page now lists too). Of 40 open pull requests read both ways on
+# 2026-11-22, 39 listed the same commits in the same order; the 40th held more than 1000 commits,
+# and GitHub's comparison lists no more than 1000 while it reports them all (pull request 4259 on
+# 2026-11-22: 1000 listed of its 1872). So a comparison listed short of its total is read from the
+# REST compare route instead, from the payload's base sha to the event's head, and refused if that
+# comes back short too; one whose total is above 1000 is read no further than its first page,
+# since its later pages cannot make it whole. A comparison GitHub cannot make is an error in its
+# answer, which gh fails on, so it is refused as the read is. Each commit's date is GitHub's
+# committedDate, which is in UTC as the REST route's is: its committer { date } keeps the
+# committer's own offset, and THE ISSUE-KEY RULE compares the date as text with a cutoff in UTC.
+read -r -d '' pr_query << 'GRAPHQL' || true
+query PrText($owner: String!, $repo: String!, $number: Int!, $head: String!, $marker: String!,
+  $full: Boolean!, $commits: Boolean!, $commitsAfter: String, $history: Boolean!,
+  $historyAfter: String, $comments: Boolean!, $commentsAfter: String, $reviews: Boolean!,
+  $reviewsAfter: String, $threads: Boolean!, $threadsAfter: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      title @include(if: $full)
+      body @include(if: $full)
+      headRefName @include(if: $full)
+      baseRefName @include(if: $full)
+      createdAt @include(if: $full)
+      changedFiles @include(if: $full)
+      additions @include(if: $full)
+      deletions @include(if: $full)
+      baseRef {
+        compare(headRef: $head) @include(if: $commits) {
+          commits(first: 100, after: $commitsAfter) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              oid
+              message
+              author { name email }
+              committedDate
+              committer { name email }
+              parents { totalCount }
+            }
+          }
+        }
+        target @include(if: $history) {
+          ... on Commit {
+            history(first: 100, after: $historyAfter, path: $marker) {
+              totalCount
+              pageInfo { hasNextPage endCursor }
+              nodes { oid }
+            }
+          }
+        }
+      }
+      comments(first: 100, after: $commentsAfter) @include(if: $comments) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { fullDatabaseId body authorAssociation author { __typename } }
+      }
+      reviews(first: 100, after: $reviewsAfter) @include(if: $reviews) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { fullDatabaseId body authorAssociation author { __typename } }
+      }
+      reviewThreads(first: 100, after: $threadsAfter) @include(if: $threads) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          comments(first: 20) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes { fullDatabaseId body authorAssociation author { __typename } }
+          }
+        }
+      }
+    }
+  }
+}
+GRAPHQL
+read -r -d '' thread_query << 'GRAPHQL' || true
+query ThreadComments($thread: ID!, $after: String) {
+  node(id: $thread) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $after) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { fullDatabaseId body authorAssociation author { __typename } }
+      }
+    }
+  }
+}
+GRAPHQL
+# graphql <answer> <operation> <variables>: asks GitHub's GraphQL API that operation with those
+# variables (a JSON object) and writes the answer to <answer>, through gh_wait_reset, which waits
+# out a spent GraphQL budget within the job's limit and calls once more, so the request is a file
+# both calls send. An answer that carries any other error, which gh reports by failing, or a budget
+# the helper could not wait for (its own ::error:: line names why), is refused by name.
+graphql() {
+  local answer=$1 operation=$2 variables=$3 query=$pr_query
+  [ "$operation" = PrText ] || query=$thread_query
+  jq -n --arg query "$query" --arg operation "$operation" --argjson variables "$variables" \
+    '{query: $query, operationName: $operation, variables: $variables}' > "$work/request.json"
+  if ! gh_wait_reset --stderr "$work/gh-error" gh api graphql --input "$work/request.json" \
+    > "$answer"; then
+    echo "::error::GitHub's GraphQL API did not answer the $operation read of #$number" \
+      "($(head -n 1 "$work/gh-error")), so its text cannot be checked" >&2
+    exit 1
+  fi
+}
+# is_page: whether a list's answer is a page of it: its nodes, a whole-number total, and whether
+# more follow, with the cursor they follow from when they do.
+page_defs='def is_page: type == "object" and (.nodes | type) == "array"
+  and (.totalCount | type) == "number" and (.totalCount | floor) == .totalCount
+  and (.pageInfo.hasNextPage | type) == "boolean"
+  and (.pageInfo.hasNextPage == false or (.pageInfo.endCursor | type) == "string");'
+# The read so far, $reads: for each list, its nodes, its total, whether more follow and the cursor
+# they follow from, or the page whose answer was no page of it (`broken`), after which it is asked
+# for no more. A round's answer is folded into it for each list the round asked for ($asked).
+# shellcheck disable=SC2016 # $asked, $answer, $list and $page are jq's variables, not the shell's
+fold_round="$page_defs"'
+def fold($list; $page):
+  if ($asked[$list] | not) then .
+  elif ($page | is_page) then
+    .[$list].nodes += $page.nodes | .[$list].total = $page.totalCount
+    | .[$list].pages += 1 | .[$list].more = $page.pageInfo.hasNextPage
+    | .[$list].cursor = $page.pageInfo.endCursor
+  else .[$list].broken = (.[$list].pages + 1) | .[$list].more = false
+  end;
+($answer[0].data.repository.pullRequest // {}) as $pr
+| fold("commits"; $pr.baseRef.compare.commits)
+| fold("history"; $pr.baseRef.target.history)
+| fold("comments"; $pr.comments)
+| fold("reviews"; $pr.reviews)
+| fold("threads"; $pr.reviewThreads)'
 live="$work/live.json"
-gh api "repos/$repository/pulls/$number" > "$live"
-if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
-  echo "::error::the pull request route answered no title and head branch for #$number" >&2
+reads="$work/reads.json"
+echo '{}' > "$reads"
+asked='{"full": true, "commits": true, "history": true, "comments": true, "reviews": true, "threads": true}'
+round=0
+while :; do
+  round=$((round + 1))
+  variables=$(jq -c --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
+    --argjson number "$number" --arg head "$head" --arg marker "$cutoff_file" --argjson asked "$asked" \
+    '$asked + {owner: $owner, repo: $repo, number: $number, head: $head, marker: $marker}
+      + (to_entries | map({key: (.key + "After"), value: .value.cursor}) | from_entries)' "$reads")
+  graphql "$work/answer" PrText "$variables"
+  if [ "$round" -eq 1 ]; then jq '.data.repository.pullRequest // {}' "$work/answer" > "$live"; fi
+  jq --slurpfile answer "$work/answer" --argjson asked "$asked" "$fold_round" "$reads" > "$reads.next"
+  mv "$reads.next" "$reads"
+  asked=$(jq -c '. as $read | {full: false} + ({commits, history, comments, reviews, threads} | map_values(.more == true))
+    | .commits = (.commits and $read.commits.total <= 1000)' "$reads")
+  [ "$(jq '[.[]] | any' <<< "$asked")" = true ] || break
+done
+# whole <list> <name>: refuses, naming <name>, a list GitHub answered no page of or whose pages
+# add up to other than its total.
+whole() {
+  local list=$1 name=$2 broken listed total
+  broken=$(jq -r --arg list "$list" '.[$list].broken // empty' "$reads")
+  if [ -n "$broken" ]; then
+    echo "::error::GitHub's GraphQL API answered no page $broken of the $name, so they cannot all be" \
+      "checked" >&2
+    exit 1
+  fi
+  listed=$(jq --arg list "$list" '.[$list].nodes | length' "$reads")
+  total=$(jq --arg list "$list" '.[$list].total' "$reads")
+  # Compared as text: an integer test inside `if` that cannot parse a number would skip the refusal.
+  if [ "$listed" != "$total" ]; then
+    echo "::error::GitHub's GraphQL API reports $total $name but listed $listed, so not every one" \
+      "can be checked" >&2
+    exit 1
+  fi
+}
+
+if ! jq -e '(.title | type == "string") and (.headRefName | type == "string")' "$live" > /dev/null 2>&1; then
+  echo "::error::GitHub's GraphQL API answered no title and head branch for #$number" >&2
   exit 1
 fi
 jq -r '.title' "$live" | tr -d '\000' > "$text/title"
 jq -r '.body // ""' "$live" | tr -d '\000' > "$text/body"
-jq -r '.head.ref' "$live" | tr -d '\000' > "$text/branch"
+jq -r '.headRefName' "$live" | tr -d '\000' > "$text/branch"
+base_ref=$(jq -r '.baseRefName // "main"' "$live")
 title_status=0
 if ! grep -qE '^[a-z]+(\([^)]+\))?!?: .+' "$text/title"; then
   echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read."
   title_status=1
 fi
 
-# GitHub limits this route to 250 commits for a call with no paging parameter: `?per_page=100` is
-# that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
-# it creates, printing one JSON object per page, each repeating total_commits.
-compare_json="$work/compare.json"
-gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
-total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
-if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
-  echo "::error::the compare route's answer for $base...$head names no whole-number" \
-    "total_commits, so the commit list cannot be checked against it" >&2
+# The commits, as one list of {sha, message, author, committer (with the date in UTC), parents
+# (their count)}: THE READ's comparison, or the compare route's when that comparison is short.
+commits_json="$work/commits.json"
+broken=$(jq -r '.commits.broken // empty' "$reads")
+if [ -n "$broken" ]; then
+  echo "::error::GitHub's GraphQL API answered no page $broken of the commits from $base_ref to $head," \
+    "so they cannot all be checked" >&2
   exit 1
 fi
-listed_commits=$(jq -s '[.[].commits[]] | length' "$compare_json")
-if [ "$listed_commits" -ne "$total_commits" ]; then
-  echo "::error::the compare route reports $total_commits commits from the pull request's base to" \
-    "$head but listed $listed_commits, so not every commit can be checked" >&2
-  exit 1
+compare_read=$(jq -r 'if (.commits.nodes | length) == .commits.total then "whole"
+  else "\(.commits.nodes | length) of its \(.commits.total)" end' "$reads")
+if [ "$compare_read" = whole ]; then
+  jq '[.commits.nodes[] | {sha: .oid, message, author: (.author // {} | {name, email}),
+      committer: ((.committer // {} | {name, email}) + {date: .committedDate}),
+      parents: (.parents.totalCount // 0)}]' \
+    "$reads" > "$commits_json"
+else
+  echo "check-pr-text: GitHub's GraphQL comparison of $base_ref with $head listed $compare_read" \
+    "commits, so the compare route reads them instead"
+  # GitHub limits this route to 250 commits for a call with no paging parameter: `?per_page=100`
+  # is that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every
+  # page it creates, printing one JSON object per page, each repeating total_commits.
+  compare_json="$work/compare.json"
+  gh_wait_reset gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate \
+    > "$compare_json"
+  total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
+  if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
+    echo "::error::the compare route's answer for $base...$head names no whole-number" \
+      "total_commits, so the commit list cannot be checked against it" >&2
+    exit 1
+  fi
+  listed_commits=$(jq -s '[.[].commits[]] | length' "$compare_json")
+  if [ "$listed_commits" -ne "$total_commits" ]; then
+    echo "::error::the compare route reports $total_commits commits from the pull request's base to" \
+      "$head but listed $listed_commits, so not every commit can be checked" >&2
+    exit 1
+  fi
+  jq -s '[.[].commits[] | {sha, message: .commit.message, author: (.commit.author | {name, email}),
+      committer: (.commit.committer | {name, email, date}), parents: (.parents // [] | length)}]' \
+    "$compare_json" > "$commits_json"
 fi
-jq -r '.commits[] | .commit.message, .commit.author.name, .commit.author.email, .commit.committer.name, .commit.committer.email' \
-  "$compare_json" | tr -d '\000' > "$text/commits"
+jq -r '.[] | .message, .author.name, .author.email, .committer.name, .committer.email' "$commits_json" |
+  tr -d '\000' > "$text/commits"
 
 # Who counts: an issue comment, review or review comment is scanned only when an App installed on
 # this repository posted it (it posts as a Bot, which only such an App or github-actions can do;
@@ -120,59 +337,90 @@ jq -r '.commits[] | .commit.message, .commit.author.name, .commit.author.email, 
 # Each skipped item is printed as `skipped <kind>:<id>: its author (<association>) is not
 # trusted`, with no text and no login: a stranger chooses the login, and a login can spell a
 # private name, which nothing here would mask.
-trusted='.user.type == "Bot" or (.author_association // "" | IN("OWNER", "MEMBER", "COLLABORATOR"))'
+trusted='(.author.__typename // "") == "Bot" or (.authorAssociation // "" | IN("OWNER", "MEMBER", "COLLABORATOR"))'
 
-# read_list <kind> <route>: writes the body of every trusted item the list route answers to
-# $text/<kind>/<id>, reading 100 items a page until a page holds fewer. An answer that is not a
-# list, or an item whose id is not a whole number, is refused rather than scanned in part.
-read_list() {
-  local kind=$1 route=$2 page=1 id trust association body
+# write_items <kind> <nodes>: writes the body of every trusted item of <nodes>, a JSON list of
+# THE READ's nodes, to $text/<kind>/<id>, the id GitHub gives it (fullDatabaseId, the REST id). An
+# item whose id is not a whole number is refused rather than scanned in part.
+write_items() {
+  local kind=$1 nodes=$2 id trust association body
   mkdir "$text/$kind"
-  while :; do
-    gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
-    if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
-      echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
-        "checked" >&2
+  jq -r ".[] | [(.fullDatabaseId // \"\" | tostring), ($trusted | tostring),
+      \"\(.authorAssociation // \"<none>\")\",
+      (.body // \"\" | explode | map(select(. != 0)) | implode | @base64)] | @tsv" \
+    "$nodes" > "$work/items"
+  while IFS=$'\t' read -r id trust association body; do
+    if ! [[ $id =~ ^[0-9]+$ ]]; then
+      echo "::error::GitHub's GraphQL API lists a $kind of #$number whose id is not a whole number," \
+        "so it cannot be reported" >&2
       exit 1
     fi
-    jq -r ".[] | [(.id | tojson), ($trusted | tostring),
-        \"\(.author_association // \"<none>\")\",
-        (.body // \"\" | explode | map(select(. != 0)) | implode | @base64)] | @tsv" \
-      "$work/answer" > "$work/items"
-    while IFS=$'\t' read -r id trust association body; do
-      if ! [[ $id =~ ^[0-9]+$ ]]; then
-        echo "::error::page $page of the $route route lists a $kind whose id is not a whole" \
-          "number, so it cannot be reported" >&2
-        exit 1
-      fi
-      if [ "$trust" = true ]; then
-        base64 -d <<< "$body" > "$text/$kind/$id"
-      else
-        echo "skipped $kind:$id: its author ($association) is not trusted"
-      fi
-    done < "$work/items"
-    if [ "$(wc -l < "$work/items")" -lt 100 ]; then break; fi
-    page=$((page + 1))
-  done
+    if [ "$trust" = true ]; then
+      base64 -d <<< "$body" > "$text/$kind/$id"
+    else
+      echo "skipped $kind:$id: its author ($association) is not trusted"
+    fi
+  done < "$work/items"
 }
-# Each kind a hit is reported under, beside its route; the reads, the scan and the report below
-# all take the kinds from here.
+whole comments "issue comments of #$number"
+whole reviews "reviews of #$number"
+whole threads "review threads of #$number"
+jq '.comments.nodes' "$reads" > "$work/comment-nodes"
+jq '.reviews.nodes' "$reads" > "$work/review-nodes"
+# Each review thread's comments: the first 100 came with its page of threads, and the rest are
+# read 100 at a time by the thread's id. They are listed in the order of their ids, as GitHub's
+# REST list of a pull request's review comments gives them.
+if ! jq -e "$page_defs"' all(.threads.nodes[]; (.comments | is_page) and (.id | type) == "string" and .id != "")' \
+  "$reads" > /dev/null; then
+  echo "::error::GitHub's GraphQL API answered a review thread of #$number with no page of its" \
+    "comments, so they cannot all be checked" >&2
+  exit 1
+fi
+jq -c '.threads.nodes[].comments.nodes[]' "$reads" > "$work/review-comment-nodes"
+jq -r '.threads.nodes | to_entries[] | .key as $i | .value.id as $id | .value.comments
+  | select(.pageInfo.hasNextPage or (.nodes | length) != .totalCount)
+  | [$i + 1, $id, (.nodes | length), .totalCount, .pageInfo.hasNextPage, (.pageInfo.endCursor // "")]
+  | @tsv' "$reads" > "$work/long-threads"
+while IFS=$'\t' read -r thread thread_id listed total more cursor; do
+  while [ "$more" = true ]; do
+    graphql "$work/answer" ThreadComments \
+      "$(jq -nc --arg thread "$thread_id" --arg after "$cursor" '{thread: $thread, after: $after}')"
+    if ! jq -e "$page_defs"' .data.node.comments | is_page' "$work/answer" > /dev/null; then
+      echo "::error::GitHub's GraphQL API answered no page of the comments of review thread $thread of" \
+        "#$number past its first $listed, so they cannot all be checked" >&2
+      exit 1
+    fi
+    jq -c '.data.node.comments.nodes[]' "$work/answer" >> "$work/review-comment-nodes"
+    IFS=$'\t' read -r listed total more cursor < <(jq -r --argjson listed "$listed" '.data.node.comments
+      | [$listed + (.nodes | length), .totalCount, .pageInfo.hasNextPage, (.pageInfo.endCursor // "")]
+      | @tsv' "$work/answer")
+  done
+  if [ "$listed" != "$total" ]; then
+    echo "::error::GitHub's GraphQL API reports $total comments in review thread $thread of #$number" \
+      "but listed $listed, so not every one can be checked" >&2
+    exit 1
+  fi
+done < "$work/long-threads"
+jq -s 'sort_by(.fullDatabaseId // "" | tostring | [length, .])' "$work/review-comment-nodes" \
+  > "$work/review-comment-nodes.json"
+# Each kind a hit is reported under, beside its nodes; the scan and the report below take the
+# kinds from here.
 lists=(
-  comment "issues/$number/comments"
-  review "pulls/$number/reviews"
-  review-comment "pulls/$number/comments"
+  comment "$work/comment-nodes"
+  review "$work/review-nodes"
+  review-comment "$work/review-comment-nodes.json"
 )
 kinds=()
 for ((i = 0; i < ${#lists[@]}; i += 2)); do
   kinds+=("${lists[i]}")
-  read_list "${lists[i]}" "${lists[i + 1]}"
+  write_items "${lists[i]}" "${lists[i + 1]}"
 done
 
 # The guard scans these by their absolute names; the log names each by the part after the
 # temporary directory, and an item as <kind>:<id>.
 kind_pattern="($(IFS='|'; echo "${kinds[*]}"))"
 status=0
-"$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
+PRIVATE_NAME_BARE_HOSTS=yes "$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
   "${kinds[@]/#/$text/}" 2>&1 | sed -E -e "s|$text/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
   > "$work/report" || status=$?
 cat "$work/report"
@@ -187,11 +435,11 @@ if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/repo
   echo "    Never re-run an older run: it checks the commits of the head its own event named, and"
   echo "    its check lands on that head, not the current one."
 fi
-# THE ISSUE-KEY RULE (check-private-names.sh's rules 6 and 7: an issue key of the deployment's own
-# projects, and a Dispatch link), over new text only. Its cutoff is derived, never typed: the
-# commit that added .github/issue-key-cutoff to the base branch is the one that told every worker
-# to keep keys and links out of this repository's text (skills/legion-worker/references/
-# pr-body.md), and the cutoff is the publish time of the earliest legion-v* release whose commit
+# THE ISSUE-KEY RULE (check-private-names.sh's rule 6: an issue key of the deployment's own
+# projects), over new text only. Its cutoff is derived, never typed: the commit that added
+# .github/issue-key-cutoff to the base branch is the one that told every worker to keep keys out
+# of this repository's text (skills/legion-worker/references/pr-body.md), and the cutoff is the
+# publish time of the earliest legion-v* release whose commit
 # contains it, found at a cost that does not grow with the releases (below). No such commit, or no
 # such release yet, and the rule is inactive; a history or a release GitHub does not answer is
 # UNKNOWN, and refused. Once active, a
@@ -206,9 +454,9 @@ fi
 # pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
 # opened after the cutoff that holds a forward merge is read whole, those older lines included.
 # That exception errs toward reading more, and each of those lines lands on main as new text
-# anyway. A key or a link that the new commits also remove is carried over, not new: a line edited
-# around a link it already held (whatever punctuation now follows it), a file moved with its keys,
-# or a line one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
+# anyway. A key that the new commits also remove is carried over, not new: a line edited around a
+# key it already held (whatever punctuation now follows it), a file moved with its keys, or a line
+# one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
 # GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
 # leaves out for a large file, or a list short of the diff's totals) is read from git instead, and
 # only a diff neither holds whole is UNKNOWN, and refused. The branch name is not read by this
@@ -217,11 +465,8 @@ fi
 # names an issue's branch after its key today, and the change that names branches another way adds
 # the branch to this rule.
 key_status=0
-cutoff_file=.github/issue-key-cutoff
-base_ref=$(jq -r '.base.ref // "main"' "$live")
-gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
-  > "$work/cutoff-commits"
-skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
+whole history "commits on $base_ref that touch $cutoff_file"
+skill_commit=$(jq -r '.history.nodes | last | .oid // empty' "$reads")
 cutoff=''
 if [ -z "$skill_commit" ]; then
   echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
@@ -267,7 +512,8 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
+      if ! gh_wait_reset --stderr "$work/gh-error" \
+        gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
         if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
@@ -293,7 +539,7 @@ else
     fi
   fi
 fi
-opened=$(jq -r '.created_at // empty' "$live")
+opened=$(jq -r '.createdAt // empty' "$live")
 if [ -n "$cutoff" ] && [ -n "$opened" ] && [[ $opened < $cutoff ]]; then
   echo "check-pr-text: #$number was opened at $opened, before the issue-key rule's cutoff, so it" \
     "is not read for issue keys"
@@ -310,42 +556,28 @@ elif [ -n "$cutoff" ]; then
   # <stage>/count. GitHub's REST answer is read first. Where it does not hold the whole diff, git
   # reads the same diff from the pull request's head, which it never truncates. Then carry.awk
   # (written below) writes each entry's added lines at their line numbers in the new file, every
-  # other line empty, with each issue-key-shaped word or Dispatch link that a removed line also
-  # holds blanked as <carried>: one removed occurrence carries one added one. The pool is every new
-  # commit's removed lines together, across their files and commits, so a key moved, a line
-  # re-worded around its link, or a line one commit removes and a later one puts back (as `jj split`
-  # divides a move) is not new text, and a second copy of it is; the net diff, read for a merge, is
-  # its own pool. A link's token ends before a sentence's trailing `.`, `,`, `;` or `:`, so changing
-  # the punctuation after it adds nothing. carry.awk runs under LC_ALL=C, so it reads bytes and
-  # folds the case of ASCII letters alone, as its words and its link scheme are defined: in a UTF-8
-  # locale gawk's tolower folds a dotted capital I to an i, where rule 7's grep -i does not.
-  link_scheme='dispatch'':''//'
+  # other line empty, with each issue-key-shaped word that a removed line also holds blanked as
+  # <carried>: one removed occurrence carries one added one. The pool is every new commit's removed
+  # lines together, across their files and commits, so a key moved, a line re-worded around its
+  # key, or a line one commit removes and a later one puts back (as `jj split` divides a move) is
+  # not new text, and a second copy of it is; the net diff, read for a merge, is its own pool.
+  # carry.awk runs under LC_ALL=C, so it reads bytes, as its words are defined.
   : > "$work/git-error"
   cat > "$work/carry.awk" <<'AWK'
-# scan <line> <collect>: in collect mode, counts each key-shaped word and link of the line as one
-# the diff removes; else the line with each one a removed occurrence carries blanked, and the
-# count of those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and
-# digits, with an ASCII character that is no letter or digit (or the line's edge) on either side.
+# scan <line> <collect>: in collect mode, counts each key-shaped word of the line as one the diff
+# removes; else the line with each one a removed occurrence carries blanked, and the count of
+# those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and digits, with
+# an ASCII character that is no letter or digit (or the line's edge) on either side, so a key in a
+# Dispatch link is one too.
 # Every other character, a non-ASCII letter or mark among them, counts as a letter, so this finds
 # a word only where the sixth rule's locale-aware [^[:alnum:]] boundary finds a key too: a removed
 # word that rule would not read as a key never carries an added one it would. The cost runs the
 # safe way: a key beside non-ASCII punctuation (a curly quote, a no-break space) is no word here,
-# so it is never carried and rule 6 reads it as new. A link is the scheme, in ASCII letters of any
-# case, and what follows it up to a blank, a quote or a bracket, less any `.`, `,`, `;` or `:` that
-# ends it, which stays in the line as written.
-function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
-  out = ""; n = length(line); i = 1; sl = length(scheme)
+# so it is never carried and rule 6 reads it as new.
+function scan(line, collect,    out, i, n, c, prev, j, k, tok) {
+  out = ""; n = length(line); i = 1
   while (i <= n) {
     c = substr(line, i, 1)
-    if (tolower(substr(line, i, sl)) == scheme) {
-      j = i + sl
-      while (j <= n && index(stops, substr(line, j, 1)) == 0) j++
-      while (j > i + sl && index(".,;:", substr(line, j - 1, 1)) > 0) j--
-      tok = scheme substr(line, i + sl, j - i - sl)
-      if (take(tok, collect)) out = out "<carried>"; else out = out substr(line, i, j - i)
-      i = j
-      continue
-    }
     prev = (i == 1) ? "" : substr(line, i - 1, 1)
     if (index(upper, c) > 0 && (prev == "" || index(apart, prev) > 0)) {
       j = i
@@ -373,7 +605,6 @@ function take(tok, collect) {
   return 0
 }
 BEGIN {
-  stops = " \t\r\"<>()[]`" sprintf("%c", 39)
   upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; digits = "0123456789"
   # apart: the ASCII characters that are no letter or digit, the one set that bounds a word.
   apart = ""
@@ -543,7 +774,7 @@ AWK
   carry_stages() {
     local stage
     for stage in "$@"; do printf '%s\t%s\n' "$stage" "$(< "$stage/count")"; done > "$work/stages"
-    LC_ALL=C awk -v stages="$work/stages" -v scheme="$link_scheme" -f "$work/carry.awk"
+    LC_ALL=C awk -v stages="$work/stages" -f "$work/carry.awk"
   }
   # place_stage <stage> <part>: each staged entry's added lines under <part>/<path>: in $keyed when
   # the path is new text (an added file, or a renamed or copied one whose path holds a word its old
@@ -560,7 +791,7 @@ AWK
       case $file_status in
         added) dest="$keyed/$part/$name" ;;
         renamed | copied)
-          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
+          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -f "$work/carry.awk")" = carried ]; then
             dest="$lines_only/$part/$name"
           else
             dest="$keyed/$part/$name"
@@ -572,8 +803,8 @@ AWK
       mv "$stage/$i.added" "$dest"
     done
   }
-  jq -r --arg cutoff "$cutoff" '.commits[] | select(.commit.committer.date >= $cutoff) | .sha' \
-    "$compare_json" > "$work/new-commits"
+  jq -r --arg cutoff "$cutoff" '.[] | select(.committer.date >= $cutoff) | .sha' \
+    "$commits_json" > "$work/new-commits"
   merges=0
   # A merge commit's message is read with the pull request's own branch and its base branch each
   # written <head branch> and <base branch>: the daemon names an issue's branch after its key, and
@@ -587,12 +818,12 @@ AWK
   # legion/<KEY>-12) keeps its key, and rule 6 reads it. The boundary characters are captured and
   # put back, since jq builds differ on look-around; each replace runs twice, for two refs one
   # character apart, whose shared boundary one pass consumes.
-  head_ref=$(jq -r '.head.ref // ""' "$live")
+  head_ref=$(jq -r '.headRefName // ""' "$live")
   commit_stages=()
   commit_parts=()
   while IFS= read -r sha; do
     short=${sha:0:12}
-    parents=$(jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .parents // [] | length' "$compare_json")
+    parents=$(jq -r --arg sha "$sha" '.[] | select(.sha == $sha) | .parents' "$commits_json")
     merge=false
     if [ "$parents" -gt 1 ]; then merge=true; fi
     jq -r --arg sha "$sha" --arg head "$head_ref" --arg base "$base_ref" --argjson merge "$merge" '
@@ -601,16 +832,17 @@ AWK
           if $ref == "" then .
           else ("(?<pre>^|[^A-Za-z0-9_.-])" + ($ref | literal) + "(?<post>[^A-Za-z0-9_./-]|$)") as $re
             | gsub($re; "\(.pre)\($as)\(.post)") | gsub($re; "\(.pre)\($as)\(.post)") end;
-        .commits[] | select(.sha == $sha) | .commit.message
+        .[] | select(.sha == $sha) | .message
         | if $merge then unbranch($head; "<head branch>") | unbranch($base; "<base branch>") else . end' \
-      "$compare_json" | tr -d '\000' > "$keyed/commit/$short"
+      "$commits_json" | tr -d '\000' > "$keyed/commit/$short"
     if [ "$merge" = true ]; then
       merges=$((merges + 1))
       continue
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    gh_wait_reset gh api "repos/$repository/commits/$sha?per_page=100" --paginate \
+      > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -642,11 +874,12 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    gh_wait_reset gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate \
+      > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")
-    want_files=$(jq '.changed_files // -1' "$live")
+    want_files=$(jq '.changedFiles // -1' "$live")
     want_lines=$(jq '(.additions // -1) + (.deletions // 0)' "$live")
     reason=''
     if [ "$files" -ne "$want_files" ] || [ "$listed" -ne "$want_lines" ]; then
@@ -670,7 +903,7 @@ AWK
       place_stage "$stage" net
     fi
   fi
-  # Two runs of rules 6 and 7: one over the title, body, items, commit messages and the files the
+  # Two runs of rule 6: one over the title, body, items, commit messages and the files the
   # new commits (or the net diff) add, or rename to a path with a word its old path lacks, whose
   # paths are new text too; one over the lines they add to files they only change, whose paths are
   # not.

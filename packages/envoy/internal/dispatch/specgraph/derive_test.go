@@ -1,7 +1,9 @@
 package specgraph
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -18,7 +20,7 @@ import (
 // turns a state toward true or hides a failure (R7: "A pass and a failure on one such subject and one
 // procedure make the state unknown", "a later failure cancels an earlier pass"), and so do an
 // approved node under another key than its id, which Current leaves out, and a subject that is no
-// subject of R10, so Derive and CheckStates give an error and no state, in the words that the
+// subject of R10, so Derive and deriveChecks give an error and no state, in the words that the
 // scenario reader refuses the same input with.
 // Each row: the case of TestCheckState, at c1, the head of branch b, with the row's checks added,
 // its setup, and its change of the Input. The three rows that name a test of their own are that
@@ -55,39 +57,32 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: result 1: it sets no job, and only the reports of the job of its check count"},
 		{name: "a run of a check of production with no deploy", add: []Check{checkStateProduction}, change: func(in *Input) {
 			in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun,
-				Outcome: OutcomeFail, Leg: new(""), At: checkStateRun, Seq: 3})
+				Outcome: OutcomeFail, Leg: "", At: checkStateRun, Seq: 3})
 		}, want: "specgraph: result 3: it sets no deploy, the subject that a check of production reads"},
 		{name: "a run of a check of the graph with no graph_tx", add: []Check{checkStateGraph}, change: func(in *Input) {
 			in.Results = append(in.Results, Result{Check: checkStateGraph.ID, CheckDigest: checkStateGraph.Digest(), Kind: ResultRun,
-				Outcome: OutcomeFail, Deploy: "d1", Leg: new(""), At: checkStateRun, Seq: 3})
+				Outcome: OutcomeFail, Deploy: "d1", Leg: "", At: checkStateRun, Seq: 3})
 		}, want: "specgraph: result 3: it sets no graph_tx, the subject that a check of the graph reads"},
 		{name: "control: a failing example of a query of production names no subject", add: []Check{checkStateProduction}, change: func(in *Input) {
 			in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultFailingExample,
-				Outcome: OutcomeFail, Leg: new(""), At: checkStateRun, Seq: 3})
+				Outcome: OutcomeFail, Leg: "", At: checkStateRun, Seq: 3})
 		}},
 		{name: "a run of a program check of production with no test_commit", add: []Check{checkStateProductionProgram}, change: func(in *Input) {
 			q := checkStateProductionProgram
 			in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
-				Deploy: "d1", Job: q.Test.Job, Leg: new(""), At: checkStateRun, Seq: 3})
+				Deploy: "d1", Job: q.Test.Job, Leg: "", At: checkStateRun, Seq: 3})
 		}, want: "specgraph: result 3: it sets no test_commit, the commit of the test that ran"},
 		{name: "a failing example of a program check of production with no test_commit", add: []Check{checkStateProductionProgram}, change: func(in *Input) {
 			q := checkStateProductionProgram
 			in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultFailingExample, Outcome: OutcomePass,
-				Leg: new(""), At: checkStateRun, Seq: 3, FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+				Leg: "", At: checkStateRun, Seq: 3, FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 		}, want: "specgraph: result 3: it sets no test_commit, the commit of the test that ran"},
 		{name: "TestCheckState, item 19: the failing example of a program check of production names no commit of its test",
 			setup: func(s *checkCase) { s.productionProgram("docs/x.md", "") },
 			want:  "specgraph: result 4: it sets no test_commit, the commit of the test that ran"},
 		{name: "TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt: production, the pass names no commit of its test",
 			setup: func(s *checkCase) {
-				q := checkStateProductionProgram
-				s.add(q)
-				s.tieLikeC(q.ID)
-				s.commit("c2", "c1", "docs/x.md")
-				s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-				s.Results = append(s.Results, Result{Check: q.ID, Kind: ResultRun, Outcome: OutcomePass, Deploy: "d2", Job: q.Test.Job, At: checkStateRun.Add(time.Hour)},
-					Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
-						At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+				s.programPass(checkStateProductionProgram, "", "c2")
 				s.remove(checkStateCheck.ID)
 			}, want: "specgraph: result 3: it sets no test_commit, the commit of the test that ran"},
 		{name: "TestAGraphCheckReadsTheTransactionOfTheSubject: a pass that names no transaction, at a deploy that names none",
@@ -132,6 +127,30 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.Approved.Nodes["x-"+checkStateCheck.ID] = in.Approved.Nodes[checkStateCheck.ID]
 			delete(in.Approved.Nodes, checkStateCheck.ID)
 		}, want: `specgraph: approved spec: node "a-restart-loses-no-message" is under the id "x-a-restart-loses-no-message"`},
+		// R22: "Dispatch refuses the approval of a change request that puts a statement under a parent
+		// that the approved spec does not hold." The derivation reads a relation only to a node of its
+		// kind, so the entry refuses, as the reader does, a relation of an approved block that names no
+		// node of the approved spec of its kind (approvedFault), and a check whose block leaves out
+		// serves, which names no statement (R6).
+		{name: "an approved parent that names no node", change: func(in *Input) {
+			approveText(in, func(s *Statement) { s.Parent = "no-such-statement" })
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
+		{name: "an approved parent that names a check", change: func(in *Input) {
+			approveText(in, func(s *Statement) { s.Parent = checkStateCheck.ID })
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-loses-no-message" names a check, not a statement (line 1 of its document)`},
+		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
+		// change that makes one."
+		{name: "a loop of parents in the approved spec", change: func(in *Input) {
+			top := checkStateTop
+			top.Parent = checkStateLeaf.ID
+			block, err := top.Print()
+			if err != nil {
+				panic(err)
+			}
+			n := in.Approved.Nodes[top.ID]
+			n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Document: block}}
+			in.Approved.Nodes[top.ID] = n
+		}, want: "specgraph: approved spec: loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[parent]-> a-stored-message-survives-a-restart"},
 		{name: "an approved node with no id", change: func(in *Input) {
 			n := in.Approved.Nodes[checkStateCheck.ID]
 			n.ID = ""
@@ -168,14 +187,18 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
-		// A tree with no path, or a content label with no character, would read as a tree, or a
-		// content, that other commits share, so a result would carry between them (R8).
+		// A tree with no path, or a content label of no letter and no digit, would read as a tree, or
+		// a content, that other commits share, so a failing example would count across them
+		// (deriveChecks, step 7), and a label changed to " " as a change of a file that a tie covers.
 		{name: "a commit of the history whose tree holds no path", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{}}}}
 		}, want: `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
 		{name: "a content label of the history that is empty", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": ""}}}}
-		}, want: `specgraph: history: commit "c1": the content label of "go.work" is empty, and a label has at least one character`},
+		}, want: `specgraph: history: commit "c1": the content label of "go.work" has no letter and no digit, so it names no content`},
+		{name: "a content label of the history of no letter and no digit", change: func(in *Input) {
+			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": " "}}}}
+		}, want: `specgraph: history: commit "c1": the content label of "go.work" has no letter and no digit, so it names no content`},
 		// A nil value of each type that implements History, a type of the package or of the caller,
 		// would panic where a result carries, and an Input with no history gives a FixtureHistory of
 		// no commit, with which no result carries.
@@ -216,16 +239,16 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: `specgraph: ties: commit " ": a commit of no letter and no digit names no commit`},
 		{name: "a check of Ties of no letter and no digit", change: func(in *Input) { in.Ties = CommitTies{"c1": {"": in.Ties["c1"][checkStateCheck.ID]}} },
 			want: `specgraph: ties: commit "c1": check "": a check of no letter and no digit names no check`},
-		{name: "a job run with no job", change: func(in *Input) { in.JobRuns = []JobRun{{Leg: new(""), Commit: "c1", Ended: new(true)}} },
+		{name: "a job run with no job", change: func(in *Input) { in.JobRuns = []JobRun{{Leg: "", Commit: "c1", Ended: true}} },
 			want: "specgraph: job run 1: it sets no job"},
-		{name: "a job run with no commit", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Ended: new(true)}} },
+		{name: "a job run with no commit", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Ended: true}} },
 			want: "specgraph: job run 1: it sets no commit"},
-		// The runs and the checks that CI refused only lower a state: a run of a leg that ended with
-		// no result reads unknown (R9), and so does a check that CI refused (R48). A caller that gives
-		// none of them would read as one in whose history no job ran and CI refused no check, so it
-		// gives each, empty for none. A run that has not ended is a run of its job too.
+		// The runs and the checks that CI refused never move a state toward true: a run of a leg that
+		// ended with no result reads unknown (R9), and so does a check that CI refused (R48). A caller
+		// that gives none of them would read as one in whose history no job ran and CI refused no
+		// check, so it gives each, empty for none. A run that has not ended is a run of its job too.
 		{name: "control: a job run that has not ended", change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(false)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: false}}
 		}},
 		// R13: a query "reads the graph at one transaction", and the runner knows the one that it
 		// tried to read, the subject's: a run that could not run names it too.
@@ -265,73 +288,159 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: result 1: it sets a job of no letter and no digit, which names no job"},
 		{name: "a failing example whose commit names nothing", change: func(in *Input) { in.Results[1].Commit = " " },
 			want: "specgraph: result 2: it sets a commit of no letter and no digit, which names no commit"},
-		{name: "a run whose leg names nothing", change: func(in *Input) { in.Results[0].Leg = new(" ") },
+		{name: "a failing example whose planted_on names nothing", change: func(in *Input) { in.Results[1].PlantedOn = " " },
+			want: "specgraph: result 2: it sets a planted_on of no letter and no digit, which names no commit"},
+		{name: "a failing example whose fault path is no repository path", change: func(in *Input) { in.Results[1].FaultPaths = []string{"packages//envoy/main.go"} },
+			want: `specgraph: result 2: it sets the fault path "packages//envoy/main.go", which is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
+		{name: "a run whose leg names nothing", change: func(in *Input) { in.Results[0].Leg = " " },
 			want: "specgraph: result 1: it sets a leg of no letter and no digit, which names no leg"},
 		{name: "a run of a check of production whose deploy names nothing", add: []Check{checkStateProduction}, change: func(in *Input) {
 			in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun,
-				Outcome: OutcomeFail, Deploy: " ", Leg: new(""), At: checkStateRun, Seq: 3})
+				Outcome: OutcomeFail, Deploy: " ", Leg: "", At: checkStateRun, Seq: 3})
 		}, want: "specgraph: result 3: it sets a deploy of no letter and no digit, which names no deploy"},
 		{name: "a run of a program check of production whose test_commit names nothing", add: []Check{checkStateProductionProgram}, change: func(in *Input) {
 			q := checkStateProductionProgram
 			in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
-				Deploy: "d1", Job: q.Test.Job, Leg: new(""), TestCommit: " ", At: checkStateRun, Seq: 3})
+				Deploy: "d1", Job: q.Test.Job, Leg: "", TestCommit: " ", At: checkStateRun, Seq: 3})
 		}, want: "specgraph: result 3: it sets a test_commit of no letter and no digit, which names no commit"},
-		{name: "a job run whose job names nothing", change: func(in *Input) { in.JobRuns = []JobRun{{Job: " ", Leg: new(""), Commit: "c1", Ended: new(true)}} },
+		{name: "a job run whose job names nothing", change: func(in *Input) { in.JobRuns = []JobRun{{Job: " ", Leg: "", Commit: "c1", Ended: true}} },
 			want: "specgraph: job run 1: it sets a job of no letter and no digit, which names no job"},
 		{name: "a job run whose leg names nothing", change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(" "), Commit: "c1", Ended: new(true)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: " ", Commit: "c1", Ended: true}}
 		},
 			want: "specgraph: job run 1: it sets a leg of no letter and no digit, which names no leg"},
 		{name: "a job run whose commit names nothing", change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: " ", Ended: new(true)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: " ", Ended: true}}
 		},
 			want: "specgraph: job run 1: it sets a commit of no letter and no digit, which names no commit"},
 		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
 		// another." "" is the leg of no matrix, and one job at one commit has legs or it has none: its
 		// runs and its run results there in both forms say two things that cannot both be true, and an
-		// older run result of the leg "" would answer a run of no matrix where the job had legs, at a
-		// commit where the results of that commit count (TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs).
-		// A state reads no leg of a failing example, and the runs of one job at two commits can differ.
+		// older run result of the leg "" would answer a run of no matrix where the job had legs, at
+		// the commit of that result. A state reads no leg of a failing example, and the runs of one job
+		// at two commits can differ.
 		{name: `job runs of one job at one commit in the leg "" and in a named leg`, change: func(in *Input) {
-			in.Results[0].Leg = new("linux")
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+			in.Results[0].Leg = "linux"
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "", Commit: "c1", Ended: true}}
 		}, want: `specgraph: job run 2: it sets the leg "", and job run 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `job runs of one job at one commit in a named leg and in the leg ""`, change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(false)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "arm", Commit: "c1", Ended: false}}
 		}, want: `specgraph: job run 2: it sets the leg "arm", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `a run result in the leg "" where the runs of its job at its commit name legs`, change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}}
 		}, want: `specgraph: result 1: it sets the leg "", and job run 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `a run result in a named leg where the runs of its job at its commit are of the leg ""`, change: func(in *Input) {
-			in.Results[0].Leg = new("linux")
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+			in.Results[0].Leg = "linux"
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}}
 		}, want: `specgraph: result 1: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{name: `control: a failing example in the leg "" where the runs of its job at its commit name legs`, change: func(in *Input) {
-			in.Results[0].Leg = new("linux")
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}}
+			in.Results[0].Leg = "linux"
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}}
 		}},
 		{name: `control: runs of one job in the leg "" at c1 and in a named leg at c2`, change: func(in *Input) {
-			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("linux"), Commit: "c2", Ended: new(true)}}
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "linux", Commit: "c2", Ended: true}}
 		}},
 		{name: `run results of one job at a commit with no run of it, in a named leg and in the leg ""`, change: func(in *Input) {
-			in.Results[0].Leg = new("linux")
+			in.Results[0].Leg = "linux"
 			none := in.Results[0]
-			none.Leg, none.Seq = new(""), 3
+			none.Leg, none.Seq = "", 3
 			in.Results = append(in.Results, none)
 		}, want: `specgraph: result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		// The commit of a run result is decided by the text of its check that ran it
+		// (countsAtACommit): a run result of a program check of production or of the graph is a record
+		// of its job at its test_commit, where its test ran, one of an agent or a query of the code is
+		// a record of its job at its commit, as one of a program check of the code is, and one of a
+		// query or an agent of production or of the graph is a record of its job at no commit,
+		// whatever test_commit it names, since such a check reads no commit and no state reads a leg
+		// of it. Of a result whose text the entry does not hold, it reads the commit that the result
+		// names and no test_commit, since that text alone could make the test_commit the commit where
+		// its job ran.
+		{name: `a run result of a program check of production in a named leg where the runs of its job at its test_commit are of the leg ""`,
+			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
+				q := checkStateProductionProgram
+				in.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: q.Test.Job, Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "production-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of a program check of the graph in a named leg where the runs of its job at its test_commit are of the leg ""`,
+			add: []Check{checkStateGraphProgram}, change: func(in *Input) {
+				g := checkStateGraphProgram
+				in.JobRuns = []JobRun{{Job: g.Test.Job, Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: g.ID, CheckDigest: g.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: g.Test.Job, Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "graph-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of an agent of the code in a named leg where the runs of its job at its commit are of the leg ""`,
+			add: []Check{checkStateCodeAgent}, change: func(in *Input) {
+				a := checkStateCodeAgent
+				in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Commit: "c1", Job: "go-checks", Leg: "linux", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `a run result of a query of the code in a named leg where the runs of its job at its commit are of the leg ""`,
+			add: []Check{checkStateCodeQuery}, change: func(in *Input) {
+				q := checkStateCodeQuery
+				in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Commit: "c1", Job: "go-checks", Leg: "linux", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `control: a run result of a query of production that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateProduction}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: the same run result of a query of production with no test_commit`,
+			add: []Check{checkStateProduction}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: "linux", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: a run result of an agent of production that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateProductionAgent}, change: func(in *Input) {
+				a := checkStateProductionAgent
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: a run result of a query of the graph that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateGraph}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: checkStateGraph.ID, CheckDigest: checkStateGraph.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: "production-checks", Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: a run result of an agent of the graph that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateGraphAgent}, change: func(in *Input) {
+				a := checkStateGraphAgent
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: "", Commit: "c1", Ended: true}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: "production-checks", Leg: "linux", TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: run results of an older text of a program check of production at one test_commit, in the leg "" and in a named leg`,
+			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
+				q := checkStateProductionProgram
+				for i, leg := range []string{"", "linux"} {
+					in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
+						Deploy: "d1", Job: q.Test.Job, Leg: leg, TestCommit: "c1", At: checkStateRun, Seq: int64(3 + i)})
+				}
+			}},
+		{name: `a run result of an older text of a check of the code in a named leg where the runs of its job at its commit are of the leg ""`, change: func(in *Input) {
+			in.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: "c1", Ended: true}}
+			in.Results = append(in.Results, Result{Check: checkStateCheck.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
+				Commit: "c1", Job: "go-checks", Leg: "linux", At: checkStateRun, Seq: 3})
+		}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		// A run result that names no job, or no commit of its job's run, is a record of no job at one
 		// commit: the rule reads none of them. Each is of an older text, so no rule of its text asks a
 		// job or a commit of it.
 		{name: `control: run results of no job at one commit, in the leg "" and in a named leg`, change: func(in *Input) {
 			for i, leg := range []string{"", "linux"} {
 				in.Results = append(in.Results, Result{Check: checkStateCheck.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
-					Commit: "c1", Leg: new(leg), At: checkStateRun, Seq: int64(3 + i)})
+					Commit: "c1", Leg: leg, At: checkStateRun, Seq: int64(3 + i)})
 			}
 		}},
 		{name: `control: run results of one job at no commit, in the leg "" and in a named leg`, change: func(in *Input) {
 			for i, leg := range []string{"", "linux"} {
 				in.Results = append(in.Results, Result{Check: checkStateCheck.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
-					Job: "go-checks", Leg: new(leg), At: checkStateRun, Seq: int64(3 + i)})
+					Job: "go-checks", Leg: leg, At: checkStateRun, Seq: int64(3 + i)})
 			}
 		}},
 		{name: "a commit of the history whose id names nothing", change: func(in *Input) {
@@ -340,27 +449,21 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history whose parent names nothing", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Parent: " ", Files: map[string]string{"go.work": "1"}}}}
 		}, want: `specgraph: history: commit "c1": it sets a parent of no letter and no digit, which names no commit`},
-		// A member marked present that a caller does not set is refused, as a file that leaves it out
-		// is, since its zero value is a value: "" is the leg of no matrix, false a run that has not
-		// ended, a node that the approved spec keeps, and a statement whose checks decide all of it.
-		{name: "a result that does not set its leg", change: func(in *Input) { in.Results[0].Leg = nil },
-			want: `specgraph: result 1: it sets no leg; a result of no matrix sets ""`},
-		{name: "a job run that does not set its leg", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Commit: "c1", Ended: new(true)}} },
-			want: `specgraph: job run 1: it sets no leg; a run of no matrix sets ""`},
-		{name: "a job run that does not set ended", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1"}} },
-			want: "specgraph: job run 1: it sets no ended; a run that has not ended sets false"},
-		{name: "an approved node that does not set removed", change: func(in *Input) {
-			n := in.Approved.Nodes[checkStateCheck.ID]
-			n.Removed = nil
-			in.Approved.Nodes[checkStateCheck.ID] = n
-		}, want: `specgraph: approved node "a-restart-loses-no-message": it sets no removed; a node that the approved spec keeps sets false`},
-		{name: "an approved node that does not set partly_checked", change: func(in *Input) {
-			n := in.Approved.Nodes[checkStateLeaf.ID]
-			n.PartlyChecked = nil
-			in.Approved.Nodes[checkStateLeaf.ID] = n
-		}, want: `specgraph: approved node "a-stored-message-survives-a-restart": it sets no partly_checked; a statement whose checks decide all of it sets false`},
+		// A member whose zero is a value is a plain value, and a caller that leaves it zero gives that
+		// value, which the entry takes: "" is the leg of no matrix, false a run that has not ended, a
+		// node that the approved spec keeps, and a statement whose checks decide all of it. The run of
+		// the case is of the leg "" (checkRun). A file that leaves one of them out is refused by its
+		// reader (TestScenarioRefusals, TestAnApprovedNodeSetsRemovedAndPartlyChecked).
+		{name: `control: a job run that sets no leg and no ended, a run of no matrix that has not ended`, change: func(in *Input) {
+			in.JobRuns = []JobRun{{Job: "go-checks", Commit: "c1"}}
+		}},
+		{name: "control: each approved node built with no removed and no partly_checked, kept and decided by all of its checks", change: func(in *Input) {
+			for id, n := range in.Approved.Nodes {
+				in.Approved.Nodes[id] = ApprovedNode{ID: n.ID, Versions: n.Versions}
+			}
+		}},
 		// M1: a path of a tree of the history is a repository path, by the rule of NewTie
-		// (isRepoPath): no tie covers "./go.work", so a change there would carry a result (R8).
+		// (isRepoPath): no tie covers "./go.work", so a failing example would count across a change there.
 		{name: "a path of the history that starts with ./", change: func(in *Input) { in.History = historyWithPath("./go.work") },
 			want: `specgraph: history: commit "c1": the path "./go.work" is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
 		{name: "a path of the history that starts with /", change: func(in *Input) { in.History = historyWithPath("/go.work") },
@@ -389,10 +492,10 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				row.change(&in)
 			}
 			state, err := Derive(in)
-			checks, checksErr := CheckStates(in)
+			_, checks, checksErr := deriveChecks(in)
 			if row.want == "" {
 				if err != nil || checksErr != nil || len(state.Statements) == 0 || len(checks) == 0 {
-					t.Fatalf("Derive: %d statements, error %v; CheckStates: %d checks, error %v; want states and no error",
+					t.Fatalf("Derive: %d statements, error %v; deriveChecks: %d checks, error %v; want states and no error",
 						len(state.Statements), err, len(checks), checksErr)
 				}
 				return
@@ -401,10 +504,204 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				t.Errorf("Derive: error %v, state %+v\nwant the error %q", err, state, row.want)
 			}
 			if checksErr == nil || checksErr.Error() != row.want {
-				t.Errorf("CheckStates: error %v, states %+v\nwant the error %q", checksErr, checks, row.want)
+				t.Errorf("deriveChecks: error %v, states %+v\nwant the error %q", checksErr, checks, row.want)
 			}
 			if state.Checks != nil || state.Statements != nil || checks != nil {
-				t.Errorf("with the error, Derive gave %+v and CheckStates %+v; want no state", state, checks)
+				t.Errorf("with the error, Derive gave %+v and deriveChecks %+v; want no state", state, checks)
+			}
+		})
+	}
+}
+
+// approveText makes the leaf of TestCheckState, with change, the one approved text of its node in
+// in, as the approval of its base wrote it.
+func approveText(in *Input, change func(s *Statement)) {
+	leaf := checkStateLeaf
+	change(&leaf)
+	block, err := leaf.Print()
+	if err != nil {
+		panic(err)
+	}
+	n := in.Approved.Nodes[leaf.ID]
+	n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Document: block}}
+	in.Approved.Nodes[leaf.ID] = n
+}
+
+// The entry of the derivation is the one guard of a caller that builds an Approved itself, as the
+// pilot does from the store (Current's doc): no reader is on that path. It refuses, in the words of
+// the reader, each approved spec that no approval writes, which would make a statement read met
+// where the approved text holds a check that is false. Each row: wait-cycle's Input at m1, where
+// envoy-delivers-messages reads not met, with the approved blocks that the row changes; the
+// controls read a state, and each other row gives the error and no state, from Derive and from
+// deriveChecks alike. R22: "Dispatch refuses the approval of a change request that puts a statement
+// under a parent that the approved spec does not hold"; R6: a check's claim is "narrower than its
+// statement", so a check serves one statement; R5: "The parent and support relations taken
+// together form no cycle, and Dispatch refuses a change that makes one." The derivation has no loop
+// guard of its own, so this refusal is the only one: a loop of parents, a loop of supporters and a
+// loop of both are rows. A change of the approved spec is a new version of a node, so the loop
+// rule reads the newest text of each node: a loop that version 2 of a node of two versions makes
+// is refused, and one that its version 1 alone made is
+// taken (the control). The kind rule reads the newest text of each node that the approved spec
+// keeps, the text that the derivation reads, too. R15: "An interface is a component marked as an
+// interface", so envoy-to-dispatch, a component at version 1, is an interface at version 2: a
+// component whose version 1 or whose removed text is under it is taken (the controls), and one
+// whose current text is under it is refused; an older text that names no node is refused, since
+// Dispatch keeps each text that the approved spec held (R2).
+func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *testing.T) {
+	t.Parallel()
+	const survives, late = "a-message-survives-a-restart", "a-message-reaches-a-late-session"
+	parentOf := func(id, parent string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			n := nodes[id]
+			v := n.Versions[0]
+			v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+parent+"\n", 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[id] = n
+		}
+	}
+	// servesOf makes id, a statement under envoy-delivers-messages, a supporter of supported.
+	servesOf := func(id, supported string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			n := nodes[id]
+			v := n.Versions[0]
+			v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: envoy-delivers-messages\nserves:\n  - "+supported+"\n", 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[id] = n
+		}
+	}
+	// twoVersions gives id two approved versions at the time of its one version, the first with the
+	// parent first and the second with the parent second, where "" keeps the block as written.
+	twoVersions := func(id, first, second string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			n := nodes[id]
+			version := func(number int, parent string) ApprovedVersion {
+				v := n.Versions[0]
+				v.Version = number
+				if parent != "" {
+					v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+parent+"\n", 1)
+				}
+				return v
+			}
+			n.Versions = []ApprovedVersion{version(1, first), version(2, second)}
+			nodes[id] = n
+		}
+	}
+	// components adds dispatch and envoy, two components, envoy-to-dispatch, a component at version 1
+	// and the interface between them at version 2, and envoy-delivery, a component under first at
+	// version 1, and under second at version 2 where second is not "", removed where it is; each
+	// version approved a day after the one before, from the approval of envoy-delivers-messages.
+	components := func(first, second string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			at := nodes["envoy-delivers-messages"].Versions[0].At
+			node := func(texts ...Component) ApprovedNode {
+				n := ApprovedNode{ID: texts[0].ID, Removed: false, PartlyChecked: false}
+				for i, c := range texts {
+					block, err := c.Print()
+					if err != nil {
+						panic(err)
+					}
+					n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: at.AddDate(0, 0, i), Document: block})
+				}
+				return n
+			}
+			component := func(id, parent string, joins ...string) Component {
+				return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message.", Parent: parent, Interface: len(joins) > 0, Joins: joins}
+			}
+			for _, n := range []ApprovedNode{node(component("dispatch", "")), node(component("envoy", "")),
+				node(component("envoy-to-dispatch", ""), component("envoy-to-dispatch", "", "dispatch", "envoy"))} {
+				nodes[n.ID] = n
+			}
+			delivery := node(component("envoy-delivery", first))
+			if second == "" {
+				delivery.Removed = true
+			} else {
+				delivery = node(component("envoy-delivery", first), component("envoy-delivery", second))
+			}
+			nodes[delivery.ID] = delivery
+		}
+	}
+	for _, row := range []struct {
+		name    string
+		changes []func(nodes map[string]ApprovedNode)
+		want    string // the error; "" for a control
+	}{
+		{name: "control: wait-cycle as written"},
+		{name: "control: the parent a statement that the approved spec removed", changes: []func(map[string]ApprovedNode){parentOf(survives, "old-parent")}},
+		{name: "the parent no node", changes: []func(map[string]ApprovedNode){parentOf(survives, "no-such-statement")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
+		{name: "the parent the check of the statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-restart-keeps-the-message")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its document)`},
+		{name: "the parent a check of another statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-late-session-gets-the-message")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-late-session-gets-the-message" names a check, not a statement (line 1 of its document)`},
+		{name: "the failing check with its serves left out", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
+			n := nodes["a-restart-keeps-the-message"]
+			v := n.Versions[0]
+			v.Document = strings.Replace(v.Document, "serves: a-message-survives-a-restart\n", "", 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[n.ID] = n
+		}}, want: `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-document: serves "" names no node of the approved spec (line 1 of its document)`},
+		{name: "a statement its own parent", changes: []func(map[string]ApprovedNode){parentOf(survives, survives)},
+			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		{name: "version 2 of a statement of two versions makes it its own parent", changes: []func(map[string]ApprovedNode){twoVersions(survives, "", survives)},
+			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		{name: "control: version 1 of a statement of two versions made it its own parent, and version 2 is as written",
+			changes: []func(map[string]ApprovedNode){twoVersions(survives, survives, "")}},
+		{name: "control: version 1 of a component under a component that is an interface at its version 2, and version 2 under envoy",
+			changes: []func(map[string]ApprovedNode){components("envoy-to-dispatch", "envoy")}},
+		{name: "control: a removed component under a component that is an interface at its version 2",
+			changes: []func(map[string]ApprovedNode){components("envoy-to-dispatch", "")}},
+		{name: "version 2 of a component, its current text, under a component that is an interface at its version 2",
+			changes: []func(map[string]ApprovedNode){components("envoy", "envoy-to-dispatch")},
+			want:    `specgraph: approved node "envoy-delivery" version 2: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
+		{name: "a removed component under no node", changes: []func(map[string]ApprovedNode){components("no-such-component", "")},
+			want: `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "no-such-component" names no node of the approved spec (line 1 of its document)`},
+		{name: "version 1 of a statement of two versions under no node, and version 2 as written",
+			changes: []func(map[string]ApprovedNode){twoVersions(survives, "no-such-statement", "")},
+			want:    `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
+		{name: "two statements each the parent of the other", changes: []func(map[string]ApprovedNode){parentOf(survives, late), parentOf(late, survives)},
+			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[parent]-> a-message-survives-a-restart -[parent]-> a-message-reaches-a-late-session"},
+		{name: "a statement that serves the statement under it", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
+			n := nodes["envoy-delivers-messages"]
+			v := n.Versions[0]
+			v.Document = strings.Replace(v.Document, "kind: behavior\n", "kind: behavior\nserves:\n  - "+survives+"\n", 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[n.ID] = n
+		}}, want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> envoy-delivers-messages -[serves]-> a-message-survives-a-restart"},
+		{name: "a statement that serves itself", changes: []func(map[string]ApprovedNode){servesOf(survives, survives)},
+			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[serves]-> a-message-survives-a-restart"},
+		{name: "two statements each a supporter of the other", changes: []func(map[string]ApprovedNode){servesOf(survives, late), servesOf(late, survives)},
+			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[serves]-> a-message-survives-a-restart -[serves]-> a-message-reaches-a-late-session"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := ReadScenario(scenarioFS(t, filepath.Join("testdata", "scenarios", "wait-cycle")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := s.Input(0)
+			nodes := map[string]ApprovedNode{"old-parent": {ID: "old-parent", Removed: true, PartlyChecked: false, Versions: []ApprovedVersion{{
+				Version: 1, At: in.Approved.Nodes["envoy-delivers-messages"].Versions[0].At,
+				Document: "---\ntype: requirement\nid: old-parent\nkind: behavior\ntext:\n  - Envoy keeps each message.\n"}}}}
+			for id, n := range in.Approved.Nodes {
+				nodes[id] = n
+			}
+			for _, change := range row.changes {
+				change(nodes)
+			}
+			in.Approved = Approved{Nodes: nodes}
+			state, err := Derive(in)
+			_, checks, checksErr := deriveChecks(in)
+			above := ""
+			for _, st := range state.Statements {
+				if st.ID == "envoy-delivers-messages" {
+					above = st.State
+				}
+			}
+			switch {
+			case row.want == "" && (err != nil || checksErr != nil || above == ""):
+				t.Errorf("Derive: error %v, envoy-delivers-messages %q; deriveChecks: error %v; want a state", err, above, checksErr)
+			case row.want != "" && (fmt.Sprint(err) != row.want || fmt.Sprint(checksErr) != row.want || state.Statements != nil || checks != nil):
+				t.Errorf("Derive: error %v, envoy-delivers-messages %q; deriveChecks: error %v, %d checks\nwant the error %q and no state", err, above, checksErr, len(checks), row.want)
 			}
 		})
 	}
@@ -420,12 +717,13 @@ func derive(t *testing.T, in Input) State {
 	return state
 }
 
-// checkStates is CheckStates(in), and fails the test when CheckStates refuses in.
+// checkStates is the states that deriveChecks gives for in, and fails the test when deriveChecks
+// refuses in.
 func checkStates(t *testing.T, in Input) []CheckState {
 	t.Helper()
-	states, err := CheckStates(in)
+	_, states, err := deriveChecks(in)
 	if err != nil {
-		t.Fatalf("CheckStates: %v", err)
+		t.Fatalf("deriveChecks: %v", err)
 	}
 	return states
 }
@@ -448,7 +746,7 @@ func TestARefusalNamesTheLeastPlaceOfTwoFaults(t *testing.T) {
 	for _, row := range []struct{ name, file, content, want string }{
 		{"two empty content labels in one tree of the history", "history.json",
 			`{"commits":[{"id":"c1","files":{"b.go":"","a.go":"","go.work":"1"}}]}`,
-			`history.json: specgraph: history: commit "c1": the content label of "a.go" is empty, and a label has at least one character`},
+			`history.json: specgraph: history: commit "c1": the content label of "a.go" has no letter and no digit, so it names no content`},
 		{"two empty rules of uncited.json at two commits", "uncited.json",
 			`{"c2":{"a-restart-loses-no-message":""},"c1":{"a-restart-loses-no-message":""}}`,
 			`uncited.json: commit "c1": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},

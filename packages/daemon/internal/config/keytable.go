@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -137,7 +138,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{
@@ -167,7 +168,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
-			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and keeps it until it is done, and the rest wait in line.",
+			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and holds it while it stands in a phase that keeps one (accepting, retro and merging keep none), and the rest wait in line.",
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
@@ -177,8 +178,13 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
-			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
+			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret. The daemon reads it at boot and again before each launch, so an edit reaches the next launch with no restart, and an edit that leaves it missing or blank keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
+		},
+		{
+			Name: "private_name_rules_file", Default: "`LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, else no private-name rule runs", RequiredBy: "no",
+			Description: "The deployment's private-name rule file, in gitleaks' rule format, which the daemon reads and compiles at boot and hands to every launch, so that every role's leak guard refuses a name it matches in a write to a public repository; it overrides `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, and a daemon of an earlier release refuses the key, so a deployment that may roll back sets the variable instead.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PrivateNameRulesFile = v }),
 		},
 		{
 			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
@@ -197,18 +203,28 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
 			Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
-			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
+			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `nats_urls`, a `projects` entry for the daemon's own project and a Dispatch credential: `dispatch_token_file`, or `dispatch_token_broker: true` under `runtime: kubernetes`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
 		},
 		{
-			Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it", RequiredBy: "when `dispatch_url` is configured",
+			Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it unless `dispatch_token_broker` is true", RequiredBy: "when `dispatch_url` is configured and `dispatch_token_broker` is not true",
 			Description: "The file holding the bearer token Legion's agents present to Dispatch; the daemon hands each pod its own copy, and no pod reads the operator's file.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenFile = v }),
+		},
+		{
+			Name: "dispatch_token_broker", Default: "`false`: the daemon presents the bearer `dispatch_token_file` names and hands each launch a copy", RequiredBy: "no",
+			Description: "Whether the daemon's Dispatch credential is its own pod identity, traded at the secrets broker for a token of its own project, in place of `dispatch_token_file`, which it is refused beside; a launch then carries no Dispatch token, since each role trades its pod's exchange identity for its own, so only `runtime: kubernetes` takes it, with `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`.",
+			Read:        reads(readBool, func(f *fileConfig, v *bool) { f.DispatchTokenBroker = v }),
+		},
+		{
+			Name: "dispatch_token_transition_file", Default: "none: a launch into a pod built before `dispatch_token_broker` was on is refused until its update round replaces the pod", RequiredBy: "no",
+			Description: "The file holding the shared Dispatch token a launch into a pod built before `dispatch_token_broker` was on gets, as every launch got it before, while that pod waits for the update round that replaces it; the daemon never calls Dispatch with it, only `dispatch_token_broker: true` takes it, and a deployment removes it once no live launch holds a Dispatch token.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenTransitionFile = v }),
 		},
 		{
 			Name: "envoy_url", Default: "`http://127.0.0.1:9020`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the loopback listener it defaults to",
@@ -236,8 +252,8 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -251,8 +267,13 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
-			Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
+			Description: "The repositories that moved, each pair naming the repository as the records hold it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, and this release also writes each pair's new name over its old one on the stored records once, at boot and at the end of an issue's pod, logging the rows each table still holds on the old name, so a pair stays here until that count is zero (dispatch://INFRA-3532's own change removes the pass).",
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
+		},
+		{
+			Name: leakCheckKey, Default: "`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment; with neither, the deployment runs no shared leak check", RequiredBy: "no",
+			Description: "The deployment's shared public leak check: the repository it is published from by tag, which the daemon reads at the worker image's pin and pushes to every pod, and the check's manifest digest, one sha256 over every file it runs from; with no check named, role pods start without one and no write is refused for its absence.",
+			Read:        reads(readLeakCheck, func(f *fileConfig, v *fileLeakCheck) { f.LeakCheck = v }),
 		},
 		{
 			Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
@@ -265,7 +286,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{
-			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
+			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
 			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
@@ -328,7 +349,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role the round asks ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -338,7 +359,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask, to each role of its issue that it waits for, to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
 		},
 		{
@@ -350,6 +371,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
 			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
+		},
+		{
+			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
+			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
 		},
 		{
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",
@@ -454,6 +480,13 @@ func (g memberGroup) topLevel() string {
 	return g.Path
 }
 
+// podDefault is the Default text of a `resources.<POD>` key the daemon fills itself: its own limit
+// or request for an issue pod and for the controller's, given from defaultResources so the table
+// holds no copy of the default.
+func podDefault(side, issue, controller string) string {
+	return "the daemon's own " + side + " for that pod: `" + issue + "` for an issue pod, `" + controller + "` for the controller's"
+}
+
 // nestedKeys is every mapping whose nested keys carry a description, by the path an operator
 // writes them under. describedMembers looks a group up by that path, so a reader that passes a
 // path this list does not hold is a bug TestNoKeyBypassesTheKeyTable catches, never a value.
@@ -467,6 +500,12 @@ var nestedKeys = []memberGroup{
 			Description: "The repository as it was, which every record Legion already holds names; compared without case."},
 		{Name: "to", Default: "none: a pair that names no `to` is refused", RequiredBy: "yes",
 			Description: "The repository it moved to, which GitHub's events name and which the daemon calls GitHub under; compared without case."},
+	}},
+	{Path: leakCheckKey, Members: []member{
+		{Name: "repository", Default: "`LEGION_LEAK_CHECK_REPOSITORY` in the daemon's environment", RequiredBy: "when `manifest_sha256` is set: the two are set together or not at all",
+			Description: "The repository the shared public leak check is published from, as `owner/name`: its `leak-check` directory at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`) is what the daemon reads, with a read-only token of its implement App, and pushes to every pod."},
+		{Name: "manifest_sha256", Default: "`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment", RequiredBy: "when `repository` is set: the two are set together or not at all",
+			Description: "The check's manifest digest at that tag, 64 lowercase hex digits: the sha256 of the `sha256sum` lines of `public-leak-check.sh`, `public_leak_check.py`, `README.md` and `must-pass-lines.txt`, in that order, which `(cd leak-check && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt) | sha256sum` prints. Every role is told it, a role pod starts no agent unless its install's manifest digest is it, and a role refuses every write for want of a check or under a check whose manifest digest is anything else, so a launcher script edited beside an unchanged program is refused. It does not decide which `legion gh` calls the check alone reads: a call that writes nothing is read so only where the check's program hashes to the digest the release's read rule was proven against, which the release compiles in."},
 	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",
@@ -510,7 +549,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
-			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the boot checks each name against Dispatch's mapping for this project and warns about one it does not find, which catches a typo, and a pane working that repository stamps its commits all the same."},
+			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the load checks each name's shape and refuses two names of one repository, and a pane working any other repository stamps nothing."},
+		{Name: "default_steps", Default: "`[" + strings.Join(defaultStepWords, ", ") + "]`, today's line up to the owner's acceptance", RequiredBy: "no",
+			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose experiment's group takes none, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro and merge follow them, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",
@@ -528,11 +569,11 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "none: a mode other than `off` is refused without them", RequiredBy: "when `mode` is `on` or `random`: a memory-group role reads its memory from these files",
 			Description: "The Oh My Pi settings overlays every role of a memory-group tree names last in `PI_CONFIG_FILES`, after the deployment's own and the role's own, as absolute paths; under Kubernetes each must be a file one of the pod's mounts carries."},
 		{Name: "instructions", Default: "a memory-group role's system prompt gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot and appends to every memory-group role's system prompt, after the deployment's own instructions."},
+			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot, and again before each launch, and appends to every memory-group role's system prompt, after the deployment's own instructions."},
 	}},
 	{Path: "projects.<KEY>.experiments.<NAME>", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
-			Description: "Which of the project's new units the experiment draws: `off` none, `on` every one into `on_variant`, `random` a draw among the variants by weight; the draw is made once and the unit keeps it."},
+			Description: "The arm each of the project's new units is given: `off` no arm, `on` the one `on_variant` names, `random` one drawn among the variants by weight; the draw is made once and the unit keeps it."},
 		{Name: "unit", Default: "`tree`", RequiredBy: "no",
 			Description: "What the experiment draws one at a time: a whole `tree`, or each `issue` on its own."},
 		{Name: "roles", Default: "every issue role", RequiredBy: "no",
@@ -550,7 +591,9 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "a unit drawn into this arm names no overlay of the arm's own", RequiredBy: "no",
 			Description: "The Oh My Pi settings overlays each role the experiment reaches (`roles`) of a unit drawn into this arm names in `PI_CONFIG_FILES`, as absolute paths; the arm that names no file is the control the others are measured against."},
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
+			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
+		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
+			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",
@@ -596,7 +639,7 @@ var nestedKeys = []memberGroup{
 		{Name: "plugins", Default: "a relaunch installs the pair the release workflow linked into this binary", RequiredBy: "no",
 			Description: "The exact pi-legion and pi-envoy pair a stale-plugin relaunch installs into a kept pod, in place of the image's own copies."},
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
-			Description: "Each mapped repository's cache pod, which an issue pod's feed is filled from before GitHub is asked for the rest."},
+			Description: "The cache pod of each repository a live record names, which an issue pod's feed is filled from before GitHub is asked for the rest."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
 			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
 		{Name: "skills_repository", Default: "", RequiredBy: "no",
@@ -605,12 +648,12 @@ var nestedKeys = []memberGroup{
 			Description: "Whether every issue pod's roles container serves its own PostgreSQL for the tests that need one."},
 		{Name: "idle_release", Default: "a pod quiet for ten minutes is released, and an open phase's worker is woken an hour after that", RequiredBy: "no",
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
-		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod at the defaults of `memory_guard.issue_pods`", RequiredBy: "no",
-			Description: "The memory guard in each gVisor issue pod's launcher, which near the container's memory limit ends with SIGKILL the largest process that is neither Legion's own nor an agent's own, and tells that process's role, so the pod's other roles keep their turns; a microVM issue pod's launcher runs the guest memory watch instead, whatever this block says."},
+		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod and in the gVisor controller's pod, at the defaults of `memory_guard.issue_pods` and `memory_guard.controller_pod`", RequiredBy: "no",
+			Description: "The memory guard in the launcher of each gVisor issue pod and of the gVisor controller's pod, which near the container's memory limit ends with SIGKILL, of the processes that are neither Legion's own nor an agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between its act share and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one new to it that holds memory of its own, each a kill of its own, and tells the role whose process it was, so the pod's agents keep their turns rather than ending with the whole container; a microVM pod's launcher, an issue pod's or the controller's, runs the guest memory watch instead, whatever this block says."},
 		{Name: "volume_trim", Default: "every issue pod's launcher sweeps its cache roots at 85% of the volume, toward 70%, deleting nothing modified in the last 15 minutes, and reads the volume every 60 seconds", RequiredBy: "no",
 			Description: "The cache trimmer in each issue pod's launcher process: when it reads the volume, at which used fraction it sweeps the pod's four cache roots, of which `$TMPDIR` gives up only Go's own build trees, toward which fraction, and how old an entry must be to be deleted."},
-		{Name: "sandbox", Default: "every issue pod runs in gVisor", RequiredBy: "no",
-			Description: "The sandbox the project's issue pods run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod, the repository cache pods and the image probe run in gVisor whatever it says."},
+		{Name: "sandbox", Default: "every issue pod and the controller's pod run in gVisor", RequiredBy: "no",
+			Description: "The sandbox the project's issue pods and its controller's pod run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod follows `type` alone, and the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
 	{Path: kubernetesKey + ".scheduling", Members: []member{
 		{Name: "node_selector", Default: "a pod selects the Legion pool alone", RequiredBy: "no",
@@ -631,17 +674,17 @@ var nestedKeys = []memberGroup{
 			Description: "The taint effect tolerated: `NoSchedule`, `NoExecute` or `PreferNoSchedule`."},
 	}},
 	{Path: kubernetesKey + ".resources.<POD>", Members: []member{
-		{Name: "cpu", Default: "the daemon's own limit for that pod: `3` for an issue pod, `1` for the controller's", RequiredBy: "no",
+		{Name: "cpu", Default: podDefault("limit", defaultResources.Issue.CPU, defaultResources.Controller.CPU), RequiredBy: "no",
 			Description: "The CPU limit every container of the pod carries, as a Kubernetes quantity."},
 		{Name: "cpu_request", Default: "the pod's own `cpu`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that CPU, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "memory", Default: "the daemon's own limit for that pod: `19Gi` for an issue pod, `4Gi` for the controller's", RequiredBy: "no",
+		{Name: "memory", Default: podDefault("limit", defaultResources.Issue.Memory, defaultResources.Controller.Memory), RequiredBy: "no",
 			Description: "The memory limit every container of the pod carries; under gVisor every process of the pod draws on this one number, so the pod's whole peak must fit it."},
 		{Name: "memory_request", Default: "the pod's own `memory`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that memory, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "ephemeral_storage", Default: "the daemon's own limit for that pod: `80Gi` for an issue pod, `10Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage", Default: podDefault("limit", defaultResources.Issue.EphemeralStorage, defaultResources.Controller.EphemeralStorage), RequiredBy: "no",
 			Description: "The pod's bound on the node's own disk — the image's content and each role's home and `/tmp`, the issue volume being its own — past which that pod alone is evicted."},
-		{Name: "ephemeral_storage_request", Default: "the daemon's own request for that pod: `6Gi` for an issue pod, `1Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage_request", Default: podDefault("request", defaultResources.Issue.EphemeralStorageRequest, defaultResources.Controller.EphemeralStorageRequest), RequiredBy: "no",
 			Description: "What the scheduler reserves of that disk; an operator who knows the root volume raises it so no pod is placed where a full node could not hold it."},
 		{Name: "requests", Default: "", RequiredBy: "no",
 			Description: "Removed: a reservation is its `cpu` and `memory` limits, with `cpu_request` and `memory_request` below them where set; the loader refuses a file that still sets it."},
@@ -654,7 +697,7 @@ var nestedKeys = []memberGroup{
 		{Name: "refresh_minutes", Default: "`10`", RequiredBy: "no",
 			Description: "How long the cache waits between its fetches from GitHub, in whole minutes."},
 		{Name: "retain_hours", Default: "`168`", RequiredBy: "no",
-			Description: "How long a cache outlives its repository leaving Dispatch's mapping before the orphan sweep deletes it with its volume and its Secret, in whole hours; the repository mapped again before that keeps its cache."},
+			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
 	}},
@@ -680,7 +723,9 @@ var nestedKeys = []memberGroup{
 		{Name: "user", Default: "none: the block is refused without it", RequiredBy: "yes",
 			Description: "The IAM login each pod signs in to that database as."},
 		{Name: "impersonate_service_account", Default: "each pod signs in as itself", RequiredBy: "no",
-			Description: "The email of the Google service account that each pod's session proxy impersonates with the pod's own credentials and signs in as; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+			Description: "The email of the Google service account that each pod's session proxy impersonates and signs in as, with the pod's own credentials or, where `writer_audience` is set, with the launcher's writer token; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+		{Name: "writer_audience", Default: "the session proxy signs in with the pod's own credentials", RequiredBy: "no",
+			Description: "The audience of a projected ServiceAccount token that only each pod's launcher reads, which is a workload identity provider's full resource name, " + ompsessions.WriterAudienceForm + "; the session proxy exchanges that token at Google's security token service and impersonates `impersonate_service_account` with it in place of the pod's own credentials, so `impersonate_service_account` is required with it, and it must differ, in both its own form and its `https:` form, from `agent_secrets.audience` and `agent_secrets.exchange_audience`, whose tokens every role of a pod reads, and from the audience of every projected `service_account_token` of `pod.volumes`, mounted or not, since every pod carries the operator's pod volumes and a `volume_mounts` entry shows one to every role of the pod."},
 	}},
 	{Path: podKey, Members: []member{
 		{Name: "env", Default: "a pod's Oh My Pi is told only what the runtime tells it", RequiredBy: "no",
@@ -787,12 +832,12 @@ var nestedKeys = []memberGroup{
 			Description: "The absolute path the daemon's own projected ServiceAccount token for the broker's audience is mounted at; the daemon logs in with it at every start and keeps logging in, and the broker's `BROKER_SERVICE_LOGINS` names that account."},
 		{Name: "operator", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon logs in with its own ServiceAccount token, which no person approves, so the block names no approver; the loader refuses a file that still sets it."},
-		{Name: "audience", Default: "`agent-secrets`", RequiredBy: "no",
+		{Name: "audience", Default: "`" + DefaultAgentSecretsAudience + "`", RequiredBy: "no",
 			Description: "The audience of the projected token the daemon presents to the broker."},
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},
 		{Name: "exchange_audience", Default: "no pod carries an identity the broker's exchange trades", RequiredBy: "no",
-			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report. The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds."},
+			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. A pod's own trade waits for three changes of plan E, and this release holds all three: in its daemon and its worker image, t-e-53, which makes a role trade with its own key, and t-e-39, which has the daemon choose each Oh My Pi role's session id rather than take its agent's report; and in its broker, t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, since before it any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session. Set `exchange_audience` only once your daemon, its worker image and its broker run this release or a later one, and only once the broker's `BROKER_POD_REGISTRARS` pairs the daemon's login account with its pods' account, since a broker with that list unset refuses every registration. The worker image must also carry an Oh My Pi that takes `--session-id`, which each new Oh My Pi role starts with: the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351 take it, the Oh My Pi this release pins among them. While the key is set, the boot refuses a worker image whose Oh My Pi does not take the flag. The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds."},
 	}},
 	{Path: pluginsKey, Members: []member{
 		{Name: "pi_legion", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_envoy` is set: a relaunch installs the pair together or not at all",
@@ -820,33 +865,47 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: kubernetesKey + ".memory_guard", Members: []member{
 		{Name: "issue_pods", Default: "the guard on, at the defaults of each of its members", RequiredBy: "no",
-			Description: "The guard's settings for issue pods, the one pod kind it runs in; a launcher reads them on the daemon's answer to each hello, so a change reaches running pods with no pod replaced."},
+			Description: "The guard's settings for every issue pod; a launcher reads them on the daemon's answer to each hello, so a change reaches running pods with no pod replaced."},
+		{Name: "controller_pod", Default: "the guard on, at the defaults of each of its members", RequiredBy: "no",
+			Description: "The guard's settings for the project controller's pod under `controller: daemon` in gVisor, whose launcher runs it as PID 1 of the pod's one container; it reads them on the daemon's answer to each hello, as an issue pod's launcher does, so a change reaches the running pod with no pod replaced; a microVM controller pod's launcher runs the guest memory watch instead, whatever this says."},
 	}},
 	{Path: kubernetesKey + ".memory_guard.issue_pods", Members: []member{
 		{Name: "enabled", Default: "`true`", RequiredBy: "no",
 			Description: "Whether the guard runs in gVisor issue pods; `false` turns it off at each launcher's next hello, and until that answer a launcher runs it at the settings it last took, or at the defaults where it has taken none; a microVM issue pod's launcher runs the guest memory watch instead, whatever this says."},
 		{Name: "act_percent", Default: "`85`", RequiredBy: "no",
-			Description: "The share of the container's memory limit, from 50 to 95, at which the pod's anonymous memory makes the guard end the largest process it may end."},
+			Description: "The share of the container's memory limit, from 50 to 90, at which the pod's anonymous memory makes the guard end, of the processes it may end, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent; it also sets the urgent share, halfway from it to the limit (92.5% at 85), at or above which the guard ends at one reading every process that grew over its last few reads and, where a process it may end is not new to its stay near the limit, every one new to it that holds memory of its own; the highest is 90, so that the urgent share stays at most 95%, below the kill point measured at 4 GiB."},
 		{Name: "floor_percent", Default: "`10`", RequiredBy: "no",
 			Description: "The share of the limit, from 1 to 50, that the processes the guard may end must hold between them before it ends one; below it the guard ends nothing and logs that it stopped."},
 		{Name: "wait_seconds", Default: "`5`", RequiredBy: "no",
-			Description: "How long, from 1 to 60 seconds, the guard waits after a kill for the reading to fall before it stops for a rise that kill did not lower."},
+			Description: "The longest the guard waits, from 1 to 60 seconds, after the kills of a reading for the killed processes to exit; from their exit, or from the end of the wait where one has not exited, the guard ends the next process at a reading still at the mark where the reading has fallen since the kills or a process it may end has grown since them, and it stops for that rise once the wait has passed with neither."},
 		{Name: "interval_milliseconds", Default: "`100`", RequiredBy: "no",
 			Description: "How often, from 50 to 5000 milliseconds, the guard reads the pod's anonymous memory and the container's limit."},
 	}},
+	{Path: kubernetesKey + ".memory_guard.controller_pod", Members: []member{
+		{Name: "enabled", Default: "`true`", RequiredBy: "no",
+			Description: "Whether the guard runs in the launcher that is PID 1 of the project controller's pod under `controller: daemon` in gVisor; `false` turns it off at that launcher's next hello, and until that answer the launcher runs it at the settings it last took, or at the defaults where it has taken none; a microVM controller pod's launcher runs the guest memory watch instead, whatever this says."},
+		{Name: "act_percent", Default: "`85`", RequiredBy: "no",
+			Description: "The share of the controller's container's memory limit, from 50 to 90, at which the pod's anonymous memory makes the guard end, of the processes it may end, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent; it also sets the urgent share, halfway from it to the limit (92.5% at 85), at or above which the guard ends at one reading every process that grew over its last few reads and, where a process it may end is not new to its stay near the limit, every one new to it that holds memory of its own; the highest is 90, so that the urgent share stays at most 95%, below the kill point measured at 4 GiB."},
+		{Name: "floor_percent", Default: "`10`", RequiredBy: "no",
+			Description: "The share of the controller's container's limit, from 1 to 50, that the processes the guard may end must hold between them before it ends one; below it the guard ends nothing and logs that it stopped."},
+		{Name: "wait_seconds", Default: "`1`", RequiredBy: "no",
+			Description: "The longest the controller's pod's guard waits, from 1 to 60 seconds, after the kills of a reading for the killed processes to exit; from their exit, or from the end of the wait where one has not exited, the guard ends the next process at a reading still at the mark where the reading has fallen since the kills or a process it may end has grown since them, and it stops for that rise once the wait has passed with neither."},
+		{Name: "interval_milliseconds", Default: "`100`", RequiredBy: "no",
+			Description: "How often, from 50 to 5000 milliseconds, the controller's pod's guard reads the pod's anonymous memory and the container's limit."},
+	}},
 	{Path: kubernetesKey + ".sandbox", Members: []member{
 		{Name: "type", Default: "`gvisor`", RequiredBy: "no",
-			Description: "The sandbox of every issue pod of the project: `gvisor` or `microvm`."},
+			Description: "The sandbox of every issue pod of the project and of its controller's pod: `gvisor` or `microvm`; a change moves the controller's pod at its next launch that installs nothing, and a suspend and resume of its claim moves it at once where the resume installs nothing."},
 		{Name: "canary_issues", Default: "`[]`", RequiredBy: "no",
-			Description: "The issue keys, each exact and named once, whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, in gVisor on a microVM project."},
+			Description: "The issue keys, each exact and named once, whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, in gVisor on a microVM project; the list never moves the controller's pod."},
 		{Name: "microvm", Default: "none: a block that an issue pod in a microVM needs and the file leaves out is refused", RequiredBy: "when `type` is `microvm` or `canary_issues` names an issue",
-			Description: "Where a microVM pod runs: its ComputeClass, its workspace volume's StorageClass and the pod-local metadata endpoint; a block while no issue pod runs in a microVM is read and does nothing."},
+			Description: "Where a microVM pod runs: its ComputeClass, a microVM issue pod's workspace volume's StorageClass and the pod-local metadata endpoint; a block while no issue pod runs in a microVM is read and does nothing."},
 	}},
 	{Path: kubernetesKey + ".sandbox.microvm", Members: []member{
 		{Name: "compute_class", Default: "none: refused while an issue pod runs in a microVM", RequiredBy: "when `type` is `microvm` or `canary_issues` names an issue",
 			Description: "The GKE ComputeClass whose nodes run the microVM pods, which a microVM pod selects by `cloud.google.com/compute-class` in place of any class `scheduling.node_selector` names, and whose taint it tolerates."},
 		{Name: "storage_class", Default: "`runtime.kubernetes.storage_class`", RequiredBy: "no",
-			Description: "The StorageClass a microVM pod's own workspace volume is provisioned from."},
+			Description: "The StorageClass a microVM issue pod's own workspace volume is provisioned from; the controller's disk stays on `runtime.kubernetes.storage_class` in either sandbox."},
 		{Name: "keep_volume", Default: "`false`", RequiredBy: "no",
 			Description: "Whether each microVM issue pod's workspace volume is a claim that its issue's Sandbox owns, which stays through the pod's ends and the issue's idle releases and is deleted with the Sandbox; a gVisor issue pod's volume ends with its pod whatever this says."},
 		{Name: "metadata", Default: "a microVM pod's launcher serves no metadata endpoint", RequiredBy: "no",

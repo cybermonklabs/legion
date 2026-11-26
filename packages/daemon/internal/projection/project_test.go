@@ -43,6 +43,13 @@ type projectionStore struct {
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
+	// planTasks is the task of each issue that has plan rows at its generation, as
+	// record.Store.PlanTasksOf answers them.
+	planTasks []record.PlanTask
+}
+
+func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
+	return s.planTasks, nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -83,11 +90,26 @@ func (projectionStore) PendingStatusWrites(context.Context, pgx.Tx, string) ([]r
 func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.Time) ([]record.HeldRow, error) {
 	return s.held, nil
 }
+
+// OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
+// intake_giveups_test.go's, on PostgreSQL.
+func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
+	return record.IntakeGiveUps{}, nil
+}
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
-func (s projectionStore) PullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
-	return s.pullRequests[issue], nil
+
+// PullRequestsOf answers the pull request of each of issues the store holds, by key, as the real
+// store reads them in one statement: an issue it holds none for has no entry.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	of := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			of[issue] = *pr
+		}
+	}
+	return of, nil
 }
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil
@@ -159,7 +181,7 @@ func TestProjectShowsOnlySlotlessTodoIssuesInDispatchRankOrder(t *testing.T) {
 		},
 		slots: []record.Slot{{Issue: "LEGION-214", Index: 0, AdmittedAt: now}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -202,7 +224,7 @@ func TestProjectShowsWhatAnAwaitingRootWaitsOn(t *testing.T) {
 		},
 	}}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -225,10 +247,10 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	const issue = "S2-1"
 	architect := claim.Token("legion-s2-1-architect")
 	implementer := claim.Token("legion-s2-1-implementer")
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -239,11 +261,13 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	if view.Key != issue {
 		t.Fatalf("operator-spawned issue key = %q, want %q", view.Key, issue)
 	}
-	architectView := api.ClaimView{Session: "session-1", State: string(supervise.StateReady)}
+	// No round is open over either claim, which every claim view says of itself
+	// (api.UpdateStateOf).
+	architectView := api.ClaimView{Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
 	if !reflect.DeepEqual(view.Architect, &architectView) {
 		t.Fatalf("operator-spawned architect = %#v, want %#v", view.Architect, &architectView)
 	}
-	implementerView := api.ClaimView{Session: "session-2", State: string(supervise.StateIdle)}
+	implementerView := api.ClaimView{Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
 	if got, want := view.Workers[claim.RoleImplementer], (api.PhaseView{Claim: implementerView}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("operator-spawned implementer = %#v, want %#v", got, want)
 	}
@@ -261,10 +285,10 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	const issue = "S2-2"
 	architect := claim.Token("legion-s2-2-architect")
 	implementer := claim.Token("legion-s2-2-implementer")
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1", PluginContract: 24},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -277,6 +301,67 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	}
 }
 
+// Each claim's view names the wake the daemon's pacing holds for that claim — its kind and the
+// moment it runs — from the one list the state names under `wakesWaiting`, so the two readings
+// of one wave cannot disagree. A claim the pacing holds nothing for carries no wake at all.
+//
+// The view names where the claim's update round stands beside it, read from the claim's own
+// columns. The planner here is the case `updateHead` alone cannot read: it is queued, no round
+// has ever asked it, and its launch waits in the pacing, so it is reported as a claim nobody
+// asked with the wake that will start its process.
+func TestProjectNamesEachClaimsOwnWakeAndRoundState(t *testing.T) {
+	const issue = "S2-3"
+	architect := claim.Token("legion-s2-3-architect")
+	planner := claim.Token("legion-s2-3-planner")
+	implementer := claim.Token("legion-s2-3-implementer")
+	round := supervise.PodRound("8c1f2e5a-7b93-4d06-9e4a-1c2b3d4e5f60")
+	asked, answered := projectedAt.Add(-2*time.Minute), projectedAt.Add(-time.Minute)
+	wakes := []api.WakeWaiting{
+		{Claim: architect, Issue: issue, Role: claim.RoleArchitect, Kind: supervise.WakeCatchUp, DueAt: projectedAt.Add(time.Minute)},
+		{Claim: planner, Issue: issue, Role: claim.RolePlanner, Kind: supervise.WakeLaunch, DueAt: projectedAt.Add(2 * time.Minute)},
+	}
+
+	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
+		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
+		{Token: planner, Issue: issue, Role: claim.RolePlanner, State: supervise.StateQueued},
+		{
+			Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-3",
+			UpdateRound: round, UpdateOpenedAt: &asked, UpdateTaskedAt: &asked, UpdateSignalledAt: &answered,
+		},
+	}, Wakes: wakes, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	if !reflect.DeepEqual(got.WakesWaiting, wakes) {
+		t.Fatalf("wakesWaiting = %#v, want the list the daemon joined, %#v", got.WakesWaiting, wakes)
+	}
+	view := got.Issues[issue]
+	wantArchitect := &api.WakeView{Kind: supervise.WakeCatchUp, DueAt: wakes[0].DueAt}
+	if !reflect.DeepEqual(view.Architect.Wake, wantArchitect) {
+		t.Errorf("the architect's wake = %#v, want %#v", view.Architect.Wake, wantArchitect)
+	}
+	if view.Architect.UpdateState != api.UpdateStateNone {
+		t.Errorf("the architect's updateState = %q, want %q: no round is open over it", view.Architect.UpdateState, api.UpdateStateNone)
+	}
+	waiting := view.Workers[claim.RolePlanner].Claim
+	wantPlanner := &api.WakeView{Kind: supervise.WakeLaunch, DueAt: wakes[1].DueAt}
+	if !reflect.DeepEqual(waiting.Wake, wantPlanner) {
+		t.Errorf("the planner's wake = %#v, want the launch the pacing holds, %#v", waiting.Wake, wantPlanner)
+	}
+	if waiting.UpdateState != api.UpdateStateNone || waiting.UpdateRound != "" {
+		t.Errorf("the planner reads %q in round %q, want %q and no round: nothing ever asked it",
+			waiting.UpdateState, waiting.UpdateRound, api.UpdateStateNone)
+	}
+	answeredView := view.Workers[claim.RoleImplementer].Claim
+	if answeredView.Wake != nil {
+		t.Errorf("the implementer's wake = %#v, want none: the pacing holds nothing for it", answeredView.Wake)
+	}
+	if answeredView.UpdateState != api.UpdateStateAnswered {
+		t.Errorf("the implementer reads %q, want %q", answeredView.UpdateState, api.UpdateStateAnswered)
+	}
+}
+
 func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
 	token := claim.Token("legion-208-architect")
 	store := projectionStore{
@@ -285,9 +370,9 @@ func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
 			"LEGION-208": {{Issue: "LEGION-208", Role: claim.RoleArchitect, Claim: token}},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{{
 		Token: token, Issue: "LEGION-208", Role: claim.RoleArchitect, State: supervise.StateLaunchUncertain,
-	}}, nil, nil, projectedAt)
+	}}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -314,11 +399,11 @@ func TestProjectShowsTheHandoffRecordAWorkerNamed(t *testing.T) {
 			{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewer, LastHandoff: "review-record"},
 		}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
 		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
 		{Token: reviewer, Issue: "LEGION-208", Role: claim.RoleReviewer, State: supervise.StateIdle, Session: "ses_reviewer"},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -353,7 +438,7 @@ func TestProjectShowsTheReviewRoundsDecisionOnThePullRequest(t *testing.T) {
 			"LEGION-209": {Issue: "LEGION-209", Number: 43, HeadSHA: "head"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -390,7 +475,7 @@ func TestProjectShowsTheOpenProductionCheckOnItsIssue(t *testing.T) {
 			{Issue: "LEGION-209", Repo: "acme/widgets", Number: 43, OpenedAt: opened, BoundAt: bound, Role: claim.RoleImplementer},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -427,10 +512,10 @@ func TestProjectShowsACapabilityReportOnlyOnTheClaimThatSentOne(t *testing.T) {
 		},
 	}
 	report.Locator.Incarnation = "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/1"
-	got, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "session-2"},
-	}, nil, map[claim.Token]capabilities.Report{implementer: report}, projectedAt)
+	}, Reports: map[claim.Token]capabilities.Report{implementer: report}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -461,7 +546,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing}},
 		held:   []record.HeldRow{{OutboxRow: start, WaitsOn: 801}, {OutboxRow: removal, WaitsOn: 803}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -472,7 +557,7 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	if !reflect.DeepEqual(got.HeldOutboxRows, want) {
 		t.Fatalf("heldOutboxRows = %#v, want %#v", got.HeldOutboxRows, want)
 	}
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project with nothing held: %v", err)
 	}
@@ -506,7 +591,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 			{Key: "LEGION-301", Project: "LEGION", Status: "in_progress"},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -522,7 +607,7 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 		t.Fatalf("waiting = %#v, want the roots' waiting line unchanged", got.Admission.Waiting)
 	}
 
-	none, err := Project(context.Background(), nil, projectionStore{}, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project with nothing blocked: %v", err)
 	}
@@ -569,7 +654,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: projectedAt.Add(-time.Hour)}},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -584,7 +669,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 	gate := store.gates["LEGION-10"][record.DesignStepSpec]
 	gate.ApprovedMark.At = projectedAt
 	store.gates["LEGION-10"] = map[record.DesignStep]record.DesignGate{record.DesignStepSpec: gate}
-	got, err = Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err = Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project with the gate opened last: %v", err)
 	}
@@ -617,7 +702,7 @@ func TestProjectJudgesAdmissionOverThisProjectsRecordsAlone(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -661,8 +746,8 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION",
-		[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION",
+		Steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -677,6 +762,57 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 	}
 	if child := got.Issues["LEGION-209"]; len(child.GatedSteps) != 0 {
 		t.Errorf("the child's gatedSteps = %+v, want none: its tree is held at its root's steps", child.GatedSteps)
+	}
+}
+
+// Under `root-issues` a root that registered its Verification document as criteria is held on it
+// as on the spec (record.TreeSteps), so it answers two gated steps, the spec's first, and the
+// criteria row is waiting on a person; a root that registered none answers the spec alone. The
+// list is what a reader of the state or of `read_record` sees of the gate, so a criteria row that
+// held work and was in no entry would hold the tree where no reader could see why.
+func TestProjectAnswersARootsRegisteredCriteriaRowUnderRootIssues(t *testing.T) {
+	approved, approvedBelow := 3, 1
+	spec := func(root string) record.DesignGate {
+		return record.DesignGate{Issue: root, Step: record.DesignStepSpec, ArtifactID: "spec-" + root, LatestVersion: 3, ApprovedVersion: &approved}
+	}
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
+				Phase: phase.Implementing, Status: "in_progress", Rank: "A", HandedOver: true},
+			{Key: "LEGION-300", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-300",
+				Phase: phase.Implementing, Status: "in_progress", Rank: "B", HandedOver: true},
+		},
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			"LEGION-208": {
+				record.DesignStepSpec: spec("LEGION-208"),
+				record.DesignStepCriteria: {Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: "verification-LEGION-208",
+					LatestVersion: 2, ApprovedVersion: &approvedBelow},
+			},
+			"LEGION-300": {record.DesignStepSpec: spec("LEGION-300")},
+		},
+	}
+
+	// The one step spec, the list `gates.design: root-issues` resolves to.
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	specView := func(root string) api.GatedStepView {
+		return api.GatedStepView{Step: record.DesignStepSpec, ArtifactID: "spec-" + root, CurrentVersion: 3, ApprovedVersion: &approved,
+			Status: api.GatedStepApproved}
+	}
+	for _, tc := range []struct {
+		root string
+		want []api.GatedStepView
+	}{
+		{root: "LEGION-208", want: []api.GatedStepView{specView("LEGION-208"),
+			{Step: record.DesignStepCriteria, ArtifactID: "verification-LEGION-208", CurrentVersion: 2, ApprovedVersion: &approvedBelow,
+				Status: api.GatedStepWaiting}}},
+		{root: "LEGION-300", want: []api.GatedStepView{specView("LEGION-300")}},
+	} {
+		if view := got.Issues[tc.root]; !reflect.DeepEqual(view.GatedSteps, tc.want) {
+			t.Errorf("%s's gatedSteps = %+v, want %+v", tc.root, view.GatedSteps, tc.want)
+		}
 	}
 }
 
@@ -719,7 +855,7 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 				},
 			}
 
-			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, nil, nil, projectedAt)
+			got, err := Project(context.Background(), Inputs{Store: store, Project: project, Now: projectedAt})
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}
@@ -757,11 +893,13 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
 // holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
-// it waits on another issue before then, when it gives the row back and is not named here
+// moment the daemon starts it while it stands in a phase that keeps one (record.KeepsSlot),
+// except while it waits on another issue there, when it gives the row back and is not named here
 // (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
-// of it is running this second. An issue with no row of its own waits for nothing here: it
-// stands in neither list.
+// of it is running this second. The fixture gives a row to an issue in accepting and one in
+// merging as well, which keep none and whose rows admission's release would take back; the
+// projection names them all the same, since it reads the rows. An issue with no row of its own
+// waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -780,7 +918,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -815,10 +953,10 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 		}},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: implementer, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
 		{Token: tester, Issue: "LEGION-208", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester"},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -834,12 +972,59 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	}
 }
 
+// An issue with plan rows counts its returns on its task (record.ReturnCounts), so the implementer's
+// view of it shows the task's counts, read for every issue in one statement
+// (record.Store.PlanTasksOf); its implementer's phases row counts nothing. An issue with no plan
+// rows shows the counts its implementer's phases row holds, as before plans.
+func TestProjectShowsATasksCountsAndAnIssueWithNoPlanRowsItsImplementersRow(t *testing.T) {
+	planned, unplanned := claim.Token("legion-208-implementer"), claim.Token("legion-209-implementer")
+	taskMoves := map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}
+	rowMoves := map[string]int{"testing-implementing": 1}
+	issue := func(key string) record.Issue {
+		return record.Issue{Key: key, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Tree: key, Status: "in_progress", Phase: phase.Implementing, Generation: 1}
+	}
+	store := projectionStore{
+		issues: []record.Issue{issue("LEGION-208"), issue("LEGION-209")},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-208": {{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: planned}},
+			"LEGION-209": {{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: unplanned, Pass: 2, Rounds: 1, BackwardMoves: rowMoves}},
+		},
+		planTasks: []record.PlanTask{{Issue: "LEGION-208", Generation: 1, Task: "a", State: record.TaskRunning,
+			Place:  record.TaskPlace{Kind: record.PlaceStep, Position: 1},
+			Counts: record.ReturnCounts{Pass: 5, Rounds: 3, BackwardMoves: taskMoves, CapTold: 3}}},
+	}
+
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
+		{Token: planned, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_208"},
+		{Token: unplanned, Issue: "LEGION-209", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_209"},
+	}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, want := range []struct {
+		key          string
+		pass, rounds int
+		moves        map[string]int
+		where        string
+	}{
+		{"LEGION-208", 5, 3, taskMoves, "its task's"},
+		{"LEGION-209", 2, 1, rowMoves, "its implementer's phases row's"},
+	} {
+		view := got.Issues[want.key].Workers[claim.RoleImplementer]
+		if view.Pass != want.pass || view.Rounds != want.rounds || !reflect.DeepEqual(view.BackwardMoves, want.moves) {
+			t.Fatalf("the implementer's view of %s counts pass %d, rounds %d, moves %v; want %s %d, %d and %v",
+				want.key, view.Pass, view.Rounds, view.BackwardMoves, want.where, want.pass, want.rounds, want.moves)
+		}
+	}
+}
+
 // Every issue of a live tree is served that tree's quiet time (contract 111): `treeMovedAt`, the
 // newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
 // has been still at the instant the state is measured at. The pair is the tree's, so the root
-// and a child of it past its own review carry the same two values, though that child holds no
-// admission slot and the root holds one: what has stopped is the tree, and an issue past its
-// review is measured like every other member of it. The child's own record is the newest
+// and a child of it in retro carry the same two values, though that child holds no admission
+// slot, since retro keeps none, and the root holds one: what has stopped is the tree, and an
+// issue in retro is measured like every other member of it. The child's own record is the newest
 // movement here, which is what makes the two values the tree's rather than each issue's.
 //
 // An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
@@ -860,7 +1045,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -868,7 +1053,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
 	}
 	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
-		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+		t.Fatalf("the root holds slot %+v and the child in retro holds %+v, want a row on the root and none on the child; this test proves nothing",
 			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
 	}
 	for _, key := range []string{"LEGION-10", "LEGION-11"} {
@@ -945,10 +1130,10 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 		Budgets: supervise.Budgets{PromptFailures: 3, PromptRetires: 2},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
 		failed, retired,
 		{Token: unfailed, Issue: "LEGION-220", Role: claim.RoleTester, State: supervise.StateIdle, Session: "ses_tester_220"},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -979,11 +1164,12 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // An issue's view carries a mergeWait object for exactly the review rounds that wait on GitHub's
 // answer about merging the head (classify.RoundWaitsOnMergeState over a pull request the record
 // holds open), and for no other: an approval standing on a head GitHub has answered nothing for
-// yet (LEGION-208) and one standing on a head GitHub will not merge from, whose architect and
-// reviewer have been told (LEGION-209, which carries the told marks the first does not). A round
-// whose issue is not reviewing (LEGION-210), one no approval decided (LEGION-211), one whose
-// head GitHub reports mergeable (LEGION-212) and one whose pull request the record no longer
-// holds open (LEGION-213) carry none.
+// yet (LEGION-208) and one standing on a head GitHub will not merge from and the round does not
+// end on, `behind`, whose architect and reviewer have been told (LEGION-209, which carries the
+// told marks the first does not). A round whose issue is not reviewing (LEGION-210), one no
+// approval decided (LEGION-211), one whose head GitHub reports mergeable (LEGION-212), one whose
+// pull request the record no longer holds open (LEGION-213) and one whose `blocked` answer ends the
+// round (LEGION-215, classify.MergeOutcomeOf) carry none.
 //
 // checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
 // two reported on its own head and not the third, of a name reported on the head before it, and
@@ -991,7 +1177,7 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
 // ever answered for: the zero instant is no time a read happened at. It is absent for LEGION-214
 // for a reason of its own: that row was written before the migration that added the stamp, so
-// the record holds a merge state GitHub gave — `blocked` — beside a zero moment, which is the
+// the record holds a merge state GitHub gave — `behind` — beside a zero moment, which is the
 // row `api.MergeWaitView.StateReadAt` and the schema's `stateReadAt` both describe. Such a view
 // carries the state and no `stateReadAt` at all, so a reader is never handed a read at the zero
 // instant for a state that was truly read.
@@ -1008,27 +1194,33 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	approved := func() *record.ReviewDecision {
 		return &record.ReviewDecision{State: "approved", Body: "ship it", Head: "h2"}
 	}
-	blocked := func(key string, number int) *record.PullRequest {
+	behind := func(key string, number int) *record.PullRequest {
 		return &record.PullRequest{Issue: key, Repo: "acme/widgets", Number: number, HeadSHA: "h2",
-			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, StateReadAt: read, HeadUpdatedAt: updated,
+			State: record.PullRequestOpen, MergeState: record.MergeStateBehind, StateReadAt: read, HeadUpdatedAt: updated,
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 11, Head: "h2"}, {Name: "lint", ID: 12, Head: "h2"},
 				{Name: "e2e", ID: 13, Head: "h1"}}}
 	}
 	told := approved()
-	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBlocked
-	merged := blocked("LEGION-213", 47)
+	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBehind
+	merged := behind("LEGION-213", 47)
 	merged.State = record.PullRequestMerged
-	mergeable := blocked("LEGION-212", 46)
+	mergeable := behind("LEGION-212", 46)
 	mergeable.MergeState = record.MergeStateClean
+	// The head GitHub holds `blocked` and MERGEABLE, nothing of it running, once both of its own
+	// check runs have concluded, with no review asked for: the merger's merge answers that state,
+	// so the approval ends the round.
+	concluded := behind("LEGION-215", 49)
+	concluded.Mergeability, concluded.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
+	concluded.ReviewsRequested, concluded.HeadChecks, concluded.EvidenceReadAt = new(0), record.HeadChecksConcluded, concluded.StateReadAt
 	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
 	// recorded and the moment of the read is not, which no row written since can be.
-	premigration := blocked("LEGION-214", 48)
+	premigration := behind("LEGION-214", 48)
 	premigration.StateReadAt = time.Time{}
 	store := projectionStore{
 		issues: []record.Issue{
 			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
 			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
-			issue("LEGION-214", phase.Reviewing),
+			issue("LEGION-214", phase.Reviewing), issue("LEGION-215", phase.Reviewing),
 		},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-208": reviewer("LEGION-208", approved()),
@@ -1038,6 +1230,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-212": reviewer("LEGION-212", approved()),
 			"LEGION-213": reviewer("LEGION-213", approved()),
 			"LEGION-214": reviewer("LEGION-214", approved()),
+			"LEGION-215": reviewer("LEGION-215", approved()),
 		},
 		pullRequests: map[string]*record.PullRequest{
 			// The head a push has just moved to: GitHub has answered nothing for it, and the
@@ -1045,15 +1238,16 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-208": {Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, HeadSHA: "h2",
 				State: record.PullRequestOpen, MergeState: record.MergeStateUnread, HeadUpdatedAt: updated,
 				CheckRuns: []record.AttemptRun{{Name: "unit", ID: 9, Head: "h1"}}},
-			"LEGION-209": blocked("LEGION-209", 43),
-			"LEGION-210": blocked("LEGION-210", 44),
-			"LEGION-211": blocked("LEGION-211", 45),
+			"LEGION-209": behind("LEGION-209", 43),
+			"LEGION-210": behind("LEGION-210", 44),
+			"LEGION-211": behind("LEGION-211", 45),
 			"LEGION-212": mergeable,
 			"LEGION-213": merged,
 			"LEGION-214": premigration,
+			"LEGION-215": concluded,
 		},
 	}
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, []supervise.Claim{}, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -1062,13 +1256,13 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no CI settlement has brought a run for",
 			wait, waiting)
 	}
-	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,
-		CheckRuns: 2, ToldHead: "h2", ToldState: "blocked"}
+	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", StateReadAt: &read, HeadUpdatedAt: &updated,
+		CheckRuns: 2, ToldHead: "h2", ToldState: "behind"}
 	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
 		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
 			wait, stuck)
 	}
-	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", HeadUpdatedAt: &updated, CheckRuns: 2}
+	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", HeadUpdatedAt: &updated, CheckRuns: 2}
 	if wait := got.Issues["LEGION-214"].MergeWait; !reflect.DeepEqual(wait, unstamped) {
 		t.Fatalf("LEGION-214's mergeWait = %+v, want %+v: a row written before the migration holds the state GitHub gave with no moment of the read, and the view carries that state without a stateReadAt",
 			wait, unstamped)
@@ -1078,6 +1272,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		{"LEGION-211", "no approval decided the round"},
 		{"LEGION-212", "GitHub reports the head one the issue may advance on"},
 		{"LEGION-213", "the record no longer holds the pull request open"},
+		{"LEGION-215", "GitHub answers blocked with both of the head's own check runs concluded, which ends the round"},
 	} {
 		if wait := got.Issues[tc.key].MergeWait; wait != nil {
 			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)

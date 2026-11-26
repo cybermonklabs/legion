@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -318,8 +319,8 @@ func (h *guestHarness) awaitKills(n int) []Kill {
 	return h.reported()
 }
 
-// run starts the watch and returns once its start and its first scan are done.
-func (h *guestHarness) run() *guestHarness {
+// start starts the watch.
+func (h *guestHarness) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan struct{})
 	go func() {
@@ -327,6 +328,11 @@ func (h *guestHarness) run() *guestHarness {
 		h.g.Run(ctx)
 	}()
 	h.t.Cleanup(h.stop)
+}
+
+// run starts the watch and returns once its start and its first scan are done.
+func (h *guestHarness) run() *guestHarness {
+	h.start()
 	h.pending = h.nextWait()
 	return h
 }
@@ -338,7 +344,7 @@ func (h *guestHarness) nextWait() fakeWait {
 		return w
 	case <-h.done:
 		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(h.t)):
 		h.t.Fatalf("the watch never waited for its next scan; the log:\n%s", strings.Join(h.log.all(), "\n"))
 	}
 	return fakeWait{}
@@ -369,7 +375,7 @@ func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, b
 	var o openedPipe
 	select {
 	case o = <-open:
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(h.t)):
 		h.t.Fatalf("no evidence pass read pid %d's status; the log:\n%s", pid, h.logged())
 	}
 	if o.err != nil {
@@ -465,6 +471,78 @@ func TestGuestRaisesARolesCommandsAndKeepsItsOwnProcessesAtTheStartingScore(t *t
 	}
 }
 
+// A panic in a step of the guest watch, here its classifier's at a scan, turns the watch off for
+// good with one off line that names the panic and where it was raised: the watch asks for no next
+// scan, and Run returns at its context's end alone. A panic that left Run would end the launcher,
+// PID 1 of the pod, which runs the watch on a goroutine of its own.
+func TestGuestTurnsOffOnAPanicInAScanAndRunsOnUntilItsContextEnds(t *testing.T) {
+	const start = 300
+	pod := newFakePod(t)
+	pod.setSelfScore(start)
+	classes := guestTree(pod, start)
+	h := newGuestHarness(t, pod.proc, newFakeCgroup(t, cgroupV2).dir, classes)
+	var panicking atomic.Bool
+	h.g.classify = func(*Table) map[int]Class {
+		if panicking.Load() {
+			panic("a test's classifier panics")
+		}
+		return classes
+	}
+	h.run()
+	panicking.Store(true)
+	w := h.pending
+	w.fire <- h.clock.advance(w.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.lines("off ")) > 0 }) {
+		t.Fatalf("the watch wrote no off line after its classifier panicked; the log:\n%s", h.logged())
+	}
+	want := "launcher: guest memory: off reason=panic: a test's classifier panics at "
+	if off := h.lines("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) || !strings.Contains(off[0], "guest_test.go:") {
+		t.Fatalf("the watch's off lines are %q, want one starting %q that names this test's file", off, want)
+	}
+	h.stop()
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the watch waited for another scan after its classifier panicked")
+	}
+}
+
+// A panic in the guest watch's first scan, which its start takes once it has started its wake on
+// memory.events (watchKills), stops that wake at once, with the off line, as a panic at any later
+// step does: the watch reads no file-modified event, and holds no inotify descriptor, while it
+// waits for its context's end. The wake is stopped once.
+func TestGuestStopsItsWakeAtOnceOnAPanicInItsFirstScan(t *testing.T) {
+	const start = 300
+	pod := newFakePod(t)
+	pod.setSelfScore(start)
+	classes := guestTree(pod, start)
+	h := newGuestHarness(t, pod.proc, newFakeCgroup(t, cgroupV2).dir, classes)
+	h.g.classify = func(*Table) map[int]Class { panic("a test's classifier panics") }
+	var stops atomic.Int32
+	h.g.watchModified = func(string) (*fileWatch, error) {
+		return &fileWatch{modified: make(chan struct{}), stop: func() { stops.Add(1) }}, nil
+	}
+	h.start()
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.lines("off ")) > 0 }) {
+		t.Fatalf("the watch wrote no off line after its first scan panicked; the log:\n%s", h.logged())
+	}
+	want := "launcher: guest memory: off reason=panic: a test's classifier panics at "
+	if off := h.lines("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) {
+		t.Fatalf("the watch's off lines are %q, want one starting %q", off, want)
+	}
+	if off := h.lines("wake off"); len(off) != 0 {
+		t.Fatalf("the watch logged %q, want its wake started before its first scan", off)
+	}
+	if !testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), time.Millisecond, func() bool { return stops.Load() > 0 }) {
+		t.Fatalf("the watch's wake still ran 5 seconds after its first scan panicked, want it stopped at once; the log:\n%s", h.logged())
+	}
+	h.stop()
+	if n := stops.Load(); n != 1 {
+		t.Fatalf("the watch stopped its wake %d times, want once", n)
+	}
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the watch waited for a scan after its first scan panicked")
+	}
+}
+
 // The counter rising by one while a command of the tester's shows the kernel's kill, still in /proc
 // with SIGKILL pending while its memory is freed (reaped), names that command: the guard's own
 // line with its role, its executable and its resident size at the scan before, the cgroup's
@@ -490,7 +568,7 @@ func TestGuestNamesTheProcessTheKernelKilledAndTellsItsRole(t *testing.T) {
 			h.tick()
 			at := h.clock.Now()
 
-			want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3"`,
+			want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3"`,
 				load, 1500*mib, 3500*mib, 3900*mib, 32*mib, podLimit)
 			if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 				t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
@@ -500,7 +578,7 @@ func TestGuestNamesTheProcessTheKernelKilledAndTellsItsRole(t *testing.T) {
 					Guard: h.g.ID(), Sequence: 1, PID: load, Executable: "python3", SizeBytes: 1500 * mib,
 					ReadingBytes: 3500 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: at, Cause: shimwire.MemoryKillCauseKernel,
 				},
-				Role: "tester",
+				Role: "tester", Rule: "kernel", Sizes: "kernel",
 			}
 			kills := h.reported()
 			if len(kills) != 1 || kills[0] != wantKill {
@@ -771,7 +849,7 @@ func TestGuestNamesAZombieThatShowsTheKillThoughTheScanLeavesItOut(t *testing.T)
 	killed.zombie, killed.resident = true, 0
 	pod.add(killed.fakeProcess)
 	showKill(pod, load, "python3", true)
-	if table, err := scan(pod.proc); err != nil || table.byPID[load] != nil {
+	if table, err := Scan(pod.proc); err != nil || table.byPID[load] != nil {
 		t.Fatalf("the scan reads the zombie %d (%v), want it left out", load, err)
 	}
 	cgroup.setKills(1)
@@ -1469,7 +1547,7 @@ func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testi
 	h.tick()
 	at := h.clock.Now()
 
-	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="omp"`,
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="omp"`,
 		guestAgent, 2*gib, 3500*mib, 3900*mib, 32*mib, podLimit)
 	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
@@ -1479,7 +1557,7 @@ func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testi
 			Guard: h.g.ID(), Sequence: 1, PID: guestAgent, Executable: "omp", SizeBytes: 2 * gib,
 			ReadingBytes: 3500 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: at, Cause: shimwire.MemoryKillCauseKernelProtected,
 		},
-		Role: "tester",
+		Role: "tester", Rule: "kernel", Sizes: "kernel",
 	}
 	kills := h.reported()
 	if len(kills) != 1 || kills[0] != wantKill {
@@ -1846,12 +1924,12 @@ func TestGuestWakesAtTheFileModifiedEventOfMemoryEventsAndNamesTheKillWithNoScan
 			Guard: h.g.ID(), Sequence: 1, PID: python, Executable: "python3", SizeBytes: 1500 * mib,
 			ReadingBytes: 3500 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: h.clock.Now(), Cause: shimwire.MemoryKillCauseKernel,
 		},
-		Role: "tester",
+		Role: "tester", Rule: "kernel", Sizes: "kernel",
 	}
 	if len(kills) != 1 || kills[0] != wantKill {
 		t.Fatalf("the sink took %+v, want the one kill %+v; the log:\n%s", kills, wantKill, h.logged())
 	}
-	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3"`,
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3"`,
 		python, 1500*mib, 3500*mib, 3900*mib, 32*mib, podLimit)
 	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
@@ -2116,7 +2194,7 @@ func TestGuestKeepsWhatAPassLeftAtARiseThroughTheScansSnapshot(t *testing.T) {
 	zombie.zombie = true
 	pod.addGuest(zombie)
 	showKill(pod, cc1, "cc1", true)
-	if table, err := scan(pod.proc); err != nil || table.byPID[cc1] != nil {
+	if table, err := Scan(pod.proc); err != nil || table.byPID[cc1] != nil {
 		t.Fatalf("the scan reads the zombie %d (%v), want it left out", cc1, err)
 	}
 	pod.addGuest(command(ld, 9450, "ld", 0, 0))

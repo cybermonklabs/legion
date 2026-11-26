@@ -31,17 +31,17 @@ const (
 	statementUnknown  = "unknown"
 )
 
-// The reason codes of a statement state, beside reasonNotBuilt and reasonRefused, each the rule of
-// Derive that gives it.
+// The reason codes of a statement state, beside ReasonNotBuilt and reasonRefused, each the rule of
+// Derive that gives it; the command names each but reasonStatementRefused.
 const (
-	reasonCheckFalse        = "check_false"
-	reasonSupporterNotMet   = "supporter_not_met"
-	reasonCheckUnknown      = "check_unknown"
-	reasonSupporterUnknown  = "supporter_unknown"
-	reasonSupporterNotBuilt = "supporter_not_built"
-	reasonNoCheck           = "no_check"
+	ReasonCheckFalse        = "check_false"
+	ReasonSupporterNotMet   = "supporter_not_met"
+	ReasonCheckUnknown      = "check_unknown"
+	ReasonSupporterUnknown  = "supporter_unknown"
+	ReasonSupporterNotBuilt = "supporter_not_built"
+	ReasonNoCheck           = "no_check"
 	reasonStatementRefused  = "statement_refused"
-	reasonChecksTrue        = "checks_true"
+	ReasonChecksTrue        = "checks_true"
 )
 
 // statementJudge derives the state of each statement of the approved spec at one subject from the
@@ -84,10 +84,23 @@ func newStatementJudge(current Tree, approved Approved, holds map[string]Holding
 	return j
 }
 
+// derive is the state of each statement of current in preorder (inPreorder). The entry of the
+// derivation refuses a loop of parent and serves relations among the current statements
+// (approvedFault), so each statement is listed once and the search of its state ends: the judge
+// has no loop guard of its own.
+func (j *statementJudge) derive(current Tree) []StatementState {
+	order := j.inPreorder(current)
+	states := make([]StatementState, 0, len(order))
+	for _, id := range order {
+		states = append(states, j.state(id))
+	}
+	return states
+}
+
 // inPreorder is the id of each current statement in preorder: the top statements by id, then the
 // statements under each one by id, depth first. A statement whose parent is no current statement is
-// a top statement, and a statement in a loop of parents, which Validate refuses, comes after them,
-// each statement once.
+// a top statement. The entry of the derivation refuses a loop of parents (approvedFault), so each
+// statement is under one top statement and is listed once.
 func (j *statementJudge) inPreorder(current Tree) []string {
 	seen := make(map[string]bool, len(current.Statements))
 	order := make([]string, 0, len(current.Statements))
@@ -95,9 +108,6 @@ func (j *statementJudge) inPreorder(current Tree) []string {
 		if !j.statements[s.Parent] {
 			order = j.preorder(s.ID, seen, order)
 		}
-	}
-	for _, s := range current.Statements {
-		order = j.preorder(s.ID, seen, order)
 	}
 	return order
 }
@@ -127,11 +137,11 @@ func (j *statementJudge) state(id string) StatementState {
 	}
 	under := j.preorder(id, map[string]bool{}, nil)
 	if i := slices.IndexFunc(under, j.notBuilt); i >= 0 {
-		st.State, st.Reason, st.Detail = statementNotBuilt, reasonNotBuilt, under[i]
+		st.State, st.Reason, st.Detail = statementNotBuilt, ReasonNotBuilt, under[i]
 	} else {
 		st.State, st.Reason, st.Detail = j.byChecks(id)
 	}
-	st.PartlyChecked = st.State == statementMet && *j.approved.Nodes[id].PartlyChecked // Input.check refuses one that is not set
+	st.PartlyChecked = st.State == statementMet && j.approved.Nodes[id].PartlyChecked
 	j.states[id] = st
 	return st
 }
@@ -152,32 +162,11 @@ func (j *statementJudge) state(id string) StatementState {
 //     statement_refused, detail that statement;
 //   - a supporter: supporter_not_met, supporter_unknown or supporter_not_built, detail it.
 //
-// A statement under id or a supporter of id that reaches id in its turn is in a loop of parent and
-// support relations, which Validate refuses: it reads unknown, statement_refused or
-// supporter_unknown, so that no state depends on the order of the derivation.
+// The entry of the derivation refuses a loop of parent and support relations among the current
+// statements (approvedFault), so no statement reaches itself and the search ends.
 func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
-	var notMet, unknown finding
-	rule, refused := j.refused[id]
-	switch {
-	case j.lacksCheck(id):
-		unknown.keep(reasonNoCheck, id)
-	case refused:
-		unknown.keep(reasonRefused, rule)
-	}
-	for _, c := range j.own[id] {
-		switch cs, reads := j.checks[c]; {
-		case !reads:
-		case cs.State == checkFalse:
-			notMet.keep(reasonCheckFalse, c)
-		case cs.State == checkUnknown:
-			unknown.keep(reasonCheckUnknown, c)
-		}
-	}
+	notMet, unknown := j.ownFindings(id)
 	for _, s := range j.children[id] {
-		if j.reaches(s, id) {
-			unknown.keep(reasonStatementRefused, s)
-			continue
-		}
 		under := j.state(s)
 		reason, detail := under.Reason, under.Detail
 		if reason == reasonRefused {
@@ -191,17 +180,13 @@ func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 		}
 	}
 	for _, p := range j.supporters[id] {
-		supporter := statementUnknown
-		if !j.reaches(p, id) {
-			supporter = j.state(p).State
-		}
-		switch supporter {
+		switch j.state(p).State {
 		case statementNotMet:
-			notMet.keep(reasonSupporterNotMet, p)
+			notMet.keep(ReasonSupporterNotMet, p)
 		case statementUnknown:
-			unknown.keep(reasonSupporterUnknown, p)
+			unknown.keep(ReasonSupporterUnknown, p)
 		case statementNotBuilt:
-			unknown.keep(reasonSupporterNotBuilt, p)
+			unknown.keep(ReasonSupporterNotBuilt, p)
 		}
 	}
 	switch {
@@ -210,7 +195,7 @@ func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 	case unknown.reason != "":
 		return statementUnknown, unknown.reason, unknown.detail
 	}
-	return statementMet, reasonChecksTrue, ""
+	return statementMet, ReasonChecksTrue, ""
 }
 
 // finding is the first reason of one state that the search order meets, and the id it names.
@@ -225,66 +210,62 @@ func (f *finding) keep(reason, detail string) {
 	}
 }
 
-// reaches is whether the state of statement follows the state of target: target is under it or
-// supports it, directly or through other statements that are under or support those in their turn.
-func (j *statementJudge) reaches(statement, target string) bool {
-	seen := map[string]bool{statement: true}
-	for next := []string{statement}; len(next) > 0; {
-		s := next[len(next)-1]
-		next = next[:len(next)-1]
-		for _, deps := range [2][]string{j.children[s], j.supporters[s]} {
-			for _, d := range deps {
-				if d == target {
-					return true
-				}
-				if !seen[d] {
-					seen[d] = true
-					next = append(next, d)
-				}
-			}
+// ownFindings is the first finding of each state that id itself and its own checks that read the
+// subject give, in the search order of byChecks: no_check when id lacks a check that the tree rules
+// ask for (lacksCheck), else refused with the rule when the tree rules refuse it (refusals), each
+// unknown; then each own check by id, check_false a not met and check_unknown an unknown. A check
+// that does not read the subject gives none. byChecks goes on from them, and ownState reads them
+// alone.
+func (j *statementJudge) ownFindings(id string) (notMet, unknown finding) {
+	rule, refused := j.refused[id]
+	switch {
+	case j.lacksCheck(id):
+		unknown.keep(ReasonNoCheck, id)
+	case refused:
+		unknown.keep(reasonRefused, rule)
+	}
+	for _, c := range j.own[id] {
+		switch cs, reads := j.checks[c]; {
+		case !reads:
+		case cs.State == CheckFalse:
+			notMet.keep(ReasonCheckFalse, c)
+		case cs.State == checkUnknown:
+			unknown.keep(ReasonCheckUnknown, c)
 		}
 	}
-	return false
+	return notMet, unknown
 }
 
 // lacksCheck is whether the approved spec gives the statement id no check where the tree rules ask
 // for one, by the pair of rules of Validate: a leaf (leaf-without-check, R6: "Each leaf statement
 // has one or more checks"), or a statement that other statements serve (supported-without-check,
 // R5: "A statement that other statements support still has checks of its own"). A statement with
-// statements under it, no supporter and no check of its own is neither: the rules take it. A
-// statement that serves itself is in a loop, which Validate refuses too, and lacks a check here.
+// statements under it, no supporter and no check of its own is neither: the rules take it.
 func (j *statementJudge) lacksCheck(id string) bool {
 	return len(j.own[id]) == 0 && (len(j.children[id]) == 0 || len(j.supporters[id]) > 0)
 }
 
 // ownState is the state of the statement id over those of its own checks that read the subject
-// (R29, with R10: "Only the checks that read the subject count"): not built when the files do not
-// hold its current text; else not met when one of them is false, also when the tree rules refuse
-// it, since a refusal never hides a failure; else unknown when it lacks a check that the tree
-// rules ask for (lacksCheck; R10: "Met means that its checks pass"), the tree rules refuse it
-// (refusals), or one of them is unknown; and met when all are true, also when a statement with
-// statements under it and no supporter has no own check, or none of its checks reads the subject.
+// (R29, with R10: "Only the checks that read the subject count"), from ownFindings: not built when
+// the files do not hold its current text; else not met when one of them is false, also when the
+// tree rules refuse it, since a refusal never hides a failure; else unknown when it lacks a check
+// that the tree rules ask for, the tree rules refuse it, or one of them is unknown; and met when
+// all are true, also when a statement with statements under it and no supporter has no own check,
+// or none of its checks reads the subject.
 func (j *statementJudge) ownState(id string) string {
 	if j.notBuilt(id) {
 		return statementNotBuilt
 	}
-	state := statementMet
-	if _, refused := j.refused[id]; refused || j.lacksCheck(id) {
-		state = statementUnknown
+	switch notMet, unknown := j.ownFindings(id); {
+	case notMet.reason != "":
+		return statementNotMet
+	case unknown.reason != "":
+		return statementUnknown
 	}
-	for _, c := range j.own[id] {
-		switch j.checks[c].State { // a check that does not read the subject has no state here
-		case checkFalse:
-			return statementNotMet
-		case checkUnknown:
-			state = statementUnknown
-		}
-	}
-	return state
+	return statementMet
 }
 
 // notBuilt is whether the files do not hold the current approved text of the statement id.
 func (j *statementJudge) notBuilt(id string) bool {
-	h := j.holds[id]
-	return !h.Present || !h.Current
+	return !j.holds[id].holdsCurrent()
 }

@@ -37,7 +37,26 @@
 // entry is keyed by the minute and a sweep's window reaches to its own (openDue), and for one
 // whose entry the sweep adopts because a build without the index rewrote its record: the sweep
 // gives that record an entry of its own and then waits out a request still ahead, from whatever
-// minute the adopted entry was keyed to (decide).
+// minute the adopted entry was keyed to (decide). A listed delivery whose GUID the bucket cannot
+// key is not among them either: it is left out of the sweep with a WARN line (keyRefusal).
+//
+// A delivery's GUID, event and action are GitHub's text, and so is every key that holds a GUID, so
+// each line and error of this package shows them as githubapp.ShownBody shows GitHub's text: whole
+// up to 512 runes, and past that its first 512 runes and its size. An error the bucket answered
+// quotes the key it refused. githubapp.ShownErr cuts such an error whole, as it cuts any other
+// error that quotes GitHub's text, with the size of the error's text (bucketErr). GitHub's
+// text in the errors of the GitHub calls (Sweeper.GitHub) reaches the sweep already cut by the
+// githubapp client, so the sweep shows those errors as they are:
+//
+//   - A refusal's body is cut alone, with the body's size.
+//   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
+//     alone, with the value's size. The error still names the layout, or the field and the type.
+//     The reason of a time parse error quotes the text after a valid time, and it is cut alone
+//     too, with the reason's size.
+//   - A transport error cuts its URL, with the URL's size, and its cause. A line the cause quotes
+//     is cut with the cause's text, with the size of the cause's text.
+//   - githubapp.ShownErr answers no error longer than 4,414 bytes. An error whose text is still
+//     longer after the cuts above is cut whole, with the size of that text.
 //
 // Dispatch runs the sweep because it holds the App's private key, which the list and redeliver
 // endpoints require (they take only an App JWT).
@@ -60,7 +79,8 @@ import (
 )
 
 const (
-	// Interval is how often the running sweep lists failures.
+	// Interval is the longest the running sweep waits after a sweep before it lists failures
+	// again: each wait is more than 0.9 of it and at most it (duty.JitteredWithin).
 	Interval = 2 * time.Minute
 	// Lookback is how far back every continuous sweep with a cursor lists. Failures older than
 	// it are decided from their records, which the index brings back when they are due (openDue).
@@ -73,9 +93,9 @@ const (
 	// longer carries that OK attempt reads the delivery as one still failing. So the window has to
 	// outlast the longest there is between a request and the sweep that judges it. That is
 	// maxBackoff, the longest a record ever waits between requests, plus the sweeps it takes for a
-	// due entry to be read: an entry is keyed to its minute, the loop's tick is Interval with up
-	// to a tenth of it again in jitter, and a sweep that reaches a record a moment early leaves it
-	// to the next one. Three intervals cover those.
+	// due entry to be read: an entry is keyed to its minute, the loop waits at most Interval after
+	// a sweep before the next, and a sweep that reaches a record a moment early leaves it to the
+	// next one. Three intervals cover those.
 	Lookback = maxBackoff + 3*Interval
 
 	// retention is the bucket's TTL, GitHub's own horizon: past three days GitHub neither lists
@@ -255,39 +275,41 @@ type Sweeper struct {
 // times those list calls for one result.
 const webhookRedeliveryLease = "webhook-redelivery"
 
-// jittered is the wait Run leaves after each sweep (duty.Jittered). It is a variable only so a test
-// can fix the draw.
-var jittered = duty.Jittered
+// jittered is the wait Run leaves after each sweep (duty.JitteredWithin). It is a variable only so
+// a test can fix the draw.
+var jittered = duty.JitteredWithin
 
-// Run sweeps now and then every interval until ctx ends, logging each sweep's counts: the failed
-// attempts listed, the deliveries they belong to, and how many deliveries had each outcome. After
-// each sweep it waits the interval plus up to a tenth of it again (duty.Jittered), drawn afresh
-// every period, so two processes started together drift apart rather than reaching the lease in
-// step every interval for the life of both. The first sweep is not delayed: a process that starts
-// sweeps at once, as it always has.
+// Run sweeps now and then about every interval until ctx ends, logging each sweep's counts: the
+// failed attempts listed, the deliveries they belong to, and how many deliveries had each outcome.
+// After each sweep it waits the interval less up to a tenth of it (duty.JitteredWithin), drawn
+// afresh every time, so no wait is longer than the interval and two processes started together
+// drift apart rather than reaching the lease in step every interval for the life of both. The
+// first sweep is not delayed: a process that starts sweeps at once, as it always has.
 //
-// Each sweep runs under webhookRedeliveryLease for one interval, so one sweep's listings are what
-// the installation's rate limit pays for that interval however many processes sweep - a process
-// that starts in the middle of another's interval, which is what a rolling update makes, finds that
-// interval swept and skips. The period is interval itself, the loop's own tick, and not the
-// package's Interval. Each sweep's due time, the moment it hands duty.Exclusive and the one its
-// period is judged by, is the moment Run started for the first and the moment its timer fired for
-// every later one - never the moment the lease was taken, which a slow lease would carry into the
-// next period and so cost the sweep after it that period. A timer armed once the sweep before has
-// returned, for at least one interval, always reaches the next period, so neither a slow lease nor
-// the jitter ever makes a process skip its own next sweep. leases is required, as it is of every
-// leased loop (cmd/dispatch exits at boot if the lease pool cannot be opened).
+// Each sweep runs under webhookRedeliveryLease for one period of duty.LeasePeriod(interval), 0.9
+// of the interval, so one sweep's listings are what the installation's rate limit pays for that
+// period however many processes sweep - a process that starts in the middle of another's period,
+// which is what a rolling update makes, finds that period swept and skips. The period follows
+// interval, the loop's own tick, and not the package's Interval. Each sweep's due time, the moment
+// it hands duty.Exclusive and the one its period is judged by, is the moment Run started for the
+// first and the moment its timer fired for every later one - never the moment the lease was taken,
+// which a slow lease would carry into the next period and so cost the sweep after it that period.
+// A timer armed once the sweep before has returned waits longer than one period, so it always
+// reaches the next period, and neither a slow lease nor the jitter ever makes a process skip its
+// own next sweep. leases is required, as it is of every leased loop (cmd/dispatch exits at boot if
+// the lease pool cannot be opened).
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration, leases duty.Leases) {
 	s.run(ctx, interval, leases, duty.Exclusive)
 }
 
 // run is Run with the lease gate handed in (duty.ExclusiveFunc), so the schedule above - the sweep
-// at start, and the jittered wait between one sweep and the next - can be tested on a fake clock
-// against a lease of the test's own, with no Postgres the bubble's clock would have to wait on.
+// at start, the jittered wait between one sweep and the next, and the period and due time each
+// sweep hands the lease - can be tested on a fake clock against a lease of the test's own, with no
+// Postgres the bubble's clock would have to wait on.
 func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.Leases, exclusive duty.ExclusiveFunc) {
 	due := time.Now()
 	for {
-		exclusive(ctx, leases, webhookRedeliveryLease, due, interval, s.sweepAndReport)
+		exclusive(ctx, nil, leases, webhookRedeliveryLease, due, duty.LeasePeriod(interval), s.sweepAndReport)
 		timer := time.NewTimer(jittered(interval))
 		select {
 		case <-ctx.Done():
@@ -336,8 +358,10 @@ func (s *Sweeper) sweepAndReport(ctx context.Context) {
 // Sweep lists the failed deliveries in its window, adds the open deliveries the listing no longer
 // returns -- the ones the index says are due in the running sweep (openDue), every one there is in
 // a sweep given a window of its own (scanOpenRecords) -- and decides each: redeliver it, wait until
-// its next request is due or another sweeper's claim ends, or expire it. A rate-limited answer from
-// GitHub ends the sweep there. It opens the state first unless an earlier sweep has (openState).
+// its next request is due or another sweeper's claim ends, or expire it. A delivery whose GUID the
+// bucket cannot key is left out with a line, and the sweep goes on without it (keyRefusal). A
+// rate-limited answer from GitHub ends the sweep there. It opens the state first unless an earlier
+// sweep has (openState).
 func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 	if err := s.openState(ctx); err != nil {
 		return Report{}, err
@@ -446,6 +470,11 @@ func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 		if requests >= maxRequests {
 			report.Complete = false
 			break
+		}
+		if refused := s.keyRefusal(guid, now); refused != nil {
+			s.Logger.Warn("webhook redelivery left out a delivery whose GUID the bucket cannot key",
+				"guid", githubapp.ShownBody(guid), "error", refused)
+			continue
 		}
 		decision, requested, err := s.decide(ctx, guid, byGUID[guid], delivered[guid], now, opts.DryRun)
 		if s.stoppedAtLimit(ctx, &report, err, opts.DryRun) {
@@ -664,7 +693,15 @@ func (s *Sweeper) decide(ctx context.Context, guid string, attempts []githubapp.
 	}
 	answered := current
 	answered.LastAttemptAt = now
-	answered.NextAttemptAt = now.Add(backoff(requests + 1))
+	// The next request is due nine tenths of the backoff after this sweep (duty.LeasePeriod), not
+	// the whole of it. The backoffs are whole numbers of Interval - the first is one, so that a
+	// failed redelivery is asked for again at the next sweep - and the running sweep waits more than
+	// nine tenths of an interval and at most one between two sweeps (Run, duty.JitteredWithin), so
+	// k sweeps take more than nine tenths of k intervals and the k-th sweep after this one always
+	// finds a backoff of k intervals passed. Due at the whole backoff, it would wait for the sweep
+	// after that one whenever the k waits came to less than the backoff, which they nearly always
+	// do: the first retry about four minutes on rather than two.
+	answered.NextAttemptAt = now.Add(duty.LeasePeriod(backoff(requests + 1)))
 	answered.FirstDeliveredAt = first
 	answered.Delivery = newest
 	// The claim's write moved the delivery's index entry to the claim's own key, so that entry,
@@ -822,12 +859,35 @@ func (s *Sweeper) clearBackoff(ctx context.Context, backoff ratelimit.Limit) {
 	}
 }
 
+// keyRefusal answers the refusal the bucket would give a write of guid's index entry, and nil when
+// the bucket can key every record and entry of the delivery. The GUID is GitHub's text, and one the
+// bucket refuses -- outside nats' key alphabet, holding a space or an empty token, or so long its
+// entry's key passes the write's bound -- fails that delivery's read or write on every sweep for as
+// long as the listing returns it: a refused read fails the whole sweep, and a refused write leaves
+// every sweep incomplete with its cursor held (errNotWritten). No sweep can ever act on such a
+// delivery, since every key it has holds the GUID, so Sweep leaves it out and stays complete for
+// it.
+//
+// The entry's key is the one question to ask. It is the longest key a delivery has, and its length
+// does not depend on the minute it is due at, since pendingLayout writes every field at a fixed
+// width; the record's key, guid.<GUID>, is shorter, and its read (Get) is held to a looser bound
+// than a write; and both keys put the GUID after a prefix of well-formed tokens, so they hold the
+// same characters and the same empty tokens and end in the same byte. A GUID whose entry can be
+// written therefore has a record the bucket can read, create and update, and an entry it can
+// delete (Delete's bound is looser still). The refusal quotes the key, so it is shown through
+// bucketErr.
+func (s *Sweeper) keyRefusal(guid string, now time.Time) error {
+	return bucketErr(s.state.RefusesWrite(pendingKey(now, guid)))
+}
+
+// attrs are the attributes every line about one delivery carries. The GUID, the event and the
+// action are GitHub's text, so each is shown as githubapp.ShownBody shows it.
 func (s *Sweeper) attrs(decision Decision) []any {
 	return []any{
-		"guid", decision.GUID,
+		"guid", githubapp.ShownBody(decision.GUID),
 		"delivery_id", decision.DeliveryID,
-		"event", decision.Event,
-		"action", decision.Action,
+		"event", githubapp.ShownBody(decision.Event),
+		"action", githubapp.ShownBody(decision.Action),
 		"repository_id", decision.RepositoryID,
 		"status_code", decision.StatusCode,
 		"delivered_at", decision.DeliveredAt.Format(time.RFC3339),
@@ -835,7 +895,8 @@ func (s *Sweeper) attrs(decision Decision) []any {
 }
 
 // backoff is the pause before the next request after tries requests: 2, 4, 8, 16, 32, then 60
-// minutes.
+// minutes, a whole number of Interval each. The request after it is due nine tenths of the pause
+// after the sweep that made this one (decide), so the sweep that many intervals on makes it.
 func backoff(tries int) time.Duration {
 	wait := firstBackoff
 	for i := 1; i < tries && wait < maxBackoff; i++ {

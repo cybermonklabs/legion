@@ -16,10 +16,10 @@ version, or when the pre-split package is still installed beside it (`envoyPlugi
 ## Installing both into the daemon's profile
 
 The Legion daemon's boot gate (`packages/daemon/internal/daemon/bootgate.go`) refuses to start
-unless the Oh My Pi a pane will run loads this plugin at the daemon's contract
-(`legion.daemonApiVersion` in this package's `package.json`, equal to `DaemonAPIVersion` in
-`packages/daemon/internal/api/version.go`) and loads `@sjawhar/pi-envoy` with it, so both go into
-the Oh My Pi profile the daemon's panes use:
+unless the Oh My Pi a pane will run loads this plugin at the daemon's contract (the
+`legion.daemonApiVersion` its pack wrote into the installed `package.json`, which must be the
+number on the first line of the daemon's `legion version --contracts`) and loads
+`@sjawhar/pi-envoy` with it, so both go into the Oh My Pi profile the daemon's panes use:
 
 ```sh
 omp plugin install @sjawhar/pi-envoy && omp plugin install @sjawhar/pi-legion
@@ -45,8 +45,8 @@ the task agents Legion's prompts and skills dispatch (`oracle`; the reviewer's p
 `thermonuclear-deep-review` and `thermonuclear-code-quality`; `deep-worker`; the architect's
 `design-outsider`, which reads no file of the repository, and `goal-red-team`, which judges a
 change against its issue's goal and requirements; the planner's
-`plan-gap-analyst` and `plan-reviewer`, which also review a root spec before every approval
-request, `plan-reviewer` checking each of its factual claims), each
+`plan-gap-analyst` and `plan-reviewer`, which an architect may also run on a spec, `plan-reviewer`
+checking each of its factual claims), each
 declaring its model as a role the operator maps (`docs/kubernetes.md`, "Model roles"). The Dispatch
 and Envoy skills, the text skills and the secrets broker's client (`agent-secrets`, `asd-ste100`,
 `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `envoy`, `outside-message` and
@@ -54,15 +54,19 @@ and Envoy skills, the text skills and the secrets broker's client (`agent-secret
 `skill://dispatch/...`, which resolves by name once both are installed.
 
 `scripts/pi-plugin-prepack.sh` at the repository root is both plugins' `prepack`: it builds the one
-entry, writes the notices and stages this package's partition of `skills/`. It refuses to pack with
-the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release workflow's
-`pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e pack step
-rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
+entry, writes the notices, stages this package's partition of `skills/`, and takes group and other
+write from every path the pack ships (each `files` entry, the manifest and the root's README and
+licence files), so the tarball's modes do not depend on the packer's umask. It refuses to pack
+with the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release
+workflow's `pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e
+pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
 afterwards: the build job's tree is discarded, and nothing commits a version — the committed
 manifest's `.version` stays where it last was, and the `pi-legion-v` tag the release makes records
-the release. The manifest's `legion` key carries the daemon
-API contract the plugin was built against; `src/daemon-api-version.test.ts` pins it to the daemon's
-golden fixture.
+the release. The same three steps write the daemon API contract the plugin was built against into
+the manifest's `legion` key (`daemonContract` in `packages/contracts/src/daemon-contract.ts`: the
+greatest number of `released-contracts.json` plus the checkout's count of entry fixtures), and the
+bundle inlines it. The committed manifest declares none, so a plugin linked from the checkout
+declares no contract and the boot gate refuses it.
 
 ## Development install
 
@@ -89,7 +93,7 @@ From this directory:
 ```sh
 bun run test
 bun test src/tools.test.ts   # one file
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bunx biome check extensions/ src/
 ```
 

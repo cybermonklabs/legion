@@ -32,7 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -45,6 +45,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -55,15 +57,14 @@ import (
 // read-only after BuildAppContext returns; per-request state lives on
 // *router.
 type AppContext struct {
-	SigningKey     auth.SigningKeys
-	WebDistDir     string
-	AssetStore     AssetStore
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	Store          *store.Store
-	DefaultProject string
-	ServerURL      string
+	SigningKey auth.SigningKeys
+	WebDistDir string
+	AssetStore AssetStore
+	Sessions   auth.SessionStore
+	People     auth.PeopleStore
+	Identity   identity.Identity
+	Store      *store.Store
+	ServerURL  string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
 	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
@@ -77,9 +78,10 @@ type AppContext struct {
 	// lifetime is AppContextOptions.Lifetime, which New passes to api.Register.
 	lifetime context.Context
 	// devSignInHost is the dashboard origin's host:port when the dev sign-in route is mounted,
-	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
-	// turn the route on without the origin check.
-	devSignInHost string
+	// and empty otherwise, and devSignInOrigin that origin, scheme://host:port, the one place the
+	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
+	// can turn the route on without the origin check.
+	devSignInHost, devSignInOrigin string
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -100,15 +102,14 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	BuildCommit string
+	Sessions    auth.SessionStore
+	People      auth.PeopleStore
+	Identity    identity.Identity
+	SignIn      *oidc.CodeFlow
+	SignInRule  identity.SignInRule
+	Store       *store.Store
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -120,7 +121,17 @@ type AppContextOptions struct {
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
-	Docs       docs.API
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
+	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
+	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
+	// machine's identity token every listener call presents in EnvoyToken's place instead
+	// (cmd/dispatch); empty presents none.
+	EnvoyGoogleAudience string
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -133,7 +144,7 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	AgentStream  agentstream.Source
 	// AgentPublisher queues a person's targeted message on its session's own subject when no store
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
@@ -142,10 +153,15 @@ type AppContextOptions struct {
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
+	// Renames is the rename pairs main read once at boot (store.ReadRepoRenames). See
+	// api.DepsInput.
+	Renames refs.Renames
 	// AgentSecretsURL/AgentSecretsTokenFile configure the credential-request UI's secrets broker
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -171,11 +187,18 @@ type AppContextOptions struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads this process serves for the keyword fill's pause,
+	// which cmd/dispatch gives the fill too (textversions.Config.Latency); nil times none. See
+	// api.Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -192,7 +215,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
 	}
-	var devSignInHost string
+	var devSignInHost, devSignInOrigin string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
 			return nil, fmt.Errorf("BuildAppContext: DevSignIn requires a Sessions store")
@@ -201,22 +224,26 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		if err != nil {
 			return nil, fmt.Errorf("BuildAppContext: %w", err)
 		}
-		devSignInHost = host
+		// DevSignInOrigin has parsed ServerURL already, so this parse cannot fail.
+		parsed, _ := url.Parse(opts.ServerURL)
+		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
-		DefaultProject:         opts.DefaultProject,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
+		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
 		Events:                 opts.Events,
+		Renames:                opts.Renames,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,
@@ -225,6 +252,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		LegionStatusScope:      opts.LegionStatusScope,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -234,8 +262,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
+		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -247,22 +277,22 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		eventHead = func(context.Context) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
-		SigningKey:     opts.SigningKey,
-		WebDistDir:     opts.WebDistDir,
-		AssetStore:     opts.AssetStore,
-		Sessions:       opts.Sessions,
-		People:         opts.People,
-		Identity:       opts.Identity,
-		Store:          opts.Store,
-		DefaultProject: opts.DefaultProject,
-		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
-		SignIn:         opts.SignIn,
-		SignInRule:     opts.SignInRule,
-		InsecureCookie: opts.InsecureCookie,
-		devSignInHost:  devSignInHost,
-		apiDeps:        apiDeps,
-		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
+		SigningKey:      opts.SigningKey,
+		WebDistDir:      opts.WebDistDir,
+		AssetStore:      opts.AssetStore,
+		Sessions:        opts.Sessions,
+		People:          opts.People,
+		Identity:        opts.Identity,
+		Store:           opts.Store,
+		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
+		SignIn:          opts.SignIn,
+		SignInRule:      opts.SignInRule,
+		InsecureCookie:  opts.InsecureCookie,
+		devSignInHost:   devSignInHost,
+		devSignInOrigin: devSignInOrigin,
+		apiDeps:         apiDeps,
+		eventHead:       eventHead,
+		lifetime:        opts.Lifetime,
 	}, nil
 }
 
@@ -398,8 +428,11 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // state was used, yet each completes at most once: the callback clears the cookie before anything
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
-// process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502.
+// process has not discovered (another process started the sign-in), or a token endpoint that
+// cannot answer it (a 5xx, a 408 or a 429, an answer whose body was cut off, or no answer:
+// oidc.ErrIssuerUnavailable), is answered 503 SIGNIN_UNAVAILABLE. Every other answer of the token
+// endpoint - a 4xx with or without an OAuth error, a 2xx that names an error or holds no token, a
+// 3xx - and every other failure of the sign-in is answered 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -423,7 +456,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
+		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is undiscovered or could not answer", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
 		return
 	}
@@ -817,8 +850,12 @@ func isBrowserRoute(normalized string) bool {
 	}
 	// Issue routes carry user-controlled segments (artifact slugs, ask/comment
 	// ids) that may legitimately contain a dot, so the file-extension
-	// heuristic below must never apply to them.
+	// heuristic below must never apply to them. A person's page carries one
+	// too, and it always holds a dot: a login is an email.
 	if normalized == "/issues" || strings.HasPrefix(normalized, "/issues/") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "/people/") {
 		return true
 	}
 	return !strings.Contains(filepath.Base(normalized), ".")
