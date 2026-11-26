@@ -306,8 +306,9 @@ func TestAReleaseDuringDeliveryKeepsTheRow(t *testing.T) {
 // publishes the row again under the same key, which the stream keeps once: one message in all.
 //
 // The control, a kept subtest: the row finished before its publish is confirmed, as a planted
-// fault (the test deletes the row while the listener holds its publish untaken): after the
-// restart no publish of it was taken, so the count the stop's case asserts reads 0, not 1.
+// fault (the test deletes the row while the listener holds its publish untaken): once the
+// restarted daemon's lane has run past every row of the issue then due (laneRan), no publish of it
+// was taken, so the count the stop's case asserts reads 0, not 1.
 func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 	t.Parallel()
 	reader := record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}
@@ -377,7 +378,7 @@ func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 				d.t.Fatalf("finish row %d before its publish is confirmed: %v", id, err)
 			}
 		})
-		time.Sleep(2 * time.Second)
+		d.laneRan()
 		if delivered := d.listener.delivered(token, record.OutboxKey(id)); delivered != 0 || d.rowLeft(id) {
 			t.Fatalf("with the row finished before its publish was confirmed: %d messages, the row left %t; want none, the loss the stop's case would count as 0 for 1",
 				delivered, d.rowLeft(id))
@@ -479,9 +480,10 @@ func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 }
 
 // A row of CI news that a project's pause holds is owed to its reader all the same: while the
-// project is paused the row runs nothing, wakes no claim and publishes nothing; at the resume it
-// wakes the released reviewer and reaches it once, under its own key. The pause holds the kind as
-// it holds a hook prompt (record's pauseHolds).
+// project is paused the row runs nothing, wakes no claim and publishes nothing, read once its lane
+// has run past every row of the issue then due (laneRan); at the resume it wakes the released
+// reviewer and reaches it once, under its own key. The pause holds the kind as it holds a hook
+// prompt (record's pauseHolds).
 func TestAPauseKeepsAnOwedCIRow(t *testing.T) {
 	t.Parallel()
 	d := newCIDaemon(t, nil)
@@ -491,7 +493,7 @@ func TestAPauseKeepsAnOwedCIRow(t *testing.T) {
 	d.boot()
 	d.pauseProject()
 	id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}, "k-ci"))
-	time.Sleep(2 * time.Second)
+	d.laneRan()
 	if wakes, refused, taken := d.wakes(claim.RoleReviewer), d.listener.refusedTo(token), len(d.listener.takenTo(token, "")); wakes != 0 || refused != 0 || taken != 0 || !d.rowLeft(id) {
 		t.Fatalf("while the project is paused: %d wakes, %d publishes refused, %d taken, the row left %t; want the row held, untouched",
 			wakes, refused, taken, d.rowLeft(id))
