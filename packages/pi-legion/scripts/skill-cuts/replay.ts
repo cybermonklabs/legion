@@ -42,17 +42,40 @@
  * all of them, in the order of the reply's calls, one `function_call_output` item per call
  * holding the answer's text (F8: the Responses API takes no error flag, and Oh My Pi sends none).
  *
- * The first reply that holds no tool call, or any tool call that reads no skill file (a read of
+ * The first reply that holds no tool call, or a tool call that reads no skill file (a read of
  * another path on disk, a read of a directory of a skill, a read with another selector, a read by
- * path of a file Oh My Pi shows in a form the arms do not rebuild, any other tool), ends the run. The
- * judged step (`Replayed.step`) is each answered round's tool calls, the reads, without their
- * answers, then that reply: the judge sees which files the agent read before it acted, so a case
- * whose line governs a read of a file of the skill ("read references/x.md first") passes on that
- * read. A reply after the last answered round whose every tool call still reads a skill file gets
- * no verdict: the replay rejects with ReadsPastLastRound (READS_PAST_LAST_ROUND), and cli.ts makes
- * the run again as any run with no verdict; judged, the read would fail in every arm. Each
- * answered round's reads are recorded (`Replayed.reads`: the skill, the file, how it was read,
- * and where the answer came from).
+ * path of a file Oh My Pi shows in a form the arms do not rebuild, any other tool) and no read
+ * that the replay answers, ends the run. The judged step (`Replayed.step`) is each answered
+ * round's answered calls, without their answers, then that reply: the judge sees which files the
+ * agent read before it acted, so a case whose line governs a read of a file of the skill ("read
+ * references/x.md first") passes on that read. A reply after the last answered round whose every
+ * tool call still reads a skill file gets no verdict: the replay rejects with ReadsPastLastRound
+ * (READS_PAST_LAST_ROUND), and cli.ts makes the run again as any run with no verdict; judged, the
+ * read would fail in every arm. Each answered round's reads are recorded (`Replayed.reads`: the
+ * skill, the file, how it was read, and where the answer came from).
+ *
+ * A mixed reply holds a read the replay answers and a call it does not (the architect,
+ * 2026-11-26: the agent batches a read of a reference the text sends it to with the calls that
+ * prepare its act, and that batch is not its attempt at the act). Without a rule
+ * (`ReplayOptions.mixed`) it ends the run as any reply with another call does. With one, its
+ * other calls (and, for a case whose act is text, its text) are sorted with no model call
+ * (`replyBoundary`, `callPart`): a behaviour case's rule (`caseAct`) sorts each by the tokens of
+ * its arguments against the case's two steps, and a load test's (LOAD_RULE) by what the call can
+ * do. A reply with an act (an attempt at the case's act; in a load test, an action that starts
+ * the task) is the judged step as it came (`Replayed.mixedAct`). A reply with no act and a call
+ * neither rule can sort gets no verdict: the replay rejects with UndecidedReply
+ * (MIXED_UNDECIDED), naming those calls, and is not continued. A reply whose other calls only
+ * prepare is a round of its own while rounds are left: its reads are answered, and it goes back
+ * holding only those read calls (a Messages reply less its unanswered `tool_use` blocks, its
+ * thinking and text kept; a Responses reply's output items less its unanswered `function_call`
+ * items, its reasoning and message items kept in their order), with one answer per read. No other
+ * call is run and no result is made up for one: the calls left out are recorded
+ * (`Replayed.leftOut`: the round, the tool and its first argument) and are in no body and in no
+ * judged step. After the last round such a reply gets no verdict, as ReadsPastLastRound. In a
+ * written case's run, a reply whose every call is read-only (checkout.ts's `readOnlyCall`) is a
+ * round of the checkout, below, and never a mixed reply: the rule sorts only a reply that also
+ * makes a call that is not read-only, and the reads of such a round it continues take knives'
+ * blocks where a round of skill reads would (`knivesRead`).
  *
  * A written case's run (`ReplayOptions.checkout`, the case's `checkout` copied from its commit;
  * cli.ts gives one to a written case only) also answers a reply whose every tool call is
@@ -135,7 +158,7 @@ import {
   skillFileRange,
   unknownSkill,
 } from "./arms";
-import { pathReadFile, skillReadFile } from "./cases";
+import { type Case, pathReadFile, skillReadFile } from "./cases";
 import {
   answerCall,
   type CheckoutCopy,
@@ -158,6 +181,7 @@ import {
   ROUTING_HEADER,
   type SendOptions,
   type Spent,
+  type ToolCall,
   toolCalls,
 } from "./gateway";
 
@@ -171,11 +195,17 @@ export const MAX_SKILL_ROUNDS = 3;
 export const MAX_CHECKOUT_ROUNDS = 5;
 
 /** How the reason of a run begins whose reply after the last answered round still only reads
- *  skill files (ReadsPastLastRound): such a run gets no verdict. */
+ *  skill files, or still reads them beside calls that only prepare the act (ReadsPastLastRound):
+ *  such a run gets no verdict. */
 export const READS_PAST_LAST_ROUND = "reads-past-last-round";
 /** How the reason of a run begins whose reply, in a written case's run, makes a read-only call
  *  its checkout copy answers in no form (UnansweredRead): such a run gets no verdict. */
 export const UNANSWERED_READ = "unanswered-read";
+
+/** How the reason of a run begins whose mixed reply has no act and a call the rule sorts neither
+ *  as the act nor as preparation (UndecidedReply): such a run gets no verdict, and is not
+ *  continued. */
+export const MIXED_UNDECIDED = "mixed-undecided";
 
 /** The most cache breakpoints (`cache_control`) one Messages API request may hold. */
 export const MAX_BREAKPOINTS = 4;
@@ -288,18 +318,32 @@ export type CheckoutRead = Readonly<z.infer<typeof CheckoutRead>>;
  *  answered. */
 export type RoundRead = AnsweredRead | CheckoutRead;
 
-/** One replay: the judged step (each answered round's tool calls, then the reply that ended the
- *  run; its other fields are that reply's), how many rounds of skill reads and of checkout reads
- *  were answered before it and each round's answers in order, what each reply used, in the order
- *  sent, the session id every round of the run went with (gateway.ts's `freshIdentity`; null for
- *  a body that names none), the routing id every round went with (null when none was given, and
- *  for a Responses body), and the deployment that answered each reply, in the order sent
- *  (gateway.ts's `deploymentOf`). */
+/** One call a continued round left out (see the file's header): the answered round it was in
+ *  (from 1, the round whose reads `Replayed.reads` holds at that place), its tool, and its first
+ *  argument but the intent label `i`, as text (a string as it is, else its JSON), or null when it
+ *  has none. A run record keeps each as it is (cli.ts's runs, load.ts's runs). */
+export const LeftOutCall = z.strictObject({
+  round: z.int().positive(),
+  tool: z.string(),
+  argument: z.string().nullable(),
+});
+export type LeftOutCall = Readonly<z.infer<typeof LeftOutCall>>;
+
+/** One replay: the judged step (each answered round's answered calls, then the reply that ended
+ *  the run; its other fields are that reply's), how many rounds of skill reads and of checkout
+ *  reads were answered before it and each round's answers in order, the calls the continued
+ *  rounds left out (LeftOutCall), whether the reply that ended it is a mixed reply with an act
+ *  (`replyBoundary`'s `acts`), what each reply used, in the order sent, the session id every
+ *  round of the run went with (gateway.ts's `freshIdentity`; null for a body that names none),
+ *  the routing id every round went with (null when none was given, and for a Responses body), and
+ *  the deployment that answered each reply, in the order sent (gateway.ts's `deploymentOf`). */
 export interface Replayed {
   readonly step: Reply;
   readonly rounds: number;
   readonly checkoutRounds: number;
   readonly reads: readonly (readonly RoundRead[])[];
+  readonly leftOut: readonly LeftOutCall[];
+  readonly mixedAct: boolean;
   readonly usage: Spent[];
   readonly userId: string | null;
   readonly routingId: string | null;
@@ -317,21 +361,53 @@ function readWords(read: RoundRead): string {
   return `${read.tool} ${named ?? ""}`.trim();
 }
 
+/** A call of a mixed reply in words: its tool, then its first argument cut to 80 characters. */
+function callWords(call: SortedCall): string {
+  const { argument } = call;
+  if (argument === null) return call.tool;
+  return `${call.tool} ${argument.length > 80 ? `${argument.slice(0, 79)}…` : argument}`;
+}
+
 /** What a replay rejects with when the reply after its last answered round still only reads skill
- *  files, or, in a written case's run, still only makes read-only calls its checkout copy answers:
- *  the run gets no verdict (see the file's header). `replayed` is the run as it stood, its `step`
- *  that reply after the answered rounds' calls. Its message begins READS_PAST_LAST_ROUND, and names
- *  the reply's reads. */
+ *  files, or reads them beside calls that only prepare the act (`beside`, the calls of a mixed
+ *  reply `replyBoundary` would continue), or, in a written case's run, still only makes read-only
+ *  calls its checkout copy answers: the run gets no verdict (see the file's header). `replayed` is
+ *  the run as it stood, its `step` that reply after the answered rounds' calls. Its message begins
+ *  READS_PAST_LAST_ROUND, and names the reply's reads and the calls beside them. */
 export class ReadsPastLastRound extends Error {
   constructor(
     readonly replayed: Replayed,
-    last: readonly RoundRead[]
+    last: readonly RoundRead[],
+    beside: readonly SortedCall[] = []
   ) {
     const reads = last.map(readWords).join(", ");
+    const others = beside.map(callWords).join(", ");
     super(
-      last.every((read) => read.from !== "checkout")
-        ? `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still only reads skill files (${reads})`
-        : `${READS_PAST_LAST_ROUND}: after ${replayed.checkoutRounds} answered rounds of read-only calls answered from the checkout and ${replayed.rounds} of skill reads, the reply still only makes read-only calls the checkout answers (${reads})`
+      beside.length > 0
+        ? `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still reads skill files (${reads}) beside other calls, none of them an act (${others})`
+        : last.every((read) => read.from !== "checkout")
+          ? `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still only reads skill files (${reads})`
+          : `${READS_PAST_LAST_ROUND}: after ${replayed.checkoutRounds} answered rounds of read-only calls answered from the checkout and ${replayed.rounds} of skill reads, the reply still only makes read-only calls the checkout answers (${reads})`
+    );
+  }
+}
+
+/** What a replay rejects with when a mixed reply has no act and a call the rule sorts neither as
+ *  the act nor as preparation (`replyBoundary`'s `undecided`): the run gets no verdict and is not
+ *  continued (see the file's header). `replayed` is the run as it stood, its `step` the answered
+ *  rounds' calls and that reply as it came. Its message begins MIXED_UNDECIDED, and names the
+ *  reply's reads and each undecided call, or its text. */
+export class UndecidedReply extends Error {
+  constructor(
+    readonly replayed: Replayed,
+    last: readonly AnsweredRead[],
+    undecided: readonly SortedCall[],
+    text: boolean
+  ) {
+    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const what = [...undecided.map(callWords), ...(text ? ["its text"] : [])].join(", ");
+    super(
+      `${MIXED_UNDECIDED}: after ${replayed.rounds} answered rounds of skill reads, the reply reads skill files (${files}) beside what the rule sorts neither as an act nor as preparation (${what}), so it is neither judged nor continued`
     );
   }
 }
@@ -358,19 +434,22 @@ export class UnansweredRead extends Error {
  *  every round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside a
  *  captured Messages body, whose betas its fields need; none beside a Responses body); the
  *  routing id that goes with a Messages body on every round, in gateway.ts's ROUTING_HEADER (a
- *  UUID; none by default, and none beside a Responses body, whatever is given); and `endsAt`,
- *  which is told each reply's content and the answers made to its reads (`round`; undefined when
- *  the reply holds no tool call, or one that reads no skill file), before the reply after the
- *  last answered round is refused. When it gives true, the run ends at that reply: the reply is
- *  the judged step, its answers are not sent, and they are in no round of `reads`. Without it, a
- *  run ends only as the file's header says. load.ts's load test uses it. A written case's run
- *  gives `checkout`, the copy of its checkout its read-only calls are answered from, at most
- *  MAX_CHECKOUT_ROUNDS rounds of them, or, for a written case with no checkout, why none is
- *  answered (see the file's header); a run without one answers none, and is judged on them. */
+ *  UUID; none by default, and none beside a Responses body, whatever is given); the rule that
+ *  sorts a mixed reply's other calls (`mixed`, MixedRule; without one a mixed reply ends the
+ *  run, as any reply with another call); and `endsAt`, which is told each reply's content and the
+ *  answers the replay would make to its reads (`round`; undefined unless `replyBoundary` makes it
+ *  a skill round or continues it), before the reply after the last answered round is refused.
+ *  When it gives true, the run ends at that reply: the reply is the judged step, its answers are
+ *  not sent, and they are in no round of `reads`. Without it, a run ends only as the file's
+ *  header says. load.ts's load test uses it. A written case's run gives `checkout`, the copy of
+ *  its checkout its read-only calls are answered from, at most MAX_CHECKOUT_ROUNDS rounds of
+ *  them, or, for a written case with no checkout, why none is answered (see the file's header); a
+ *  run without one answers none, and is judged on them. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly InstalledCopy[];
   readonly routingId?: string;
+  readonly mixed?: MixedRule;
   readonly endsAt?: (
     content: readonly ContentBlock[],
     round: readonly SkillRead[] | undefined
@@ -466,29 +545,451 @@ function skillRead(
   return { id, text, read };
 }
 
-/** The reads a reply's `content` makes, answered, or undefined when it holds no tool call, or a
- *  tool call that reads no skill file. No read is answered unless every call is a `read` of a path
- *  or URL, so a reply that also makes another call never fails on a read the replay cannot
- *  answer (`otherSkillRead`'s throw). */
-function roundReads(
+/** What splits a call's argument or a step's text into the act rule's tokens (`tokens`):
+ *  whitespace and the characters " ' ` ; | & ( ) , = < >. */
+const TOKEN_BREAK = /[\s"'`;|&(),=<>]+/;
+
+/** The tokens of `text` as the act rule reads them (the runner's architect,
+ *  2026-11-26T06:16:45Z): split at TOKEN_BREAK, lowercased, each of 2 characters or more. */
+export function tokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(TOKEN_BREAK)
+    .filter((token) => token.length >= 2);
+}
+
+/** The tokens of a tool call's arguments `input`: of every string value in it (a number and a
+ *  boolean as text), at any depth, but the value of its intent label `i`, which says what the
+ *  call is for, not what it does. */
+export function argumentTokens(input: unknown): string[] {
+  const found: string[] = [];
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") found.push(...tokens(value));
+    else if (typeof value === "number" || typeof value === "boolean") {
+      found.push(...tokens(String(value)));
+    } else if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+    } else if (isObject(value)) {
+      for (const field of Object.values(value)) walk(field);
+    }
+  };
+  if (isObject(input)) {
+    for (const [key, value] of Object.entries(input)) if (key !== "i") walk(value);
+  } else walk(input);
+  return found;
+}
+
+/** A tool call's arguments `input` without its intent label `i`, which says what the call is
+ *  for, not what it does: two calls whose arguments differ only in it make the same call. */
+function withoutIntent(input: unknown): unknown {
+  if (!isObject(input)) return input;
+  const { i: _intent, ...rest } = input;
+  return rest;
+}
+
+/** One act call of a case (`caseAct`): its tool, its arguments without the intent label
+ *  (`withoutIntent`), its distinguishing tokens, and whether it only reads or looks
+ *  (`onlyLooks`). */
+export interface ActCall {
+  readonly tool: string;
+  readonly input: unknown;
+  readonly tokens: ReadonlySet<string>;
+  readonly looks: boolean;
+}
+
+/** A case's act (`caseAct`): its act calls, and, where its two steps make the same calls, its
+ *  distinguishing text tokens (`text`; undefined where the act is calls). */
+export interface Act {
+  readonly calls: readonly ActCall[];
+  readonly text: ReadonlySet<string> | undefined;
+}
+
+/**
+ * The act of case `c`, from its `realStep` and `violatingStep` (the runner's architect,
+ * 2026-11-26T06:16:45Z), with no model: each step's `toolCall` blocks, each its tool and its
+ * argument tokens (`argumentTokens`). The shared tokens are those the calls of both steps hold. A
+ * call that the other step makes as it is (its tool and its arguments the same, the intent label
+ * left out) is the steps' shared context, not the act, each matched once; each call of either
+ * step left unmatched is an act call, and its distinguishing tokens are its tokens that are not
+ * shared. Where no call is left unmatched, the two steps make the same calls and the act is the
+ * text: its distinguishing tokens are the tokens of each step's text that the other step's text
+ * lacks.
+ */
+export function caseAct(c: Pick<Case, "realStep" | "violatingStep">): Act {
+  type StepCall = { readonly tool: string; readonly input: unknown };
+  const callsOf = (step: Case["realStep"]): StepCall[] =>
+    (step.content ?? []).flatMap((block) =>
+      block.type === "toolCall" ? [{ tool: block.name ?? "", input: block.arguments }] : []
+    );
+  const real = callsOf(c.realStep);
+  const violating = callsOf(c.violatingStep);
+  const tokensOf = (calls: readonly StepCall[]) =>
+    new Set(calls.flatMap((call) => argumentTokens(call.input)));
+  const realTokens = tokensOf(real);
+  const shared = new Set([...tokensOf(violating)].filter((token) => realTokens.has(token)));
+  const unmatched = (own: readonly StepCall[], other: readonly StepCall[]): StepCall[] => {
+    const left = [...other];
+    return own.filter((call) => {
+      const at = left.findIndex(
+        (each) =>
+          each.tool === call.tool &&
+          Bun.deepEquals(withoutIntent(each.input), withoutIntent(call.input), true)
+      );
+      if (at < 0) return true;
+      left.splice(at, 1);
+      return false;
+    });
+  };
+  const acts = [...unmatched(real, violating), ...unmatched(violating, real)];
+  if (acts.length > 0) {
+    return {
+      calls: acts.map((call) => ({
+        tool: call.tool,
+        input: withoutIntent(call.input),
+        tokens: new Set(argumentTokens(call.input).filter((token) => !shared.has(token))),
+        looks: onlyLooks(call.tool, call.input),
+      })),
+      text: undefined,
+    };
+  }
+  const textOf = (step: Case["realStep"]) =>
+    new Set(
+      tokens(
+        (step.content ?? [])
+          .flatMap((block) =>
+            block.type === "text" && block.text !== undefined ? [block.text] : []
+          )
+          .join("\n")
+      )
+    );
+  const realText = textOf(c.realStep);
+  const violatingText = textOf(c.violatingStep);
+  return {
+    calls: [],
+    text: new Set([
+      ...[...realText].filter((token) => !violatingText.has(token)),
+      ...[...violatingText].filter((token) => !realText.has(token)),
+    ]),
+  };
+}
+
+/** The programs whose words a `bash` command's simple command may start with and still only read
+ *  or look (LOAD_RULE), each with the test its arguments must pass for that: any other program,
+ *  and one whose arguments fail its test, leaves the call undecided. */
+const LOOKING_PROGRAMS: Readonly<Record<string, (args: readonly string[]) => boolean>> = (() => {
+  const any = () => true;
+  /** Where in `args` its subcommand is: the first argument that is no flag nor the value of one
+   *  of `valued`'s flags; -1 when none is. */
+  const subcommandAt = (args: readonly string[], valued: readonly string[]): number => {
+    for (let at = 0; at < args.length; at += 1) {
+      const arg = args[at] ?? "";
+      if (!arg.startsWith("-")) return at;
+      if (valued.includes(arg)) at += 1;
+    }
+    return -1;
+  };
+  /** Whether the subcommand of `args` is one of `looks`. */
+  const looksBy =
+    (looks: readonly string[], valued: readonly string[]) => (args: readonly string[]) =>
+      looks.includes(args[subcommandAt(args, valued)] ?? "");
+  const listing = ["-a", "-r", "-v", "-vv", "-l", "--all", "--remotes", "--list", "--show-current"];
+  const runs = [
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-fls",
+  ];
+  const plain = [
+    ...["ls", "cat", "head", "tail", "wc", "pwd", "cd", "grep", "egrep", "fgrep", "rg", "fd"],
+    ...["jq", "tree", "stat", "file", "du", "df", "which", "type", "realpath", "readlink"],
+    ...["basename", "dirname", "date", "whoami", "id", "hostname", "uname", "echo", "printf"],
+    ...["true", "test", "[", "nl", "cut", "tr", "diff", "cmp", "comm", "printenv"],
+  ];
+  return {
+    ...Object.fromEntries(plain.map((program) => [program, any])),
+    find: (args) => !args.some((arg) => runs.includes(arg)),
+    sed: (args) =>
+      args[0] === "-n" && !args.some((arg) => arg.startsWith("-i") || arg.startsWith("--in-place")),
+    sort: (args) => !args.some((arg) => arg.startsWith("-o") || arg.startsWith("--output")),
+    command: (args) => args[0] === "-v" || args[0] === "-V",
+    git: (args) => {
+      const at = subcommandAt(args, ["-C", "-c"]);
+      const rest = args.slice(at + 1);
+      if (at < 0 || rest.some((arg) => arg.startsWith("--output"))) return false;
+      if (args[at] === "branch") return rest.every((arg) => listing.includes(arg));
+      if (args[at] === "remote") return rest.every((arg) => arg === "-v");
+      const looks = ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "grep"];
+      return looks.includes(args[at] ?? "");
+    },
+    docker: looksBy(
+      ["ps", "images", "inspect", "logs"],
+      ["-H", "--host", "--context", "--config", "-l", "--log-level"]
+    ),
+    kubectl: looksBy(
+      ["get", "describe", "logs"],
+      ["-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user"]
+    ),
+  };
+})();
+
+/** The simple commands of the shell command line `command`, each its words with their quotes
+ *  and escapes taken off, split at `;`, `&&`, `||`, `|`, `&` and new lines outside quotes; or
+ *  undefined when it runs a command inside another (`$(…)`, backticks), writes a file by a
+ *  redirection (`>`, `>>` or `&>` to anything but /dev/null or another stream), or leaves a
+ *  quote open. */
+export function simpleCommands(command: string): string[][] | undefined {
+  const commands: string[][] = [];
+  let words: string[] = [];
+  let word = "";
+  let quoted = false;
+  let quote: string | undefined;
+  const endWord = () => {
+    if (word !== "" || quoted) words.push(word);
+    word = "";
+    quoted = false;
+  };
+  const endCommand = () => {
+    endWord();
+    if (words.length > 0) commands.push(words);
+    words = [];
+  };
+  for (let at = 0; at < command.length; at += 1) {
+    const char = command[at] ?? "";
+    const next = command[at + 1];
+    if (char === "\\" && quote !== "'") {
+      word += next ?? "";
+      at += 1;
+    } else if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      else if (quote === '"' && (char === "`" || (char === "$" && next === "("))) return undefined;
+      else word += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      quoted = true;
+    } else if (char === "`" || (char === "$" && next === "(")) {
+      return undefined;
+    } else if (char === ">" || (char === "&" && next === ">")) {
+      const target = /^&?>>?\s*(\/dev\/null(?![^\s;&|])|&\d+)/.exec(command.slice(at));
+      if (target === null) return undefined;
+      // A stream number before the redirection is no word of the command.
+      if (/^\d*$/.test(word) && !quoted) word = "";
+      at += target[0].length - 1;
+    } else if (char === ";" || char === "\n" || char === "|" || char === "&") {
+      endCommand();
+      if ((char === "|" || char === "&") && next === char) at += 1;
+    } else if (/\s/.test(char) || char === "<") {
+      endWord();
+    } else {
+      word += char;
+    }
+  }
+  if (quote !== undefined) return undefined;
+  endCommand();
+  return commands;
+}
+
+/** Whether the shell command line `command` only reads or looks (LOAD_RULE): each of its simple
+ *  commands (`simpleCommands`), past its variable assignments, starts with a program of
+ *  LOOKING_PROGRAMS whose arguments pass that program's test. */
+export function readOnlyCommand(command: string): boolean {
+  const commands = simpleCommands(command);
+  if (commands === undefined || commands.length === 0) return false;
+  return commands.every((words) => {
+    let at = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at] ?? "")) at += 1;
+    const program = words[at];
+    if (program === undefined) return true;
+    return LOOKING_PROGRAMS[path.posix.basename(program)]?.(words.slice(at + 1)) === true;
+  });
+}
+
+/** The tools an agent only reads or looks with (`onlyLooks`). */
+const LOOKING_TOOLS = new Set(["read", "grep", "glob", "find", "lsp", "ast_grep"]);
+
+/** Whether a call of tool `tool` with the arguments `input` only reads or looks: a call of
+ *  LOOKING_TOOLS, a `write` to the `xd://lsp` device (a query), or a `bash` call whose command
+ *  only reads or looks (`readOnlyCommand`). */
+function onlyLooks(tool: string, input: unknown): boolean {
+  if (LOOKING_TOOLS.has(tool)) return true;
+  const field = (key: string): string | undefined => {
+    const value = isObject(input) ? input[key] : undefined;
+    return typeof value === "string" ? value : undefined;
+  };
+  const command = tool === "bash" ? field("command") : undefined;
+  if (command !== undefined) return readOnlyCommand(command);
+  const target = tool === "write" ? field("path") : undefined;
+  return target !== undefined && /^xd:\/\/lsp(\/|$)/.test(target);
+}
+
+/** What a call of a mixed reply is, beside its answerable skill reads: an act (an attempt at the
+ *  case's act; in a load test, an action that starts the task), only preparation for it, or
+ *  neither for certain (`callPart`). */
+export type CallPart = "act" | "preparation" | "undecided";
+
+/** The rule that sorts a mixed reply's other calls (`callPart`, `replyBoundary`): a behaviour
+ *  case's act (`caseAct`), or a load test's (LOAD_RULE), whose question is whether the agent
+ *  loaded the tested skill before it started the task. */
+export type MixedRule = { readonly kind: "case"; readonly act: Act } | { readonly kind: "load" };
+
+/** The load test's rule (the runner's architect, 2026-11-26T06:20:08Z): a call that only
+ *  reads or looks (`onlyLooks`) is preparation; any other `bash` call, and a `write` call whose
+ *  path is not known, is undecided; any other call (a `write` or `edit` of a file, a patch, a
+ *  `task` dispatch, any tool whose effect is not only a read) is an action. */
+export const LOAD_RULE: MixedRule = { kind: "load" };
+
+/** What `rule` makes of a call of tool `tool` with the arguments `input` in a mixed reply (see
+ *  the file's header). A case's rule: preparation when the tool is no act call's; an act when the
+ *  call is an act call of its tool (its arguments the same, the intent label left out), or its
+ *  tokens (`argumentTokens`) hold a distinguishing token of one; preparation when it only reads
+ *  or looks (`onlyLooks`) and no act call of its tool does; else undecided. A call whose tokens
+ *  the steps share is no less an attempt at the act for that (a violating step that leaves out
+ *  the real one's check has no token of its own), so only what the call does makes it
+ *  preparation. A load test's rule: LOAD_RULE. */
+export function callPart(rule: MixedRule, tool: string, input: unknown): CallPart {
+  if (rule.kind === "load") {
+    if (onlyLooks(tool, input)) return "preparation";
+    if (tool === "bash") return "undecided";
+    if (tool === "write" && !(isObject(input) && typeof input.path === "string")) {
+      return "undecided";
+    }
+    return "act";
+  }
+  const own = rule.act.calls.filter((call) => call.tool === tool);
+  if (own.length === 0) return "preparation";
+  const bare = withoutIntent(input);
+  if (own.some((call) => Bun.deepEquals(call.input, bare, true))) return "act";
+  const found = argumentTokens(input);
+  if (found.some((token) => own.some((call) => call.tokens.has(token)))) return "act";
+  return onlyLooks(tool, input) && !own.some((call) => call.looks) ? "preparation" : "undecided";
+}
+
+/** The text of a reply's `content`: its `text` blocks, or the text and refusal parts of its
+ *  Responses `message` items, one per line. */
+function replyText(content: readonly ContentBlock[]): string {
+  return content
+    .flatMap((block): string[] => {
+      if (block.type === "text") return typeof block.text === "string" ? [block.text] : [];
+      if (block.type !== "message" || !Array.isArray(block.content)) return [];
+      return block.content.flatMap((part): string[] => {
+        const text = isObject(part) ? (part.text ?? part.refusal) : undefined;
+        return typeof text === "string" ? [text] : [];
+      });
+    })
+    .join("\n");
+}
+
+/** What `rule` makes of a mixed reply's text: for a case whose act is the text, an act when it
+ *  holds a distinguishing text token, preparation when it is blank, else undecided (a plan to
+ *  answer is not the answer); undefined for any other rule, where the text decides nothing. */
+function textPart(rule: MixedRule, content: readonly ContentBlock[]): CallPart | undefined {
+  const own = rule.kind === "case" ? rule.act.text : undefined;
+  if (own === undefined) return undefined;
+  const text = replyText(content);
+  if (text.trim() === "") return "preparation";
+  return tokens(text).some((token) => own.has(token)) ? "act" : "undecided";
+}
+
+/** The first argument of a call's `input` but its intent label `i`, as text: a string as it is,
+ *  anything else as its JSON; null when it has none. */
+function firstArgument(input: unknown): string | null {
+  if (!isObject(input)) return null;
+  const entry = Object.entries(input).find(([key]) => key !== "i");
+  if (entry === undefined) return null;
+  return typeof entry[1] === "string" ? entry[1] : (JSON.stringify(entry[1]) ?? null);
+}
+
+/** A call of a mixed reply other than its answerable reads, as `replyBoundary` sorts it: its id,
+ *  its tool, its first argument (`firstArgument`), and its part (`callPart`). */
+export interface SortedCall {
+  readonly id: string | undefined;
+  readonly tool: string;
+  readonly argument: string | null;
+  readonly part: CallPart;
+}
+
+/** What a replay does with a reply (`replyBoundary`): `ends`, the run ends at it (no tool call,
+ *  no read the replay answers, or without a rule a call that is not one); `skill round`, every
+ *  call is a read it answers; or, for a mixed reply, its reads and its other calls sorted, with
+ *  what its text is where the rule reads it: `acts`, one is an act, and the run ends at it;
+ *  `undecided`, none is, and one is undecided; `continue`, each only prepares. */
+export type Boundary =
+  | { readonly kind: "ends" }
+  | { readonly kind: "skill round"; readonly reads: readonly SkillRead[] }
+  | {
+      readonly kind: "acts" | "undecided" | "continue";
+      readonly reads: readonly SkillRead[];
+      readonly others: readonly SortedCall[];
+      readonly text: CallPart | undefined;
+    };
+
+/**
+ * What the replay of `arm` with the installed copies `copies` does with a reply whose content is
+ * `content`, under `rule` (see the file's header): the one rule the replay and cli.ts's and
+ * load.ts's audits of saved runs apply, with no model. Without a rule a reply with a call that is
+ * not a `read` the replay answers ends the run, and no read of it is answered, so it never fails
+ * on one the replay cannot answer (`otherSkillRead`'s throw). With one, each `read` of a path or
+ * URL is answered where it can be, and a reply with an answered read and another call is sorted
+ * by `callPart`, and for a case whose act is the text by its text. Throws as `otherSkillRead`
+ * does for a read of a skill the profile lists that `copies` holds no copy of.
+ */
+export function replyBoundary(
   content: readonly ContentBlock[],
   arm: Arm,
-  copies: readonly InstalledCopy[]
-): SkillRead[] | undefined {
-  const calls: { id: string; target: string }[] = [];
-  for (const { id, name, input } of toolCalls(content)) {
+  copies: readonly InstalledCopy[],
+  rule?: MixedRule
+): Boundary {
+  const calls = toolCalls(content);
+  if (calls.length === 0) return { kind: "ends" };
+  const readOf = ({ id, name, input }: ToolCall) => {
     const target = isObject(input) ? input.path : undefined;
-    if (id === undefined || name !== "read" || typeof target !== "string") return undefined;
-    calls.push({ id, target });
+    return id !== undefined && name === "read" && typeof target === "string"
+      ? { id, target }
+      : undefined;
+  };
+  if (rule === undefined) {
+    const targets = calls.map(readOf);
+    if (targets.some((target) => target === undefined)) return { kind: "ends" };
+    const reads: SkillRead[] = [];
+    for (const target of targets) {
+      const read = target && skillRead(target.id, target.target, arm, copies);
+      if (read === undefined) return { kind: "ends" };
+      reads.push(read);
+    }
+    return { kind: "skill round", reads };
   }
-  if (calls.length === 0) return undefined;
   const reads: SkillRead[] = [];
-  for (const { id, target } of calls) {
-    const read = skillRead(id, target, arm, copies);
-    if (read === undefined) return undefined;
-    reads.push(read);
+  const others: SortedCall[] = [];
+  for (const call of calls) {
+    const target = readOf(call);
+    const read =
+      target === undefined ? undefined : skillRead(target.id, target.target, arm, copies);
+    if (read !== undefined) {
+      reads.push(read);
+      continue;
+    }
+    const tool = call.name ?? "";
+    others.push({
+      id: call.id,
+      tool,
+      argument: firstArgument(call.input),
+      part: callPart(rule, tool, call.input),
+    });
   }
-  return reads;
+  if (reads.length === 0) return { kind: "ends" };
+  if (others.length === 0) return { kind: "skill round", reads };
+  const text = textPart(rule, content);
+  const parts = [...others.map((call) => call.part), ...(text === undefined ? [] : [text])];
+  const kind = parts.includes("act")
+    ? "acts"
+    : parts.includes("undecided")
+      ? "undecided"
+      : "continue";
+  return { kind, reads, others, text };
 }
 
 /** Why a Responses body's run is not answered where knives adds its blocks: they are a text block
@@ -561,8 +1062,29 @@ async function checkoutRound(
   return answers;
 }
 
-/** `body` with `content`, a reply whose every tool call is one of `reads`, and the answer to each
- *  read added, in the form of the body's API (see the file's header). */
+/** `reads`, the skill reads of a reply's `content` a round answers, each with knives' blocks after
+ *  it where they go there (`knivesRead`), from the checkout copy `checkout` and the run's
+ *  `artifacts`; or why one of them is answered in no form. */
+function knivesReads(
+  reads: readonly SkillRead[],
+  content: readonly ContentBlock[],
+  checkout: CheckoutCopy | Unanswered | undefined,
+  artifacts: RunArtifacts | undefined,
+  responses: boolean
+): SkillRead[] | Unanswered {
+  const inputs = new Map(toolCalls(content).map(({ id, input }) => [id, input]));
+  const given: SkillRead[] = [];
+  for (const read of reads) {
+    const each = knivesRead(read, inputs.get(read.id), checkout, artifacts, responses);
+    if ("why" in each) return each;
+    given.push(each);
+  }
+  return given;
+}
+
+/** `body` with `content`, a reply whose every tool call is one of `reads` (a continued mixed
+ *  reply already less its other calls), and the answer to each read added, in the form of the
+ *  body's API (see the file's header). */
 function answered(
   body: RequestBody,
   content: readonly ContentBlock[],
@@ -598,17 +1120,25 @@ function answered(
 /** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
  *  file's header), the run's own session id `userId` (`freshIdentity`) and its routing id
  *  `routingId` (`routingFor`; none when null), which every round of the run keeps; answers its
- *  skill reads, and, with `checkout`, its rounds of read-only calls, and returns the judged step,
- *  or rejects with ReadsPastLastRound or, with `checkout`, UnansweredRead (see the file's
- *  header). `sent` is never changed, and every round's body shares its parts. `firstSettled` is
- *  told once the run's first send has its reply or its failure. */
+ *  skill reads as `replyBoundary` says under `options.mixed`, and, with `checkout`, its rounds of
+ *  read-only calls, and returns the judged step, or rejects with ReadsPastLastRound,
+ *  UndecidedReply or, with `checkout`, UnansweredRead (see the file's header). `sent` is never
+ *  changed, and every round's body shares its parts. `firstSettled` is told once the run's first
+ *  send has its reply or its failure. */
 async function replaySent(
   sent: RequestBody,
   userId: string | null,
   routingId: string | null,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers, endsAt, checkout }: ReplayOptions,
+  {
+    maxSkillRounds = MAX_SKILL_ROUNDS,
+    copies = [],
+    headers,
+    mixed,
+    endsAt,
+    checkout,
+  }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
   const sendHeaders = routingId === null ? headers : { ...headers, [ROUTING_HEADER]: routingId };
@@ -616,7 +1146,9 @@ async function replaySent(
   const usage: Spent[] = [];
   const deployments: string[] = [];
   const reads: RoundRead[][] = [];
-  // The answered rounds' tool calls, which the judged step holds before the reply that ends it.
+  const leftOut: LeftOutCall[] = [];
+  // The answered rounds' answered calls (their reads, and the read-only calls the checkout copy
+  // answered), which the judged step holds before the reply that ends it.
   const calls: ContentBlock[] = [];
   let rounds = 0;
   let checkoutRounds = 0;
@@ -633,48 +1165,45 @@ async function replaySent(
     usage.push(reply.spent);
     deployments.push(deploymentOf(reply));
     const content = reply.message.content;
-    const round = roundReads(content, arm, copies);
+    const boundary = replyBoundary(content, arm, copies, mixed);
+    const round =
+      boundary.kind === "skill round" || boundary.kind === "continue" ? boundary.reads : undefined;
     const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
+    const mixedAct = boundary.kind === "acts";
     const replayed = {
       step,
       rounds,
       checkoutRounds,
       reads,
+      leftOut,
+      mixedAct,
       usage,
       userId,
       routingId,
       deployments,
     };
     if (endsAt?.(content, round) === true) return replayed;
+    const responses = isResponsesBody(body);
     let answers: readonly AnsweredCall[];
-    if (round !== undefined) {
+    // A reply whose every call is a skill read is a round of skill reads; one whose every call is
+    // read-only, in a written case's run, a round of the checkout; only any other reply is sorted
+    // by the mixed rule (see the file's header).
+    const looked =
+      boundary.kind === "skill round" || checkout === undefined
+        ? undefined
+        : await checkoutRound(content, arm, copies, checkout, artifacts, responses);
+    if (boundary.kind === "skill round") {
       if (rounds >= maxSkillRounds) {
         throw new ReadsPastLastRound(
           replayed,
-          round.map(({ read }) => read)
+          boundary.reads.map(({ read }) => read)
         );
       }
       rounds += 1;
-      const inputs = toolCalls(content);
-      const given: SkillRead[] = [];
-      for (const [index, read] of round.entries()) {
-        const each = knivesRead(
-          read,
-          inputs[index]?.input,
-          checkout,
-          artifacts,
-          isResponsesBody(body)
-        );
-        if ("why" in each) throw new UnansweredRead(replayed, each.why);
-        given.push(each);
-      }
+      const given = knivesReads(boundary.reads, content, checkout, artifacts, responses);
+      if ("why" in given) throw new UnansweredRead(replayed, given.why);
       answers = given;
-    } else {
-      const looked =
-        checkout === undefined
-          ? undefined
-          : await checkoutRound(content, arm, copies, checkout, artifacts, isResponsesBody(body));
-      if (looked === undefined) return replayed;
+    } else if (looked !== undefined) {
       if ("why" in looked) throw new UnansweredRead(replayed, looked.why);
       if (checkoutRounds >= MAX_CHECKOUT_ROUNDS) {
         throw new ReadsPastLastRound(
@@ -684,20 +1213,45 @@ async function replaySent(
       }
       checkoutRounds += 1;
       answers = looked;
+    } else {
+      if (boundary.kind === "ends" || boundary.kind === "acts") return replayed;
+      const last = boundary.reads.map(({ read }) => read);
+      if (boundary.kind === "undecided") {
+        const undecided = boundary.others.filter((call) => call.part === "undecided");
+        throw new UndecidedReply(replayed, last, undecided, boundary.text === "undecided");
+      }
+      if (rounds >= maxSkillRounds) throw new ReadsPastLastRound(replayed, last, boundary.others);
+      rounds += 1;
+      const given = knivesReads(boundary.reads, content, checkout, artifacts, responses);
+      if ("why" in given) throw new UnansweredRead(replayed, given.why);
+      leftOut.push(
+        ...boundary.others.map(({ tool, argument }) => ({
+          round: reads.length + 1,
+          tool,
+          argument,
+        }))
+      );
+      answers = given;
     }
     reads.push(answers.map(({ read }) => read));
-    calls.push(...content.filter(isToolCallBlock));
-    body = answered(body, content, answers);
+    // The reply holding only the calls the replay answers: no other call goes back.
+    const answeredIds = new Set(answers.map(({ id }) => id));
+    const kept = content.filter(
+      (block) => !isToolCallBlock(block) || answeredIds.has(toolCalls([block])[0]?.id ?? "")
+    );
+    calls.push(...kept.filter(isToolCallBlock));
+    body = answered(body, kept, answers);
   }
 }
 
 /** Sends `body` for `arm` with a session id of its own when it names one (`freshIdentity`) and
  *  with `options.routingId` (`routingFor`), answers its skill reads, and returns the judged step.
  *  Rejects when a send does (the gateway's `BudgetSpent` among them), with ReadsPastLastRound
- *  when the reply after the last answered round still only reads, and with UnansweredRead when a
- *  written case's reply makes a read-only call its checkout copy answers in no form, or that a
- *  case with no checkout answers none of. `firstSettled` is told once the run's first send has
- *  its reply or its failure. */
+ *  when the reply after the last answered round still only reads (or reads skill files beside
+ *  calls that only prepare), with UndecidedReply for a mixed reply `options.mixed` leaves
+ *  undecided, and with UnansweredRead when a written case's reply makes a read-only call its
+ *  checkout copy answers in no form, or that a case with no checkout answers none of.
+ *  `firstSettled` is told once the run's first send has its reply or its failure. */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
@@ -775,15 +1329,16 @@ export interface InterleavedRun extends Slot {
  * the prefix its reply wrote to the cache serves its arm's later runs. Those waits change no
  * place of the order. Each arm's body to send is made once for all its runs, each run's a copy
  * of its top level with its own id (the body itself, when it names no id). Each run's outcome is
- * kept, whether it was a step or a failure, in the order sent. A written case's round gives
- * `checkout`, the copy every arm's runs answer read-only calls from, or, where the case has none,
- * why none is answered.
+ * kept, whether it was a step or a failure, in the order sent. `options.mixed` sorts each run's
+ * mixed replies (a behaviour case's act, `caseAct`). A written case's round gives `checkout`, the
+ * copy every arm's runs answer read-only calls from, or, where the case has none, why none is
+ * answered.
  */
 export async function replayInterleaved(
   arms: readonly ArmRuns[],
   gateway: Gateway,
   seed: string,
-  options: Pick<ReplayOptions, "maxSkillRounds" | "checkout"> = {}
+  options: Pick<ReplayOptions, "maxSkillRounds" | "mixed" | "checkout"> = {}
 ): Promise<InterleavedRun[]> {
   const byName = new Map<ArmName, ArmRuns & { readonly sent: RequestBody }>();
   for (const each of arms) {

@@ -20,6 +20,8 @@
  *       [--again <case id>]... [--confirm-flagged] (both confirm only)
  *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
  *       [--route-id <arm>=<uuid>]... (screen, confirm and control only)
+ *   bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <file> --out <dir> --old <dir>
+ *       [--new <dir> | --ours <dir>] --cases <file> [--cache-dir <dir>] [--scratch <dir>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -63,6 +65,7 @@
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
  *       [--hint-draw <n>] [--omp-config <file>]... [--claude <binary>]
  *       [--context-session <store>:<path hash>] [--route-seed <text>]
+ *   bun scripts/skill-cuts/cli.ts load audit-mixed --out <dir> --skill <dir> [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
@@ -275,6 +278,17 @@
  *   `deploymentWords`; `not recorded` for results made before runs recorded them), and, for a
  *   kind with runs an arm's `--route-id` pin sent, `<stage> routing pinned: <arm>=<id>, ...` with
  *   their cases: such runs are a diagnostic, never a test result.
+ * - `audit-mixed` (no model call, no capture, no network; `auditMixedCommand`) applies the
+ *   replay's mixed-reply rule (replay.ts's `replyBoundary` under the case's act, `caseAct`) to
+ *   the judged reply of each saved run, its arms the ones each stage ran (score.ts's
+ *   `stageArms`), built from `--old` and the compared arm's directory as a stage command takes
+ *   it (`--new`, `--ours`, or neither for no skill), and its installed copies read from its
+ *   stage's saved capture under `--cache-dir`; a stage run with other texts than those is skipped
+ *   and named. It prints and writes to `<out>/audit-mixed.json`, per case, stage and arm, the runs
+ *   judged at a mixed reply with an act, those it would continue now, those it would leave with
+ *   no verdict, past the last round or undecided, each with its run number, blind id and session
+ *   id, and, in a written case, how many runs' judged reply reads skill files beside read-only
+ *   calls alone, which a round of its checkout takes before the rule: ids, counts and tool names.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -296,18 +310,25 @@
  * replay, `restoredCapture` refuses a capture whose record names other copies than the case's
  * profile now gives, cached or not, and makes each missing copy again from its repository at its
  * commit. Each run records the answered rounds' reads (`skillReads`) and is judged on those
- * rounds' read calls and the reply after them.
+ * rounds' read calls and the reply after them. A reply that reads skill files beside other calls
+ * is sorted by the case's act (replay.ts's `caseAct`, `callPart`): with an act among them it is
+ * judged as it came (the run's `mixedAct`); with an undecided call it gets no verdict and is run
+ * again, its reason beginning `mixed-undecided` and naming those calls; with only preparation its
+ * reads are answered and it goes back holding only them, the other calls recorded as left out
+ * (`leftOut`) and never run. `report` counts each kind by stage and arm.
  * A written case's runs also answer, from the shared checkout of its
  * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
  * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a run saved
  * before the runner rebuilt the pin's summaries may mark a read of a code file it answered with
  * the file's whole text `wholeText`; no run marks one now); a written case with no checkout (built
  * before build-cases passed over a context session in no checkout it knows) answers none
- * (`NO_CHECKOUT`). A run whose reply after the last answered round still only reads skill files,
- * or, in a written case, makes a read-only call the checkout answers in no form, gets no verdict
- * and is run again, its reason beginning `reads-past-last-round` or `unanswered-read`; each case's
- * line and `report` count such runs by arm, `report` by kind of case too beside the saved reads
- * marked `wholeText`, and a stage left unscreened by an arm with such runs drops its case under
+ * (`NO_CHECKOUT`). A reply of a written case whose every call is read-only is such a round, never
+ * a mixed reply the case's act sorts. A run whose reply after the last answered round still only
+ * reads skill files, or reads them beside only preparation, or, in a written case, makes a
+ * read-only call the checkout answers in no form, gets no verdict and is run again, its reason
+ * beginning `reads-past-last-round` or `unanswered-read`; each case's line and `report` count
+ * such runs by arm, `report` by kind of case too beside the saved reads marked `wholeText`, and
+ * a stage left unscreened by an arm with such runs drops its case under
  * `reads-past-last-round`, with the
  * counts. A stage left unscreened in which the provider refused, on a content policy (a stream
  * error whose type ends in `_policy`, as `cyber_policy`), every replay that got no verdict in
@@ -384,7 +405,11 @@
  * the skill, the loads and verdicts printed and saved under `--out`, which a run started again
  * goes on from. The model is LOAD_MODEL and the thinking level LOAD_THINKING unless `--model` and
  * `--thinking` say otherwise. `--context-session <store>:<path hash>` names the session a written
- * task stands for in its capture.
+ * task stands for in its capture. On Oh My Pi, a reply that reads skill files beside other calls
+ * is sorted by replay.ts's LOAD_RULE (load.ts). **`load audit-mixed`** (no model call;
+ * `loadAuditCommand`) applies that rule to the saved runs of a load's `--out`, and prints and
+ * writes to `<out>/audit-mixed.json`, per task, the runs that would end at an action, continue,
+ * or be left with no verdict, with their run numbers and session ids.
  *
  * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
  * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, `load`,
@@ -413,6 +438,7 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -465,6 +491,7 @@ import {
   listingOf,
   restoredCapture,
   type SessionFacts,
+  savedCapture,
   sessionFacts,
   sessionHeads,
   userTurnKey,
@@ -561,7 +588,16 @@ import {
   judgeIdentity,
   newSeed,
 } from "./judge";
-import { Host, jsonLines, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
+import {
+  auditLoadMixed,
+  Host,
+  jsonLines,
+  LOAD_MODEL,
+  LOAD_THINKING,
+  runLoad,
+  skillName,
+  type TaskAudit,
+} from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
@@ -603,15 +639,23 @@ import {
 } from "./readers";
 import {
   AnsweredRead,
+  type Boundary,
+  type CallPart,
   CheckoutRead,
+  caseAct,
+  LeftOutCall,
   MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
+  MIXED_UNDECIDED,
+  type MixedRule,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
   replayInterleaved,
+  replyBoundary,
   UNANSWERED_READ,
   UnansweredRead,
+  UndecidedReply,
 } from "./replay";
 import { main as resultsIndexMain } from "./results-index";
 import {
@@ -2122,9 +2166,18 @@ const Run = z.strictObject({
    *  checkout copy, in a run made before such a run got no verdict (its reason now begins
    *  UNANSWERED_READ); absent otherwise. */
   unanswered: z.string().optional(),
-  /** The step's content (each answered round's calls, then the reply after them, which for a run
-   *  that read past the last round, or made a call the checkout answers in no form, is the reply
-   *  it ended on), or null when the replay failed. */
+  /** The calls each continued round left out (replay.ts's LeftOutCall: a reply that read skill
+   *  files beside calls that only prepare the case's act, whose reads were answered and sent back
+   *  alone), in order, or null when the replay failed; absent from a run made before this
+   *  field. */
+  leftOut: z.array(LeftOutCall).nullable().optional(),
+  /** True where the reply its step ends on read skill files beside an act (replay.ts's
+   *  `replyBoundary`: `acts`), so it was judged at a mixed reply; absent otherwise. */
+  mixedAct: z.literal(true).optional(),
+  /** The step's content (each answered round's answered calls, then the reply after them, which
+   *  for a run that read past the last round, made a call the checkout answers in no form, or
+   *  whose mixed reply was undecided, is the reply it ended on, as it came), or null when the
+   *  replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
   /** What the run's replay and its judgement used, each call's usage and dollars. A replay that
    *  failed (`REPLAY_FAILED`) records none, though the rounds it had answered were paid. */
@@ -2454,7 +2507,8 @@ interface Behaviour {
   readonly compared: Compared;
   /** Whether a result made with another compared arm than `compared` is refused (`readResult`):
    *  for a stage command, and for a report given `--new` or `--ours`; a report given neither
-   *  takes the arm its results record. */
+   *  takes the arm its results record, and `audit-mixed` skips each stage run with other texts
+   *  than its own. */
   readonly checkCompared: boolean;
   readonly servedModels: readonly string[];
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
@@ -2595,12 +2649,12 @@ function readResults(b: Behaviour): Map<string, CaseResult> {
 }
 
 /** `result` as the score reads it (`scored`): each run of each stage, earlier confirms included,
- *  with no reply and no reads, which the score does not read, so that the results kept for the
- *  score hold no reply's content. */
+ *  with no reply, no reads and no left-out calls, which the score does not read, so that the
+ *  results kept for the score hold no reply's content. */
 function forScore(result: CaseResult): CaseResult {
   const slim = (stage: StageResult): StageResult => ({
     ...stage,
-    runs: stage.runs.map((run) => ({ ...run, reply: null, skillReads: null })),
+    runs: stage.runs.map((run) => ({ ...run, reply: null, skillReads: null, leftOut: null })),
   });
   const { screen, confirm, control } = result.stages;
   return {
@@ -3036,17 +3090,21 @@ const REPLAY_FAILED = "the replay failed";
  *  a session id of its own, the routing id `routingOf` gives its arm and its run number (its
  *  arm's runs so far, then its place among its arm's runs in the order sent), and its arm's
  *  installed copies of the profile's other skills, from its capture's record and the cache
- *  (context.ts's `installedCopies`), and, for a written case, `checkout`, the copy of its checkout
- *  its read-only calls are answered from, or why it has none (NO_CHECKOUT); then every reply
- *  judged blind under `seed`. A replay that fails is a run with no verdict, its reason
- *  `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal there), and so is one
- *  whose reply after the last answered round still only reads, or makes a read-only call the
- *  checkout answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason
- *  begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply, spend
- *  and deployments); one the budget refused, or whose judgement the budget refused, is no run.
- *  The runs are numbered, within their arm, in the order they were sent, and each records this
- *  runner (`r.runner`), its routing id, whether that is its arm's `--route-id` pin, and the
- *  deployment that answered each of its requests. */
+ *  (context.ts's `installedCopies`), its mixed replies sorted by the case's act (replay.ts's
+ *  `caseAct`), and, for a written case, `checkout`, the copy of its checkout its read-only calls
+ *  are answered from, or why it has none (NO_CHECKOUT); then every reply judged blind under
+ *  `seed`. A replay that fails is a run with no verdict, its reason `<REPLAY_FAILED>: <why>`
+ *  (REFUSED_REPLAY reads a content-policy refusal there), and so is one whose reply after the
+ *  last answered round still only reads, or reads skill files beside calls that only prepare
+ *  (replay.ts's ReadsPastLastRound: its reason begins READS_PAST_LAST_ROUND), one whose mixed
+ *  reply is undecided (UndecidedReply: its reason begins MIXED_UNDECIDED), and one that makes a
+ *  read-only call the checkout answers in no form (UnansweredRead: its reason begins
+ *  UNANSWERED_READ), each of which keeps that run's reads, left-out calls, reply, spend and
+ *  deployments; one the budget refused, or whose judgement the budget refused, is no run. The
+ *  runs are numbered, within their arm, in the order they were sent, and each records this
+ *  runner (`r.runner`), its routing id, whether that is its arm's `--route-id` pin, the
+ *  deployment that answered each of its requests, the calls its continued rounds left out, and
+ *  whether it was judged at a mixed reply with an act (`mixedAct`). */
 async function runRound(
   r: Runner,
   c: Case,
@@ -3077,7 +3135,10 @@ async function runRound(
     }),
     r.replays,
     seed,
-    checkout === undefined ? {} : { checkout }
+    {
+      mixed: { kind: "case", act: caseAct(c) },
+      ...(checkout === undefined ? {} : { checkout }),
+    }
   );
   // Each reply is judged under its arm and its place among its arm's replays of this round.
   const replies: ArmReply[] = sent.flatMap(({ arm, run, outcome }) =>
@@ -3117,10 +3178,13 @@ async function runRound(
         budgetSpent = true;
         continue;
       }
-      // A run whose reply after the last answered round still only reads, or makes a read-only
-      // call the checkout answers in no form, keeps what it read and spent.
+      // A run whose reply after the last answered round still reads, whose mixed reply is
+      // undecided, or that makes a read-only call the checkout answers in no form, keeps what it
+      // read, left out and spent.
       const past =
-        outcome.reason instanceof ReadsPastLastRound || outcome.reason instanceof UnansweredRead
+        outcome.reason instanceof ReadsPastLastRound ||
+        outcome.reason instanceof UndecidedReply ||
+        outcome.reason instanceof UnansweredRead
           ? outcome.reason
           : undefined;
       runs.push({
@@ -3132,6 +3196,7 @@ async function runRound(
         skillRounds: past?.replayed.rounds ?? null,
         checkoutRounds: past?.replayed.checkoutRounds ?? null,
         skillReads: past?.replayed.reads.map((each) => [...each]) ?? null,
+        leftOut: past === undefined ? null : [...past.replayed.leftOut],
         reply: past?.replayed.step.message.content ?? null,
         replaySpent: past?.replayed.usage ?? [],
         deployments: past?.replayed.deployments ?? [],
@@ -3154,6 +3219,8 @@ async function runRound(
       skillRounds: step.rounds,
       checkoutRounds: step.checkoutRounds,
       skillReads: step.reads.map((each) => [...each]),
+      leftOut: [...step.leftOut],
+      ...(step.mixedAct ? { mixedAct: true as const } : {}),
       reply: step.step.message.content,
       replaySpent: step.usage,
       deployments: step.deployments,
@@ -4275,10 +4342,12 @@ function stageVerdict(stage: Stage, passes: Passes<Stage>, compared: Compared): 
 
 /** Each arm of `stage`, the old text compared with `compared` (score.ts's `stageArms`), with how
  *  many of `runs`, a stage's runs, got no verdict for the reads of a reply, the reason beginning
- *  `reason`: READS_PAST_LAST_ROUND, the reply after the last answered round still only read skill
- *  files, or, in a written case, still only made read-only calls its checkout copy answers
- *  (replay.ts's ReadsPastLastRound); or UNANSWERED_READ, a written case's reply made a read-only
- *  call its checkout copy answers in no form (UnansweredRead). */
+ *  `reason`: READS_PAST_LAST_ROUND, the reply after the last answered round still read skill
+ *  files, alone or beside calls that only prepare, or, in a written case, still only made
+ *  read-only calls its checkout copy answers (replay.ts's ReadsPastLastRound); UNANSWERED_READ, a
+ *  written case's reply made a read-only call its checkout copy answers in no form
+ *  (UnansweredRead); or MIXED_UNDECIDED, a reply read skill files beside a call that is neither
+ *  an act nor only preparation (UndecidedReply). */
 function readsPast(
   runs: readonly Run[],
   stage: Stage,
@@ -4315,7 +4384,7 @@ function readsPastDrop(runs: readonly Run[], stage: Stage, compared: Compared): 
     const which = [
       ...(count > 0
         ? [
-            `${count} of which still only read after the last answered round (skill files, or read-only calls a written case's checkout answers)`,
+            `${count} of which still read after the last answered round (skill files, alone or beside calls that only prepare, or read-only calls a written case's checkout answers)`,
           ]
         : []),
       ...(missed > 0
@@ -4389,9 +4458,10 @@ function savedRefusal(result: CaseResult, stage: Stage): CaseResult | undefined 
 
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
  *  they say, by the compared arm the stage records, and how many runs got no verdict, those that
- *  still only read after the last answered round (skill files, or read-only calls a written
- *  case's checkout answers) and those that made a read-only call the checkout answers in no form
- *  counted by arm. */
+ *  still read after the last answered round (skill files, alone or beside calls that only
+ *  prepare, or read-only calls a written case's checkout answers), those that made a read-only
+ *  call the checkout answers in no form and those whose mixed reply was undecided counted by
+ *  arm. */
 function stageLine(
   caseId: string,
   stage: Stage,
@@ -4402,7 +4472,8 @@ function stageLine(
   const compared = recordedArm(state);
   const outcome = stageOutcome(state.runs, caseId, stage, compared);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
-  const reasonWords = [READS_PAST_LAST_ROUND, UNANSWERED_READ].flatMap((reason) => {
+  const reasons = [READS_PAST_LAST_ROUND, UNANSWERED_READ, MIXED_UNDECIDED];
+  const reasonWords = reasons.flatMap((reason) => {
     const counts = readsPast(state.runs, stage, compared, reason);
     return counts.some(({ count }) => count > 0) ? [`; ${reason}: ${armCounts(counts)}`] : [];
   });
@@ -5520,13 +5591,33 @@ function reportCommand(
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LEGION_TOOL_UNDEFINED)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
-  // round still only read: an arm that keeps the agent reading acts differently.
+  // round still read (skill files, alone or beside calls that only prepare, or a written case's
+  // read-only calls the checkout answers): an arm that keeps the agent reading acts differently.
   const runsByStage = Stage.options.map((stage) => [stage, kindRuns(results, stage)] as const);
   const pastByStage = runsByStage.map(
     ([stage, runs]) => `${stage} ${armCounts(readsPast(runs, stage, b.compared))}`
   );
   lines.push(
-    `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads, or of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
+    `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads still read skill files, alone or beside calls that only prepare, or whose reply after the last of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
+  );
+  // Each arm's runs of each stage whose replay met a reply that read skill files beside other
+  // calls (replay.ts's `replyBoundary`): continued past one whose other calls only prepare the
+  // case's act, judged at one with an act, or left with no verdict by one with an undecided call.
+  // One past the last round counts above, as reads-past-last-round.
+  const mixedByStage = (counted: (run: Run) => boolean) =>
+    runsByStage
+      .map(([stage, runs]) => {
+        const byArm = stageArms(stage, b.compared).map((arm) => ({
+          arm,
+          count: runs.filter((run) => run.arm === arm && counted(run)).length,
+        }));
+        return `${stage} ${armCounts(byArm)}`;
+      })
+      .join("; ");
+  lines.push(
+    `mixed replies continued (the reply read skill files beside calls that only prepare the case's act: its reads answered and sent back alone, its other calls left out, never run), runs by stage and arm: ${mixedByStage((run) => (run.leftOut?.length ?? 0) > 0)}`,
+    `mixed replies judged (the reply read skill files beside an act, and was judged as it came), runs by stage and arm: ${mixedByStage((run) => run.mixedAct === true)}`,
+    `${MIXED_UNDECIDED}: the runs whose reply read skill files beside a call that is neither an act nor only preparation, which get no verdict and are run again, by stage and arm: ${mixedByStage((run) => run.verdict === null && run.reason.startsWith(MIXED_UNDECIDED))}`
   );
   // By kind of case, the runs with no verdict for the reads of a reply, by reason, and the reads
   // a run saved before the runner rebuilt the pin's summaries marks `wholeText`, answered with a
@@ -5547,7 +5638,7 @@ function reportCommand(
     const whole = runs
       .flatMap((run) => (run.skillReads ?? []).flat())
       .filter((read) => read.from === "checkout" && read.wholeText === true).length;
-    return `${kind}: ${rerun(READS_PAST_LAST_ROUND)} ${READS_PAST_LAST_ROUND}, ${rerun(UNANSWERED_READ)} ${UNANSWERED_READ}, ${whole} saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries)`;
+    return `${kind}: ${rerun(READS_PAST_LAST_ROUND)} ${READS_PAST_LAST_ROUND}, ${rerun(UNANSWERED_READ)} ${UNANSWERED_READ}, ${rerun(MIXED_UNDECIDED)} ${MIXED_UNDECIDED}, ${whole} saved reads marked wholeText (answered whole before the runner rebuilt the pin's summaries)`;
   });
   lines.push(
     `runs with no verdict, run again, and saved whole-text reads, by kind of case: ${byKindOfCase.join("; ")}`
@@ -5700,12 +5791,272 @@ function reportCommand(
   b.io.out(`${lines.join("\n")}\n`);
 }
 
+// `behaviour audit-mixed` and `load audit-mixed`: the mixed-reply rule over saved runs.
+
+/** The file `behaviour audit-mixed` and `load audit-mixed` write under `--out`. */
+const AUDIT_FILE = "audit-mixed.json";
+
+/** One run an audit names: its number in its arm and stage, its reply's blind id (null when it
+ *  was not judged), its session id, its verdict, and the tools of the calls of its judged reply
+ *  that put it there (`(text)` for its text). */
+interface AuditedRun {
+  readonly run: number;
+  readonly id: string | null;
+  readonly userId: string | null;
+  readonly verdict: "pass" | "fail" | null;
+  readonly tools: readonly string[];
+}
+
+/** What `behaviour audit-mixed` finds of one arm's runs in one stage of a case (see
+ *  `auditMixedCommand`). `confirm` numbers a case's confirms from 1, oldest first.
+ *  `checkoutRound` counts a written case's runs whose judged reply reads skill files beside
+ *  read-only calls alone: a round of its checkout, which the mixed rule never sorts. */
+interface ArmAudit {
+  readonly caseId: string;
+  readonly stage: Stage;
+  readonly confirm?: number;
+  readonly arm: ArmName;
+  readonly runs: number;
+  readonly judged: number;
+  noReply: number;
+  unrecorded: number;
+  ends: number;
+  skillRound: number;
+  checkoutRound: number;
+  readonly acts: AuditedRun[];
+  readonly continues: AuditedRun[];
+  readonly pastLastRound: AuditedRun[];
+  readonly unresolved: AuditedRun[];
+}
+
+/** An audit's runs in words: their count, and each one's number, blind id (a behaviour run's,
+ *  where it has one) and tools. */
+function auditedWords(
+  runs: readonly {
+    readonly run: number;
+    readonly id?: string | null;
+    readonly tools: readonly string[];
+  }[]
+): string {
+  if (runs.length === 0) return "0";
+  const each = runs.map(
+    (run) => `run ${run.run}${run.id == null ? "" : ` id ${run.id}`}: ${run.tools.join(" ")}`
+  );
+  return `${runs.length} (${each.join("; ")})`;
+}
+
+/**
+ * `behaviour audit-mixed` (no model call, no capture, no network): replay.ts's mixed-reply rule
+ * (`replyBoundary` under the case's act, `caseAct`) applied to the judged reply of each saved run
+ * of each stage of `b`'s cases, earlier confirms included: the run's `reply` less its answered
+ * rounds' answered calls (its first N blocks, N the answers its `skillReads` holds). Each stage's
+ * arms are the ones it ran (score.ts's `stageArms` of the compared arm it records), each built
+ * from `dirs` (`--old`, and `--new` or `--ours` where given, and a control's planted line from
+ * its stage) in a scratch directory of its own under `scratchRoot`, removed after, and answers a
+ * read of another skill from the installed copies its stage's saved capture names under
+ * `cacheDir`, which no read restores. A stage run with other texts than `texts` (`--old`'s, and
+ * `--new`'s or `--ours`'s where given) is skipped and listed. For each case, stage
+ * and arm it prints, and writes as JSON to `<out>/audit-mixed.json`, which it names, the runs and
+ * the judged runs, and each run whose judged reply read skill files beside other calls: judged at
+ * it, an act among them (`acts`); continued now, its other calls only preparation
+ * (`continues`); no verdict, as such a reply after the last round (`pastLastRound`); or no
+ * verdict, a call undecided (`unresolved`); and counts the runs whose reply only reads skill
+ * files (`skillRound`), in a written case makes read-only calls alone (`checkoutRound`: a round
+ * of its checkout, answered or refused as UnansweredRead before the rule would sort it), holds no
+ * such mix (`ends`), is not saved (`noReply`, a replay that failed), or whose answered rounds a
+ * run saved before `skillReads` cannot tell (`unrecorded`).
+ * Its output holds ids, counts and tool names, never a request's or a reply's text. Throws for an
+ * arm whose capture is not saved, and as `replyBoundary` throws for a read of a skill whose
+ * installed copy the cache lacks, naming the run.
+ */
+function auditMixedCommand(
+  b: Behaviour,
+  dirs: ArmDirs,
+  texts: Texts,
+  cacheDir: string,
+  scratchRoot: string
+): void {
+  const results = readResults(b);
+  mkdirSync(scratchRoot, { recursive: true });
+  const scratch = mkdtempSync(path.join(scratchRoot, "audit-mixed-"));
+  const audits: ArmAudit[] = [];
+  const skipped: { caseId: string; stage: Stage; confirm?: number; why: string }[] = [];
+  try {
+    for (const c of b.cases) {
+      const result = results.get(c.id);
+      if (result === undefined) continue;
+      const rule: MixedRule = { kind: "case", act: caseAct(c) };
+      const written = caseKind(c) === "written";
+      const armScratch = path.join(
+        scratch,
+        createHash("sha256").update(c.id).digest("hex").slice(0, 16)
+      );
+      const { screen, control } = result.stages;
+      const stages: { stage: Stage; state: StageResult; confirm?: number }[] = [
+        ...(screen === undefined ? [] : [{ stage: "screen" as const, state: screen }]),
+        ...confirmStages(result).map((state, index) => ({
+          stage: "confirm" as const,
+          state,
+          confirm: index + 1,
+        })),
+        ...(control === undefined ? [] : [{ stage: "control" as const, state: control }]),
+      ];
+      for (const { stage, state, confirm } of stages) {
+        if (state.runs.length === 0) continue;
+        const where = { caseId: c.id, stage, ...(confirm === undefined ? {} : { confirm }) };
+        if (
+          state.texts.old !== texts.old ||
+          state.texts.new !== texts.new ||
+          state.texts.ours !== texts.ours
+        ) {
+          skipped.push({
+            ...where,
+            why: `run with the texts ${textWords(state.texts)}, not ${textWords(texts)}`,
+          });
+          continue;
+        }
+        const armDirs = {
+          ...dirs,
+          ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
+        };
+        for (const name of stageArms(stage, recordedArm(state))) {
+          const runs = state.runs.filter((run) => run.arm === name);
+          if (runs.length === 0) continue;
+          const arm = buildArm(c, name, armDirs, armScratch);
+          const note = state.captures[name];
+          const files = capturePaths(
+            note === undefined
+              ? armCaptureDir(b.out, arm, texts)
+              : path.dirname(path.resolve(b.out, note.bodyFile)),
+            c.id,
+            name
+          );
+          const capture = savedCapture(files);
+          if (capture === undefined) {
+            throw new Error(
+              `case ${c.id}: the ${name} arm's capture ${files.record} is not saved, and the audit reads its installed copies from it`
+            );
+          }
+          const copies = installedCopies(capture.record.context, cacheDir);
+          const audit: ArmAudit = {
+            ...where,
+            arm: name,
+            runs: runs.length,
+            judged: runs.filter((run) => run.verdict !== null).length,
+            noReply: 0,
+            unrecorded: 0,
+            ends: 0,
+            skillRound: 0,
+            checkoutRound: 0,
+            acts: [],
+            continues: [],
+            pastLastRound: [],
+            unresolved: [],
+          };
+          for (const run of runs) {
+            const answered = run.skillReads?.flat().length ?? (run.skillRounds === 0 ? 0 : null);
+            if (run.reply === null) {
+              audit.noReply += 1;
+              continue;
+            }
+            if (answered === null) {
+              audit.unrecorded += 1;
+              continue;
+            }
+            const reply = run.reply.slice(answered);
+            let boundary: Boundary;
+            try {
+              boundary = replyBoundary(reply, arm, copies, rule);
+            } catch (error) {
+              throw new Error(`case ${c.id} ${stage} ${name} run ${run.run}: ${messageFor(error)}`);
+            }
+            if (boundary.kind === "ends") audit.ends += 1;
+            else if (boundary.kind === "skill round") audit.skillRound += 1;
+            else if (
+              written &&
+              toolCalls(reply).every(
+                ({ id, name: tool, input }) => id !== undefined && readOnlyCall(tool, input)
+              )
+            ) {
+              audit.checkoutRound += 1;
+            } else {
+              const { others, text } = boundary;
+              const named = (part: CallPart): AuditedRun => ({
+                run: run.run,
+                id: run.id,
+                userId: run.userId,
+                verdict: run.verdict,
+                tools: [
+                  ...others.flatMap((call) => (call.part === part ? [call.tool] : [])),
+                  ...(text === part ? ["(text)"] : []),
+                ],
+              });
+              if (boundary.kind === "acts") audit.acts.push(named("act"));
+              else if (boundary.kind === "undecided") audit.unresolved.push(named("undecided"));
+              else if ((run.skillRounds ?? 0) >= MAX_SKILL_ROUNDS) {
+                audit.pastLastRound.push(named("preparation"));
+              } else audit.continues.push(named("preparation"));
+            }
+          }
+          audits.push(audit);
+        }
+      }
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  const file = path.join(b.out, AUDIT_FILE);
+  const sum = (count: (audit: ArmAudit) => number) =>
+    audits.reduce((total, audit) => total + count(audit), 0);
+  const totals = {
+    runs: sum((audit) => audit.runs),
+    judged: sum((audit) => audit.judged),
+    acts: sum((audit) => audit.acts.length),
+    continues: sum((audit) => audit.continues.length),
+    pastLastRound: sum((audit) => audit.pastLastRound.length),
+    unresolved: sum((audit) => audit.unresolved.length),
+  };
+  for (const audit of audits) {
+    const confirm = audit.confirm === undefined ? "" : ` ${audit.confirm}`;
+    const unrecorded =
+      audit.unrecorded === 0 ? "" : `; answered rounds not recorded ${audit.unrecorded}`;
+    const checkout =
+      audit.checkoutRound === 0
+        ? ""
+        : `; a written case's read-only calls, a round of its checkout ${audit.checkoutRound}`;
+    say(
+      b,
+      `case ${audit.caseId} ${audit.stage}${confirm} ${audit.arm}: ${audit.runs} runs, ${audit.judged} judged; judged at a mixed reply with an act ${auditedWords(audit.acts)}; continued now ${auditedWords(audit.continues)}; no verdict past the last round ${auditedWords(audit.pastLastRound)}; unresolved ${auditedWords(audit.unresolved)}; only skill reads ${audit.skillRound}; no mixed reply ${audit.ends}; no reply ${audit.noReply}${checkout}${unrecorded}`
+    );
+  }
+  for (const each of skipped) {
+    const confirm = each.confirm === undefined ? "" : ` ${each.confirm}`;
+    say(b, `case ${each.caseId} ${each.stage}${confirm}: skipped: ${each.why}`);
+  }
+  writeWhole(
+    file,
+    json({
+      cases: b.casesFile,
+      out: b.out,
+      texts,
+      maxSkillRounds: MAX_SKILL_ROUNDS,
+      totals,
+      arms: audits,
+      skipped,
+    })
+  );
+  say(
+    b,
+    `${totals.runs} runs, ${totals.judged} judged: ${totals.acts} judged at a mixed reply with an act, ${totals.continues} continued now, ${totals.pastLastRound} with no verdict past the last round, ${totals.unresolved} unresolved; written to ${file}`
+  );
+}
+
 // `behaviour`: the command.
 
-const BEHAVIOUR_COMMANDS = ["screen", "confirm", "control", "report"] as const;
+const BEHAVIOUR_COMMANDS = ["screen", "confirm", "control", "report", "audit-mixed"] as const;
 
 const BEHAVIOUR_USAGE = [
-  "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file>",
+  "usage: cli.ts behaviour <screen|confirm|control|report|audit-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file>",
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut or set id>/models/<skill>.json, written by attribute)",
@@ -5717,6 +6068,7 @@ const BEHAVIOUR_USAGE = [
   "  [--route-id <arm>=<uuid>]... (screen, confirm, control: a diagnostic: every run of that arm, in every round, goes with that routing id in place of its round's)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default; [--limits <file>] (printed as it is)",
   "  [--build-summary <file>]... (report only: build-cases' summaries; it names their navigation lines no case tests and counts their replacement cases before and after the judge controls)",
+  `  audit-mixed needs only --config, --out, --old and --cases, and --new or --ours as its stages were run with (neither for no skill), and reads --cache-dir and --scratch; it makes no model call and writes <out>/${AUDIT_FILE}`,
 ].join("\n");
 
 /** The routing id each arm `--route-id <arm>=<uuid>` names is pinned to in `behaviour
@@ -5841,9 +6193,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     );
   }
   const report = command === "report";
+  const audit = command === "audit-mixed";
   const given = required(
     values,
-    report ? ["config", "out", "old", "cases"] : ["config", "key-file", "out", "old", "cases"],
+    report || audit
+      ? ["config", "out", "old", "cases"]
+      : ["config", "key-file", "out", "old", "cases"],
     BEHAVIOUR_USAGE
   );
   if (values.new !== undefined && values.ours !== undefined) {
@@ -5868,8 +6223,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const named: Compared =
     values.new !== undefined ? "new" : values.ours !== undefined ? "ours" : "none";
   const routePins = routePinsOf(values["route-id"] ?? [], command ?? "", named);
-  // A stage command writes the cases' session text under --out; `report` writes nothing.
-  const inCheckout = report ? undefined : outRefusal(given.out);
+  // A stage command writes the cases' session text under --out; `report` writes nothing, and
+  // `audit-mixed` only ids, counts and tool names.
+  const inCheckout = report || audit ? undefined : outRefusal(given.out);
   if (inCheckout !== undefined) throw new Refused(inCheckout);
   const config = configFrom(given.config);
   let cases: Case[];
@@ -5895,7 +6251,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     casesFile: given.cases,
     cases,
     compared: named,
-    checkCompared: !report || values.new !== undefined || values.ours !== undefined,
+    checkCompared: !audit && (!report || values.new !== undefined || values.ours !== undefined),
     servedModels: config.servedModels,
     readingModels:
       readingModels === undefined
@@ -5945,6 +6301,26 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (values.ours !== undefined && !isFile(path.join(values.ours, "SKILL.md"))) {
     throw new Refused(`--ours ${values.ours} holds no SKILL.md`);
   }
+  const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
+  const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
+  const texts: Texts = {
+    old: textDigest(given.old),
+    ...(values.new === undefined ? {} : { new: textDigest(values.new) }),
+    ...(values.ours === undefined ? {} : { ours: textDigest(values.ours) }),
+  };
+  // The arms' directories but the planted line, which a stage command takes from --planted-line
+  // and `audit-mixed` from each control stage it reads.
+  const dirs: ArmDirs = {
+    old: given.old,
+    ...(values.new === undefined ? {} : { new: values.new }),
+    ...(values.ours === undefined
+      ? {}
+      : { ours: { dir: values.ours, name: skillName(values.ours) } }),
+  };
+  if (audit) {
+    auditMixedCommand(behaviour, dirs, texts, cacheDir, scratch);
+    return EXIT.ok;
+  }
   const unpriced = [
     ...new Set(
       cases.flatMap((c) => {
@@ -5971,26 +6347,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     concurrency: values.concurrency,
     spendRecorder: io.spendRecorder,
   });
-  const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
-  const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
   const plantedLine = values["planted-line"];
   const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
-  const texts: Texts = {
-    old: textDigest(given.old),
-    ...(values.new === undefined ? {} : { new: textDigest(values.new) }),
-    ...(values.ours === undefined ? {} : { ours: textDigest(values.ours) }),
-  };
   const runner: Runner = {
     ...behaviour,
-    dirs: {
-      old: given.old,
-      ...(values.new === undefined ? {} : { new: values.new }),
-      ...(values.ours === undefined
-        ? {}
-        : { ours: { dir: values.ours, name: skillName(values.ours) } }),
-      ...(plantedLine === undefined ? {} : { plantedLine }),
-    },
+    dirs: { ...dirs, ...(plantedLine === undefined ? {} : { plantedLine }) },
     texts,
     scratch,
     cacheDir,
@@ -6201,11 +6563,63 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
   return EXIT.failed;
 }
 
+const LOAD_AUDIT_USAGE = `usage: cli.ts load audit-mixed --out <dir> --skill <dir> [--cache-dir <dir>]: replay.ts's mixed-reply rule (LOAD_RULE) over the saved runs of a load test's --out, with no model call; it writes <out>/${AUDIT_FILE}`;
+
+/** `skill-cuts load audit-mixed`: load.ts's `auditLoadMixed` over the saved runs under `--out`,
+ *  the tested skill's directory `--skill` (as the load test was given it) answering a read of its
+ *  files, and the installed copies the tasks' captures name under `--cache-dir` (the load test's
+ *  default) answering a read of another skill. Prints, per task, its runs and judged runs, and
+ *  the runs whose last reply read skill files beside other calls, by what the rule makes of it
+ *  now, each named with its run number and the tools that decided it, and writes that as JSON to
+ *  `<out>/audit-mixed.json`, which it names: ids, counts and tool names, never a reply's text. */
+function loadAuditCommand(argv: readonly string[], io: CliIo): number {
+  const values = parse(
+    argv,
+    { out: { type: "string" }, skill: { type: "string" }, "cache-dir": { type: "string" } },
+    LOAD_AUDIT_USAGE
+  );
+  const given = required(values, ["out", "skill"], LOAD_AUDIT_USAGE);
+  if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--skill ${given.skill} is not a directory`);
+  }
+  const tasks = auditLoadMixed({
+    out: given.out,
+    skillDir: path.resolve(given.skill),
+    cacheDir: values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR),
+  });
+  const line = (text: string) => io.out(`load audit-mixed: ${text}\n`);
+  for (const task of tasks) {
+    line(
+      `task ${task.task}: ${task.runs} runs, ${task.judged} judged; ended before the rule ${task.untouched}; ended at an action ${auditedWords(task.actions)}; continued now ${auditedWords(task.continues)}; sent by another skill's answer now ${auditedWords(task.sentBy)}; no verdict past the last round ${auditedWords(task.pastLastRound)}; unresolved ${auditedWords(task.unresolved)}; only skill reads ${task.skillRound}; no mixed reply ${task.ends}`
+    );
+  }
+  const sum = (count: (task: TaskAudit) => number) =>
+    tasks.reduce((total, task) => total + count(task), 0);
+  const totals = {
+    runs: sum((task) => task.runs),
+    judged: sum((task) => task.judged),
+    actions: sum((task) => task.actions.length),
+    continues: sum((task) => task.continues.length),
+    sentBy: sum((task) => task.sentBy.length),
+    pastLastRound: sum((task) => task.pastLastRound.length),
+    unresolved: sum((task) => task.unresolved.length),
+  };
+  const file = path.join(given.out, AUDIT_FILE);
+  writeWhole(
+    file,
+    json({ out: given.out, skill: given.skill, maxSkillRounds: MAX_SKILL_ROUNDS, totals, tasks })
+  );
+  line(
+    `${totals.runs} runs, ${totals.judged} judged: ${totals.actions} ended at an action, ${totals.continues} continued now, ${totals.sentBy} sent by another skill's answer now, ${totals.pastLastRound} with no verdict past the last round, ${totals.unresolved} unresolved; written to ${file}`
+  );
+  return EXIT.ok;
+}
+
 // The command line.
 
 const USAGE = [
   "usage: cli.ts <command> ...",
-  "  behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file> ...",
+  "  behaviour <screen|confirm|control|report|audit-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file> ...",
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] ... --original-line <a>[-<b>|all] ... <craft's flags> --out <dir>",
@@ -6221,6 +6635,7 @@ const USAGE = [
   "  count-sql --config <skill-cuts.json> --query transcript --day <YYYY-MM-DD> [--hour <0-23>] [--run]",
   "  count-sql --config <skill-cuts.json> --query transcript-coverage [--run]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
+  "  load audit-mixed --out <dir> --skill <dir> [--cache-dir <dir>]",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
@@ -6250,7 +6665,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       case "count-sql":
         return countSqlMain(rest, io);
       case "load":
-        return await loadCommand(rest, io);
+        return rest[0] === "audit-mixed"
+          ? loadAuditCommand(rest.slice(1), io)
+          : await loadCommand(rest, io);
       case "copies":
         return await copiesMain(rest, {
           gh: spawnGh,

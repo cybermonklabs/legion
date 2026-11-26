@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  The `skill-cuts` behaviour replay no longer judges a reply that reads a skill file beside other
+  calls as the agent's attempt at the case's act. Such a reply is sorted with no model call,
+  against the case's two steps: a call that makes one of their act calls, or holds a token only
+  one of them holds, attempts the act, and the reply is judged as it came; a call of a tool
+  neither act uses, or one that only reads or looks where the act does not, only prepares; any
+  other call cannot be sorted, and the reply gets no verdict and is run again, as
+  `mixed-undecided`. A reply whose other calls only prepare has its skill reads answered and goes
+  back holding only those reads, the other calls recorded as left out and never run. The load
+  test sorts such a reply by what its calls can do: a call that only reads or looks, a `bash`
+  command on a read-only list among them, lets the run go on, an action ends it, and anything
+  else gives it no verdict. Claude Code's load runs still end at their first message. An `--out`
+  of a load test made before this rule is refused. `behaviour report` counts the runs continued,
+  judged and left undecided at such a reply, and the new `behaviour audit-mixed` and `load
+  audit-mixed` commands apply the same rule to saved runs, with no model call, and write what
+  they find to `audit-mixed.json`.
+time: 2026-11-26T07:01:32Z
+custom:
+    Issue: INFRA-4676

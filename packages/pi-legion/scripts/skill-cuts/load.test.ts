@@ -71,7 +71,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
-import { sendOrder } from "./replay";
+import { MIXED_UNDECIDED, sendOrder } from "./replay";
 import { LISTING_MEASURE_ITEM, type TaskLabel } from "./score";
 import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
@@ -1878,6 +1878,237 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
         ],
       ])
     );
+  });
+
+  // The load test's mixed-reply rule (the runner's architect, 2026-11-26T06:20:08Z): a reply that
+  // reads another skill beside other calls is sorted by what those calls can do, with no model.
+  // Catches: a batch of a skill read and a look counted as the task started (not loaded), a call
+  // that starts the task continued past, and a call no rule can sort counted as either.
+  /** An Oh My Pi `bash` call of `command`, as the stand-in answers with it. */
+  const bashOf = (command: string, id = "toolu_bash"): ReplyBlock => ({
+    type: "tool_use",
+    id,
+    name: "bash",
+    input: { command },
+  });
+  /** Beta's SKILL.md as a `skill://` read of beta's installed copy shows it. */
+  const BETA_SHOWN = `[Skill file: /skills/beta/SKILL.md]\n${BETA_SKILL.replace(/\n$/, "")}`;
+
+  test("a read of another skill beside a bash command that only reads or looks continues: the read is answered, the command left out of every body and recorded, and the next reply's load counts", async () => {
+    const s = readsTest("mixed-looks", BETA_SKILL);
+    const looks = bashOf("ls -la && git status");
+    answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://beta"), looks] : READ_ALPHA);
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const sent = recorder.requests.slice(before);
+    expect(sent.map((request) => messagesOf(request).length).toSorted()).toEqual([
+      1, 1, 1, 3, 3, 3,
+    ]);
+    for (const request of sent.filter((each) => messagesOf(each).length === 3)) {
+      expect(messagesOf(request).at(-2)).toEqual({
+        role: "assistant",
+        content: [readOf("skill://beta")],
+      });
+      expect(answersOf(request)).toEqual([{ text: BETA_SHOWN, isError: false }]);
+    }
+    expect(sent.some((request) => request.body.includes("toolu_bash"))).toBe(false);
+    const runs = savedRuns(s.out, "mixed-looks");
+    expect(runs.map((run) => [run.outcome, run.loadedBy, run.leftOut])).toEqual(
+      Array(3).fill([
+        "loaded",
+        "read skill://alpha",
+        [{ round: 1, tool: "bash", argument: "ls -la && git status" }],
+      ])
+    );
+    expect(runs[0]?.replies[0]?.calls).toEqual([
+      { name: "read", target: "skill://beta" },
+      { name: "bash", target: null, argument: "ls -la && git status" },
+    ]);
+  });
+
+  test("a read of another skill beside a write of a file ends the run there, not loaded, as before", async () => {
+    const s = readsTest("mixed-write", BETA_SKILL);
+    const write: ReplyBlock = {
+      type: "tool_use",
+      id: "toolu_write",
+      name: "write",
+      input: { path: "checklist.md", content: "# Alpha" },
+    };
+    answer = () => [readOf("skill://beta"), write];
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length - before).toBe(3);
+    expect(
+      savedRuns(s.out, "mixed-write").map((run) => [run.outcome, run.replies.length, run.leftOut])
+    ).toEqual(Array(3).fill(["not loaded", 1, undefined]));
+  });
+
+  test("a read of another skill beside a bash command off the read-only list is undecided: no verdict, its reason naming the call, and the task runs again up to its extra runs", async () => {
+    const s = readsTest("mixed-off-list", BETA_SKILL);
+    answer = () => [readOf("skill://beta"), bashOf("make test")];
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length - before).toBe(8);
+    const runs = savedRuns(s.out, "mixed-off-list");
+    expect(runs.map((run) => [run.outcome, run.reason, run.replies.length])).toEqual(
+      Array(8).fill([
+        "undecided",
+        `${MIXED_UNDECIDED}: after 0 answered rounds of skill reads, the reply reads skill files (beta SKILL.md) beside what the rule sorts neither as an act nor as preparation (bash make test), so it is neither judged nor continued`,
+        1,
+      ])
+    );
+    const reason =
+      "0 of 3 judged runs after 5 extra runs: undecided at a mixed reply in 8 of 8 runs";
+    expect(summaryTask(s.out, "mixed-off-list")).toMatchObject({
+      made: 8,
+      judged: 0,
+      undecided: 8,
+      extraRuns: 5,
+      complete: false,
+      noEvidence: reason,
+    });
+    expect(ran.stdout).toContain(
+      `; runs that read past the last round: 0; runs undecided at a mixed reply: 8; extra runs: 5: no description evidence: ${reason}`
+    );
+  });
+
+  test("the squash-stack shape: a read of skill://sdd/references/review-and-merge.md beside a bash command off the list is undecided, not a run that does not load", async () => {
+    const s = readsTest("squash-stack", BETA_SKILL);
+    answer = () => [
+      readOf("skill://sdd/references/review-and-merge.md"),
+      bashOf("jj squash --from @ --into @- && jj git push --bookmark stack"),
+    ];
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const runs = savedRuns(s.out, "squash-stack");
+    expect(runs.map((run) => run.outcome)).toEqual(Array(8).fill("undecided"));
+    expect(runs[0]?.reason).toContain(
+      "reads skill files (sdd references/review-and-merge.md) beside what the rule sorts neither as an act nor as preparation (bash jj squash --from @ --into @- && jj git push --bookmark stack)"
+    );
+  });
+
+  test("a Claude Code run still ends at its first message: a Read of another skill beside a Bash call is not answered, and the run does not load", async () => {
+    const s = readsTest("claude-mixed", BETA_SKILL, "claude", BETA_CLAUDE_PROFILE);
+    const betaPath = "/config/plugins/cache/acme-market/acme-tools/0.0.0/skills/beta/SKILL.md";
+    answer = () => [
+      { type: "tool_use", id: "toolu_read_beta", name: "Read", input: { file_path: betaPath } },
+      { type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "ls" } },
+    ];
+    const before = recorder.requests.length;
+    const ran = await cli(s.args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length - before).toBe(3);
+    expect(
+      savedRuns(s.out, "claude-mixed").map((run) => [
+        run.outcome,
+        run.skillReads,
+        run.replies.map((reply) => reply.calls),
+        run.leftOut,
+      ])
+    ).toEqual(
+      Array(3).fill([
+        "not loaded",
+        "first message",
+        [
+          [
+            { name: "Read", target: betaPath },
+            { name: "Bash", target: null },
+          ],
+        ],
+        undefined,
+      ])
+    );
+  });
+
+  test("load audit-mixed sorts each saved run's last reply by the rule with no model call: one that would continue, one that ends at an action, one unresolved for a command its record lacks, one past the last round; a loaded run and a run with no skill read are left as they are", async () => {
+    const s = readsTest("audit", BETA_SKILL);
+    answer = () => TEXT;
+    expect((await cli(s.args)).code).toBe(0);
+    const [template] = savedRuns(s.out, "audit");
+    if (template === undefined) throw new Error("no run was saved");
+    const usage = template.replies[0]?.usage;
+    if (usage === undefined) throw new Error("the saved run has no reply");
+    type Reply = LoadRun["replies"][number];
+    const beta = { name: "read", target: "skill://beta" };
+    const betaRead = {
+      skill: "beta",
+      file: "SKILL.md",
+      by: "skill" as const,
+      from: "copy" as const,
+      isError: false,
+    };
+    const planted = (n: number, fields: Partial<LoadRun>) =>
+      LoadRun.parse({ ...template, run: n, userId: `user-${n}`, ...fields });
+    const reply = (calls: Reply["calls"], answers: Reply["answers"] = null): Reply => ({
+      calls,
+      answers,
+      usage,
+    });
+    const runs = [
+      // Made before the record kept a bash call's command: the rule cannot tell what it does.
+      planted(1, { replies: [reply([beta, { name: "bash", target: null }])] }),
+      planted(2, {
+        replies: [reply([beta, { name: "bash", target: null, argument: "git log -3" }])],
+      }),
+      planted(3, {
+        replies: [reply([beta, { name: "write", target: null, argument: "checklist.md" }])],
+      }),
+      planted(4, {
+        outcome: "loaded",
+        loadedBy: "read skill://alpha",
+        replies: [reply([{ name: "read", target: "skill://alpha" }])],
+      }),
+      planted(5, { replies: [reply([])] }),
+      planted(6, {
+        replies: [
+          ...Array(3).fill(reply([beta], [betaRead])),
+          reply([beta, { name: "glob", target: null }]),
+        ],
+      }),
+    ];
+    writeFileSync(
+      loadRunFile(s.out, "audit"),
+      runs.map((run) => `${JSON.stringify(run)}\n`).join("")
+    );
+    const before = recorder.requests.length;
+    const audited = await cli([
+      "load",
+      "audit-mixed",
+      "--out",
+      s.out,
+      "--skill",
+      skill,
+      "--cache-dir",
+      s.cache,
+    ]);
+    expect({ code: audited.code, stderr: audited.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length).toBe(before);
+    const named = (n: number, tools: string[]) => ({ run: n, userId: `user-${n}`, tools });
+    const file = path.join(s.out, "audit-mixed.json");
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.tasks).toEqual([
+      {
+        task: "audit",
+        runs: 6,
+        judged: 6,
+        untouched: 1,
+        ends: 1,
+        skillRound: 0,
+        actions: [named(3, ["write"])],
+        continues: [named(2, ["bash"])],
+        sentBy: [],
+        pastLastRound: [named(6, ["glob"])],
+        unresolved: [named(1, ["bash"])],
+      },
+    ]);
+    expect(audited.stdout).toContain(
+      "load audit-mixed: task audit: 6 runs, 6 judged; ended before the rule 1; ended at an action 1 (run 3: write); continued now 1 (run 2: bash); sent by another skill's answer now 0; no verdict past the last round 1 (run 6: glob); unresolved 1 (run 1: bash); only skill reads 0; no mixed reply 1\n"
+    );
+    expect(audited.stdout).toContain(`; written to ${file}\n`);
+    expect(readFileSync(file, "utf8")).not.toContain("git log");
   });
 });
 

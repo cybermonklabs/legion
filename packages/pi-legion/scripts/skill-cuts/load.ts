@@ -124,31 +124,47 @@
  * record names other copies than the task's profile now gives, cached or not), a read of a skill
  * it does not install with Oh My Pi's unknown-skill result, and a read of another file of the
  * tested skill from its directory. Then the body goes again with the reply and the answers, at
- * most MAX_SKILL_ROUNDS times. A run comes to one of four outcomes (RunOutcome):
+ * most MAX_SKILL_ROUNDS times. A reply that reads skill files beside other calls, and does not
+ * read the tested skill, is sorted with no model by replay.ts's LOAD_RULE (the architect,
+ * 2026-11-26T06:20:08Z): each other call is preparation when it only reads or looks (a `read`,
+ * `grep`, `glob`, `find` or LSP lookup, a `write` to the `xd://lsp` device, a `bash` call each
+ * of whose commands starts with a program of replay.ts's read-only list), an action when it
+ * changes state or starts the task's work (a `write` or `edit` of a file, a `task` dispatch, any
+ * other tool), and undecided otherwise (a `bash` command off the list). A reply with an action
+ * ends the run there, as before; one with no action and an undecided call gets no verdict; one
+ * whose other calls only prepare is a round of its own: its reads are answered and it goes back
+ * holding only those calls, the others recorded as left out (LoadRun's `leftOut`), never run.
+ * A run comes to one of five outcomes (RunOutcome):
  *
  * - `loaded`: a reply reads the skill, the first one or one after answered rounds, before any
- *   reply does more than read skill files. The run ends at that reply.
+ *   reply does more than read skill files and prepare. The run ends at that reply.
  * - `sent by`: the answer to a read of another skill holds a text that names the skill
  *   (`namesSkill`). What the agent does next comes from that text, not from the skill's listing,
  *   so the run ends once that answer is made, before it is sent, and names that skill (`sentBy`).
- * - `reads past last round`: the reply after the last answered round still only reads skill files
- *   (replay.ts's ReadsPastLastRound).
- * - `not loaded`: a run that ends at a reply that does more than read skill files, or makes no
- *   tool call, with no load and no answer that names the skill before it.
+ * - `reads past last round`: the reply after the last answered round still only reads skill
+ *   files, or reads them beside calls that only prepare (replay.ts's ReadsPastLastRound).
+ * - `undecided`: a reply reads skill files beside a call the rule sorts as neither (replay.ts's
+ *   UndecidedReply); the run's `reason` names each such call.
+ * - `not loaded`: a run that ends at a reply with no read the replay answers, or with an action
+ *   beside one, or that makes no tool call, with no load and no answer that names the skill
+ *   before it.
  *
  * Claude Code's runs end at their first message (`skillReads: "first message"` in their record):
  * the runner does not rebuild Claude Code's result of a `Skill` or `Read` call, so it answers no
  * read there, and the first message is `loaded` or `not loaded`.
  *
- * `loaded` and `not loaded` runs are judged; for each run of the other two the task runs again,
+ * `loaded` and `not loaded` runs are judged; for each run of the other three the task runs again,
  * up to MAX_EXTRA_RUNS (score.ts's) runs beyond `--runs`, until it has `--runs` judged runs
  * (`taskOutcome`). A task still short of them after its extra runs gives no description evidence:
  * the skill's verdict leaves it out, and its line and the summary say why, with how many of its
- * runs each skill sent and how many read past the last round. Each run's record holds each reply
- * (ReplyRecord): its tool calls with their names and targets (a read's path, a `Skill` call's
- * skill), the answers the runner made to its reads with where each came from (replay.ts's
- * AnsweredRead: the tested skill's directory, an installed copy, or no copy), and what it used.
- * Every reply but the last went back with its answers.
+ * runs each skill sent, how many read past the last round and how many were undecided. Each
+ * run's record holds each reply (ReplyRecord): its tool calls with their names and targets (a
+ * read's path, a `Skill` call's skill) and, on Oh My Pi, what LOAD_RULE reads of a `bash` or
+ * `write` call (its command, its path), the answers the runner made to its reads with where each
+ * came from (replay.ts's AnsweredRead: the tested skill's directory, an installed copy, or no
+ * copy), and what it used. Every reply but the last went back with its answers.
+ * `load audit-mixed` (`auditLoadMixed`) applies the rule to the saved runs of an `--out`, with no
+ * model call.
  *
  * A capture shows its task's session, not the run that captured it (capture.ts, "The harness
  * strings"): a task from a session stands for that session, and a written task for the session
@@ -289,6 +305,7 @@ import {
   type SavedHead,
   type SessionFacts,
   type Sourced,
+  savedCapture,
   sessionCheckout,
   sessionFacts,
   sessionHeads,
@@ -345,12 +362,18 @@ import { newSeed } from "./judge";
 import { type RecordedRequest, startRecorder } from "./recorder";
 import {
   AnsweredRead,
+  type Boundary,
+  type CallPart,
+  LeftOutCall,
+  LOAD_RULE,
   MAX_SKILL_ROUNDS,
   ReadsPastLastRound,
   type Replayed,
   replayOnce,
+  replyBoundary,
   type SkillRead,
   sendOrder,
+  UndecidedReply,
 } from "./replay";
 import {
   descriptionFault,
@@ -525,8 +548,14 @@ type ClaudePlacement =
   | { readonly skill: string; readonly as: "left out"; readonly reason: string };
 
 /** One tool call of a reply: its name, and its target (an Oh My Pi `read`'s path, a Claude Code
- *  `Skill` call's skill, a `Read`'s path), or null for any other call. */
-const ReplyCall = z.strictObject({ name: z.string(), target: z.string().nullable() });
+ *  `Skill` call's skill, a `Read`'s path), or null for any other call; and, for an Oh My Pi
+ *  `bash` or `write` call, what replay.ts's LOAD_RULE reads of it (`argument`: its command, its
+ *  path), absent for any other call and in a run made before it was recorded. */
+const ReplyCall = z.strictObject({
+  name: z.string(),
+  target: z.string().nullable(),
+  argument: z.string().optional(),
+});
 
 /** One reply of a run (see the file's header): its tool calls in order; the answers the runner
  *  made to its reads (replay.ts's AnsweredRead: the skill, the file inside its directory, `skill`
@@ -541,9 +570,15 @@ const ReplyRecord = z.strictObject({
 type ReplyRecord = z.infer<typeof ReplyRecord>;
 
 /** What a run came to (see the file's header): `loaded` and `not loaded` runs are judged; for a
- *  run `sent by` another skill or one whose replies read past the last round, the task runs
- *  again. */
-const RunOutcome = z.enum(["loaded", "not loaded", "sent by", "reads past last round"]);
+ *  run `sent by` another skill, one whose replies read past the last round, or one `undecided`
+ *  at a mixed reply, the task runs again. */
+const RunOutcome = z.enum([
+  "loaded",
+  "not loaded",
+  "sent by",
+  "reads past last round",
+  "undecided",
+]);
 
 /** What a run does with a reply whose every tool call reads a skill file: on Oh My Pi it answers
  *  it (`answered`), at most MAX_SKILL_ROUNDS times; on Claude Code it ends at its first message
@@ -552,14 +587,17 @@ const SkillReads = z.enum(["answered", "first message"]);
 
 /** One run of one task: what it came to, the call that loaded the skill (null unless it loaded
  *  it), the skill whose answered text named the tested one (null unless it was sent by one), how
- *  it took skill reads, each reply (ReplyRecord), the last reply's stop reason and request id,
- *  what the host lists for the skill (Oh My Pi's hint, or Claude Code's listed description), the
- *  profile file of its task's context with the SHA-256 of its bytes, the session id each of its
- *  requests went with (its own: `metadata.user_id`, or a Responses body's `prompt_cache_key`),
- *  the routing id each went with (`loadRoutingId`; null for a Responses body, which goes with
- *  none), the deployment that answered each of its requests in order (gateway.ts's
- *  `deploymentOf`, "" where the answer carried none), and the seed of the send order it went in
- *  and its place in that order (from 0). A run made before routing ids has neither field. */
+ *  it took skill reads, each reply (ReplyRecord), the calls its continued rounds left out
+ *  (replay.ts's LeftOutCall; absent where none was, and from a run made before), why it has no
+ *  verdict where it is `undecided` (replay.ts's UndecidedReply, naming each undecided call;
+ *  absent otherwise), the last reply's stop reason and request id, what the host lists for the
+ *  skill (Oh My Pi's hint, or Claude Code's listed description), the profile file of its task's
+ *  context with the SHA-256 of its bytes, the session id each of its requests went with (its
+ *  own: `metadata.user_id`, or a Responses body's `prompt_cache_key`), the routing id each went
+ *  with (`loadRoutingId`; null for a Responses body, which goes with none), the deployment that
+ *  answered each of its requests in order (gateway.ts's `deploymentOf`, "" where the answer
+ *  carried none), and the seed of the send order it went in and its place in that order (from
+ *  0). A run made before routing ids has neither field. */
 export const LoadRun = z.strictObject({
   task: z.string().min(1),
   run: z.int().positive(),
@@ -572,6 +610,8 @@ export const LoadRun = z.strictObject({
   sentBy: z.string().nullable(),
   skillReads: SkillReads,
   replies: z.array(ReplyRecord).min(1),
+  leftOut: z.array(LeftOutCall).optional(),
+  reason: z.string().optional(),
   stopReason: z.string().nullable(),
   requestId: z.string().nullable(),
   listed: z.string(),
@@ -594,6 +634,8 @@ type RunDone = Pick<
   | "sentBy"
   | "skillReads"
   | "replies"
+  | "leftOut"
+  | "reason"
   | "stopReason"
   | "requestId"
   | "userId"
@@ -645,10 +687,11 @@ interface MessageLoad {
 }
 
 /** One task's runs so far: how many were made and judged, how many loaded the skill and which,
- *  how many each skill sent and how many read past the last round, how many were made beyond
- *  the runs the test asks for, how many to start now, whether it has its judged runs, why it
- *  gives no description evidence (null unless it lacks its judged runs after its extra runs), and
- *  its verdict (score.ts's `taskFault`), null until it has them or when they are not LOAD_RUNS. */
+ *  how many each skill sent, how many read past the last round and how many were undecided at a
+ *  mixed reply, how many were made beyond the runs the test asks for, how many to start now,
+ *  whether it has its judged runs, why it gives no description evidence (null unless it lacks its
+ *  judged runs after its extra runs), and its verdict (score.ts's `taskFault`), null until it has
+ *  them or when they are not LOAD_RUNS. */
 interface TaskOutcome {
   readonly made: number;
   readonly judged: number;
@@ -656,6 +699,7 @@ interface TaskOutcome {
   readonly loadedRuns: readonly number[];
   readonly sentBy: Readonly<Record<string, number>>;
   readonly readsPastLastRound: number;
+  readonly undecided: number;
   readonly extraRuns: number;
   readonly toStart: number;
   readonly complete: boolean;
@@ -1103,6 +1147,14 @@ function callTarget(host: Host, call: ToolCall): string | undefined {
   return call.name === "Read" ? inputField(call, "file_path") : undefined;
 }
 
+/** What replay.ts's LOAD_RULE reads of an Oh My Pi `bash` or `write` call `call` (ReplyCall's
+ *  `argument`): its command, its path; undefined for any other call, and on Claude Code. */
+function ruleArgument(host: Host, call: ToolCall): string | undefined {
+  if (host !== "omp") return undefined;
+  if (call.name === "bash") return inputField(call, "command");
+  return call.name === "write" ? inputField(call, "path") : undefined;
+}
+
 /** How the tool call `call` of a reply loads `skill` in `host` (`read <path>`, `Skill <name>`,
  *  `Read <path>`), or undefined when it does not. */
 function loadingCall(host: Host, call: ToolCall, skill: TestedSkill): string | undefined {
@@ -1169,6 +1221,7 @@ export function taskOutcome(
     if (sentBy !== null) senders.set(sentBy, (senders.get(sentBy) ?? 0) + 1);
   }
   const readsPastLastRound = runs.filter((run) => run.outcome === "reads past last round").length;
+  const undecided = runs.filter((run) => run.outcome === "undecided").length;
   const lacking = wanted - judged.length;
   const left = wanted + MAX_EXTRA_RUNS - runs.length;
   const complete = lacking <= 0;
@@ -1176,6 +1229,7 @@ export function taskOutcome(
   const why = [
     ...[...senders].map(([skill, count]) => `sent by ${skill} in ${count} ${of}`),
     ...(readsPastLastRound > 0 ? [`reads past the last round in ${readsPastLastRound} ${of}`] : []),
+    ...(undecided > 0 ? [`undecided at a mixed reply in ${undecided} ${of}`] : []),
   ];
   return {
     made: runs.length,
@@ -1184,6 +1238,7 @@ export function taskOutcome(
     loadedRuns,
     sentBy: Object.fromEntries(senders),
     readsPastLastRound,
+    undecided,
     extraRuns: Math.max(0, runs.length - wanted),
     toStart: complete ? 0 : Math.max(0, Math.min(lacking, left)),
     complete,
@@ -1611,9 +1666,10 @@ interface LoadResult {
 const SENDS = "each run its own session id; a profile's tasks interleaved in one seeded order";
 
 /** How a test's runs take skill reads, as its settings record it (see the file's header). An
- *  `--out` whose settings do not record it holds runs that stopped at their first message, so it
- *  is refused. */
-const SKILL_READS = `Oh My Pi answers a reply that only reads skill files, at most ${MAX_SKILL_ROUNDS} rounds; a run sent by another skill or still reading after them runs again, at most ${MAX_EXTRA_RUNS} extra runs a task`;
+ *  `--out` whose settings do not record it holds runs that stopped at their first message, or
+ *  that ended at a reply that read skill files beside other calls before replay.ts's LOAD_RULE
+ *  sorted them, so it is refused. */
+const SKILL_READS = `Oh My Pi answers a reply that only reads skill files, or reads them beside calls that only read or look (the others left out), at most ${MAX_SKILL_ROUNDS} rounds; a run sent by another skill, still reading after them, or undecided at a reply that reads them beside a call that is neither runs again, at most ${MAX_EXTRA_RUNS} extra runs a task`;
 
 /** What an Oh My Pi test lists each skill under, as its settings record it with its draw (see the
  *  file's header). An `--out` whose settings do not record it holds captures whose every skill
@@ -2343,7 +2399,8 @@ class LoadTest {
    * One run of `each`'s capture (see the file's header), sent through replay.ts's `replayOnce`
    * with the routing id `routingId` (none beside a Responses body): it ends at a reply that loads
    * the skill, once the answer to a read of another skill names the skill, on Claude Code at its
-   * first reply, else as the replay ends a run. Gives what it came to and each of its replies.
+   * first reply, else as the replay ends a run, which on Oh My Pi sorts a reply that reads skill
+   * files beside other calls by LOAD_RULE. Gives what it came to and each of its replies.
    * `firstSettled` is told once its first send has its reply or its failure. Rejects with
    * RunFailed when a send does (the gateway's `BudgetSpent` among them), which carries what the
    * run's earlier replies used.
@@ -2370,10 +2427,14 @@ class LoadTest {
     ): boolean => {
       const load = messageLoad(host, content, tested);
       seen.push({
-        calls: toolCalls(content).map((call) => ({
-          name: call.name ?? "",
-          target: callTarget(host, call) ?? null,
-        })),
+        calls: toolCalls(content).map((call) => {
+          const argument = ruleArgument(host, call);
+          return {
+            name: call.name ?? "",
+            target: callTarget(host, call) ?? null,
+            ...(argument === undefined ? {} : { argument }),
+          };
+        }),
         // AnsweredRead's fields, as ReplyRecord keeps them.
         answers:
           round?.map(({ read: { skill, file, by, from, isError } }) => ({
@@ -2401,19 +2462,25 @@ class LoadTest {
     };
     const { body, headers, arm, copies } = each.captured;
     let replayed: Replayed;
-    let past = false;
+    let unjudged:
+      | { readonly outcome: "reads past last round" | "undecided"; readonly reason: string }
+      | undefined;
     try {
       replayed = await replayOnce(
         body,
         arm,
         gateway,
-        { headers, copies, endsAt, routingId },
+        // Claude Code's runs end at their first message, so they take no rule.
+        { headers, copies, endsAt, routingId, ...(host === "omp" ? { mixed: LOAD_RULE } : {}) },
         firstSettled
       );
     } catch (error) {
-      if (!(error instanceof ReadsPastLastRound)) throw new RunFailed(error, spent);
+      if (error instanceof ReadsPastLastRound) {
+        unjudged = { outcome: "reads past last round", reason: error.message };
+      } else if (error instanceof UndecidedReply) {
+        unjudged = { outcome: "undecided", reason: error.message };
+      } else throw new RunFailed(error, spent);
       replayed = error.replayed;
-      past = true;
     }
     const replies = seen.map((reply, index) => {
       const usage = spent[index];
@@ -2421,11 +2488,13 @@ class LoadTest {
       return { ...reply, usage: { ...usage } };
     });
     return {
-      outcome: ended?.outcome ?? (past ? "reads past last round" : "not loaded"),
+      outcome: ended?.outcome ?? unjudged?.outcome ?? "not loaded",
       loadedBy: ended?.outcome === "loaded" ? ended.by : null,
       sentBy: ended?.outcome === "sent by" ? ended.by : null,
       skillReads: host === "omp" ? "answered" : "first message",
       replies,
+      ...(replayed.leftOut.length === 0 ? {} : { leftOut: [...replayed.leftOut] }),
+      ...(unjudged?.outcome === "undecided" ? { reason: unjudged.reason } : {}),
       stopReason: replayed.step.message.stop_reason,
       requestId: replayed.step.requestId ?? null,
       userId: replayed.userId,
@@ -2586,7 +2655,7 @@ function verdictWords(task: Task, outcome: TaskOutcome, wanted: number): string 
 
 /** A task's counts in words (TaskOutcome): its loads among its judged runs, and what each of
  *  `runs` came to when they are given; its runs each other skill sent, its runs that read past
- *  the last round, and its extra runs. */
+ *  the last round, its runs undecided at a mixed reply where it has any, and its extra runs. */
 function countWords(outcome: TaskOutcome, runs?: readonly LoadRun[]): string {
   const senders = Object.entries(outcome.sentBy);
   const sent = senders.reduce((sum, [, count]) => sum + count, 0);
@@ -2595,7 +2664,9 @@ function countWords(outcome: TaskOutcome, runs?: readonly LoadRun[]): string {
       ? ""
       : ` (${senders.map(([skill, count]) => `${skill} ${count}`).join(", ")})`;
   const each = runs === undefined ? "" : ` (${runs.map(runWords).join(", ")})`;
-  return `loaded in ${outcome.loads} of ${outcome.judged} judged runs${each}; runs sent by another skill: ${sent}${bySkill}; runs that read past the last round: ${outcome.readsPastLastRound}; extra runs: ${outcome.extraRuns}`;
+  const undecided =
+    outcome.undecided === 0 ? "" : `; runs undecided at a mixed reply: ${outcome.undecided}`;
+  return `loaded in ${outcome.loads} of ${outcome.judged} judged runs${each}; runs sent by another skill: ${sent}${bySkill}; runs that read past the last round: ${outcome.readsPastLastRound}${undecided}; extra runs: ${outcome.extraRuns}`;
 }
 
 /** What run `run` came to, in words. */
@@ -2609,6 +2680,8 @@ function runWords(run: LoadRun): string {
       return `run ${run.run} is sent by ${run.sentBy}`;
     case "reads past last round":
       return `run ${run.run} reads past the last round`;
+    case "undecided":
+      return `run ${run.run} is undecided`;
   }
 }
 
@@ -3211,4 +3284,158 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     `the skill ${name}: ${verdict.reason}${small}; the test's runs, its failed runs and its hints so far cost $${usd.toFixed(4)} at list price; written to ${summaryFile}`
   );
   return { failures };
+}
+
+/** One run a load audit names: its number, its session id, and the tools of the calls of its
+ *  last reply that put it there (the actions; the calls a continued round would leave out; the
+ *  undecided calls). */
+export interface AuditedLoadRun {
+  readonly run: number;
+  readonly userId: string | null;
+  readonly tools: readonly string[];
+}
+
+/** What `auditLoadMixed` finds of one task's saved runs (see its comment). */
+export interface TaskAudit {
+  readonly task: string;
+  readonly runs: number;
+  readonly judged: number;
+  readonly untouched: number;
+  readonly ends: number;
+  readonly skillRound: number;
+  readonly actions: readonly AuditedLoadRun[];
+  readonly continues: readonly AuditedLoadRun[];
+  readonly sentBy: readonly AuditedLoadRun[];
+  readonly pastLastRound: readonly AuditedLoadRun[];
+  readonly unresolved: readonly AuditedLoadRun[];
+}
+
+/**
+ * The load test's mixed-reply rule (replay.ts's `replyBoundary` under LOAD_RULE) applied to the
+ * saved runs of each task the summary under `out` lists (`runs/<task id>.jsonl`), with no model
+ * call, no capture and no network: what each run's last reply would come to now. A run that
+ * loaded the skill or was sent by another skill, and every Claude Code run, ended before the rule
+ * (`untouched`). For each other run, its last reply is rebuilt from its record (ReplyRecord: each
+ * call's tool, a read's path, and the command or path LOAD_RULE reads, which a run made before
+ * that was recorded lacks, so its `bash` and `write` calls are undecided), and answered as its
+ * run would answer it: the tested skill (the run's `name`) from `skillDir`, the other skills of
+ * the run's profile file from the copies its task's saved capture names under `cacheDir`
+ * (context.ts's `installedCopies`). Each run is counted as ending there as before (`ends`: no
+ * read the replay answers, or no call), only reading skill files (`skillRound`), or named with
+ * its run number and session id: ending at an action (`actions`), continued (`continues`), sent
+ * by another skill whose answer the continued round would make (`sentBy`), getting no verdict
+ * past the last round (`pastLastRound`), or getting none for an undecided call (`unresolved`).
+ * Throws a refusal for a summary, a run or a profile it cannot read, and an error for a task
+ * with no saved capture, or a read of a skill whose copy the cache lacks.
+ */
+export function auditLoadMixed(o: {
+  readonly out: string;
+  readonly skillDir: string;
+  readonly cacheDir: string;
+}): TaskAudit[] {
+  const summaryFile = path.join(o.out, "summary.json");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(summaryFile, "utf8"));
+  } catch (error) {
+    throw new Refused(`cannot read ${summaryFile}: ${messageFor(error)}`);
+  }
+  const summary = SavedSummary.safeParse(raw);
+  if (!summary.success) throw new Refused(`${summaryFile} is not a load test's summary`);
+  const profiles = new Map<string, TaskProfile>();
+  return summary.data.tasks.map(({ id }): TaskAudit => {
+    const file = loadRunFile(o.out, id);
+    const runs = [...jsonLines(file)].map(({ at, value }) => {
+      const parsed = LoadRun.safeParse(value);
+      if (!parsed.success) {
+        throw new Refused(`${file}:${at} is not a load run: ${schemaFaults(parsed.error)}`);
+      }
+      return parsed.data;
+    });
+    const audit = {
+      task: id,
+      runs: runs.length,
+      judged: runs.filter((run) => run.outcome === "loaded" || run.outcome === "not loaded").length,
+      untouched: 0,
+      ends: 0,
+      skillRound: 0,
+      actions: [] as AuditedLoadRun[],
+      continues: [] as AuditedLoadRun[],
+      sentBy: [] as AuditedLoadRun[],
+      pastLastRound: [] as AuditedLoadRun[],
+      unresolved: [] as AuditedLoadRun[],
+    };
+    let copies: readonly InstalledCopy[] | undefined;
+    for (const run of runs) {
+      const last = run.replies.at(-1);
+      if (
+        run.host === "claude" ||
+        run.outcome === "loaded" ||
+        run.outcome === "sent by" ||
+        last === undefined
+      ) {
+        audit.untouched += 1;
+        continue;
+      }
+      if (copies === undefined) {
+        const capture = savedCapture(loadCapturePaths(o.out, "omp", id));
+        if (capture === undefined) {
+          throw new Error(`task ${id} has no saved capture under ${o.out}, which names its copies`);
+        }
+        copies = installedCopies(capture.record.context, o.cacheDir);
+      }
+      const profile = profiles.get(run.profile) ?? loadProfile(run.profile, "omp", run.name);
+      profiles.set(run.profile, profile);
+      const arm: Arm = {
+        name: ARM,
+        skill: run.name,
+        skillDir: o.skillDir,
+        installedDir: path.join("/skills", run.name),
+        messages: [],
+        profileSkills: [
+          ...profile.profile.skills,
+          { repo: LOCAL_SKILL_REPO, commit: run.profileDigest, path: o.skillDir, name: run.name },
+        ],
+      };
+      // The reply as its record keeps it: each call's tool and what the rule reads of it.
+      const content: ContentBlock[] = last.calls.map((call, index) => ({
+        type: "tool_use",
+        id: `audited_${index}`,
+        name: call.name,
+        input:
+          call.name === "read" && call.target !== null
+            ? { path: call.target }
+            : call.argument === undefined
+              ? {}
+              : { [call.name === "bash" ? "command" : "path"]: call.argument },
+      }));
+      let boundary: Boundary;
+      try {
+        boundary = replyBoundary(content, arm, copies, LOAD_RULE);
+      } catch (error) {
+        throw new Error(`task ${id} run ${run.run}: ${messageFor(error)}`);
+      }
+      if (boundary.kind === "ends") audit.ends += 1;
+      else if (boundary.kind === "skill round") audit.skillRound += 1;
+      else {
+        const { others } = boundary;
+        const named = (part: CallPart) => ({
+          run: run.run,
+          userId: run.userId,
+          tools: others.flatMap((call) => (call.part === part ? [call.tool] : [])),
+        });
+        const sender = boundary.reads.find(
+          ({ read, text }) =>
+            read.skill !== run.name && !read.isError && namesSkill(stripSkillHeader(text), run.name)
+        );
+        if (boundary.kind === "acts") audit.actions.push(named("act"));
+        else if (boundary.kind === "undecided") audit.unresolved.push(named("undecided"));
+        else if (sender !== undefined) audit.sentBy.push(named("preparation"));
+        else if (run.replies.length - 1 >= MAX_SKILL_ROUNDS) {
+          audit.pastLastRound.push(named("preparation"));
+        } else audit.continues.push(named("preparation"));
+      }
+    }
+    return audit;
+  });
 }
