@@ -439,6 +439,11 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 		cmd.Stderr = c.stderr
 	}
 	started := time.Now()
+	// CONTROL COMMIT, never for merge: a stall between the guard's own start stamp and the
+	// fork of the child, for the programs the stopped-read row runs.
+	if base := filepath.Base(c.argv[0]); base == "gh" || base == "git" {
+		time.Sleep(2500 * time.Millisecond)
+	}
 	err := procgroup.Err(cmd.Run())
 	switch {
 	case killed():
