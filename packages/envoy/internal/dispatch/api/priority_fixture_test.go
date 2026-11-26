@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -144,6 +145,15 @@ func seededAdvancesTuple(issueKey, priority string, at time.Time) []any {
 		prioritystore.KindIssue, issueKey, prioritystore.RelationAdvances,
 		prioritystore.KindPriority, priority, at, seededWriter, prioritystore.NoEvent, true,
 	}
+}
+
+// retractedAdvancesTuple is the retraction of an `advances` relation, as prioritystore.Retract
+// appends one: the relation's own row with asserted false. Written after the assertion, it is
+// the newer of the pair, so the relation stands retracted.
+func retractedAdvancesTuple(issueKey, priority string, at time.Time) []any {
+	tuple := seededAdvancesTuple(issueKey, priority, at)
+	tuple[slices.Index(seededTupleColumns, "asserted")] = false
+	return tuple
 }
 
 // seededIssueKey is the key an issue of a bulk corpus carries: the project's key and its number,

@@ -140,15 +140,19 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * engine's parse less GFM's autolink literals (`STORED_TEXT_PARSE`) and held as a `DisplayTree`
  * of the shape the server's reading of a text has, or, for a text that holds no markup
  * (`isPlainText`), built as that parse would read it (`plainReading`). The walks that read the
- * server's reading - its words (`wordsOf`), a node's first block (`lineWords`), its addresses
- * written short (`withShortAddresses`) - so read a stored text the same way. Its words are the
- * words of that parse, which are what the server's reading holds for every text that holds none
- * of three things: a container directive, a Proof mark span and a bare address holding markup
+ * server's reading - its words (`wordsOf`) and a node's first block (`lineReading`), which the
+ * shared projection draws - so read a stored text the same way. Its words are the words of that
+ * parse, which are what the server's reading holds for every text that holds none of three
+ * things: a container directive, a Proof mark span and a bare address holding markup
  * (`STORED_TEXT_PARSE`), so a place that has only the text reads what the server's reading of it
  * would hold (R21).
  *
- * The reading holds what decides the words and where they stand apart: the blocks, the text runs
- * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
+ * The reading holds what decides the words, where they stand apart and how a link reads: the
+ * blocks, the text runs and the marks on them, by the server's names, and of their attributes an
+ * ordered list's first number (`blockOf`) and a link's target and title (`linkMark`), as the
+ * server writes them; no word lies in any other. The shared projection reads a link whose words
+ * are its own address, an autolink among them, as its target's short form or name, by that
+ * target (`linkDrawn`), as it reads the server's reading of the same text. A
  * block opens a space before its words and after them. A mark sits on the runs it covers, so a
  * marked run and the run beside it stay consecutive children of one block and read adjacent
  * (`a **b**c` reads `a bc`). A leaf that holds no text - a hard break, an image, a footnote
@@ -170,7 +174,7 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * caller that names no holder is answered the reading a holder holds where there is one, and
  * otherwise a reading parsed for it alone and remembered nowhere, since nothing would ever
  * release it. A reading is shared by every caller that reads its text, so nothing may change
- * one: `withShortAddresses` writes an address into a copy of the nodes it changes.
+ * one.
  */
 export function storedReading(markdown: string, holder?: object): DisplayTree {
   // A holder asking again for the text it last asked for is answered first, before even the
@@ -231,17 +235,53 @@ function paragraphOf(lines: readonly string[]): DisplayTree {
 
 /** The reading of a stored text by the parse alone (`STORED_TEXT_PARSE`), with no plain path and
  *  nothing remembered: what `storedReading` reads a text by where it holds no reading of it, and
- *  what a test holds the plain path (`plainReading`) equal to. */
+ *  what a test holds the plain path (`plainReading`) equal to. The text's link reference
+ *  definitions are read only once a reference link asks for one (`definedLinks`). */
 export function parsedReading(markdown: string): DisplayTree {
-  return withContent("doc", blocksOf(fromMarkdown(markdown, STORED_TEXT_PARSE).children));
+  const root = fromMarkdown(markdown, STORED_TEXT_PARSE);
+  let defined: ReadonlyMap<string, DisplayTree> | undefined;
+  const links: DefinedLinks = (identifier) => {
+    defined ??= definedLinks(root.children, new Map());
+    return defined.get(identifier);
+  };
+  return withContent("doc", blocksOf(root.children, links));
+}
+
+/** The link a reference link reads as, by its label's identifier (`definedLinks`). */
+type DefinedLinks = (identifier: string) => DisplayTree | undefined;
+
+/** `links` with, for each definition among `nodes` and in the blocks they hold, the link it names
+ *  (`linkMark`) by its label's identifier, unless an earlier definition named that label: a
+ *  reference link reads its label's first definition, as the server reads one. A definition
+ *  stands only among a container's blocks, never in a paragraph or a table. */
+function definedLinks(
+  nodes: readonly Parsed[],
+  links: Map<string, DisplayTree>
+): Map<string, DisplayTree> {
+  for (const node of nodes) {
+    switch (node.type) {
+      case "definition":
+        if (!links.has(node.identifier)) {
+          links.set(node.identifier, linkMark(node.url, node.title));
+        }
+        break;
+      case "blockquote":
+      case "list":
+      case "listItem":
+      case "footnoteDefinition":
+        definedLinks(node.children, links);
+        break;
+    }
+  }
+  return links;
 }
 
 /** The readings of `nodes`, the blocks of one container, in order, less each that draws nothing
  *  (`blockOf`). */
-function blocksOf(nodes: readonly Parsed[]): DisplayTree[] {
+function blocksOf(nodes: readonly Parsed[], links: DefinedLinks): DisplayTree[] {
   const blocks: DisplayTree[] = [];
   for (const node of nodes) {
-    const block = blockOf(node);
+    const block = blockOf(node, links);
     if (block !== undefined) blocks.push(block);
   }
   return blocks;
@@ -250,25 +290,29 @@ function blocksOf(nodes: readonly Parsed[]): DisplayTree[] {
 /**
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
- * server's schema carries HTML inline only. Front matter is one text run of its lines between
- * two plain `---` fences, and of the two fences alone where it holds nothing, as the server
- * writes it (`parseFrontmatterBlock`, `pmdoc/lines.go`). A link reference definition, which only
- * names a link's target, draws nothing and is `undefined`.
+ * server's schema carries HTML inline only. An ordered list keeps the number it starts on as its
+ * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`.
+ * Front matter is one text run of its lines between two plain `---` fences, and of the two fences
+ * alone where it holds nothing, as the server writes it (`parseFrontmatterBlock`,
+ * `pmdoc/lines.go`). A link reference definition, which only names a link's target, draws
+ * nothing and is `undefined`.
  */
-function blockOf(node: Parsed): DisplayTree | undefined {
+function blockOf(node: Parsed, links: DefinedLinks): DisplayTree | undefined {
   switch (node.type) {
     case "paragraph":
     case "heading":
-      return withContent(node.type, runsOf(node.children));
+      return withContent(node.type, runsOf(node.children, links));
     case "blockquote":
-      return withContent("blockquote", blocksOf(node.children));
+      return withContent("blockquote", blocksOf(node.children, links));
     case "list":
-      return withContent(
-        node.ordered === true ? "ordered_list" : "bullet_list",
-        blocksOf(node.children)
-      );
+      return node.ordered === true
+        ? {
+            ...withContent("ordered_list", blocksOf(node.children, links)),
+            attrs: { order: node.start ?? 1 },
+          }
+        : withContent("bullet_list", blocksOf(node.children, links));
     case "listItem":
-      return withContent("list_item", blocksOf(node.children));
+      return withContent("list_item", blocksOf(node.children, links));
     case "code": {
       const runs: DisplayTree[] = [];
       addText(runs, node.value, NO_MARKS);
@@ -281,10 +325,10 @@ function blockOf(node: Parsed): DisplayTree | undefined {
     case "table":
       return withContent(
         "table",
-        node.children.map((row, at) => rowOf(row, at === 0))
+        node.children.map((row, at) => rowOf(row, at === 0, links))
       );
     case "footnoteDefinition":
-      return withContent("footnote_definition", blocksOf(node.children));
+      return withContent("footnote_definition", blocksOf(node.children, links));
     case "yaml": {
       const text = node.value === "" ? "---\n---" : `---\n${node.value}\n---`;
       return { content: [{ text, type: "text" }], type: "frontmatter" };
@@ -297,21 +341,21 @@ function blockOf(node: Parsed): DisplayTree | undefined {
 /** The reading of one table row: the header row as `table_header_row` of `table_header` cells
  *  and a body row as `table_row` of `table_cell` cells, as the server names them, each cell's
  *  words in a paragraph of its own, so two cells' words stand apart as two blocks' do. */
-function rowOf(row: ParsedRow, header: boolean): DisplayTree {
+function rowOf(row: ParsedRow, header: boolean, links: DefinedLinks): DisplayTree {
   const cell = header ? "table_header" : "table_cell";
   return withContent(
     header ? "table_header_row" : "table_row",
     row.children.map((each) => ({
-      content: [withContent("paragraph", runsOf(each.children))],
+      content: [withContent("paragraph", runsOf(each.children, links))],
       type: cell,
     }))
   );
 }
 
 /** The text runs and the leaves of one block's inline content (`addRuns`). */
-function runsOf(nodes: readonly Parsed[]): DisplayTree[] {
+function runsOf(nodes: readonly Parsed[], links: DefinedLinks): DisplayTree[] {
   const runs: DisplayTree[] = [];
-  addRuns(runs, nodes, NO_MARKS);
+  addRuns(runs, nodes, NO_MARKS, links);
   return runs;
 }
 
@@ -319,13 +363,14 @@ function runsOf(nodes: readonly Parsed[]): DisplayTree[] {
  * Adds to `runs` the runs and the leaves of `nodes`, inline content standing in `marks`. A mark's
  * content is flattened into runs carrying that mark as well, as the server holds a mark on the
  * text it covers rather than as a node around it, so nothing comes between a marked run and its
- * neighbours. A link by reference is a link, as an inline one is; an image by reference is an
- * image.
+ * neighbours. A link's runs carry its target and title (`linkMark`), and a link by reference's
+ * those of its label's first definition (`definedLinks`); an image by reference is an image.
  */
 function addRuns(
   runs: DisplayTree[],
   nodes: readonly Parsed[],
-  marks: readonly DisplayTree[]
+  marks: readonly DisplayTree[],
+  links: DefinedLinks
 ): void {
   for (const node of nodes) {
     switch (node.type) {
@@ -336,18 +381,25 @@ function addRuns(
         addText(runs, node.value, withMark(marks, "inlineCode"));
         break;
       case "strong":
-        addRuns(runs, node.children, withMark(marks, "strong"));
+        addRuns(runs, node.children, withMark(marks, "strong"), links);
         break;
       case "emphasis":
-        addRuns(runs, node.children, withMark(marks, "emphasis"));
+        addRuns(runs, node.children, withMark(marks, "emphasis"), links);
         break;
       case "delete":
-        addRuns(runs, node.children, withMark(marks, "strike_through"));
+        addRuns(runs, node.children, withMark(marks, "strike_through"), links);
         break;
       case "link":
-      case "linkReference":
-        addRuns(runs, node.children, withMark(marks, "link"));
+      case "linkReference": {
+        // The parse reads a reference link only where a definition names its label, so a link
+        // is always found. A run carries one link, as the server's reading holds it: an autolink
+        // in a link's words links them to its own URL in place of the link around it.
+        const link = node.type === "link" ? linkMark(node.url, node.title) : links(node.identifier);
+        const linked =
+          link === undefined ? marks : [...marks.filter((mark) => mark.type !== "link"), link];
+        addRuns(runs, node.children, linked, links);
         break;
+      }
       case "break":
         runs.push({ type: "hardbreak" });
         break;
@@ -369,6 +421,15 @@ function addRuns(
  *  once, as the server's reading holds a run's marks as a set. */
 function withMark(marks: readonly DisplayTree[], type: string): readonly DisplayTree[] {
   return marks.some((mark) => mark.type === type) ? marks : [...marks, { type }];
+}
+
+/** A link to `url`, as the server's reading writes one (`pmdoc/parse.go`): its `href`, and its
+ *  `title` where it has one, which the display tree leaves out where it is null. */
+function linkMark(url: string, title: string | null | undefined): DisplayTree {
+  return {
+    attrs: title === null || title === undefined ? { href: url } : { href: url, title },
+    type: "link",
+  };
 }
 
 /** Adds a run of `text` carrying `marks` to `runs`, unless the text is empty: an empty text node

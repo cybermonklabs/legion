@@ -13,6 +13,7 @@ import (
 // A value Dispatch never writes — out of range, or no integer at all — reads as none and is
 // reported, never poison: the event may move the issue's status, which the workflow acts on.
 func TestADispatchIssueEventCarriesItsOwnPriority(t *testing.T) {
+	t.Parallel()
 	const subject = "notifications.dispatch.issue.CAPTURE-3.issue.updated"
 	original := string(capturedIssueUpdatedEnvelope(t))
 	anchor := `\"priority\":null,`
@@ -53,6 +54,7 @@ func TestADispatchIssueEventCarriesItsOwnPriority(t *testing.T) {
 // (ListedIssue, ObservedIssue, and OwnStatusWrite over the detail), as an event does, so the
 // record takes it from whichever read reaches it first.
 func TestTheListingAndTheDetailCarryTheIssuesPriorityOntoTheFact(t *testing.T) {
+	t.Parallel()
 	level := func(n int) *int { return &n }
 	for _, tc := range []struct {
 		name  string

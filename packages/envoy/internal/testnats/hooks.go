@@ -69,6 +69,21 @@ const (
 	// stores it (applyStreamMsgOp). A stream with no Raft group, a lone server's, has no such
 	// point.
 	StreamApply Point = "stream.apply"
+	// DedupeReset is a stream update whose duplicate window changes, past the re-arm of the
+	// stream's purge of remembered duplicate ids ("Let it fire right away", server/stream.go) and
+	// before the store of the new window. The update re-arms that purge to fire at once, and only
+	// while the stream remembers an id. A hold here parks the update, with the stream's own lock
+	// held, which this server version's purge does not take: the purge the re-arm fired runs
+	// during the park, reads the window being replaced, keeps an id the new window would drop and
+	// re-arms itself for as long as that old window, the order the defect needs. Event.Window is
+	// the old window and Event.NewWindow the one the update will store.
+	DedupeReset Point = "dedupe.reset"
+	// DedupePurged is a purge of remembered duplicate ids that has done its work, with the dedupe
+	// lock still held: Event.Window is the window it measured the ids' ages against, which no
+	// update can have changed meanwhile, and Event.Remembered the number it kept. A goroutine
+	// held here holds that lock, so a publish of an id and an update's store of a new window wait
+	// for the release.
+	DedupePurged Point = "dedupe.purged"
 
 	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown or
 	// lame duck begins, before it stops anything, and where its Shutdown has waited for every
@@ -87,6 +102,8 @@ var missing = map[string]map[Point]string{
 	"2.10.29": {
 		WritePreRename:               "it writes a consumer's o.dat in place, with no temporary file and no rename",
 		Point("msgget.timeSelected"): "its message get takes no start_time, so no sequence is selected by time",
+		DedupeReset:                  "its purge of remembered ids takes the stream's own lock, which its update holds across the re-arm and the store of the new window, so no purge runs between the two and the point is not hooked",
+		DedupePurged:                 "its purge of remembered ids is not hooked: the order dedupe.reset forces is impossible on this version",
 	},
 }
 
@@ -97,9 +114,6 @@ func (p Point) Exists() (bool, string) {
 	}
 	return true, ""
 }
-
-// reachWithin bounds every wait for a hold to be reached or an event to be reported.
-const reachWithin = 30 * time.Second
 
 // Event is one report of the hooked server, as natsserver.MeasureEvent carries it, with its
 // state decoded.
@@ -124,12 +138,19 @@ type Event struct {
 	// Server, Account, Subject, Stream, Client and Kind describe a server point's request or
 	// message: Account is the account that sent the request at APIWorker, the publishing
 	// connection's at ClientPublish, and the stream's at StreamApply and at MetaApply; Stream is
-	// the stream's name at StreamApply, at MetaApply and at msgget.timeSelected; Client is the
-	// publishing connection's name, Kind its kind. ServerID is the ID of the server's run at
-	// ServerShutdown and ServerDown.
+	// the stream's name at StreamApply, at MetaApply, at msgget.timeSelected and at the
+	// duplicate-window points, DedupeReset and DedupePurged; Client is the publishing
+	// connection's name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown
+	// and ServerDown.
 	Server, ServerID, Account, Subject, Stream, Client, Kind string
 	// Recovering is set at StreamApply and at MetaApply while the server replays its log at start.
 	Recovering bool
+	// Window is the duplicate window the point read: at DedupeReset the one being replaced, which
+	// a purge running there measures the remembered ids against, and at DedupePurged the one the
+	// purge did measure them against. NewWindow is the window the update will store, at
+	// DedupeReset alone, and Remembered the ids the purge kept, at DedupePurged alone.
+	Window, NewWindow time.Duration
+	Remembered        int
 }
 
 func (e Event) String() string {
@@ -153,6 +174,15 @@ func (e Event) String() string {
 		fmt.Fprintf(&b, " delivered=%d/%d ackfloor=%d/%d pending=%d", e.State.Delivered.Consumer, e.State.Delivered.Stream,
 			e.State.AckFloor.Consumer, e.State.AckFloor.Stream, len(e.State.Pending))
 	}
+	if e.Window != 0 || e.NewWindow != 0 {
+		fmt.Fprintf(&b, " window=%s", e.Window)
+		if e.NewWindow != 0 {
+			fmt.Fprintf(&b, "->%s", e.NewWindow)
+		}
+	}
+	if e.Point == DedupePurged {
+		fmt.Fprintf(&b, " remembered=%d", e.Remembered)
+	}
 	if e.Recovering {
 		b.WriteString(" recovering")
 	}
@@ -163,7 +193,7 @@ func eventOf(me *natsserver.MeasureEvent) Event {
 	e := Event{
 		Point: Point(me.Point), Gen: me.Gen, Consumer: me.Name, Store: me.Store, Path: me.Path, Seq: me.Seq,
 		Server: me.Server, ServerID: me.ServerID, Account: me.Account, Subject: me.Subject, Stream: me.Stream, Client: me.Client,
-		Kind: me.Kind, Recovering: me.Recovering,
+		Kind: me.Kind, Recovering: me.Recovering, Window: me.Window, NewWindow: me.NewWindow, Remembered: me.Remembered,
 	}
 	if me.Err != nil {
 		e.Err = me.Err.Error()
@@ -205,8 +235,8 @@ func Consumer(name string) Match {
 }
 
 // Stream takes the events of the stream named name: a StreamApply of it, a MetaApply of one of its
-// consumers, a message get from it (msgget.timeSelected), or a file store point of one of its
-// consumers.
+// consumers, a message get from it (msgget.timeSelected), a duplicate-window point of it
+// (DedupeReset, DedupePurged), or a file store point of one of its consumers.
 func Stream(name string) Match {
 	return Match{"stream " + name, func(e Event) bool {
 		if e.Stream != "" {
@@ -395,11 +425,12 @@ func (h *Hooks) Events(point Point, match ...Match) []Event {
 	return found
 }
 
-// Await returns the first event at point that every match accepts, waiting up to 30 seconds for
-// one, and fails t naming the point and the matches when none is reported.
+// Await returns the first event at point that every match accepts, waiting for one until the
+// test's deadline (testDeadline, computed once, when Await begins), and fails t naming the point
+// and the matches when none is reported by then, however many other events come meanwhile.
 func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 	t.Helper()
-	deadline := time.After(reachWithin)
+	bound := boundOf(t)
 	for {
 		h.mu.Lock()
 		changed := h.changed
@@ -410,10 +441,8 @@ func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 			}
 		}
 		h.mu.Unlock()
-		select {
-		case <-changed:
-		case <-deadline:
-			t.Fatalf("the hooked server reported no event at %s within %s", describe(point, match), reachWithin)
+		if bound.over() || !awaitSignal(bound, changed) {
+			t.Fatalf("the hooked server reported no event at %s by %s, short of the test's deadline", describe(point, match), bound)
 		}
 	}
 }
@@ -458,19 +487,16 @@ func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
-// Reached waits up to 30 seconds for the hold to be reached, and returns the event that reached
-// it. That event's goroutine is parked at the hold until Release, unless the hold had been
-// released before it was reached, when the event went on. It fails t, naming the point and the
-// matches, when none did.
+// Reached waits for the hold to be reached, until the test's deadline (testDeadline), and returns
+// the event that reached it. That event's goroutine is parked at the hold until Release, unless the
+// hold had been released before it was reached, when the event went on. It fails t, naming the
+// point and the matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
-	select {
-	case <-hold.reached:
-		return hold.event
-	case <-time.After(reachWithin):
-		t.Fatalf("the hold at %s was not reached within %s", hold, reachWithin)
-		return Event{}
+	if bound := boundOf(t); !awaitSignal(bound, hold.reached) {
+		t.Fatalf("the hold at %s was not reached by %s, short of the test's deadline", hold, bound)
 	}
+	return hold.event
 }
 
 func (hold *Hold) wasReached() bool {

@@ -319,12 +319,14 @@ func (c backlogMoveCorpus) standingInBacklog() int {
 
 // projectListingArguments are the arguments the listing route binds for
 // `?project=<project>&moved=<moved>` (listIssues): no filter but the project, the gate of the
-// move read ($14) moved, and `own` ($15) false. The three times it names none of, updated_since
-// and the closed window's two ends, are typed nils: pgx sends one as null, as it sends an untyped
-// nil, and benchtime.PreparedArguments writes one as a timestamptz null.
+// move read ($14) moved, `own` ($15) false, and the two strings of the label filter's map ($16,
+// $17) empty, as labelFoldMap answers them for a request that names no label. The three times it
+// names none of, updated_since and the closed window's two ends, are typed nils: pgx sends one as
+// null, as it sends an untyped nil, and benchtime.PreparedArguments writes one as a timestamptz
+// null.
 func projectListingArguments(project string, moved bool) []any {
 	return []any{project, []string{}, "", (*time.Time)(nil), []string{}, false, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved, false}
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved, false, "", ""}
 }
 
 // backlogMoveSchemas are the index under the name events_backlog_moves that each reading runs

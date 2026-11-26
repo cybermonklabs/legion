@@ -64,13 +64,13 @@ const (
 )
 
 // newBrokerRig is ciphertest.NewRig with options, failing rather than skipping on GitHub Actions
-// when BROKER_TEST_DATABASE_URL is unset: the daemon-go-race job of
-// .github/workflows/ci-job-daemon-go.yaml, which runs internal/daemon, names its Postgres service
-// there, and a silent skip would let these tests stop running unnoticed.
+// when BROKER_TEST_DATABASE_URL is unset: the daemon-go-race-legs job of
+// .github/workflows/ci-job-daemon-go.yaml, whose race legs run internal/daemon, names its Postgres
+// service there, and a silent skip would let these tests stop running unnoticed.
 func newBrokerRig(t *testing.T, options ...ciphertest.Option) *ciphertest.Rig {
 	t.Helper()
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: the daemon-go-race job of .github/workflows/ci-job-daemon-go.yaml names its Postgres service")
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: the daemon-go-race-legs job of .github/workflows/ci-job-daemon-go.yaml names its Postgres service")
 	}
 	return ciphertest.NewRig(t, options...)
 }
@@ -227,7 +227,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: slog.New(slog.NewTextHandler(logs, nil)),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar:      registrar,
 		RefreshGate:    supervise.NewRefreshGate(0),
@@ -262,7 +262,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	handle(
 		supervise.RequestSpawn{Claim: token},
 		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: keyThumbprint(t, key), PodToken: podToken}},
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: releaseSession, SessionFile: releaseFile, PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: releaseSession, SessionFile: releaseFile, PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: releaseSession},
 	)
 	r := &releaseRig{t: t, ctx: ctx, broker: broker, proxy: proxy, st: st, token: token, key: key, logs: logs, clock: clock,
@@ -359,6 +359,7 @@ func (r *releaseRig) holds() []supervise.Hold {
 // broker frees the name and the pod's trade under it afterwards is admitted, which fails the test
 // naming the session.
 func TestAReleaseTellsTheBrokerBeforeItFreesTheNames(t *testing.T) {
+	t.Parallel()
 	r := newReleaseRig(t, true)
 
 	released := r.freed(r.release())
@@ -393,6 +394,7 @@ func TestAReleaseTellsTheBrokerBeforeItFreesTheNames(t *testing.T) {
 // The control (the pull request records the run): ReleaseNames going on to free the names after
 // the broker did not release them frees them while the broker is down, which fails the test.
 func TestAReleaseTheBrokerDoesNotAnswerKeepsTheNames(t *testing.T) {
+	t.Parallel()
 	r := newReleaseRig(t, true)
 	held := r.holds()
 	r.proxy.setDown(true)
@@ -446,6 +448,7 @@ func TestAReleaseTheBrokerDoesNotAnswerKeepsTheNames(t *testing.T) {
 // frees the claim's names once the broker's carry check answers, as before the release route, and
 // makes no call to that route.
 func TestAReleaseWithoutTheExchangeAsksNoBroker(t *testing.T) {
+	t.Parallel()
 	r := newReleaseRig(t, false)
 
 	released := r.freed(r.release())

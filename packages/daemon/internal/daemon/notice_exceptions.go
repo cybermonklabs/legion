@@ -223,7 +223,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// is spent, and what is carried over is the account of it the line reports. Without this
 		// the copy publishes and no "supervise: wake ran" is written at all, so the operator's
 		// own check neither counts that wake nor builds its window (scripts/wake-windows.py).
-		notice.PacedAt, notice.PacedFrom = payload.PacedAt, payload.PacedFrom
+		notice.PacedAt, notice.PacedFrom, notice.PacedTurns = payload.PacedAt, payload.PacedFrom, payload.PacedTurns
 		reported := reportedNotice{issue: row.Issue, notice: notice, row: source, architect: architect, claims: row.ID}
 		if err := r.reholdNotice(ctx, reported, notDelivered.Reason, notDelivered.Holder); err != nil {
 			return fmt.Errorf("re-hold the notice for %s that its architect %s did not take: %w", row.Issue, architect, err)
