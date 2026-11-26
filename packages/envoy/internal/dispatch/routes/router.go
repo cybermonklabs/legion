@@ -1104,7 +1104,7 @@ func writeAPIRefusal(w http.ResponseWriter, req *http.Request, code apicode.Code
 // build can know the day it is released: the Envoy image is built before the release job decides
 // its legion-envoy version, and the server knows only the commit it was built from (main's
 // buildCommit), so the date can be some days before the release that carries it.
-var apiV1DeprecatedAt = time.Date(2026, time.November, 22, 0, 0, 0, 0, time.UTC)
+var apiV1DeprecatedAt = time.Date(2026, time.November, 26, 0, 0, 0, 0, time.UTC)
 
 // apiV1Deprecation is the Deprecation header's value, `@` and the date's Unix seconds.
 var apiV1Deprecation = "@" + strconv.FormatInt(apiV1DeprecatedAt.Unix(), 10)
