@@ -7,6 +7,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 )
 
 // concurrentAsks has n asks for names for an hour from one enrollment go to Create at once, each
@@ -306,5 +309,81 @@ func TestAnAskReadsAgainUnderTheLocksOnItsFirstAttemptAlone(t *testing.T) {
 	}
 	if !slices.Equal(attempts, []int{1, 2}) {
 		t.Fatalf("the ask made attempts %v; want [1 2], a second only after the first read again", attempts)
+	}
+}
+
+// TestANarrowedAskKeepsItsProfileAndTargetOnItsSecondAttempt: an ask with a github_app field
+// (CreateNarrowed) for the person's own App, OWN_APP, is served as OWN_APP_WRITE, the profile
+// gitHubAppProfile chooses for a write narrowing, with the field's target. Before its first
+// attempt's transaction the same ask, made again, writes a grant for that profile, which the read
+// under the names' locks finds, so the first attempt writes nothing and the second hands that
+// grant over: one grant, of the chosen profile and the field's target, recorded as narrowed.
+//
+// The named revert: give the second attempt no narrowing, and it serves the stored secret with
+// the signed object's target, which no narrowed grant matches, so the ask is not handed the grant
+// the first attempt saw written.
+func TestANarrowedAskKeepsItsProfileAndTargetOnItsSecondAttempt(t *testing.T) {
+	m, enr, key, _ := newFixture(t)
+	local := fixtureStore(m)
+	local.Put(policytest.TypeSecret("OWN_APP", fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	m.Policy = policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(
+		`{"name": "OWN_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "read", "metadata": "read"}, "value": "installations"}}`,
+		`{"name": "OWN_APP_WRITE", "source": "OWN_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "write", "metadata": "read"}, "value": "installations"}}`,
+	), fixtureService)
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Policy)
+	m.GitHubAppFieldSecrets = "OWN_APP"
+	narrowing := GitHubAppNarrowing{Owner: "acme", Repositories: []string{"widgets"}}
+	ctx := context.Background()
+	ask := func() (Request, error) {
+		return m.CreateNarrowed(ctx, enr, signRequestFor(t, m, key, 3600, "OWN_APP"), "", narrowing)
+	}
+
+	var attempts []int
+	nested := false
+	var meanwhile Request
+	m.testBeforeCreateTx = func(attempt int) {
+		if nested {
+			return
+		}
+		attempts = append(attempts, attempt)
+		if attempt != 1 {
+			return
+		}
+		nested = true
+		var err error
+		if meanwhile, err = ask(); err != nil || meanwhile.GrantID == nil {
+			t.Errorf("the ask written meanwhile = %+v, %v; want a grant", meanwhile, err)
+		}
+		nested = false
+	}
+	defer func() { m.testBeforeCreateTx = nil }()
+
+	got, err := ask()
+	if err != nil || got.GrantID == nil {
+		t.Fatalf("CreateNarrowed(OWN_APP) with a grant written meanwhile = %+v, %v; want a grant", got, err)
+	}
+	// The second attempt hands the grant over at its reuse read, before its own transaction, so
+	// the hook sees the first attempt alone.
+	if !slices.Equal(attempts, []int{1}) {
+		t.Fatalf("the ask's transactions began for attempts %v; want [1], the second handing over the grant written meanwhile", attempts)
+	}
+	if meanwhile.GrantID == nil || *got.GrantID != *meanwhile.GrantID {
+		t.Fatalf("the ask was handed grant %v; want %v, the one written meanwhile", *got.GrantID, meanwhile.GrantID)
+	}
+	if len(got.Secrets) != 1 || got.Secrets[0].Name != "OWN_APP_WRITE" {
+		t.Fatalf("the ask's secrets = %+v; want OWN_APP_WRITE, the profile the field's write narrowing chooses", got.Secrets)
+	}
+	var narrowed bool
+	var account string
+	var repositories []string
+	if err := m.Store.Pool.QueryRow(ctx, `select github_app_field, coalesce(target_account, ''), target_repositories from request_secrets where request_id=$1`, got.ID).
+		Scan(&narrowed, &account, &repositories); err != nil {
+		t.Fatal(err)
+	}
+	if !narrowed || account != "acme" || !slices.Equal(repositories, []string{"widgets"}) {
+		t.Fatalf("the granted request records github_app_field %v and target %q %v; want true and acme [widgets]", narrowed, account, repositories)
+	}
+	if n := grantRows(t, m, enr); n != 1 {
+		t.Fatalf("%d grants; want the one written meanwhile", n)
 	}
 }
