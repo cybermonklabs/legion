@@ -10,6 +10,7 @@ package workflow
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +163,11 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 // testing asks one, and the tester is told the landing as before. The controls are the other
 // order of each pair. Where every step of the task has run - accepting as the last step, or the
 // retro - a conflict waits for the merger, so a merge that lands there is one the implementer was
-// asked for at an earlier step (askedInReviewing).
+// asked for at an earlier step (askedInReviewing). The owner at its own acceptance
+// (`acceptance:owner`) is the worker of the step the issue stands at (record.Issue.StepWorker), so
+// it is told the landing on its own claim, as a fresh agent of acceptance is. The review comes
+// before the landed: mergeForwardLanded addresses the review first, and addressMergeForward keeps
+// the order it is given.
 func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
@@ -174,11 +179,11 @@ func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 		want  []string
 	}{
 		{name: "accepting before the reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "acceptance:owner", "reviewer"}, pr: settledGreen("lint"), want: []string{}},
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}, pr: settledGreen("lint"), want: []string{"acceptance landed"}},
 		{name: "control: accepting after the reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "reviewer", "acceptance:owner"}, pr: askedInReviewing(), want: []string{"reviewer review"}},
+			steps: []string{"implementer", "reviewer", "acceptance:owner"}, pr: askedInReviewing(), want: []string{"reviewer review", "acceptance landed"}},
 		{name: "testing after the reviewer step", at: phase.Testing,
-			steps: []string{"implementer", "reviewer", "tester"}, pr: settledGreen("lint"), want: []string{"tester landed", "reviewer review"}},
+			steps: []string{"implementer", "reviewer", "tester"}, pr: settledGreen("lint"), want: []string{"reviewer review", "tester landed"}},
 		{name: "control: testing before the reviewer step", at: phase.Testing,
 			steps: []string{"implementer", "tester", "reviewer"}, pr: settledGreen("lint"), want: []string{"tester landed"}},
 		{name: "retro after a reviewer step that follows the acceptance", at: phase.Retro,
@@ -196,7 +201,7 @@ func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 			if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("the landing in %s under %v queued %v, want %v", tc.at, tc.steps, got, tc.want)
 			}
-			review := len(tc.want) > 0 && tc.want[len(tc.want)-1] == "reviewer review"
+			review := slices.Contains(tc.want, "reviewer review")
 			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Landed != forwardHead || mf.ReviewAsked != review {
 				t.Fatalf("the record's merge forward = %+v, want it landed at %s with the review asked: %t", mf, forwardHead, review)
 			}
@@ -212,22 +217,27 @@ func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 // nobody, whatever the base's rules, and waits for merging, where the merger merges the base
 // forward (cybermonklabs/legion#4979). In accepting that a step follows, the step still to run
 // needs a head the base's checks run on, so the conflict is decided as it is in testing and
-// reviewing: a check the base requires that is not green asks the implementer at once. Merging
-// asks the merger whatever the task's steps. The controls are the acceptance as the task's last
-// step, the retro of a task whose acceptance a step follows, and its merging.
+// reviewing: a check the base requires that is not green asks the implementer at once, and holds
+// the worker of the step the issue stands at. At the owner's own acceptance (`acceptance:owner`)
+// that worker is the owner (record.Issue.StepWorker), held on its own claim as a fresh agent of
+// acceptance is. Merging asks the merger whatever the task's steps. The controls are the
+// acceptance as the task's last step, the retro of a task whose acceptance a step follows, and its
+// merging.
 func TestAConflictInAcceptingAsksTheImplementerOnlyWhereAStepFollows(t *testing.T) {
 	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	owner := seededClaim(t, claim.RoleArchitect) // the owner's claim: the root's architect's
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
 		steps []string
 		why   record.ConflictWhy
+		hold  claim.Role // the role the owner is held as, "" for no hold
 	}{
 		{name: "accepting before a reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "acceptance:owner", "reviewer"}, why: record.ConflictCheckNotGreen},
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}, why: record.ConflictCheckNotGreen, hold: claim.RoleAcceptance},
 		{name: "accepting before a tester step", at: phase.Accepting,
-			steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}, why: record.ConflictCheckNotGreen},
+			steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}, why: record.ConflictCheckNotGreen, hold: claim.RoleAcceptance},
 		{name: "control: accepting as the last step", at: phase.Accepting,
 			steps: []string{"implementer", "reviewer", "acceptance:owner"}},
 		{name: "control: the retro of a task whose acceptance a step follows", at: phase.Retro,
@@ -245,7 +255,7 @@ func TestAConflictInAcceptingAsksTheImplementerOnlyWhereAStepFollows(t *testing.
 				assertNothingActed(t, pool, tc.at)
 				return
 			}
-			askedOnce(t, pool, tc.at, PhaseStatus(tc.at), tc.why, "")
+			askedOnceHolding(t, pool, tc.at, PhaseStatus(tc.at), tc.why, tc.hold, owner)
 		})
 	}
 }
