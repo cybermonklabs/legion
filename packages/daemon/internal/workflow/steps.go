@@ -173,7 +173,9 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // the issue leaves, or that its place held, reaches Dispatch before this start. The record never
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
 // that runs no step and a record key that is no issue key are no step its callers find
-// (standingStep).
+// (standingStep). A start of the retro also marks the run's retro started at that moment
+// (record.Store.MarkRetroStarted), in the same transaction, so every later close of the run finds
+// the retro it had (retroAtClose), a retro after a close included.
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
@@ -192,6 +194,11 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	})
 	if err != nil {
 		return err
+	}
+	if step.place.Kind == record.PlaceRetro {
+		if err := e.store.MarkRetroStarted(ctx, tx, issue.Key, issue.Generation, issue.Tree, now); err != nil {
+			return err
+		}
 	}
 	return e.enqueue(ctx, tx, issue.Key, write)
 }

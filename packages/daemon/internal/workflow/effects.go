@@ -1115,6 +1115,11 @@ const (
 // merger's task is built at retro's completion, the one move into merging, and at the retry of a
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
+//
+// The retro of an issue whose pull request merged before its retro sends its findings as the
+// retro after a close does (findingsClause, R2 of dispatch://INFRA-5602): its work is on the base
+// already, so a requirement it finds unmet goes to the tree's root architect rather than back to
+// a step. A record key that makes no claim token, which only a test writes, names no architect.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue) + at.lines
 	if handoff.HandoffRecord != "" {
@@ -1129,6 +1134,11 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
+	}
+	if issue.Phase == phase.Retro && pr != nil && pr.State == record.PullRequestMerged {
+		if topic, err := rootArchitectTopic(issue); err == nil {
+			text += findingsClause(topic)
+		}
 	}
 	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
 		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",

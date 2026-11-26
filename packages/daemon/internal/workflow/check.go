@@ -393,7 +393,9 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 // The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
 // deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
 // the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
-// and the pod goes until the next wake, whose launch makes the Sandbox again.
+// and the pod goes until the next wake, whose launch makes the Sandbox again. Where the check's
+// role is also the agent of the issue's open retro after its close (retroHoldsRole), its claim is
+// the retro's and is not suspended; the suspension waits while that claim holds the pod.
 func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, reason string) error {
 	if check.Last {
 		return e.closeCheck(ctx, tx, check, record.CheckNotRun)
@@ -410,8 +412,14 @@ func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.Pr
 			"look", check.Looks, "phase", issue.Phase)
 		return nil
 	}
-	if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
+	retro, err := e.retroHoldsRole(ctx, tx, issue, check.Role)
+	if err != nil {
 		return err
+	}
+	if !retro {
+		if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
+			return err
+		}
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
 		return err
@@ -469,7 +477,9 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 // its deadline waited for this check (lingerExpired): once no check of the tree is open its close
 // is re-armed with a LingerClose row due now, a duplicate of the waiting row's event, so applying
 // both is harmless. An issue back in the workflow — a root reopened inside its linger — retires
-// nobody and suspends nothing: the claims and the pod are the new run's.
+// nobody and suspends nothing: the claims and the pod are the new run's. A checking role that is
+// also the agent of the issue's open retro after its close (retroHoldsRole) is not closed: the
+// retro's end closes it (finishRetroAfterClose), and the suspension waits while it holds the pod.
 func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, outcome record.CheckOutcome) error {
 	if err := e.markCheckClosed(ctx, tx, check, outcome); err != nil {
 		return err
@@ -483,9 +493,15 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 			"mergeCommit", check.MergeSHA, "phase", issue.Phase)
 		return nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role,
-		Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check closed as %s", issue.Key, outcome)}); err != nil {
+	retro, err := e.retroHoldsRole(ctx, tx, issue, check.Role)
+	if err != nil {
 		return err
+	}
+	if !retro {
+		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: check.Role,
+			Generation: issue.Generation, Reason: fmt.Sprintf("%s's production check closed as %s", issue.Key, outcome)}); err != nil {
+			return err
+		}
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
 		return err

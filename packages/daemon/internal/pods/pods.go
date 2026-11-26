@@ -207,8 +207,8 @@ type IdleView struct {
 	// RetroHolds is whether a retro Legion runs after a close is open for the issue, or for any
 	// issue of its tree where the issue is the tree's root (record.RunRetro.Open): the retro's
 	// agent, and for a root the architect a finding wakes, hold the pod, so the pod gate treats
-	// the issue as the workflow's to run while it stands (Standing.RetroHolds). Declared here; the
-	// store fills it and the gate reads it from INFRA-5602's task t4.
+	// the issue as the workflow's to run while it stands (Standing.RetroHolds). The store fills it
+	// (INFRA-5602's task t4).
 	RetroHolds bool
 }
 
@@ -216,22 +216,22 @@ type IdleView struct {
 // holds: the children of a root that waits on a person are released like any other issue.
 func (v IdleView) IsRoot() bool { return v.Issue == v.Tree }
 
-// Standing is where one issue stands in the three plain fields the pod gate reads: its phase,
-// its Dispatch status and whether it lingers after a close.
+// Standing is where one issue stands in the plain fields the pod gate reads: its phase, its
+// Dispatch status, whether it lingers after a close, and whether a retro after its close holds its
+// pod.
 type Standing struct {
 	Phase   phase.Phase
 	Status  string
 	Lingers bool
-	// RetroHolds is whether a retro Legion runs after the issue's close is open for it
-	// (IdleView.RetroHolds). It leaves InWorkflow as it is and is the one field InWorkflowNotLingering
-	// will read to say the pod is still a retro's. Declared here; the gate reads it from
-	// INFRA-5602's task t4.
+	// RetroHolds is whether a retro Legion runs after the issue's close holds its pod
+	// (IdleView.RetroHolds): it leaves InWorkflow as it is, and InWorkflowNotLingering reads it to
+	// say the pod is still a retro's.
 	RetroHolds bool
 }
 
 // Standing is the issue's own standing, and RootStanding its tree root's.
 func (v IdleView) Standing() Standing {
-	return Standing{Phase: v.Phase, Status: v.Status, Lingers: v.LingerUntil != nil}
+	return Standing{Phase: v.Phase, Status: v.Status, Lingers: v.LingerUntil != nil, RetroHolds: v.RetroHolds}
 }
 
 func (v IdleView) RootStanding() Standing {
@@ -256,7 +256,8 @@ func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 
 // InWorkflowNotLingering is whether an issue and its tree root are both still the workflow's to
 // run: neither is out of the workflow by status or phase (InWorkflow), and neither lingers after
-// its close.
+// its close. An issue whose pod a retro after a close holds (Standing.RetroHolds) is the
+// workflow's to run as well, whatever it and its root stand at: the retro runs after the close.
 //
 // It is the one gate every path that acts on an idle or released pod reads — the idle rule, a
 // wake applied inside a fact, a wake the outbox takes for a delivery it holds, and the store's
@@ -264,7 +265,7 @@ func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 // workflow's is a close's to stop, never a release's to take or a wake's to bring back. The store
 // is one of the four and sits below workflow, so the rule lives here, where both reach it.
 func InWorkflowNotLingering(issue, root Standing, outOfWorkflow func(status string) bool) bool {
-	return issue.live(outOfWorkflow) && root.live(outOfWorkflow)
+	return issue.RetroHolds || issue.live(outOfWorkflow) && root.live(outOfWorkflow)
 }
 
 // live is one issue's half of InWorkflowNotLingering.

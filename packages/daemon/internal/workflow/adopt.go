@@ -299,7 +299,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 // already finished without acting. The outbox decides whether a claim still stands in the old tree
 // when it executes the request.
 func (e *Engine) StopLeftTree(ctx context.Context, tx pgx.Tx, left record.Issue) error {
-	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree), "")
+	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree))
 }
 
 // joinedTheTree is the child-status notice an adoption sends about an issue a tree takes: the owner

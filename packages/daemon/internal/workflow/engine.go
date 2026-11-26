@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -356,6 +357,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.checkWakeDue(ctx, tx, fact)
 	case intake.CheckBound:
 		return e.checkBound(ctx, tx, fact)
+	case intake.RetroReport:
+		return e.retroReported(ctx, tx, fact)
+	case intake.RetroBoundEnded:
+		return e.retroBoundEnded(ctx, tx, fact)
 	case intake.ListenerWake:
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
@@ -866,8 +871,10 @@ func recordedResolution(issue record.Issue) Resolution {
 // for that caller too: one re-entry, not two.
 //
 // A done child's open production check closes as not run before the new run starts
-// (markCheckClosed). The run's generation fences a completion left by an interrupted phase, and
-// the closed check refuses an old look's report, so both claims stay live.
+// (markCheckClosed), and its open retro after the close ends as stopped by the todo, with no rating
+// (EndOpenRetro). The run's generation fences a completion left by an interrupted phase, and the
+// closed check and the ended retro refuse an old look's or the retro's report, so every claim stays
+// live.
 func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue, fact intake.DispatchIssue) error {
 	root, err := e.store.Issue(ctx, tx, child.Tree)
 	if err != nil || root == nil {
@@ -894,6 +901,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
 			return err
 		}
+	}
+	if err := e.EndOpenRetro(ctx, tx, child); err != nil {
+		return err
 	}
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
@@ -2678,8 +2688,38 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return "", err
 	}
+	// The move out of admitted is where the run starts, for the issue and each issue above it
+	// (markRunStarted).
+	if from == phase.Admitted && issue.CarriesRun() {
+		if err := e.markRunStarted(ctx, tx, *issue); err != nil {
+			return "", err
+		}
+	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", to, "trigger", trigger, "status", issue.Status)
 	return from, nil
+}
+
+// markRunStarted records that issue's run started now, at its own first phase: the run of issue
+// and the run each issue above it in its tree stands in (record.Above), since a run is started by
+// its own first phase or by the first phase of an issue beneath it (INFRA-5602's P1, P2). A run the
+// record already holds as started keeps its first moment (record.Store.MarkRunStarted), so a parent
+// started by its child keeps that start at its own first phase. It is what the close reads to
+// decide that the run owes its retro (retroAtClose).
+func (e *Engine) markRunStarted(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	now := e.now()
+	if err := e.store.MarkRunStarted(ctx, tx, issue.Key, issue.Generation, issue.Tree, now); err != nil {
+		return err
+	}
+	members, err := e.treeMembers(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for _, above := range record.Above(issue, members) {
+		if err := e.store.MarkRunStarted(ctx, tx, above.Key, above.Generation, above.Tree, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // holdBeforeRetro is the pass of a parent's last step into to, its retro, on a task whose last
@@ -2861,12 +2901,13 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // admission starts with a root's tree and a child's first phase start starts for a child
 // (StartFirstPhase), and each phase worker, whether or not it ever reported a handoff. The phase
 // rows record only handoffs, so they cannot list the claims; the executor treats a request for a
-// claim that does not exist as done. except is the one role left out, "" for none: a merged
-// child's close leaves out the role that works its production check (Engine.checkRole), whose
-// claim the check's own close retires (closeCheck).
-func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
+// claim that does not exist as done. except is the roles left out, none for none: the roles whose
+// work goes on after a close, a merged child's checking role (Engine.checkRole), whose claim the
+// check's own close retires (closeCheck), and the agent of a retro after the close, whose end
+// retires it (finishRetroAfterClose).
+func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except ...claim.Role) error {
 	for _, role := range claim.Roles {
-		if role == except {
+		if slices.Contains(except, role) {
 			continue
 		}
 		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: op, Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason}); err != nil {

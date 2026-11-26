@@ -1394,9 +1394,17 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // run keeps its mark with the run: that run is its new tree's from here on, and the tree it roots
 // has run when it is taken back. Nothing here writes the mark: a run is earned by running, never by
 // arriving.
+//
+// A re-admission is a todo, and it ends the issue's open retro after its close as stopped, with no
+// rating (workflow's EndOpenRetro, P10 of dispatch://INFRA-5602), as a child's re-entry does; a
+// carried orphan's run goes on in the tree it roots, so the record of that run's start and its
+// retro goes with it to the new generation (record.Store.CarryRunRetro).
 func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed, carry bool) error {
 	if stored.Generation == ^uint64(0) {
 		return fmt.Errorf("re-admit %s: generation overflows", stored.Key)
+	}
+	if err := a.engine.EndOpenRetro(ctx, tx, stored); err != nil {
+		return fmt.Errorf("end the open retro of re-admitted %s: %w", stored.Key, err)
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
@@ -1525,6 +1533,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// where it stood; an orphan that ran before plans has none, and the carry writes nothing.
 		if err := a.store.CarryPlan(ctx, tx, stored.Key, oldGeneration, stored.Generation, true); err != nil {
 			return fmt.Errorf("carry the plan to re-admitted orphan %s: %w", stored.Key, err)
+		}
+		// The record of the carried run's start and its retro goes with it, so the orphan's close
+		// reads that run as started, and as having had its retro where it had one.
+		if err := a.store.CarryRunRetro(ctx, tx, stored.Key, oldGeneration, stored.Generation, stored.Tree); err != nil {
+			return fmt.Errorf("carry the run record to re-admitted orphan %s: %w", stored.Key, err)
 		}
 		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
 		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan

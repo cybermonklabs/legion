@@ -207,7 +207,9 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 // `listener_ready` report is the positive liveness signal R7's gate reads and wakes nothing. A
 // role or agent report names a role token or a session, and this daemon acts only when one of its
 // own claims is released under that name: every daemon consumes the subject, because the listener
-// does not know which daemon owns a session and must not learn.
+// does not know which daemon owns a session and must not learn. A role report whose token names no
+// released claim may still name the architect of a tree root the tree's close took over, which a
+// retro after a close of that tree wakes while it is open (retroWake).
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -225,8 +227,14 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	} else {
 		released, found, err = e.cfg.Pods.ReleasedClaimByToken(ctx, tx, fact.Role)
 	}
-	if err != nil || !found {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if !found {
+		if fact.Kind != intake.ListenerWakeRole {
+			return intake.Result{}, nil
+		}
+		return intake.Result{}, e.retroWake(ctx, tx, claim.Token(fact.Role))
 	}
 	_, err = e.wakeReleased(ctx, tx, released, kind, detail, fact.At)
 	return intake.Result{}, err
@@ -408,7 +416,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // read: the claim is still released, its issue is one this daemon records, and its tree is live —
 // neither the issue nor its root has left the workflow and neither lingers
 // (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
-// resume, never a wake's.
+// resume, never a wake's — but one: a retro after a close holds the pod (pods.Standing.RetroHolds)
+// of its own agent, released once its turn ended (P7), and of the tree root's architect while a
+// retro after a close of its tree is open (P6). Such a wake's start is marked as the retro's
+// (record.SuperviseRequest.RetroRun for its agent, RetroWake for the architect), which the outbox
+// fences on the open retro rather than on the issue's standing (retroWakeOf).
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -454,7 +466,16 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil || root == nil {
 		return false, err
 	}
-	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+	standing := issue.Standing()
+	var retroRun uint64
+	var retroWake bool
+	if !pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow) {
+		if retroRun, retroWake, err = e.retroWakeOf(ctx, tx, *issue, released.Token); err != nil {
+			return false, err
+		}
+		standing.RetroHolds = retroRun != 0 || retroWake
+	}
+	if !pods.InWorkflowNotLingering(standing, root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)
@@ -479,7 +500,32 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	}
 	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
 		"pause", pause, "stopped_by_pause", stopping)
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
+	row := wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop))
+	row.RetroRun, row.RetroWake = retroRun, retroWake
+	return true, e.enqueue(ctx, tx, issue.Key, row)
+}
+
+// retroWakeOf is the retro after a close a wake of the released claim token of issue is for, where
+// the issue has left the workflow or its tree lingers: the run of the issue's open retro after its
+// close where token is that retro's agent, or, for the tree root's own architect, true while a
+// retro after a close of its tree is open; neither where the claim serves no such retro.
+func (e *Engine) retroWakeOf(ctx context.Context, tx pgx.Tx, issue record.Issue, token claim.Token) (uint64, bool, error) {
+	open, err := e.store.OpenRetroOfIssue(ctx, tx, issue.Key)
+	if err != nil {
+		return 0, false, err
+	}
+	if open != nil && open.Agent == token {
+		return open.Generation, false, nil
+	}
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return 0, false, nil
+	}
+	architect, err := stepClaim(issue, issue.Key, claim.RoleArchitect)
+	if err != nil || architect != token {
+		return 0, false, err
+	}
+	tree, err := e.store.OpenRetrosOfTree(ctx, tx, issue.Tree)
+	return 0, len(tree) > 0, err
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

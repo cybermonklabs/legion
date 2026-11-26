@@ -234,9 +234,12 @@ type IdleDecision struct {
 // decision reports:
 //
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
-//     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
-//     close's to stop, and LeftPodClose decides it: it is held while that close is still to come
-//     or still running (IdleHoldTreeNotLive), and closed where nothing else will close it;
+//     the workflow, and neither lingers (pods.InWorkflowNotLingering), or a retro after the
+//     issue's close holds its pod (pods.IdleView.RetroHolds), whose agent is released once its
+//     turn ends, for a message to its role to wake it (P7 of dispatch://INFRA-5602). A pod in any
+//     other state is a close's to stop, and LeftPodClose decides it: it is held while that close
+//     is still to come or still running (IdleHoldTreeNotLive), and closed where nothing else will
+//     close it;
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
 //     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
@@ -408,6 +411,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - a look of the issue's production check is open (pods.IdleView.CheckLookOpen): the look runs
 //     in the checking role's session, and its end is a close of its own, which stops that role
 //     and deletes the Sandbox (the workflow's endLookPending, closeCheck) (IdleHoldTreeNotLive);
+//   - a retro after the issue's close is open (pods.IdleView.RetroHolds): the retro's agent works
+//     in the pod, and the retro's end stops it and deletes the Sandbox (the workflow's
+//     finishRetroAfterClose) (IdleHoldTreeNotLive);
 //   - no claim is live and the issue's Sandbox suspension is still queued
 //     (pods.IdleView.IssueSuspendQueued): the close is taking the pod now (IdleHoldTreeNotLive).
 //     Beside a live claim a queued suspension is no close under way: it waits for that claim to
@@ -498,7 +504,7 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen {
+	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen || view.RetroHolds {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	var roles []claim.Role
