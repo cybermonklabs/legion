@@ -30,12 +30,10 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,8 +49,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -100,8 +96,6 @@ type forwardCountLive struct {
 	projects    map[string]*ownerStepsRig
 	// number is the next pull request number the run opens.
 	number int
-	// streamMade is whether the run's one ENVOY_NOTIFICATIONS stream has been created.
-	streamMade bool
 }
 
 // TestForwardCountControlEventsLive drives C7's nine issues through three daemons and runs the
@@ -348,35 +342,6 @@ const forwardCountVerification = ":::check{#" + forwardCountCheck +
 	` negative_control="Break the unit limits and watch the run fail." ci_check="` + forwardCountJob + "\"}\n" +
 	"The unit limits hold at the head.\n:::\n"
 
-// proof is one project's liveProof over the run's shared broker: newLiveProofOn's own work with
-// its stream create left out. `workflowNATS` made ENVOY_NOTIFICATIONS when the run started, and
-// the scratch Dispatch reconciles that stream as it starts, so a later create of the bare
-// configuration is refused (`stream name already in use`, err_code 10058) and a reset would empty
-// the stream under the daemons already consuming it. Three daemons share this one broker.
-func (l *forwardCountLive) proof() liveProof {
-	t := l.t
-	t.Helper()
-	cfg := workflowConfig(t, l.natsURL)
-	p := liveProof{t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), notices: newNoticeListener(), records: record.NewStore()}
-	p.cfg.DispatchURL = p.board.url
-	listener := httptest.NewServer(p.notices)
-	t.Cleanup(listener.Close)
-	p.cfg.EnvoyURL = listener.URL
-	var err error
-	if p.project, err = claim.ProjectToken(cfg.Project); err != nil {
-		t.Fatal(err)
-	}
-	p.js = workflowJetStream(t, l.natsURL)
-	ctx := context.Background()
-	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	t.Cleanup(p.st.Close)
-	if _, err := p.st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate the store: %v", err)
-	}
-	return p
-}
 
 // project makes one project with its issues, opens a pull request of its own for each on the
 // stand-in, publishes GitHub's opened of it, and boots a daemon of that project at the shared
@@ -384,7 +349,7 @@ func (l *forwardCountLive) proof() liveProof {
 func (l *forwardCountLive) project(key string, issues []forwardCountIssue) *ownerStepsRig {
 	t := l.t
 	t.Helper()
-	proof := l.proof()
+	proof := forwardCountProof(t, l.natsURL)
 	proof.cfg.Project = key
 	proof.cfg.Projects = map[string]config.Project{key: {}}
 	proof.cfg.AdmissionCap = 8
