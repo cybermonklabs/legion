@@ -92,14 +92,27 @@ export function IssuePropertiesRow({
   // decision's node is held the count reads the Changes asked of it by their quotes, as
   // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
   // read is read by its quote alone, as the tree places it.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewerRead = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
+  const viewer = viewerRead.data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({
     ...issueCommentsQuery(issue.key),
     ...EVENT_FRESH,
   });
-  const tree = useTreeRead(issue).answer;
+  const treeRead = useTreeRead(issue);
+  const tree = treeRead.answer;
+  // Whether every read the count is counted from has settled, with its answer or its failure:
+  // until then the count may still grow, or come at all, so the line holds its place
+  // (`WaitingSlot`) rather than draw a count that a later answer widens, or draw none and then
+  // push every control after it along the line as the count arrives (R3: on a load of a large
+  // issue the approval control slid 160 px right when the tree read answered).
+  const counted =
+    !viewerRead.isPending &&
+    !decisions.isPending &&
+    !coverage.isPending &&
+    !comments.isPending &&
+    !treeRead.pending;
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -211,10 +224,12 @@ export function IssuePropertiesRow({
         variant="header"
       />
       <ChildrenProgress childIssues={issue.children ?? []} />
-      {waiting.total > 0 ? (
+      {!counted ? (
+        <WaitingSlot />
+      ) : waiting.total > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
+          className={`${WAITING_CHIP_BOX} ${pageWaitingChip} ${focusVisibleRing}`}
           data-testid="issue-whose-turn"
           onClick={goToWaiting}
           type="button"
@@ -266,7 +281,17 @@ export function IssuePropertiesRow({
           variant="header"
         />
       )}
-      {entries.length === 0 ? null : (
+      {/* A root's steps are drawn once the projects read answers; until then the line holds a
+          place of a step's height where they will stand, so the line keeps its height and its
+          items keep their places when they come (R3). It takes no width, and its margin takes
+          back the gap after it, so a gate with no step leaves the line as it was. */}
+      {isProjectRoot(issue) && projects.isPending ? (
+        <span
+          aria-hidden="true"
+          className="inline-flex min-h-6 w-0 -mr-2.5 min-[761px]:-mr-3"
+          data-approval-steps-slot=""
+        />
+      ) : entries.length === 0 ? null : (
         <ApprovalSteps
           actionsOn={waiting.approvals}
           entries={entries}
@@ -283,6 +308,34 @@ export function IssuePropertiesRow({
       ) : null}
       <HeaderLabels labels={issue.labels ?? []} onOpenAll={onOpenLabels} />
     </div>
+  );
+}
+
+/** The box of the count of what waits on the reader, which its held place draws too
+ *  (`WaitingSlot`): the prototype's `.waitchip`. Its digits are tabular, so a count of two digits
+ *  is as wide as the place held for it. */
+const WAITING_CHIP_BOX =
+  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold tabular-nums";
+
+/**
+ * The place the properties line holds for the count of what waits on the reader while the reads
+ * it is counted from are out (R3, "The places held" row 2): the count's own box, its dot and its
+ * words with a count of two digits, drawn invisible and hidden from assistive technology, so the
+ * count drawn in its place once the reads answer takes the box it held and moves nothing after
+ * it. A count of more or fewer digits, the agents' turn in its place, or no count at all once the
+ * reads answer, changes the line by that difference alone.
+ */
+function WaitingSlot(): ReactNode {
+  return (
+    <span
+      aria-hidden="true"
+      className={`${WAITING_CHIP_BOX} invisible border-transparent`}
+      data-whose-turn-slot=""
+      {...pageChrome}
+    >
+      <span className="size-2 shrink-0 rounded-full" />
+      <span>{PROPERTY_LABELS.waiting_on_you} (00)</span>
+    </span>
   );
 }
 

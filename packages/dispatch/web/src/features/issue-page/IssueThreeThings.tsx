@@ -270,11 +270,18 @@ function BriefRow({
       >
         {label}
       </span>
-      {detail === undefined ? null : (
-        <span className="block min-w-0" data-brief-counts="" id={`${id}-counts`}>
-          {detail}
-        </span>
-      )}
+      {/* The counts' line is drawn from the row's first drawing, a line high (18 px) and empty
+          until the counts may be drawn, then holding them: drawn only with them, it grew the
+          rows under the label once the tree's reads answered, and pushed every row below them
+          down (R3; below 1024 px the children's rows, 30 px). */}
+      <span
+        className="block min-h-[18px] min-w-0"
+        data-brief-counts=""
+        id={`${id}-counts`}
+        {...(detail === undefined ? { "aria-hidden": true } : {})}
+      >
+        {detail}
+      </span>
     </button>
   );
 }

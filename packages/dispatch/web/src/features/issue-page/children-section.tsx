@@ -1,9 +1,12 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useLocation } from "react-router-dom";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { IssueChild } from "../../api/types";
 import { pageInkText, pageQuietText, pageWordsText } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import type { IssueRoute } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
@@ -79,7 +82,13 @@ export function openChildEntry(key: string): void {
 export function ChildrenSection({ issue, route }: SlotProps): ReactNode {
   const childIssues = issue.children ?? [];
   const preset = presetOf(route);
-  if (childIssues.length === 0 || outlineOf(preset) === undefined) return null;
+  // The reader's saved fold of the section is theirs, kept under their login
+  // (`useUserPreference`), so the section is drawn once the login has settled, open or folded as
+  // they saved it: drawn before, it was drawn open and then folded under the rows' feet as the
+  // login answered (R3, "The places held" row 4). The login is the shell's one read, kept fresh as
+  // the tree keeps it (`EVENT_FRESH`), so this costs no request.
+  const loginOut = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).isPending;
+  if (childIssues.length === 0 || outlineOf(preset) === undefined || loginOut) return null;
   // Keyed on the issue, so the pages the reader opened and a child's opening are the issue's own.
   return <ChildrenList childIssues={childIssues} key={issue.key} route={route} />;
 }

@@ -114,6 +114,7 @@ export function DecisionsRow({
   focused,
   isClosed,
   level,
+  namesOut,
   onFocus,
   onPin,
   onReviewed,
@@ -137,6 +138,10 @@ export function DecisionsRow({
   isClosed: boolean;
   /** How deep the row sits: 1, or 2 under the foot's own row (`aria-level`). */
   level: number;
+  /** The statements, by node id, whose name the page has asked for and not read yet
+   *  (`DecisionsFilterBody.tsx`): while the entry shaped one of them, the row holds its
+   *  "informs" line's place. */
+  namesOut: ReadonlySet<string>;
   onFocus: () => void;
   onPin: () => void;
   /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
@@ -200,6 +205,12 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
+  // Whether the row holds its "informs" line's place: it names no statement yet, and one it
+  // shaped is still to be named (`namesOut`). The line held is one line high and hidden, and the
+  // names are drawn in it once they come, so the row keeps its height as they do (R3: each
+  // decision's row grew a line, and the rows under it moved, a commit after the rows were drawn).
+  const informsHeld =
+    statements.length === 0 && entry.shapes.some((shape) => namesOut.has(shape.id));
   return (
     <div
       aria-labelledby={ids.labelledBy}
@@ -301,9 +312,10 @@ export function DecisionsRow({
             <Changed by={person(entry.change.by)} change={entry.change} focused={focused} />
           )}
           {entry.parent === undefined ? null : <EntryParentLine parent={entry.parent} />}
-          {statements.length === 0 ? null : (
+          {statements.length === 0 && !informsHeld ? null : (
             <p
-              className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
+              aria-hidden={informsHeld || undefined}
+              className={`flex min-h-5 min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}${informsHeld ? " invisible" : ""}`}
               data-decision-informs=""
             >
               <span className="shrink-0" {...pageChrome}>
