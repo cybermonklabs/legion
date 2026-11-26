@@ -23,7 +23,7 @@ with `DISPATCH_URL` set (so pi-envoy adds the dispatch-first skill to the reques
 The run needs `bun install --frozen-lockfile` at the repository root for the pack.
 `capture.sh` removes its scratch directory when it ends.
 
-A fixture is the first request that carries a system prompt and tools, re-indented, with the fresh working directory's path replaced by `/work/cwd`.
+A fixture is the first request that carries a system prompt and tools, formatted by the repository's Biome (`capture.sh` runs it last, since lint holds every committed JSON file to it), with the fresh working directory's path replaced by `/work/cwd`.
 Nothing else is changed.
 The stand-in's address is on loopback and appears in no fixture.
 

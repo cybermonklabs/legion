@@ -22,8 +22,8 @@
 # byte for byte) from this checkout, which needs `bun install --frozen-lockfile` at the repository
 # root. Scratch is one mktemp -d under $TMPDIR, removed at the end by its exact path.
 #
-# Each fixture is the first request with a system prompt and tools, re-indented, with the fresh
-# working directory's path replaced by /work/cwd. With a settings layer named in PI_CONFIG_FILES
+# Each fixture is the first request with a system prompt and tools, formatted by the repository's
+# Biome, with the fresh working directory's path replaced by /work/cwd. With a settings layer named in PI_CONFIG_FILES
 # Oh My Pi first sends one skill-description compression request for each skill (a request with no
 # system prompt); those are skipped.
 set -euo pipefail
@@ -229,3 +229,7 @@ mkdir -p "$here/requests"
 capture 1-changed-skill "$work/root-1" ""
 capture 2-changed-skill-hidden "$work/root-1" "$work/hide.yml"
 capture 3-changed-reference "$work/root-3" ""
+
+# The repository's own formatter holds the committed JSON (lint's `biome check`), which writes the
+# short arrays on one line: format the fixtures the way a commit holds them.
+"$repo/node_modules/.bin/biome" format --write "$here/requests" >/dev/null

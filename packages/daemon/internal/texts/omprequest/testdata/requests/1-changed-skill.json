@@ -51,10 +51,7 @@
             "description": "Local path, internal URI, or URL; selectors inline."
           }
         },
-        "required": [
-          "path",
-          "i"
-        ],
+        "required": ["path", "i"],
         "additionalProperties": false
       }
     },
@@ -107,10 +104,7 @@
             "additionalProperties": false
           }
         },
-        "required": [
-          "command",
-          "i"
-        ],
+        "required": ["command", "i"],
         "additionalProperties": false
       }
     },
@@ -128,10 +122,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "i",
-          "input"
-        ],
+        "required": ["i", "input"],
         "additionalProperties": false
       },
       "strict": true
@@ -143,10 +134,7 @@
         "type": "object",
         "properties": {
           "language": {
-            "enum": [
-              "py",
-              "js"
-            ],
+            "enum": ["py", "js"],
             "type": "string",
             "description": "\"py\": Python with IPython-style magics (not IPython); \"js\": Bun"
           },
@@ -167,10 +155,7 @@
             "description": "Wipe only this kernel."
           }
         },
-        "required": [
-          "language",
-          "code"
-        ],
+        "required": ["language", "code"],
         "additionalProperties": false
       }
     },
@@ -198,9 +183,7 @@
           }
         },
         "additionalProperties": false,
-        "required": [
-          "i"
-        ]
+        "required": ["i"]
       }
     },
     {
@@ -226,16 +209,10 @@
             "type": "boolean"
           },
           "skip": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": ["number", "null"]
           }
         },
-        "required": [
-          "pattern",
-          "i"
-        ],
+        "required": ["pattern", "i"],
         "additionalProperties": false
       }
     },
@@ -292,19 +269,12 @@
                   ]
                 }
               },
-              "required": [
-                "task",
-                "solutionSpace"
-              ],
+              "required": ["task", "solutionSpace"],
               "additionalProperties": false
             }
           }
         },
-        "required": [
-          "context",
-          "tasks",
-          "i"
-        ],
+        "required": ["context", "tasks", "i"],
         "additionalProperties": false
       }
     },
@@ -334,17 +304,7 @@
             "description": "concise intent"
           },
           "op": {
-            "enum": [
-              "init",
-              "start",
-              "done",
-              "rm",
-              "drop",
-              "block",
-              "unblock",
-              "append",
-              "view"
-            ],
+            "enum": ["init", "start", "done", "rm", "drop", "block", "unblock", "append", "view"],
             "type": "string"
           },
           "list": {
@@ -363,10 +323,7 @@
                   "minItems": 1
                 }
               },
-              "required": [
-                "phase",
-                "items"
-              ],
+              "required": ["phase", "items"],
               "additionalProperties": false
             },
             "description": "phases for init"
@@ -390,10 +347,7 @@
             "description": "blocker note for block"
           }
         },
-        "required": [
-          "op",
-          "i"
-        ],
+        "required": ["op", "i"],
         "additionalProperties": false
       }
     },
@@ -411,12 +365,7 @@
             "type": "string"
           },
           "recency": {
-            "enum": [
-              "day",
-              "week",
-              "month",
-              "year"
-            ],
+            "enum": ["day", "week", "month", "year"],
             "type": "string"
           },
           "limit": {
@@ -432,10 +381,7 @@
             "type": "number"
           }
         },
-        "required": [
-          "query",
-          "i"
-        ],
+        "required": ["query", "i"],
         "additionalProperties": false
       }
     },
@@ -456,10 +402,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "path",
-          "i"
-        ],
+        "required": ["path", "i"],
         "additionalProperties": false
       },
       "cache_control": {
