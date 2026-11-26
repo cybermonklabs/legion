@@ -338,7 +338,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// (record.Store.PutIssue) names columns migrations above that release's newest add —
 	// issues.view_of (20261114064234), the held start of awaiting_children (20261114232555),
 	// issues.priority (20261124060500), and the close wait's columns and tree_generation
-	// (20261125004932_done_by_checks) — which the fixture withholds with the phase entry, so the
+	// (20261126223725_done_by_checks) — which the fixture withholds with the phase entry, so the
 	// upgrade under test adds them.
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {

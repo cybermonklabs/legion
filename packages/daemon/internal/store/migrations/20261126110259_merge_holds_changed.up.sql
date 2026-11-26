@@ -10,17 +10,13 @@
 -- store's idleWaitingKinds).
 --
 -- The check is one list, so this migration names every kind, as 20261122154643 did: its
--- thirty-two kinds, in its order, and then this one. Its version stands above
+-- thirty-two kinds, in its order, and then this one, thirty-three in all. Its version stands above
 -- 20261122154643, the list with the two basis seeds, 20261119203047, the design news's list,
 -- 20261119003157, the list with the conflict's second read and the merge forward, 20261117023932,
 -- the plan record's, and 20261117000528, the step record's, so on any database this list is the
 -- last word: Migrate applies every unrecorded migration in version order, and at a lower version
 -- any of those lists, none of which names merge_holds_changed, would be applied after this one and
 -- refuse the kind.
--- The done-by-checks migration, 20261125004932, stands below it and adds close_read and
--- close_wait_publish. So this list names those two after merge_holds_changed, thirty-five in all.
--- On a database main migrated with this file, the upgrade applies 20261125004932 after it, and
--- that list names merge_holds_changed too.
 --
 -- This list must name step_record, plan_record, conflict_confirm, merge_forward, design_changes,
 -- phase_ended, pending_basis_seed and reparent_seed, because a database main's release migrated
@@ -51,4 +47,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'close_read', 'close_wait_publish'));
+  'merge_holds_changed'));

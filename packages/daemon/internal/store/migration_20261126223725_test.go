@@ -13,11 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // doneByChecksVersion is the version of the migration this file tests, so each test can migrate
 // through everything before it whatever lands beside it.
-const doneByChecksVersion = 20261125004932
+const doneByChecksVersion = 20261126223725
 
 // doneByChecksRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -111,6 +113,22 @@ func schemaShape(t *testing.T, store *Store) []string {
 	return shape
 }
 
+// shapeDiff is what got holds besides want and what it lacks of it, so a failure names the lines
+// that differ rather than two whole schemas.
+func shapeDiff(got, want []string) (extra, missing []string) {
+	for _, line := range got {
+		if !slices.Contains(want, line) {
+			extra = append(extra, line)
+		}
+	}
+	for _, line := range want {
+		if !slices.Contains(got, line) {
+			missing = append(missing, line)
+		}
+	}
+	return extra, missing
+}
+
 // doneByChecksIssue is the insert of one issue as this release writes it: the phase, the status,
 // the generation, the tree's generation and the merge it names.
 func doneByChecksIssue(key, tree, phase, status string, generation, treeGeneration int) string {
@@ -129,7 +147,7 @@ func execAll(t *testing.T, store *Store, statements ...string) {
 	}
 }
 
-// 20261125004932 adds the phase verifying and the records the close of an issue on its checks
+// The migration adds the phase verifying and the records the close of an issue on its checks
 // reads, and moves no row: every issue the upgrade finds, in each phase main writes and done, keeps
 // its phase, its status and its generation. After it a write of verifying is taken, and before it
 // refused, and a hold from verifying is refused after it as before, since no role works the phase.
@@ -290,10 +308,10 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // suspension, release and workspace check the root's generation, the tree generation the release
 // before reads. Block B leaves the store exactly as the release before migrated it, which is the
 // store that release boots on: each column, constraint, function, index and version recorded. The
-// release before applies every embedded migration but this one, those that sort above it among
-// them. 20261126110259 sorts above it and writes outbox_kind_check whole, close_read and
-// close_wait_publish among its kinds, so block B leaves that check as it stands. So a difference
-// is what the block leaves of this migration, or what it takes of the release before.
+// release before applies every embedded migration but this one, and this one stands above them
+// all, so the check the release before leaves on the outbox is the merge holds' of 20261126110259,
+// which block B puts back whole. So a difference is what the block leaves of this migration, or
+// what it takes of the release before.
 // Before that, a delivery's copy in the release before's form is read through design_news_credits,
 // and so through design_news_current, and counts as a credit, and step_run_witness answers for an
 // issue: neither fails on the dropped tree_generation.
@@ -354,17 +372,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 	before := emptyStore(t)
 	migrateAllBut(t, before, doneByChecksVersion)
 	if got, want := schemaShape(t, store), schemaShape(t, before); !reflect.DeepEqual(got, want) {
-		var extra, missing []string
-		for _, line := range got {
-			if !slices.Contains(want, line) {
-				extra = append(extra, line)
-			}
-		}
-		for _, line := range want {
-			if !slices.Contains(got, line) {
-				missing = append(missing, line)
-			}
-		}
+		extra, missing := shapeDiff(got, want)
 		t.Fatalf("the store after the way back is not the store the release before migrated:\nit holds besides: %q\nit lacks: %q", extra, missing)
 	}
 }
@@ -452,4 +460,53 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 			t.Fatalf("block A again after block B = %q, %v, want nothing printed and no failure", notices, err)
 		}
 	})
+}
+
+// mainsNewestAtTheLastMerge is the newest migration main carried at this branch's forward merge of
+// 2026-11-26 (main 20ee90deba1e): the merge-holds kind list.
+const mainsNewestAtTheLastMerge = 20261126110259
+
+// This migration stands above every migration main carries, which is what keeps each list and each
+// function it writes the last word on a database main migrated as well as on a fresh one. Migrate
+// applies every unrecorded migration in version order, so a migration of main below this one that
+// wrote outbox_kind_check, issues_phase_check or one of the four functions again would be applied
+// after this one on a database main migrated, where it would overwrite what this migration writes,
+// or fail its ADD CONSTRAINT over a row of a kind its list leaves out (SQLSTATE 23514). At a
+// forward merge that brings a migration of main above this one, this test goes red and the file is
+// renumbered above it, as 20261126110259_merge_holds_changed was twice.
+func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing.T) {
+	t.Parallel()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == mainsNewestAtTheLastMerge }) {
+		t.Fatalf("no embedded migration is %d: mainsNewestAtTheLastMerge names the newest migration main carried at the merge", mainsNewestAtTheLastMerge)
+	}
+	if doneByChecksVersion <= mainsNewestAtTheLastMerge {
+		t.Fatalf("the done-by-checks migration is %d, which stands below main's newest, %d: rename the file and this one above it, and move every reference with it",
+			doneByChecksVersion, mainsNewestAtTheLastMerge)
+	}
+}
+
+// A database main migrated, upgraded with this release, ends at the schema a fresh database of
+// this release holds: each column, constraint, function, index and version recorded. This
+// migration is the one version main lacks, and it stands above every migration main carries, so
+// the upgrade applies it last, where a fresh database applies it last as well. Were it below a
+// migration of main that writes one of the same objects, the fresh database would end at main's
+// text and the upgraded one at this migration's, and the two lines are what this test prints.
+func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
+	fresh := emptyStore(t)
+	if _, err := fresh.Migrate(t.Context()); err != nil {
+		t.Fatalf("migrate a fresh database: %v", err)
+	}
+	upgraded := emptyStore(t)
+	migrateAllBut(t, upgraded, doneByChecksVersion)
+	if _, err := upgraded.Migrate(t.Context()); err != nil {
+		t.Fatalf("upgrade the database main migrated: %v", err)
+	}
+	if got, want := schemaShape(t, upgraded), schemaShape(t, fresh); !reflect.DeepEqual(got, want) {
+		extra, missing := shapeDiff(got, want)
+		t.Fatalf("the database main migrated, upgraded, is not a fresh database of this release:\nit holds besides: %q\nit lacks: %q", extra, missing)
+	}
 }
