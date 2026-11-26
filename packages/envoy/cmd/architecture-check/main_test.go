@@ -11,10 +11,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -241,18 +244,24 @@ type result struct {
 	stderr string
 }
 
+// binaryLimit bounds one run of the built binary, which answers in milliseconds: from when the
+// kernel made its process (testexec.ProcStart) to its exit, not from the call, so a loaded machine
+// that holds the start itself, before the kernel makes the process, kills no run. A run that
+// blocks, as one that opens a named pipe nothing writes to does, or that takes that long of its
+// own anywhere else, is killed at the limit and fails its test then.
+const binaryLimit = 20 * time.Second
+
 // binarySpare is what a run of the built binary leaves of the test binary's deadline (go test's
-// -timeout): the binary answers in milliseconds, and a run that blocks, as one that opens a named
-// pipe nothing writes to does, is killed with binarySpare left and fails its test then, rather
-// than holding it until go test's own deadline and outliving it. No fixed span bounds a run, so a
-// loaded machine that holds a run up kills nothing.
+// -timeout): a run still going then is killed and fails its test, rather than holding it until go
+// test's own deadline and outliving it.
 const binarySpare = 30 * time.Second
 
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output. A run still going with binarySpare left of the
-// test binary's deadline is killed and fails the test. The binary runs on one P (GOMAXPROCS=1):
-// the parallel rows keep every run alive at once, and a run left to size GOMAXPROCS to the host
-// starts a thread for each P its collector's idle mark workers take, about 80 on a 288-CPU host.
+// empty, and answers its exit status and output. A run still going binaryLimit after the kernel
+// made its process, or with binarySpare left of the test binary's deadline, is killed and fails
+// the test. The binary runs on one P (GOMAXPROCS=1): the parallel rows keep every run alive at
+// once, and a run left to size GOMAXPROCS to the host starts a thread for each P its collector's
+// idle mark workers take, about 80 on a 288-CPU host.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, binarySpare))
@@ -262,7 +271,10 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	overran, err := runFromItsStart(t, cmd, binaryLimit)
+	if overran {
+		t.Fatalf("architecture-check %q did not exit within %s of when the kernel made its process and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
+	}
 	if ctx.Err() != nil {
 		t.Fatalf("architecture-check %q did not finish with %s left of the test binary's deadline and was killed: stdout %q, stderr %q", args, binarySpare, stdout.String(), stderr.String())
 	}
@@ -271,6 +283,43 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 		t.Fatalf("run architecture-check %q: %v", args, err)
 	}
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// runFromItsStart starts cmd and waits for it, and kills it once it has run bound from when the
+// kernel made its process, read right after Start (testexec.ProcStart), not from this call. Each of
+// the two times it compares, that start and the time since boot it reads to set the kill, can read
+// up to a tick early, so the kill waits two ticks more: no run is killed before it has run bound.
+// overran says the bound ended the run: the kill had been sent, and the run's own exit status says
+// a SIGKILL ended it, so a run that exited before the kill reached it did not overrun. A start the
+// kernel dates more than two ticks before the call is no start at all, and the row says it cannot
+// read when its run started, as testexec.StartedAfter does, rather than judge it.
+func runFromItsStart(t *testing.T, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
+	t.Helper()
+	called := testexec.SinceBoot(t)
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	started, err := testexec.ProcStart(cmd.Process.Pid)
+	if err == nil && started < called-2*testexec.ClockTick {
+		err = fmt.Errorf("the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock", called-started)
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
+	}
+	var sent atomic.Bool
+	kill := time.AfterFunc(started+bound+2*testexec.ClockTick-testexec.SinceBoot(t), func() {
+		sent.Store(true)
+		_ = cmd.Process.Kill()
+	})
+	err = cmd.Wait()
+	kill.Stop()
+	if !sent.Load() || cmd.ProcessState == nil {
+		return false, err
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
 }
 
 // expect fails the test unless got is want.
