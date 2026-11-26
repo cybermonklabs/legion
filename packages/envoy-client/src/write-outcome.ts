@@ -106,13 +106,13 @@ export type WriteEvent =
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
   | "exhausted"
-  /** Cipher's proxy refused the write on its own (a 4xx with `Cipher-Proxy-Code` and
-   *  `Cipher-Proxy-Forwarded: false`): nothing of it reached Dispatch, and asking again with the
-   *  same placeholder gets the same answer. */
+  /** Cipher's proxy refused the write on its own (a status that is no outage, with
+   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing of it reached Dispatch, and
+   *  asking again with the same placeholder gets the same answer. */
   | "proxy-refused"
-  /** Cipher's proxy failed the write on its own before any of it left (a 5xx with
-   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing reached Dispatch, and it is
-   *  asked again under the key. */
+  /** Cipher's proxy failed the write on its own before any of it left (an outage, a 408, a 429 or
+   *  a 5xx, with `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing reached
+   *  Dispatch, and it is asked again under the key. */
   | "proxy-failed"
   /** Cipher's proxy answered on its own after the write may have reached Dispatch
    *  (`Cipher-Proxy-Code` with `Cipher-Proxy-Forwarded: unknown`, or none): it may have landed, and

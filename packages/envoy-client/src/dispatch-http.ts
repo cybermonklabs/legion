@@ -1013,10 +1013,11 @@ function isStoredKeyStatus(status: number): boolean {
  * could land unkeyed. The key decides only how a final answer reads; every retry goes regardless.
  *
  * A write sent through Cipher's proxy (`proxied`) first reads whether the answer is the proxy's own
- * (`Cipher-Proxy-Code`): `proxy-refused` for a 4xx and `proxy-failed` for a 5xx it wrote before
- * any byte left it (`Cipher-Proxy-Forwarded: false`), and `proxy-unsettled` for one it wrote after
- * the write may have reached Dispatch (`unknown`, or no such header). A service's answer it carried
- * has no code, and is read as Dispatch's.
+ * (`Cipher-Proxy-Code`). One it wrote before any byte left it (`Cipher-Proxy-Forwarded: false`) is
+ * `proxy-failed` for an outage (`outage`: a 408, a 429 or a 5xx), which is asked again as every
+ * other outage is, and `proxy-refused` for any other status, which the same placeholder would get
+ * again. One it wrote after the write may have reached Dispatch (`unknown`, or no such header) is
+ * `proxy-unsettled`. A service's answer it carried has no code, and is read as Dispatch's.
  */
 function answerEvent(
   answer: WriteAnswer,
@@ -1028,7 +1029,7 @@ function answerEvent(
   const { status } = answer.response;
   if (proxied && answer.response.headers.get(PROXY_CODE_HEADER) !== null) {
     if (answer.response.headers.get(PROXY_FORWARDED_HEADER) !== "false") return "proxy-unsettled";
-    return status >= 500 ? "proxy-failed" : "proxy-refused";
+    return outage(status) ? "proxy-failed" : "proxy-refused";
   }
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
