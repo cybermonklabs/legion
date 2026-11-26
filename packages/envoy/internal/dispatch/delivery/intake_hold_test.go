@@ -757,21 +757,33 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	awaitBoundDurable(t, publisher)
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
+	// Each wait below reads what only the cut can bring about. The cut closes both of the relay's
+	// sockets at once, but each end acts on that only once its own read loop runs: until the
+	// server's has, the durable still reads push-bound to the holder's subscription, and until the
+	// holder client's has, the client still reads connected. Under load both took milliseconds, and
+	// waits on those two states passed before either end had seen the cut, so the row flushed a
+	// connection nats.go then dropped (INFRA-3904).
+	holderConn := holder.client.Connection()
+	reconnectsBeforeCut := holderConn.Stats().Reconnects
 	relay.Cut()
 	holder.leases.cut.Store(true)
 	cut := time.Now()
-	waitFor(t, 30*time.Second, func() bool {
-		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound
-	}, func() string {
-		return "the standby never took the durable over from the cut-off holder: " + consumerState(publisher)
-	})
+	// The standby delivering the durable, which it can do only once the holder's hold has lapsed.
+	awaitDurableTakenOver(t, holder.intake, standby.intake, publisher)
 	t.Logf("the standby took the durable over %s after the holder was cut off", time.Since(cut))
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
-	waitFor(t, 20*time.Second, holder.client.Connected, func() string {
-		return "the holder's NATS connection did not come back"
+	// The holder's connection on a session nats.go began after the cut: connected, with a reconnect
+	// count past the one read before it. A flush on the session the cut ended is answered "nats:
+	// connection closed" once nats.go acts on the cut, since it drops every flush still waiting
+	// when it starts to reconnect.
+	waitFor(t, 20*time.Second, func() bool {
+		return holder.client.Connection() == holderConn && holderConn.Status() == natsgo.CONNECTED &&
+			holderConn.Stats().Reconnects > reconnectsBeforeCut
+	}, func() string {
+		return fmt.Sprintf("the holder's NATS connection did not come back after the cut: the client still holds the connection it had = %t, its status is %v, and nats.go counts %d reconnect(s) since the cut",
+			holder.client.Connection() == holderConn, holderConn.Status(), holderConn.Stats().Reconnects-reconnectsBeforeCut)
 	})
 	// The holder's client sends its subscriptions again as it reconnects, before anything else it
 	// writes; a round trip on that connection (a flush) returns only once the server has read them,
