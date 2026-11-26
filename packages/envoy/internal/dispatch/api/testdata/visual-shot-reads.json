@@ -41,6 +41,7 @@
     "/api/v1/projects/{key}/artifacts",
     "/api/v1/projects/{key}/artifacts/{slug}",
     "/api/v1/projects/{key}/legion/daemon",
+    "/api/v1/reference-targets",
     "/api/v1/references",
     "/api/v1/settings/architecture-sources",
     "/api/v1/settings/delivery",

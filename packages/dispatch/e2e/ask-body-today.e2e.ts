@@ -726,6 +726,24 @@ function getPaths(traffic: ApiRequests): string[] {
   ].sort();
 }
 
+/** The `ref`s of each GET /api/v1/reference-targets since the last `reset`, one list per request
+ *  and sorted, since a batch names a set. `traffic.requests` keeps every request the page sent,
+ *  so the same read sent twice is two lists here, where `getPaths` keeps one path. */
+function referenceTargetReads(traffic: ApiRequests): string[][] {
+  return traffic.requests.flatMap(({ method, path }) => {
+    const sent = new URL(path, "http://ask-body.test");
+    return method === "GET" && sent.pathname === "/api/v1/reference-targets"
+      ? [sent.searchParams.getAll("ref").sort()]
+      : [];
+  });
+}
+
+/** The statements the seeded decisions shaped, r1 to r4 of the spec (`seededDecisions` in
+ *  `dashboard-seed.ts`), each once by the address its ties name, sorted. */
+function shapedStatements(data: AskTodaySeed): string[] {
+  return ["r1", "r2", "r3", "r4"].map((id) => `dispatch://${data.key}/spec#b-${id}`);
+}
+
 // SLOW(>=2s): cold loads of nine surfaces, plus the tab and margin's staged Change reads.
 test("each surface sends main's reads and no other", async ({ context }) => {
   test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
@@ -738,7 +756,7 @@ test("each surface sends main's reads and no other", async ({ context }) => {
       const card = await surface.open(page, data);
       await expect(card.locator(BODY), surface.name).toBeVisible();
       await expectLoadSettled(traffic);
-      expectReads(getPaths(traffic), data, surface.name);
+      expectReads(traffic, data, surface.name);
     } finally {
       await page.close();
     }
@@ -754,7 +772,7 @@ test("each surface sends main's reads and no other", async ({ context }) => {
       await expect(card).toBeVisible();
       await expectLoadSettled(traffic);
       const reads = getPaths(traffic);
-      expectReads(reads, data, where);
+      expectReads(traffic, data, where);
       const text = `/api/v1/artifacts/${data.decisionsDocumentId}/text`;
       expect(reads).not.toContain(text);
       await button(card, "Change").click();
@@ -772,34 +790,48 @@ test("each surface sends main's reads and no other", async ({ context }) => {
   }
 });
 
-// SLOW(>=2s): seed the real records, then load today's Spec tab, whose margin draws the cards.
-// On main this load, and the ask block's, send no GET /api/v1/reference-targets (the inventory
-// recorded at the merge-base holds none for "margin" or "document"), and R21 lets the margin
-// send no new read on load; `expectReads` lets that route through on every surface.
-test("today's Spec tab sends no reference-targets read on its load, as main sends none", async ({
-  page,
+// SLOW(>=2s): seed the real records, then load today's Decisions tab and its Spec tab, whose
+// margin draws the cards beside the document.
+test("today's Decisions tab and Spec margin read every statement's first line in one batch", async ({
+  context,
 }) => {
   test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
   const data = await seed();
-  await wide(page);
-  const traffic = watchApiRequests(page);
-  await page.goto(spec(data));
-  const card = margin(page).locator(CARD).filter({ hasText: data.decisions.second.heading });
-  await expect(card).toBeVisible();
-  await expect(ask(margin(page), data.records.anchored).locator(BODY)).toBeVisible();
-  await expectLoadSettled(traffic);
-  expect(
-    getPaths(traffic).filter(
-      (path) => new URL(path, "http://ask-body.test").pathname === "/api/v1/reference-targets"
-    ),
-    "today's Spec tab sent a reference-targets read on its load, which main does not send"
-  ).toEqual([]);
+  for (const where of ["decisions", "spec"] as const) {
+    const page = await context.newPage();
+    try {
+      await wide(page);
+      const traffic = watchApiRequests(page);
+      await page.goto(`/issues/${data.key}/${where}`);
+      // A card draws a statement by its first line once the batch has answered for it, and
+      // draws nothing for it before, so each line drawn here is the batch's.
+      for (const entry of data.decisionCases) {
+        if (where === "spec" && entry.case === "replaced") continue;
+        const statements = decisionRoots(page, entry, where === "spec")
+          .first()
+          .locator("[data-decision-statements]");
+        for (const line of entry.ties) {
+          await expect(
+            statements.getByRole("link", { name: new RegExp(`^${literal(line)}`) })
+          ).toBeVisible();
+        }
+      }
+      await expectLoadSettled(traffic);
+      expect(
+        referenceTargetReads(traffic),
+        `today's ${where} tab read its statements' lines other than in one batch of them all`
+      ).toEqual([shapedStatements(data)]);
+    } finally {
+      await page.close();
+    }
+  }
 });
 
 /** Main's shell reads and the issue, Inbox, Conversation, answer and document reads its surfaces
- *  already use. In particular a document read here must be for the document actually drawn,
- *  never decisions.md on a surface that shows only a decision card. */
-function expectReads(paths: readonly string[], data: AskTodaySeed, surface: string): void {
+ *  already use, and the one read R21 adds. In particular a document read here must be for the
+ *  document actually drawn, never decisions.md on a surface that shows only a decision card. */
+function expectReads(traffic: ApiRequests, data: AskTodaySeed, surface: string): void {
+  const paths = getPaths(traffic);
   const issue = `/api/v1/issues/${data.key}`;
   const api = "/api/v1";
   const specArtifact = `${api}/artifacts/${data.specArtifactId}`;
@@ -855,7 +887,7 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
   const decisionsTab = surface === "decisions";
   const allowed = (path: string) => {
     const sent = new URL(path, "http://ask-body.test");
-    if (shell.has(sent.pathname) || sent.pathname === `${api}/reference-targets`) return true;
+    if (shell.has(sent.pathname)) return true;
     if (sent.pathname === `${api}/me/replies`) {
       return (
         sent.searchParams.get("kind") === "reply,agent" ||
@@ -876,6 +908,12 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
     if (specSurface && document.has(path)) return true;
     if (specSurface || decisionsTab) {
       if (path === `${issue}/decisions`) return true;
+      // R21's one new read, which the count below holds to one batch of every statement.
+      if (sent.pathname === `${api}/reference-targets`) return true;
+      // A decision's text reads each reference it cites by its own link (`RefLink`), as main's
+      // does, and the seed's texts cite the very statements their decisions shaped, so such a
+      // read is the request a statement line would send if it read its own words. The card
+      // reads none (`withStatementTexts`), but a request cannot say which of the two sent it.
       const target = sent.searchParams.get("to");
       if (
         sent.pathname === `${api}/references` &&
@@ -899,6 +937,19 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
     paths.filter((path) => !allowed(path)),
     `${surface} sent reads absent on main`
   ).toEqual([]);
+  // R21: a list of decision cards reads the first lines of the statements its decisions shaped
+  // in one batch, so a surface that draws one sends that read at most once on its load, naming
+  // them all and never one alone, and a surface that draws no decision card sends none. Every
+  // request counts, the same one sent twice as two.
+  const batches = referenceTargetReads(traffic);
+  expect(
+    batches.length,
+    `${surface} read statements' first lines more often than one batch for its list of cards`
+  ).toBeLessThanOrEqual(specSurface || decisionsTab ? 1 : 0);
+  const statements = shapedStatements(data);
+  for (const batch of batches) {
+    expect(batch, `${surface} read some statements' lines apart from the rest`).toEqual(statements);
+  }
   if (surface === "ThreadBody") expect(paths).toContain(askRead(data.records.thread));
   if (answers) expect(paths).toContain(askRead(data.records.changed));
   if (decisionsTab || specSurface) expect(paths).toContain(`${issue}/decisions`);
