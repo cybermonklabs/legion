@@ -2155,10 +2155,10 @@ type Store interface {
 	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
 	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
 	// moment beside them to tell how long a role has been owed the work the number names (admit's
-	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
-	// project, which a project running hundreds of trees pays hundreds of times over. A row the
-	// record does not hold is absent from the answer, which reads as the zero entry: a role no
-	// transition has ever handed work on.
+	// architectStalls), and a read an issue would cost one round trip a slot on every pass of the
+	// project (the pass rule on admit's Admission.Apply), which a project running hundreds of trees
+	// pays hundreds of times over. A row the record does not hold is absent from the answer, which
+	// reads as the zero entry: a role no transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	// MergersReady is, of issues, the ones whose merger's phases row records the head it stands
 	// on (PhaseRow.HandoffCommit): the merger's ready mark (LineFacts.Ready), read in one
@@ -2337,21 +2337,22 @@ type Store interface {
 	// first phase, unless a person set the child back to todo while it ran or was held: that
 	// re-entry starts and stops nothing (workflow's ReenterChild), so a child's own architect that
 	// held its role still holds it and is the one told. The wait itself is never stored, so that a
-	// stale mirror row costs one pass; the telling is, so that the pass every fact, tick, hold
-	// release and boot runs does not tell it again. A re-admission opens a new generation of the
-	// tree and so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
+	// stale mirror row costs one pass; the telling is, so that the next pass (the pass rule on
+	// admit's Admission.Apply, and the boot's) does not tell it again. A re-admission opens a new
+	// generation of the tree and so tells it anew, and so does a hand-over, which gives the issue a
+	// tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,
 	// whether this call is the telling of that one: a stall already marked, or one an earlier
 	// index of the same call marked, answers false, so the one row decides who tells. Each arm has
 	// a mark of its own, so a root two arms read wakes the controller twice and one arm hides no
-	// other. Each arm is told once, because the pass that raises them runs on every fact of the
-	// project, and a wake that pass repeats would bury the controller's topic. A re-admission
-	// opens a new generation and tells it anew, as TellChildrenFirst does, and the tree is in the
-	// key for the same reason: a generation names a run within one tree alone. It is one
-	// statement however many stalls it marks, and none for no stall, since every fact of the
-	// project runs the pass that calls it
+	// other. Each arm is told once, because the pass that raises them runs again and again (the
+	// pass rule on admit's Admission.Apply), and a wake that pass repeats would bury the
+	// controller's topic. A re-admission opens a new generation and tells it anew, as
+	// TellChildrenFirst does, and the tree is in the key for the same reason: a generation names a
+	// run within one tree alone. It is one statement however many stalls it marks, and none for no
+	// stall, since every pass of the project calls it
 	// (admit's TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
 	TellArchitectsStalled(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) ([]bool, error)
 	// ArchitectStallsUntold says whether any of stalls holds no mark yet, which is whether the
@@ -2639,7 +2640,7 @@ type Store interface {
 	//
 	// It is for the caller that must ask this of every root of one pass and may make no read per
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
-	// tellStalledTrees), on every fact, every tick and every boot.
+	// tellStalledTrees), on every pass (the pass rule on admit's Admission.Apply) and every boot.
 	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose

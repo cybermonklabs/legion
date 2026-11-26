@@ -60,8 +60,8 @@ It carries:
   — the `codegraph` tool a tester queries for `affected` tests and a reviewer for `impact`/`callers` blast radius (`packages/daemon/internal/prompts/roles/core/tester.md`, `core/reviewer.md`).
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
-- OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>/`:
-  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (123 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
+- OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
+  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (124 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
 
 - pinned Bun, `jj` (Sami's fork, the version the dogfood daemon runs) and `gh` at `/usr/local/bin`, and `git` at `/usr/bin/git` from the `debian:trixie-slim` base
   — jj's git backend requires git >= 2.42 (bookworm's 2.39.5 made every `jj git clone` in the init container fail), so the build also proves the image's jj accepts its git with a network-free `jj git clone` of a scratch bare repository before the probes run, and its last step refuses a git anywhere but `/usr/bin/git`;
@@ -81,9 +81,14 @@ It carries:
   Then it hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the line it read, but for a revision argument whose meaning the rewrite changed, which then names the commits it named before the step, as the step left them, and with `--ignore-working-copy` where the step took its one snapshot of the working copy, so the push takes no second one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   The step gives each commit the push sends the author of the role its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (contract entry `20261125161436`, below), and prints one `legion jj:` line for each commit it rewrote.
   It sets no author on an immutable commit, one a remote bookmark holds, one only a git tag names or one whose role has no identity, nor, but for an empty author, where it prints that it could not.
-  `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
-  The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
+
+- the rules engine that hook and those wrappers run:
+  `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library, so no pod can meet an absent engine.
+  The binary embeds no rule file:
+  the private-name rules a pod runs are the deployment's own, which the daemon hands each launch ([The deployment's private-name rules](#the-deployments-private-name-rules)).
+  So a pod can meet a rule file that is missing or that the guard cannot use, and the guard then refuses the write as a setup failure.
+  The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal shows at most 40 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a repository the deployment names, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build, and a deployment that names a manifest digest (below) moves its `manifest_sha256` in the same change.
@@ -124,7 +129,8 @@ It carries:
   The pod holds no credential for that repository and reads nothing of Dispatch.
 
 - a deployment that names no check, which runs none:
-  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
+  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and the deployment's private-name rules still running over it where the deployment names a rule file ([The deployment's private-name rules](#the-deployments-private-name-rules)).
+  A deployment that names neither a check nor a rule file has every write cleared with nothing read.
 
 - the check's launches, rollbacks and tmux panes:
   a launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
@@ -136,11 +142,14 @@ It carries:
   an older daemon pushes nothing and tells no digest, so a new image's shim starts the role, and every write it makes is refused for the check its environment names and its pod does not hold.
   A tag of that repository need not be protected for a role to run under the check the deployment named: a tag force-moved to other bytes has another manifest digest, which every shim and guard told the deployment's refuses; the daemon serves its earlier copy of the tag until it restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
-  The daemon resolves that machine's check once per launch and tells the pane where it is, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  A refused write writes nothing and prints one of three lines on standard error:
-  `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
-  `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
-  or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
+  The daemon resolves that machine's check once per launch and tells the pane where it is, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are");
+
+- the leak guard's answers to a role: a refused write is a command that wrote nothing and one of three lines on standard error:
+  `LEAK CHECK: refusing <the write>: <the check that refused it>` is a name in the write.
+  A private-name refusal shows each match with its record, the rule's description and its line, within the bounds of [The deployment's private-name rules](#the-deployments-private-name-rules).
+  It shows the text because the agent that would make the write wrote it.
+  `<the write>: GitHub answers 404 for <repo>, …` is a wrong name or a credential that cannot see it.
+  `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>` is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
@@ -2256,6 +2265,39 @@ From a release that also carries the one `roles` container (daemon API contract 
 — since the release before this one refuses a `roles` locator and an `issue` resources entry as this one does;
 its step 4 is not needed, since every issue Sandbox is deleted here.
 
+#### Rolling back the release whose check report names its check
+
+`POST /legion/v1/handoff/complete` reports a production check's look only when the request names `checkOpenedAt` (the tool's `check_opened_at`), the check's opening time.
+The look task gives that time in RFC3339 with its stored microseconds.
+State, the caller's role and whether a phase task is pending do not decide which call it is.
+Without the field the request completes a phase.
+A done issue refuses that phase call with `CHECK_LOOK_NOT_SERVED` and names the missing field; it records nothing.
+With the field the route first refuses a missing, closed or different check (`CHECK_NOT_OPEN`), then another role (`CHECK_ROLE_MISMATCH`), then a look the claim has not served (`CHECK_LOOK_NOT_SERVED`), before it applies any fact.
+A served look stays on the claim through phase tasks until another look replaces it, so its report can arrive after a phase task was queued.
+The check route runs no phase effects.
+A late phase completion needs this run's started task (`EntryTask`), not merely an entry counter or claim, and its fresh handoff is still required.
+A carried run keeps its task; a cleared generation removes it.
+A task's stop records the first late report only if that step had started, and still returns `TASK_STOPPED`.
+
+Before returning to a daemon that chooses a check report from the claim's state, stop the new daemon and, for each project being rolled back, run the SQL below with `<PROJECT>` replaced by that project's key.
+Without this reset the old daemon can mistake a later phase completion for a check report, because a phase task no longer clears the kept look.
+Clear only kept looks on claims whose issues still run.
+Done issues keep their looks so the old daemon can attribute their production reports, and another project's claims stay unchanged.
+Then start the previous daemon with its matching plugin and worker image.
+This step is needed only when that previous daemon lacks the explicit `checkOpenedAt` request field.
+
+```sql
+UPDATE claims AS c
+SET serving_check_look = 0, serving_check_opened_at = NULL
+FROM issues AS i
+WHERE c.issue = i.key
+  AND i.project = '<PROJECT>'
+  AND i.phase <> 'done';
+```
+
+`TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone` runs this exact SQL against a running issue, a done issue and an issue of another project.
+It checks the reset's scope; it does not claim to exercise the previous daemon's completion route.
+
 #### Rolling back the release whose cap counts issues
 
 This release's migration `20261103183833_issue_slots` gives a slot to every issue already at work, adds `design_gates.ever_opened` and `dispatch_issues.parent`, and writes the tree lifecycle row of every running tree that had none.
@@ -3717,6 +3759,7 @@ It touches none of the six, so the block holds over it and leaves the five colum
 20261124182040_issue_pod_disks adds `issue_pod_disks` and touches none of the six, so the block holds over it.
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
+20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -3942,7 +3985,7 @@ runtime:
                                 # or Burstable), so every pod is covered for the resource-limits capability with or
                                 # without this block, and an ephemeral-storage limit over a smaller request (the
                                 # pod's bound on the node's disk)
-      issue: { memory: 32Gi, memory_request: 19Gi }   # every issue pod: Burstable, reserves 19Gi, may use 32Gi
+      issue: { memory: 32Gi, memory_request: 8Gi }   # every issue pod: Burstable, reserves 8Gi, may use 32Gi
       controller: { cpu: 2, memory: 8Gi }  # controller: daemon only
     pod:                        # the operator's: env, volumes, mounts, ServiceAccount (below)
       service_account: <the ServiceAccount this deployment's pods run as>
@@ -3979,20 +4022,20 @@ a lower request makes that pod `Burstable` ([Issue sizing](#issue-sizing-one-res
 
 | key | cpu (limit / request) | memory (limit / request) | ephemeral-storage (limit / request) |
 | :--- | :--- | :--- | :--- |
-| `issue` | 3 / 3 | 19Gi / 19Gi | 80Gi / 6Gi |
+| `issue` | 2 / 2 | 8Gi / 8Gi | 80Gi / 6Gi |
 | `controller` (`controller: daemon`) | 1 / 1 | 4Gi / 4Gi | 10Gi / 1Gi |
 | the image probe (fixed, not a `resources` key) | 500m / 500m | 1Gi / 1Gi | 5Gi / 1Gi |
 
-The `issue` default is the sum of the six per-role defaults of the layout that ran one container per role.
+The `issue` default is the size INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with heavy builds and whole test suites run in CI or where the deployment's instructions send them, not in the pod (`skills/legion-worker/references/tools.md`).
 One number frees nothing at run time: under gVisor every process of a pod already used whatever the pod had free, so the pod's peak must fit its reservation
-— an issue pod measured at 1-minute resolution used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
+— an issue pod that still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
 On GKE Autopilot the cap is 10Gi of ephemeral storage for the main containers' sum and 10Gi for each init container (server dry runs, 2026-10-24), and GKE clamps a container's limit to its request, so a GKE deployment sets `issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi}`.
 
 The image probe pod's reservation is the daemon's own and no issue pod's share (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`):
 `legion probe-image` starts one Oh My Pi at a time, runs no lane, and checks the image's capability rows and the roles' overlays, so 1Gi holds it; its 500m was set while it also ran a TLS check of the image's clients, and is kept until its other checks are audited ([Image size and pull time](#image-size-and-pull-time)); and the probe runs at every boot before anything is served
 — a probe that reserved a larger share, as it did the controller's 1 CPU and 4Gi until LEGION-632, could leave the daemon unable to boot on a pool with no room for a pod that large ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound").
 
-At the defaults an issue pod reserves 3 CPU and 19 GiB, an ephemeral-storage limit of 80Gi and a request of 6Gi.
+At the defaults an issue pod reserves 2 CPU and 8 GiB, an ephemeral-storage limit of 80Gi and a request of 6Gi.
 `issue_volume` sizes each issue pod's own disk:
 the clone, the workspace, uv's Pythons and packages, and everything a role writes without being told where to put it.
 Four of those directories are the issue's, one set its roles share
@@ -4217,9 +4260,11 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   where set` (`limits` likewise); any other member of an entry but `cpu`, `cpu_request`, `memory`, `memory_request`, `ephemeral_storage` and `ephemeral_storage_request` is an unknown key, and any of those six or `issue_volume` that is not a positive Kubernetes quantity is refused as such (`… must be a positive Kubernetes quantity (e.g. 20Gi or 500m)`);
 
 - a request past its limit, once both are settled
-  — the file set one side or both, since the defaults never exceed: `runtime.kubernetes.resources.issue.memory_request 20Gi exceeds memory
-  19Gi`, and likewise `cpu_request … exceeds cpu …` and `ephemeral_storage_request …
-  exceeds ephemeral_storage …`, for `controller` too, and `runtime.kubernetes.repository_cache.resources.…` likewise;
+  — the file set one side or both, since the defaults never exceed: `runtime.kubernetes.resources.issue.memory_request 9Gi exceeds memory
+  8Gi`, and likewise `cpu_request … exceeds cpu …` and `ephemeral_storage_request …
+  exceeds ephemeral_storage …`, for `controller` too, and `runtime.kubernetes.repository_cache.resources.…` likewise.
+  This is a breaking configuration change for a file that sets an issue pod's `memory_request` above 8Gi or its `cpu_request` above 2 with no limit beside it.
+  To load such a file, set the limit beside the request, as in `issue: {memory: 32Gi, memory_request: 9Gi}`;
 
 - a `repository_cache` that is not a mapping, or names a member but `volume`, `refresh_minutes`, `retain_hours` and `resources`;
   a `volume` that is not a positive Kubernetes quantity;
@@ -4570,6 +4615,214 @@ A clean boot line proves the user, not every grant:
 the check before the pane seed is written also has each daemon consume a Dispatch and a GitHub event with no error line, and searches each daemon's log for `NATS refused the daemon`, since a missing grant on the exceptions lane (`notifications.envoy.exceptions.notifications.role.>`) still boots healthy and consumes both events, and that error line is its only sign.
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
+
+### The deployment's private-name rules
+
+The leak guard runs up to two checks before a role writes ([Worker image](#worker-image)):
+the shared public leak check, where one is named for the role (the deployment's `leak_check` setting in a pod, or on a pane's machine the check its operator installed), and the deployment's own private-name rules, where the deployment names a rule file (`packages/daemon/internal/leakguard`).
+The `legion` binary carries no private-name rule.
+A deployment names its own rule file, in gitleaks' rule format.
+Each is the operator's to name, so a write gets one of four guards:
+
+- a shared check and a rule file named: the check runs, then the visibility read, then the rules over a public destination;
+
+- a rule file and no shared check: the visibility read, then the rules over a public destination;
+
+- a shared check and no rule file: the check alone, with no visibility read;
+
+- neither: no leak guard at all, and every write is cleared with nothing read; the daemon says so in two boot lines, one that no leak check is configured and one that no rule file is named.
+
+The key and the variable below work the same way under `runtime: tmux` (`docs/deployment.md`, "What a pane's Dispatch credential is").
+
+**Where the file is named.**
+`private_name_rules_file` in `legion.yaml` names the file:
+
+```yaml
+private_name_rules_file: private-name-rules.toml   # relative to legion.yaml's directory
+```
+
+A relative path resolves against `legion.yaml`'s directory, and an empty value is refused (`private_name_rules_file must not be empty`).
+Where the file sets no such key, `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment names the file.
+An empty value of the variable names no file, as an unset variable does.
+Where both name a file, the key wins.
+A daemon of an earlier release refuses `private_name_rules_file`.
+So a deployment that may roll back across this release sets the variable instead of the key.
+
+**What the daemon does with it.**
+The daemon reads the file once, at boot, and compiles it with the guard's own loader (`readBoot`, `packages/daemon/internal/daemon/bootreads.go`, and `compilePrivateNameRules`, `privatenamerules.go`).
+A file it cannot read or compile refuses the boot, and `legion config check` refuses it in the same words before any boot.
+The refusal names the key or the variable, and the file.
+The daemon's own branch create runs the rules boot compiled.
+Every launch carries the file's bytes as the launch secret `LEGION_PRIVATE_NAME_RULES` (`launchSecrets`, `packages/daemon/internal/daemon/launchsecrets.go`):
+each worker under either runtime, and the controller under `controller: daemon`.
+The runtime writes the secret to a file of the launch's own and points `LEGION_PRIVATE_NAME_RULES_FILE` at that file:
+`/var/run/legion/private/g<generation>/LEGION_PRIVATE_NAME_RULES` in a pod ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and a 0600 file under `<state_dir>/secrets` in a tmux pane.
+A role keeps the copy its launch was handed.
+So a changed file reaches a role only after the daemon restarts and that role launches again.
+`runtime.tmux.pane_env` may not set `LEGION_PRIVATE_NAME_RULES_FILE`.
+While the deployment names a file, `runtime.kubernetes.pod.env` may not set that variable either, and no `provider_keys` entry may be named `LEGION_PRIVATE_NAME_RULES`.
+
+**The bound.**
+The guard reads at most 256 KiB of a rule file (`MaxRulesFile`, `packages/daemon/internal/leakguard/rules.go`), and the daemon refuses a longer file at boot.
+A deployment's file is a few kilobytes of regular expressions.
+The bound is there because the file rides every launch's start command.
+Under `runtime: kubernetes` that command is one frame, and a launcher reads no frame longer than 1 MiB, so the daemon refuses a start whose frame is longer before it sends it (`checkStartFrame`, `packages/daemon/internal/runtime/sandbox/launcher.go`).
+The same frame carries the role's system prompt and the launch's other files, all of it JSON-encoded, and JSON doubles each backslash of a regular expression.
+A file near 1 MiB would therefore fail every launch.
+The bound also refuses a pointer to a log or an image, named by mistake, rather than reading that file into memory whole.
+
+**What the file may hold.**
+What the file holds is the whole of what the guard's private-name step detects (`LoadRules`, `rules.go`).
+The guard refuses a file in each of these cases, and so does the daemon at boot:
+
+- The file is longer than 256 KiB.
+
+- The file is no TOML.
+
+- The file holds a key that gitleaks' rule format does not have, and the refusal names the key.
+  gitleaks itself ignores an unknown key, so a misspelt `[[rule]]` would compile to no rule at all.
+
+- The file holds an `[extend]` section.
+  Write the extended rules into the file itself.
+
+- The file holds two rules of one `id`, and gitleaks would run only the last of them.
+
+- The file holds no rule.
+
+- A pattern of the file does not compile.
+
+The guard ignores `gitleaks:allow`.
+A line that carries those words is scanned like any other line, so no writer can exempt a line from the deployment's rules.
+
+**What the rules read.**
+The private-name step runs only for a destination GitHub reports public, and for one the caller cannot name.
+It scans each record of the write on its own, so a rule that needs two words matches only where one record holds both.
+A report names a record by its label: as it was written where that is printable text of at most 200 bytes with no `\`, and otherwise as **The report** below says.
+A push has these records:
+
+- The ref name, labelled `the ref name`.
+
+- Each commit's author, committer and message, labelled `commit <sha7> author`, `commit <sha7> committer` and `commit <sha7> message`.
+
+- Each added or renamed path, labelled by the path.
+
+- Each added line, labelled by its file's path.
+  The report's `on line <n>` is the line in that file.
+
+A gh call has these records:
+
+- Each argument, labelled `the gh call's argument <i>`.
+  A field given to `-f`, `--raw-field`, `-F` or `--field` of `gh api` or `gh workflow run` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
+  Only those two commands have field options: in every other command `-f` and `-F` mean other things (`-F` is `--body-file` in `gh pr create`), so there every argument is one record, read whole.
+  An option's value is read as that option's value and never as an option of its own, so `gh api -t '-f…'` is a template, read whole.
+  A `gh api` call's endpoint is also read decoded, because GitHub decodes the percent-escapes of an endpoint's path and query: it decodes a REST path, and stores a release asset's `name` and `label` query values decoded.
+  Its path with its percent-escapes decoded is a record, labelled `the gh call's argument <i>, path`, and so is each value of its query, decoded as a URL query is, labelled `the gh call's argument <i>, query <key>`, and each key of its query, decoded the same way, labelled `the gh call's argument <i>, query <key> (name)`; each is a record only where decoding changes the text.
+  A key is read because GitHub may store it as a name: a server that merges a query into a request's parameters, as a Rails parser does, reads `inputs%5Bnotes%5D=1` as an input named `notes`; that is not measured, since measuring it takes a write, and the read costs one record.
+  A `;` inside a query value stays in the value, as GitHub keeps it (measured on `api.github.com` on 2026-11-25: `?per_page=1&x=a%62c;d` came back as the pair `x=abc%3Bd`), so such a pair is read decoded with its `;`.
+  A path whose escapes do not decode is read only as written, and so is a pair of a query whose key or value does not decode.
+
+- The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
+  A call that only prints, such as gh's help of a command (`--help`, or a `-h` that no option of the command takes), sends nothing beside its arguments, so the guard opens no file its options name: `legion gh pr comment 1 --body-file <file> --help` passes where no file is at `<file>`, and its arguments are read as any call's are.
+  A `-h` counts as help only after the command's name, where no option of the command takes it; before the command's name, a `-h` passes only as the whole argv, `gh -h`; any other `-h` there is refused, such as `gh pr -h`, `gh -R acme/widgets -h` or one with words after it, since gh can take the next word as its value and run another command (`gh -h status config set -h github.com editor x` runs `gh config set`, whose own `-h` is `--host`).
+
+- Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
+  An object's name is a record too, labelled `<record>, JSON <path> (name)`.
+  A path of more than 8 steps is shown as its first 2 steps, `…` and its last 5, and a step longer than 64 bytes is cut there, with `…`, so a deep body's labels stay short.
+  An empty string is no record, since no rule can match it.
+  A body that is not exactly one JSON document is read as one record.
+  A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com`, is read as one record, because GitHub stores it as sent.
+  Where such a body is exactly one JSON document, its JSON strings are read beside that record too, because whoever parses the stored document reads each string decoded, `\u0074` as `t`.
+  A call to such a URL that gives fields, no `--input` and a method other than `GET` is refused, because gh would send its fields as one JSON document that GitHub stores as sent; send the asset's bytes with `--input <file>` or `--input -`.
+  With `--input`, or with the method `GET` (`-X GET` or `--method GET`, in any case), gh puts the fields in the URL's query string instead, and they are read as any field of the call is.
+  A file or standard input longer than 1 MiB (1,048,576 bytes) is refused, because the guard reads no more than that of what a call sends, so a release asset past that size is refused too.
+
+- Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
+  A `gh api` call's query is read so whatever spelling of GitHub's GraphQL endpoint the call names (`graphql`, `/graphql`, the API's full URL), and wherever the query comes from: a field, a file, a JSON body's `query`, or standard input named by `-F query=@-`.
+  A query that does not lex is read as written.
+
+Each text that a write to a public repository sends and GitHub stores and shows is read as GitHub stores it, but a release asset's file and a label gh takes from the name of a file a glob pattern matched, which are handled as on `main` (the last row).
+The table lists each of them, what GitHub does to it before it stores it, and the records the guard reads of it; `TestEveryTextGitHubStoresIsReadAsItIsStored` (`packages/daemon/internal/leakguard/gh_fields_test.go`) holds a row for each record the table names:
+
+| What the call sends | What GitHub stores | What the guard reads |
+| --- | --- | --- |
+| An argument, such as a title, a body or a tag | the text as written | `the gh call's argument <i>`, as written |
+| A field of `gh api` or `gh workflow run` (`-f`, `--raw-field`, `-F`, `--field`) | the name and the value as written: gh JSON-escapes them, and GitHub stores the strings | `the gh call's field <name>` and `the gh call's field <name> (name)`, as written |
+| A JSON request body sent to GitHub's REST API (`gh api --input <file>` or `--input -`) | each JSON string, its escapes decoded | `<record>, JSON <path>` and `<record>, JSON <path> (name)`, decoded |
+| A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com` | the bytes as sent | `<record>`, as sent, and where the body is exactly one JSON document `<record>, JSON <path>` too, decoded |
+| The file of a file option (`--body-file`, `--notes-file`, `--from-file`, and the `-F` that is one of them), and the file of a field's `@<path>` (`-F <name>=@<path>`, `--field <name>=@<path>`) but a GraphQL query's, which its own row covers | the text as written | the file's path, labelling its text as written |
+| A `gh api` endpoint's path | the path, its percent-escapes decoded | `the gh call's argument <i>, path`, decoded, beside the argument as written |
+| Each pair of a `gh api` endpoint's query | the value, its percent-escapes decoded and a `;` in it kept | `the gh call's argument <i>, query <key>`, decoded with its `;`; a pair whose key or value does not decode is read only as written, in the argument |
+| Each key of a `gh api` endpoint's query | the key, its percent-escapes decoded, where GitHub merges the query into the request's parameters (not measured) | `the gh call's argument <i>, query <key> (name)`, decoded; a pair whose key or value does not decode is read only as written, in the argument |
+| A GraphQL query (a `query` field, a file, a JSON body's `query`, or `-F query=@-`) | each string literal, its escapes decoded | `<record>, GraphQL string <k>`, decoded |
+| The inputs of `gh workflow run --json`, on standard input | each input's JSON string, its escapes decoded | `the gh call's standard input, JSON <path>`, decoded |
+| A release asset of `gh release upload` or `gh release create` | the file's bytes, its name and its label | as on `main`: each argument as written, so an asset's path or `#label` written in an argument is read and refused as any argument is; the rule pass opens no asset's file, and a label gh takes from the name of a file a glob pattern matched is in no argument and goes unread; the shared check reads the call's arguments too |
+
+A text that `legion leak-check text` checks has two records, `the title` (its first line) and `the body` (the rest).
+A path rule reads only a record's path, and only a pushed file's records carry one: its added or renamed path and each of its added lines.
+A file that a gh call sends carries no path, because GitHub never sees the name the file has where the call runs.
+So no label, JSON path or line number is read as a path.
+
+**The report.**
+A refusal by the private-name rules starts `LEAK CHECK: refusing <the write>: the deployment's private-name rules match it`.
+Under that line it shows one line for each distinct finding among the 40 shown; a line the report already shows, such as a path rule's finding on every added line of a file, is not written again.
+Each line is indented two spaces:
+
+```text
+<record>: <description>: matched "<match>" on line <n>: "<line>"
+```
+
+`<record>` is the record's label.
+A character that does not print, and `\`, stands in it as Go writes it in a quoted string, so a newline in a field's name or a path cannot break the report apart either.
+A label longer than 200 bytes is shown as its first 60 bytes, `…` and its last 140.
+`<description>` is the description the deployment's rule gives.
+`<match>` and `<line>` are Go-quoted, so a newline or a control character cannot break the report apart.
+The match is cut at 200 bytes.
+The line is a window of at most 120 bytes on each side of the match shown.
+`…` marks each cut.
+A path rule's finding stands on no line, and reads `<record>: <description>: matched the path`.
+A report shows at most 40 lines, and then `… and <k> more matches not shown`.
+The report masks nothing it shows.
+It shows the text because the agent that would make the write wrote it, so nothing in it is hidden from that agent.
+This repository's public CI never prints the guard's report.
+
+**What the boot and a role say.**
+With no file named, boot logs this line before anything that can stop the boot:
+
+```text
+daemon: the deployment names no private-name rule file (private_name_rules_file in legion.yaml, or LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment): every role's guard runs no private-name rule
+```
+
+With a file named, boot logs this line once it has read and compiled the file:
+
+```text
+daemon: the deployment's private-name rules are <path> (sha256 <hex>, <n> rules), handed to every launch
+```
+
+The sha256 is of the bytes every launch carries, so an operator can tell one version of the file from another.
+`GET /legion/v1/state` shows the path, and never the rules, as `settings.private_name_rules_file`, and leaves the key out while no file is named.
+
+Where its launch names no rule file, a role's guard runs the shared check alone, reads no visibility and builds no record; where the deployment names no shared check either (the `leak_check` setting above), it runs nothing and clears every write.
+`legion leak-check pre-push`, `legion leak-check text` and `legion gh` print nothing of it, on any command, since a line on each would break a script that reads what they print.
+The boot's line above says it once, in the daemon's log.
+`legion gh` logs such a call with the visibility source `no-rules` (`packages/daemon/cmd/legion/gh_reads.go`).
+Where `LEGION_PRIVATE_NAME_RULES_FILE` names a file the guard cannot use (missing, unreadable, longer than 256 KiB, or refused above), the guard refuses the write as a setup failure:
+`LEAK CHECK SETUP ERROR: <the write>: the private-name rule file <path>, which LEGION_PRIVATE_NAME_RULES_FILE names, <why>`.
+`<path>` is shown as the report shows a label, and so is every path, repository and option a setup failure of the guard names.
+A deployment that named rules meant them to run, and a guard that ran none in their place would pass what they refuse.
+
+**The operator-launched controller.**
+Under `controller: operator` the daemon launches no controller, so no launch hands that controller the rules.
+`legion controller start` runs Oh My Pi on top of the operator's own environment ([Operator-launched controller](#operator-launched-controller)).
+So an operator who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
+That controller's gh tokens are the review App's read-only tokens, so no write of its gh reaches GitHub, with the rules or without them.
+
+**Deploy order.**
+A pod's guard runs the rules its daemon hands it at launch.
+So each project moves its daemon to this release before its pods' image, or with it.
+A rollback goes in the reverse order: the pods' image first, then the daemon.
+A pod of an older image runs the rules its own `legion` binary embeds, whatever its daemon hands it.
+A pod of the new image under an older daemon runs no private-name rule, and nothing says so: an older daemon logs no line about the rules, and the pod's commands print nothing of it.
+A deployment that may roll back across this release names its file in `LEGION_PRIVATE_NAME_RULES_FILE`, since an older daemon refuses `private_name_rules_file`.
 
 <a id="issue-pods-in-microvms"></a>
 ### Pods in microVMs
@@ -5605,7 +5858,7 @@ the `roles` container's own spec carries a single variable, `POD_UID` from the d
 `launchEnvironment` (`manifest.go`) splits the rendered environment in two
 — the kubelet-resolved entries go on the container, and the plain `NAME=value` pairs travel in the daemon's start command for that role to `legion launcher`, which hands them to that role's `legion worker-shim` and so to its agent (`launcherCommand`, `launcher.go`).
 So a `printenv` run by `kubectl exec` into the container finds none of them but `PATH`, which the worker image's own `ENV` sets (`packages/daemon/docker/worker.Dockerfile`) to the value the row below documents, so every process of the container carries it however it was started;
-one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it does not.
+one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it never sets and for `LEGION_PRIVATE_NAME_RULES_FILE` in a deployment that names no private-name rule file.
 They are an issue pod's role's; `<generation>` is the role's own generation counter, which differs between the roles of one pod and rises on each relaunch of that role in it, and every path under `/var/run/legion` is the role's own directory, bound there in its namespaces.
 `ENVOY_TOKEN_FILE` is stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `envoy_token_file` (`packages/daemon/internal/config/kubernetes.go`), and so is `DISPATCH_TOKEN_FILE`, because it refuses one that sets no `dispatch_url` and a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`) unless `dispatch_token_broker` is true.
 Under that setting a role in a pod that carries the exchange identity is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE` ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
@@ -5623,11 +5876,12 @@ Under that setting a role in a pod that carries the exchange identity is told `D
 | `LEGION_BOOT_TOKEN_FILE` | `/var/run/legion/private/g<generation>/LEGION_BOOT_TOKEN` | `launcherCommand`, `launcher.go` |
 | `LEGION_TERMINATION_GRACE_SECONDS` | the runtime sets it in no container; the pod's grace reaches the shim as its `--stop-grace` argument | `launcherCommand`, `launcher.go` |
 | `ENVOY_TOKEN_FILE` | `/var/run/legion/private/g<generation>/ENVOY_TOKEN` | `manifest.go` |
+| `LEGION_PRIVATE_NAME_RULES_FILE` | `/var/run/legion/private/g<generation>/LEGION_PRIVATE_NAME_RULES` where the deployment names a private-name rule file, and in no container where it names none ([The deployment's private-name rules](#the-deployments-private-name-rules)) | `manifest.go`, over `launchSecrets`, `internal/daemon/launchsecrets.go` |
 
 `<owner>`, `<repo>`, `<key-lower>` and `<generation>` are the pod's own:
 the owner and repository of the issue's repository, the issue key in lower case, and the role's generation counter.
 The daemon-launched controller's container differs:
-of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the bundle's first directory, sorted, which is usually an owner the review App is installed on whose lease the mint answered for, though a configured rename also puts the pair's `from` owner in the bundle as an alias directory, and such a name can sort first and be taken, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
+of these twelve names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the bundle's first directory, sorted, which is usually an owner the review App is installed on whose lease the mint answered for, though a configured rename also puts the pair's `from` owner in the bundle as an alias directory, and such a name can sort first and be taken, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
@@ -6786,14 +7040,14 @@ Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not 
 Every container of a Legion pod carries a cpu and memory limit with a request no greater than it (`requirements`, `internal/daemon/kubernetes.go`), and an ephemeral-storage limit over a smaller ephemeral-storage request (the node-disk bound, below):
 an issue pod's `roles` container and both its init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
 — [Configuration](#configuration)), the controller's launcher the controller's (`runtime.kubernetes.resources.controller`), and the image probe's one container the probe's own fixed 500m / 1Gi, request equal to limit (`probeReservation`, [Configuration](#configuration)).
-At the default an issue pod reserves 3 CPU and 19 GiB, the init containers adding nothing:
+At the default an issue pod reserves 2 CPU and 8 GiB, the init containers adding nothing:
 a pod's effective request is the larger of its containers' sum and its largest init container, and they carry the same reservation.
 Every pod reserved is what the `resource-limits` row of [The deployment's capability report](#the-deployments-capability-report) measures, so on a Kubernetes deployment it is `present` with or without a `resources` block;
 its detail names the pods, if any, that are `Burstable`.
 
 One number frees nothing at run time.
 Under gVisor every process of a pod already used whatever the pod had free (below), so the pod's peak must fit its reservation:
-an issue pod on the production cluster, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
+an issue pod on the production cluster that still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
 
 **Guaranteed or Burstable.**
 The kubelet's QoS class reads cpu and memory alone (the disk bound's request under its limit changes no pod's class).
@@ -6824,18 +7078,18 @@ with `issue: {memory: 32Gi, memory_request: 8Gi}` the pod requests 8Gi and never
 On a `Performance` node the ceiling is those requests rounded up to a machine type, and a lower request still picks a smaller, cheaper VM.
 To give an issue real headroom on Autopilot, raise its request rather than its limit alone.
 
-The defaults were sized from an issue pod on the production cluster (measured 2026-10-09, under `GOMAXPROCS=3`):
-`go test ./...` of `packages/daemon` peaks at about 1.45 GiB of summed RSS, a cold `go build ./...` at about 0.97 GiB, `bun test` of a plugin package at about 1.2 GiB, Biome and `bun install` at about 0.8 GiB each and `tsc` at about 0.75 GiB;
-a role's Oh My Pi process is about 1 GiB after half an hour of work, and a headless Chromium's largest process about 0.45 GiB.
-A lane-running role's Go test lane, its agent and a browser sum to about 3.9 GiB, at the limit of the 4Gi they were first given, and a `Guaranteed` pod OOM-killed mid-turn stalls its tree;
-so the implementer's and tester's 6Gi held its agent, one lane and a browser with room over that sum, the reviewer's 4Gi its agent, a browser and its review pair, and 1Gi each the architect, planner and merger.
-The `issue` default, 19 GiB, is the sum of those six figures.
+The `issue` default is the size INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with heavy builds and whole test suites run outside the pod ([Configuration](#configuration)).
+An issue pod on the production cluster that still ran its own builds was measured on 2026-10-09, under `GOMAXPROCS=3`:
+`go test ./...` of `packages/daemon` peaked at about 1.45 GiB of summed RSS, a cold `go build ./...` at about 0.97 GiB, `bun test` of a plugin package at about 1.2 GiB, Biome and `bun install` at about 0.8 GiB each and `tsc` at about 0.75 GiB.
+A role's Oh My Pi process was about 1 GiB after half an hour of work, and a headless Chromium's largest process about 0.45 GiB.
+A role's Go test lane, its agent and a browser summed to about 3.9 GiB, and a `Guaranteed` pod OOM-killed mid-turn stalls its tree.
+A deployment whose roles still run heavy builds and whole test suites in the pod sizes `issue` from those readings, not from the default.
 
 Legion sets no affinity itself (GKE Autopilot adds its own to an annotated pod, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
 each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever the `legion` pool has room for its reservation, and Karpenter adds a node under the pool's limits when none has, of the smallest type the pool's requirements allow.
 In production (read 2026-10-08) those are `instance-cpu Gt 3` and `instance-memory Gt 65535`, so the floor is an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
-a 3 CPU / 19 GiB issue pod fits, two per node (7.9 / 3 by cpu, where 60.8 / 19 would place three), cpu the binding dimension.
-On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this two-per-node packing.
+a 2 CPU / 8 GiB issue pod fits, three per node (7.9 / 2 by cpu, where 60.8 / 8 would place seven), cpu the binding dimension.
+On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this three-per-node packing.
 The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else the pool has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The **controller's** pod, whose Sandbox owns its claim, and an issue pod with a kept volume are the pods that wait on a volume when they are relaunched onto another node:
 each one's `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.
@@ -6854,8 +7108,9 @@ The reservation is the pod's working set, and its request is what the scheduler 
 Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform reached about 1.3 to 1.9 cores whether the pod reserved 2, 2.5 or 3 CPU (1.321, 1.367 and 1.392 cores over 300-second runs on one node, and 1.8227 cores in a running issue pod at a 3-CPU limit), so reserving more cpu there bought that workload little more work ([kubernetes/kubernetes#91665](https://github.com/kubernetes/kubernetes/issues/91665), "Actual CPU capacity is lower than assigned CPU capacity when gVisor sandbox is enabled").
 
 **The bound.**
-Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
-at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
+Concurrently running issue pods are bounded by the nodes the pool's `limits.cpu` and `limits.memory` let Karpenter make: Karpenter counts each node's whole capacity against those limits, not the pods' requests, and stops making nodes once a limit is reached ([NodePools](https://karpenter.sh/docs/concepts/nodepools/), `spec.limits`).
+Karpenter checks the limits eventually consistently, because it provisions in parallel, so a rapid scale-out can make nodes past a limit (the same page).
+At the defaults three pods fit a floor node, so `limits.cpu: 256` makes about 32 floor nodes and places about 96 two-CPU pods (less what the nodes' daemonsets hold), and a larger instance type places more, up to the 128 two-CPU pods that 256 CPU holds; `limits.memory` divided by 64 GiB, a floor node's memory, bounds the nodes too when that is the smaller, three pods to each (a `Burstable` issue pod's lower request places more on each node)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
 `admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that keeps one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
 So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
@@ -6868,7 +7123,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
+Size the pool's limits for the nodes that bound needs, three default issue pods to a floor node, plus room for those two pods, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -6897,7 +7152,7 @@ A pod past its limit is evicted — the offending issue's pod alone
 The request is what the scheduler counts against the node's allocatable ephemeral storage;
 at the default 6Gi it binds little, so a node's disk can be oversubscribed by the pods' limits.
 In production (read 2026-10-09) the Legion node class carries one 700Gi gp3 root device, and a node's allocatable ephemeral storage is about 629 GiB of it;
-with CPU and memory placing about two issue pods per node, their limits sum to about 160Gi of those 629 GiB, so the bound has room before any request is raised.
+with CPU and memory placing about three issue pods per node at the defaults, their limits sum to about 240Gi of those 629 GiB, so the bound has room before any request is raised.
 An operator with a known root volume raises `ephemeral_storage_request` toward the issue's expected use so the scheduler reserves disk and places no pod a full node could not hold.
 
 **GKE Autopilot's bound is per pod, not per node.**
@@ -8085,7 +8340,7 @@ A project's pause holds a pod too, under `paused` or `pause_held` ([Pausing a pr
 
 The daemon releases a pod for a second reason: no claim of the issue is live at all, which leaves a pod no claim owns.
 A claim is live while it is not `failed`, not `retired` and not `suspended`, so an issue whose claims have all stopped holds a pod in which no role can take a turn
-— a root whose architect failed after three launch failures, for example, which holds its 3 CPU and 19 GiB until the issue closes.
+— a root whose architect failed after three launch failures, for example, which holds its 2 CPU and 8 GiB at the defaults until the issue closes.
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
 This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -10199,7 +10454,7 @@ the Go tmux daemon takes over the Kubernetes daemon's claims once every pod of t
 The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too.
 A session found nowhere is a session no store holds, whether or not `take_over` is set:
 the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect, to the controller and to the new agent in its own prompt (dispatch://INFRA-714 R8), so a lost session is loud rather than silent.
-Oh My Pi itself does not refuse: verified against the pinned build (`omp --resume=<missing path> --mode rpc`), it exits 0, answers `ready`, and runs as a fresh agent, with no error frame and no mention of the file.
+Oh My Pi refuses too: measured on the pinned build (`omp --resume=<missing path> --mode rpc`), it prints `Error: Session "<path>" not found.` on stderr, writes no frame, and exits 1 (`main.ts` opens a resume by path with `throwIfMissing: true` and ends the process on that error, `exitForSessionResolutionError`).
 Under Kubernetes there is no file to look for and no init container that looks for one:
 every session is a row in the session database, and the pod's disk, which dies with the pod, never holds a transcript.
 The role's own launcher makes the check instead, inside the pod and before it starts the child:
@@ -10207,7 +10462,7 @@ it looks the recorded session up in the table through the mounted URL file and n
 A table that holds no such session (`gone`) is that session gone, and the daemon starts the fresh agent above.
 A table that does not exist, or a store that does not answer (`store-unreachable`), is a deployment fault that says nothing about the session:
 the claim keeps it, nothing is charged, the start is tried again every minute, and the issue and the controller are told at once and then hourly until the store answers.
-Should a resume by its file reach Oh My Pi with its row gone anyway, it starts a fresh session with a new id that the daemon refuses to register (`409 Worker respawn must resume the same agent session`), so the pod exits and the launch failure is counted there.
+Should a resume by its file reach Oh My Pi with its row gone anyway, Oh My Pi exits 1 with `Session "<path>" not found.` before it registers anything, so the pod's launch fails and is counted there.
 Either way the respawn fails loudly rather than quietly starting a new agent under the old role token (see [Selecting the store](#selecting-the-store)).
 A claim can record a session and no file of it: every release from `legion-v18.0.1` up to, and not including, `legion-v20.5.0` cleared the file at each issue close and kept the session id (dispatch://INFRA-4108).
 Such a claim on Oh My Pi is resumed by its id, and never started as a fresh agent while it records the session, because the daemon refuses the registration of any other session on it.
@@ -10223,7 +10478,7 @@ Through such a launcher the daemon names no session and no file, and the agent's
 That launcher reads no row and tells the agent that its workspace was not recreated, so the daemon's own prompt for that launch says that the workspace may have been recreated since the session last ran.
 Where that start does not register as the recorded session, because its process ends first or the registration deadline passes, the next try forgets the session, and neither that end nor the forget is charged.
 Oh My Pi ends such a start with exit code 1 when no row holds the id, on both builds measured, `18.18.6-sami.20261117-013345` and `18.18.6-sami.20261119-162325` (dispatch://INFRA-4108/comment/c0824089-87ef-4e1b-80e2-016a08e4133f).
-The second, the build this release pins, also ends it with exit code 1, after a wait of up to 35 s, while another live Oh My Pi holds the session, since the daemon sets `OMP_SESSION_EXCLUSIVE=1` on every Oh My Pi resume.
+The second, and the build this release pins (`18.18.6-sami.20261125-164517`, read in its source), also end it with exit code 1, after a wait of up to 35 s, while another live Oh My Pi holds the session, since the daemon sets `OMP_SESSION_EXCLUSIVE=1` on every Oh My Pi resume.
 A row whose recorded directory is gone ends such a start with exit code 1 on the first build only: in RPC mode the pinned build resumes that row in place, under the same id.
 The issue, its architect and the controller are told, with the notice kind `session-forgotten`, that the pod's launcher could not look the session up and that Oh My Pi did not resume it by its id.
 No pod is replaced and nothing waits for one: a replacement deletes the pod's disk with the unpushed work of every role whose process has stopped, and a wait for the pod's update round has no end in a pod where no other role runs.

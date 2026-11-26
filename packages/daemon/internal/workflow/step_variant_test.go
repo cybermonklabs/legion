@@ -54,10 +54,12 @@ func TestEachStepRecordNamesTheVariantOfItsIssue(t *testing.T) {
 			assertPhase(t, pool, phase.Merging)
 		}},
 		// The review's run is one the boot opens (bootBefore, as reviewApprovedNow runs), so its
-		// start queues no row.
+		// start queues no row. The reviewer's step started (its entry task), so its completion after
+		// the approval is a late report of that step: a claim alone proves no start (ranUnreported).
 		{name: "the review's end, the acceptance's start, and the reviewer's late report", from: phase.Reviewing, writes: 3, marked: "report", walk: func(t *testing.T, pool *pgxpool.Pool) {
 			engine := returnEngine()
 			reviewer := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleReviewer, "")
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewer, Entry: 1, EntryTask: "review this change"})
 			reviewApprovedNow(t, pool, engine, "LEGION-208")
 			assertPhase(t, pool, phase.Accepting)
 			if result := applyFacts(t, pool, engine)("late-report", reportOf(claim.RoleReviewer, reviewer, "review-1")); result.Refusal != nil {
