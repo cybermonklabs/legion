@@ -626,8 +626,8 @@ export const RigDaemonRequest = z.strictObject({
   paneLogs: z.string(),
   paneDaemon: z.enum(["label", "intercept-report"]),
   // The run's directory, which holds the gh stand-in (bin/gh, fixtures.json, calls.jsonl). The real
-  // pane gets <runDir>/bin first on its PATH and SKILL_SCENARIO_RUN=<runDir>, so its gh calls reach
-  // the stand-in.
+  // pane's gh runs <runDir>/bin/gh, and the pane gets SKILL_SCENARIO_RUN=<runDir>, so its gh calls
+  // reach the stand-in.
   runDir: z.string(),
 });
 export type RigDaemonRequest = z.infer<typeof RigDaemonRequest>;

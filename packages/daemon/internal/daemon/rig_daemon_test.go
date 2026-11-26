@@ -107,6 +107,9 @@ func TestRigDaemon(t *testing.T) {
 
 		delete(r.claims, token)
 		taken := r.worker(claim.RoleImplementer)
+		if launches := r.launchesOf(token); len(launches) != before+1 {
+			t.Fatalf("after the new session's ready the fake runtime holds %d launches of %s, want %d: the fresh session's one", len(launches), token, before+1)
+		}
 		if held := r.d.claim(token); held.Session != taken.session {
 			t.Fatalf("after the fresh session %s names session %q, want the new session %s", token, held.Session, taken.session)
 		}
