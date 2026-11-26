@@ -281,14 +281,15 @@ func TestARevocableSocketWriterAnswersPlainTextBeforeUpgrade(t *testing.T) {
 	}
 }
 
-// TestARecheckAccessWhileTheServerStopsRevokesNoSocket: shutdown cancels the process context with
-// ErrServerStopping (context.WithCancelCause) before the HTTP drain runs and before
-// documentService.Shutdown closes rooms. recheckAccess returns without revoking when
-// context.Cause(ctx) is ErrServerStopping, so no socket gets errAccessRevoked's close code 4412.
-// A plain cancelled context, as a per-pass deadline, still closes with 4412 (the m12 test's
-// "the re-check's context has ended" row).
+// TestARecheckAccessWhileTheServerStopsRevokesNoSocket: cmd/dispatch's process context
+// (processContext) ends with ErrServerStopping as its cause on SIGTERM and on every other stop of
+// the process, and it ends before the HTTP drain and before documentService.Shutdown closes the
+// rooms. A re-check that runs under that context returns without revoking, so no socket gets
+// errAccessRevoked's close code 4412, and shutdown closes each with its own going-away code.
 //
-// Control: cancel without the cause and assert 4412.
+// The control is m12's "the re-check's context has ended" row
+// (TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain): a context cancelled
+// without the cause still closes both sockets with 4412.
 func TestARecheckAccessWhileTheServerStopsRevokesNoSocket(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -318,8 +319,8 @@ func TestARecheckAccessWhileTheServerStopsRevokesNoSocket(t *testing.T) {
 	testcleanup.Add(t, server.Close)
 	peer := connectPeer(t, server.URL, ids[0], "alice@example.com")
 
-	// Cancel the process context with ErrServerStopping, as cmd/dispatch does at SIGTERM,
-	// before any Shutdown call. Run the re-check; no socket should be revoked.
+	// End the process context as processContext does, with ErrServerStopping as its cause, before
+	// any Shutdown call. The re-check then revokes no socket.
 	lifetime, cancelCause := context.WithCancelCause(context.Background())
 	cancelCause(ErrServerStopping)
 	service.recheckAccess(lifetime)

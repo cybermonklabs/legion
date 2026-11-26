@@ -329,6 +329,7 @@ func (s *Service) recheckAccess(ctx context.Context) {
 		}
 	}
 	if serverStopping(ctx) || (len(hidden) == 0 && len(unread) == 0) {
+		return
 	}
 	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {
 		if hidden[admission] {

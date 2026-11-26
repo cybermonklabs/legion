@@ -230,19 +230,25 @@ export const REFERENCE_TARGETS_MAX = 256;
  * `IDEMPOTENCY_LEASE_MS`) is `409 IDEMPOTENCY_KEY_IN_FLIGHT` with `Retry-After: 1`, which a client
  * asks again after. A 5xx, 401, 408 or 429 is not stored, so the next attempt runs the request
  * again - unless the first attempt's write committed before its answer was lost, which a repeat
- * is answered `409 IDEMPOTENCY_KEY_COMMITTED` for. Keys belong to the signed-in login that sent
- * them and are kept `IDEMPOTENCY_KEY_TTL_MS`.
+ * is answered `409 IDEMPOTENCY_KEY_COMMITTED` for. A repeat whose object its caller does not see
+ * now - hidden from it, or deleted since - is answered `409 IDEMPOTENCY_KEY_COMMITTED` too when its
+ * first request committed a write, and runs nothing again. Keys belong to the signed-in login that
+ * sent them and are kept `IDEMPOTENCY_KEY_TTL_MS`.
  * Five routes answer a repeat from the record they made rather than the stored body: `POST
  * /api/v1/agents/{session_id}/messages`, `POST /api/v1/broadcasts`, `POST
  * /api/v1/issues/{key}/messages`, `POST /api/v1/issues/{key}/comments` and `POST
  * /api/v1/artifacts/{id}/comments` resume any delivery still owed and answer `201` with
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
- * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. `POST /api/v1/issues/{key}/status-change` keeps a recovery
+ * can still read `pending`, and a repeat after a lost answer is that replay. The three of them
+ * that name an issue or a document answer `409 IDEMPOTENCY_KEY_COMMITTED` instead when that issue
+ * or document is hidden from the caller or deleted since; a session's message and a broadcast,
+ * which no object hides, never do. `POST /api/v1/issues/{key}/status-change` keeps a recovery
  * point too: a repeat of a finished call answers its `200` from what its steps stored, each issue
  * as its step's write answered it, and a repeat that takes the key of a call that stopped runs
- * only the steps the point does not hold. Where a first answer was a comment or an issue message,
+ * only the steps the point does not hold; a repeat whose caller does not see its issue, or an issue
+ * its point names, is answered `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment
+ * or an issue message,
  * eight routes answer its repeat with that post read afresh, under the first answer's status: a
  * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
  * reply to a comment or a message. Any other stored success is not replayed once it holds a
@@ -276,9 +282,11 @@ export const IDEMPOTENCY_KEY_REUSED = "KEY_REUSED";
  *  nothing was run, and the client asks again under the same key. */
 export const IDEMPOTENCY_KEY_IN_FLIGHT = "KEY_IN_FLIGHT";
 
-/** The code of the `409` for a key whose write landed before its answer was lost: Dispatch will
- *  not run it again and has no answer to replay. The write is done; a client treats it as landed
- *  and reads again what it wrote (the event feed carries the change too). */
+/** The code of the `409` for a key whose write landed and whose answer Dispatch does not give this
+ *  caller: the answer was lost before Dispatch stored it, or the object the write names is hidden
+ *  from the caller or deleted since, on the recovery routes too. Dispatch will not run it again.
+ *  The write is done; a client treats it as landed and reads again what it wrote, through the
+ *  routes that hold it to what it sees (the event feed carries the change too). */
 export const IDEMPOTENCY_KEY_COMMITTED = "KEY_COMMITTED";
 
 /** The code of the `400` for an `IDEMPOTENCY_KEY_HEADER` that does not match

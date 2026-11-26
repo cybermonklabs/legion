@@ -359,7 +359,7 @@ func main() {
 		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", serverURL)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := processContext()
 	defer cancel()
 	// The profiler binds first, before NATS, migrations and the rest of boot, so a slow or hung
 	// boot can be profiled and a port clash refuses the boot before anything connects.
@@ -1421,6 +1421,24 @@ func defaultDataDir() (string, error) {
 func stopIntakesOnExit(cancel context.CancelFunc, waitIntakes func()) {
 	cancel()
 	waitIntakes()
+}
+
+// processContext is the process's lifetime context and its stop. The context ends on SIGINT or
+// SIGTERM, and every stop of the process - the signal, serveUntilStopped's own cancel on a serve
+// failure or a lost registration, exitAfterIntakes and stopIntakesOnExit - ends it with
+// docs.ErrServerStopping as its cause (context.Cause). A reader of the cause can so tell the
+// process stopping from any other cancellation: the document sockets' access re-check
+// (docs.Service.recheckAccess) revokes nothing then, since shutdown closes every socket with its
+// own going-away code. The stop also releases the signal handlers.
+func processContext() (context.Context, context.CancelFunc) {
+	signalled, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancelCause := context.WithCancelCause(context.Background())
+	stop := func() { cancelCause(docs.ErrServerStopping) }
+	context.AfterFunc(signalled, stop)
+	return ctx, func() {
+		stop()
+		stopSignals()
+	}
 }
 
 // defaultWebDistDir resolves the SPA build directory: configured (DISPATCH_WEB_DIST) when it is

@@ -301,9 +301,10 @@ export interface WriteBounds extends RequestBounds {
  *  no copy of the first answer, which was too large for it to keep or holds a comment or an issue
  *  message that was deleted, or a document version name a delete replaced, so the repeat came
  *  back with the first one's status and no resource
- *  (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it, so the repeat
- *  came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller reads what it
- *  wrote again, and shows no refusal. */
+ *  (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the repeat came back `409 KEY_COMMITTED` (`isKeyCommitted`):
+ *  the answer was lost before Dispatch stored it, or the object the write names is hidden from the
+ *  caller or deleted since. The write landed; its caller reads what it wrote again, and shows no
+ *  refusal. */
 export class AnswerNotKeptError extends Error {
   readonly code: IdempotencyLandedCode;
   readonly status: number;
@@ -324,9 +325,10 @@ export function isKeyInFlight(error: unknown): error is ApiError {
   );
 }
 
-/** Whether Dispatch made this write's key's write already, and lost the answer before it stored
- *  it (`409 KEY_COMMITTED`, even after a 5xx the first attempt was answered): the write landed, and
- *  Dispatch will not run it again. */
+/** Whether Dispatch made this write's key's write already and gives no answer for it to this caller
+ *  (`409 KEY_COMMITTED`, even after a 5xx the first attempt was answered): the answer was lost before
+ *  Dispatch stored it, or the object the write names is hidden from the caller or deleted since, on
+ *  the recovery routes too. The write landed, and Dispatch will not run it again. */
 export function isKeyCommitted(error: unknown): error is ApiError {
   return (
     error instanceof ApiError && error.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED

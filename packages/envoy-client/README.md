@@ -956,8 +956,9 @@ write that ends with no answer at all names the request: its last attempt cut of
 attempt was out or after one that may have reached Dispatch ("had no definitive answer when its
 deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
-`status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
-not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
+`status`): `409 KEY_COMMITTED`, a write that landed whose answer Dispatch does not give this caller
+(the answer was lost, or the object the write names is hidden from the caller or deleted since),
+which Dispatch will not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
 comment or a message that was deleted, or a document version name a delete replaced
 (`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
