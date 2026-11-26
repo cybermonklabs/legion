@@ -2672,6 +2672,62 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 	}
 }
 
+// TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule (dispatch://INFRA-978, D9):
+// ALPHA reads two source repositories, acme/one under the production job `one / release` and
+// acme/two under `two / release`, and each holds a run of its own job and a run of the other's:
+// acme/one's 1001 and acme/two's 1002 are deploys by their own repository's rule, and acme/two's
+// 1003 (one's job) and acme/one's 1004 (two's job) are none. A subscriber's first answer of the
+// `measures` view counts two successful deploys and its first answer of the `pipeline` view holds a
+// production card of both repositories' jobs with two deploys, each the body its route answers, as
+// the routes count them (TestTheDeliveryRoutesReadEachSourceRepositoryUnderItsOwnRule).
+func TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "ALPHA")
+	saveProjectRules(t, rig.database, "ALPHA", deployRule("acme/one", "one / release"), deployRule("acme/two", "two / release"))
+	seedSourceRun(t, rig.database, "acme/one", 1001, 1, "one / release")
+	seedSourceRun(t, rig.database, "acme/two", 1002, 2, "two / release")
+	seedSourceRun(t, rig.database, "acme/two", 1003, 3, "one / release")
+	seedSourceRun(t, rig.database, "acme/one", 1004, 4, "two / release")
+	from, to := sourcesDay, sourcesDay.AddDate(0, 0, 1)
+	at := sourcesDay.Add(20 * time.Hour)
+
+	conn := newFakeLiveConn()
+	bodies := map[string]json.RawMessage{}
+	for i, test := range []struct {
+		sub, kind, query string
+		view             DeliveryLiveView
+	}{
+		{"measures", deliveryLiveMeasures, "", measuresRange(from, to, "")},
+		{"pipeline", deliveryLivePipeline, "at=" + at.Format(time.RFC3339Nano), livePipelineView(&at)},
+	} {
+		rig.hub.Subscribe(conn, subscribeFrame(test.sub, test.view))
+		snapshot := conn.snapshot(t, test.sub)
+		if i > 0 {
+			// The first view's read set the hub's verdict silently; every later view's snapshot is
+			// followed by it.
+			conn.freshness(t, "the verdict after the snapshot of "+test.sub)
+		}
+		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, windowTarget(t, test.kind, snapshot.Body, test.query)))
+		bodies[test.sub] = snapshot.Body
+	}
+
+	var measured deliveryMeasuresResponse
+	if err := json.Unmarshal(bodies["measures"], &measured); err != nil {
+		t.Fatalf("decode the measures snapshot: %v", err)
+	}
+	if deploys := measured.Measures.DeployFrequency.SuccessfulDeploys; deploys != 2 {
+		t.Errorf("the hub's measures view counts %d successful deploys, want 2: acme/one's 1001 and acme/two's 1002, each by its own rule", deploys)
+	}
+	var pipeline deliveryPipelineResponse
+	if err := json.Unmarshal(bodies["pipeline"], &pipeline); err != nil {
+		t.Fatalf("decode the pipeline snapshot: %v", err)
+	}
+	if card := pipeline.ProductionApply; card.Job != "one / release or two / release" || card.Total.N != 2 {
+		t.Errorf("the hub's pipeline view holds the production card %+v, want both repositories' jobs and their two deploys", card)
+	}
+}
+
 func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

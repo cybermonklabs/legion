@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"math"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -123,44 +125,79 @@ func sameFigure(t *testing.T, name string, got, want *float64) {
 }
 
 // TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes (k11, decision 3): over the history's two
-// days, the delivery measures route answers the three failure measures FAIL's eval routes answer,
-// from the same stored rows through the same folds: change fail rate 2 of 3, recovery 180 minutes
-// with one failure not restored, rework 1 of 3. A window that starts before failures_measured_since
-// reads null in both; and with a second delivery-on project the deployment-wide route answers null,
-// while FAIL's evals still answer.
+// days, the old delivery routes answer the three failure measures FAIL's eval routes answer, from
+// the same stored rows through the same folds: change fail rate 2 of 3, recovery 180 minutes with
+// one failure not restored, rework 1 of 3. Each of the three surfaces that still answer them is
+// held to it: the measures route, the `measures` of the timeline route, and the live hub's
+// `measures` view, which a subscriber's first answer carries. A window that starts before
+// failures_measured_since reads null in all of them and in the evals; and with a second
+// delivery-on project the deployment-wide routes and the hub answer null, while FAIL's evals still
+// answer.
 func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedFailureHistory(t, database)
 	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	refreshEvalDays(t, registry, database, failuresNow)
 
+	// The three surfaces' measures: the measures route's, the timeline route's measures object and
+	// the first snapshot a subscriber of the hub's measures view is sent, of one window.
+	measuresRoute := func(from, to int) measures.Result {
+		t.Helper()
+		return getDeliveryMeasures(t, handler, failureWindowQuery(from, to)).Measures
+	}
+	timelineRoute := func(from, to int) measures.Result {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/timeline?"+failureWindowQuery(from, to), nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET timeline?%s: status=%d body=%s", failureWindowQuery(from, to), response.Code, response.Body.String())
+		}
+		return decodeBody[deliveryTimelineWithMeasures](t, response).Measures.Measures
+	}
+	hubView := func(hub *hubRig, from, to int) measures.Result {
+		t.Helper()
+		conn := newFakeLiveConn()
+		hub.hub.Subscribe(conn, subscribeFrame("m", measuresRange(failuresDay.AddDate(0, 0, from), failuresDay.AddDate(0, 0, to), "")))
+		var body deliveryMeasuresResponse
+		if err := json.Unmarshal(conn.snapshot(t, "m").Body, &body); err != nil {
+			t.Fatalf("decode the hub's measures snapshot: %v", err)
+		}
+		return body.Measures
+	}
+
 	query := failureWindowQuery(0, 2)
-	got := getDeliveryMeasures(t, handler, query).Measures
 	want := evalStatistics(t, handler, query)
 	cfr, recovery, rework := want[evals.SlugChangeFailRate].Window, want[evals.SlugFailedDeployRecovery].Window, want[evals.SlugDeploymentReworkRate].Window
-	if got.ChangeFailureRate == nil || got.TimeToRestore == nil || got.DeploymentReworkRate == nil {
-		t.Fatalf("the measures route answers change fail rate %v, recovery %v and rework rate %v, want a value each",
-			got.ChangeFailureRate, got.TimeToRestore, got.DeploymentReworkRate)
-	}
-	sameFigure(t, "change fail rate", got.ChangeFailureRate.Rate, cfr["rate"])
-	sameFigure(t, "failed deploys", new(float64(got.ChangeFailureRate.Failed)), cfr["failed"])
-	sameFigure(t, "deploys", new(float64(got.ChangeFailureRate.Total)), cfr["total"])
-	sameFigure(t, "recovery median", got.TimeToRestore.MedianMinutes, recovery["median"])
-	sameFigure(t, "restores timed", new(float64(got.TimeToRestore.N)), recovery["n"])
-	sameFigure(t, "failures not restored", new(float64(got.TimeToRestore.NotRestored)), recovery["not_restored"])
-	sameFigure(t, "rework rate", got.DeploymentReworkRate.Rate, rework["rate"])
-	sameFigure(t, "restoring deploys", new(float64(got.DeploymentReworkRate.Restoring)), rework["restoring"])
-	if got.ChangeFailureRate.Failed != 2 || got.ChangeFailureRate.Total != 3 || got.TimeToRestore.MedianMinutes == nil ||
-		*got.TimeToRestore.MedianMinutes != 180 || got.TimeToRestore.NotRestored != 1 || got.DeploymentReworkRate.Restoring != 1 {
-		t.Errorf("the measures route answers change fail rate %+v, recovery %+v and rework rate %+v; want 2 of 3, 180 minutes with 1 not restored, 1 of 3",
-			*got.ChangeFailureRate, *got.TimeToRestore, *got.DeploymentReworkRate)
+	oneProject := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
+	for surface, got := range map[string]measures.Result{
+		"the measures route": measuresRoute(0, 2), "the timeline route's measures": timelineRoute(0, 2), "the hub's measures view": hubView(oneProject, 0, 2),
+	} {
+		if got.ChangeFailureRate == nil || got.TimeToRestore == nil || got.DeploymentReworkRate == nil {
+			t.Fatalf("%s answers change fail rate %v, recovery %v and rework rate %v, want a value each",
+				surface, got.ChangeFailureRate, got.TimeToRestore, got.DeploymentReworkRate)
+		}
+		sameFigure(t, surface+": change fail rate", got.ChangeFailureRate.Rate, cfr["rate"])
+		sameFigure(t, surface+": failed deploys", new(float64(got.ChangeFailureRate.Failed)), cfr["failed"])
+		sameFigure(t, surface+": deploys", new(float64(got.ChangeFailureRate.Total)), cfr["total"])
+		sameFigure(t, surface+": recovery median", got.TimeToRestore.MedianMinutes, recovery["median"])
+		sameFigure(t, surface+": restores timed", new(float64(got.TimeToRestore.N)), recovery["n"])
+		sameFigure(t, surface+": failures not restored", new(float64(got.TimeToRestore.NotRestored)), recovery["not_restored"])
+		sameFigure(t, surface+": rework rate", got.DeploymentReworkRate.Rate, rework["rate"])
+		sameFigure(t, surface+": restoring deploys", new(float64(got.DeploymentReworkRate.Restoring)), rework["restoring"])
+		if got.ChangeFailureRate.Failed != 2 || got.ChangeFailureRate.Total != 3 || got.TimeToRestore.MedianMinutes == nil ||
+			*got.TimeToRestore.MedianMinutes != 180 || got.TimeToRestore.NotRestored != 1 || got.DeploymentReworkRate.Restoring != 1 {
+			t.Errorf("%s answers change fail rate %+v, recovery %+v and rework rate %+v; want 2 of 3, 180 minutes with 1 not restored, 1 of 3",
+				surface, *got.ChangeFailureRate, *got.TimeToRestore, *got.DeploymentReworkRate)
+		}
 	}
 
 	early := failureWindowQuery(-1, 2)
-	before := getDeliveryMeasures(t, handler, early).Measures
-	if before.ChangeFailureRate != nil || before.TimeToRestore != nil || before.DeploymentReworkRate != nil {
-		t.Errorf("a window from the day before failures_measured_since answers %v, %v and %v on the measures route, want null each",
-			before.ChangeFailureRate, before.TimeToRestore, before.DeploymentReworkRate)
+	for surface, before := range map[string]measures.Result{
+		"the measures route": measuresRoute(-1, 2), "the timeline route's measures": timelineRoute(-1, 2), "the hub's measures view": hubView(oneProject, -1, 2),
+	} {
+		if before.ChangeFailureRate != nil || before.TimeToRestore != nil || before.DeploymentReworkRate != nil {
+			t.Errorf("a window from the day before failures_measured_since answers %v, %v and %v on %s, want null each",
+				before.ChangeFailureRate, before.TimeToRestore, before.DeploymentReworkRate, surface)
+		}
 	}
 	if rate := evalStatistics(t, handler, early)[evals.SlugChangeFailRate].Window["rate"]; rate != nil {
 		t.Errorf("a window from the day before failures_measured_since reads change fail rate %g on the eval route, want no data", *rate)
@@ -170,10 +207,16 @@ func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 		Project: "MORE", Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
 		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
 	})
-	two := getDeliveryMeasures(t, handler, query).Measures
-	if two.ChangeFailureRate != nil || two.TimeToRestore != nil || two.DeploymentReworkRate != nil {
-		t.Errorf("with two delivery-on projects the measures route answers %v, %v and %v, want null each",
-			two.ChangeFailureRate, two.TimeToRestore, two.DeploymentReworkRate)
+	// The hub that answers the two-project window is one that starts after the second project's
+	// settings are saved, so its first read is of the settings as they stand.
+	twoProjects := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
+	for surface, two := range map[string]measures.Result{
+		"the measures route": measuresRoute(0, 2), "the timeline route's measures": timelineRoute(0, 2), "the hub's measures view": hubView(twoProjects, 0, 2),
+	} {
+		if two.ChangeFailureRate != nil || two.TimeToRestore != nil || two.DeploymentReworkRate != nil {
+			t.Errorf("with two delivery-on projects %s answers %v, %v and %v, want null each",
+				surface, two.ChangeFailureRate, two.TimeToRestore, two.DeploymentReworkRate)
+		}
 	}
 	if rate := evalStatistics(t, handler, query)[evals.SlugChangeFailRate].Window["rate"]; rate == nil {
 		t.Error("with two delivery-on projects FAIL's change fail rate reads no data, want its value")

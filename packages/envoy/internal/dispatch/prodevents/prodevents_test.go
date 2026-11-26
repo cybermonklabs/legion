@@ -357,3 +357,150 @@ func TestACommitBlamesTheFirstDeployThatShippedIt(t *testing.T) {
 		t.Fatalf("run 1 answered %v (ok %v, err %v), want %s", found.ID, ok, err, first.ID)
 	}
 }
+
+// underTheChangeLogLock runs write, one of the record's writers, while another transaction holds
+// the delivery change log's lock (pg_advisory_xact_lock(6900, 0), which the drain takes and no
+// writer of the record does), and holds that the write committed all the same: landed answers the
+// id of the row the write made or moved once it stands as the write leaves it, polled for 30 s
+// while the lock is held; that row's change rows are then waiting in delivery_changes_pending and
+// none of them went into the log; and once the lock is released the write returns and every one of
+// those change rows is in the log, none left pending (dispatch://INFRA-978, D8 and R13).
+func underTheChangeLogLock(t *testing.T, ctx context.Context, pool *store.Pool, what string, write func() error, landed func() (string, bool)) {
+	t.Helper()
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("%s: begin the gate: %v", what, err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
+		t.Fatalf("%s: take the change log's lock: %v", what, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- write() }()
+
+	var id string
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		if got, ok := landed(); ok {
+			id = got
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("%s: the write ended (%v) with its row not stored while the change log's lock was held", what, err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: the write did not commit in 30 s while another transaction held the change log's lock", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	changeRows := func(table string) int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `select count(*) from `+table+` where kind = 'production_events' and ref = $1`, id).Scan(&count); err != nil {
+			t.Fatalf("%s: count the change rows of %s in %s: %v", what, id, table, err)
+		}
+		return count
+	}
+	pending, logged := changeRows("delivery_changes_pending"), changeRows("delivery_changes")
+	if pending == 0 {
+		t.Fatalf("%s: with the lock held, row %s has no change row waiting in the outbox, want its changes there", what, id)
+	}
+	t.Logf("%s: row %s committed with the change log's lock held, its %d change rows waiting in the outbox, %d already in the log", what, id, pending, logged)
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("%s: release the change log's lock: %v", what, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s: the write: %v", what, err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s: the write did not return within 30 s of the lock's release", what)
+	}
+	if left, now := changeRows("delivery_changes_pending"), changeRows("delivery_changes"); left != 0 || now-logged != pending {
+		t.Errorf("%s: once the lock is free, row %s has %d change rows pending and %d more in the log, want none pending and its %d moved", what, id, left, now-logged, pending)
+	}
+}
+
+// TestTheRoutesAndTheSignalsWritesTakeNoChangeLogLock: every write of the record the routes and the
+// automatic signals make commits while another transaction holds the delivery change log's lock,
+// each with its change rows waiting in delivery_changes_pending until the drain after the lock is
+// released, as TestTheDeployRowWriteTakesNoChangeLogLock holds for the adapter's deploy row. The
+// routes' writes: a POST of a deploy and of a failure, a person's flag, and each state of PUT
+// .../state (a reject, a re-count and a restore). The signals' row writes: a check_fail, a
+// revert (whose deploy restored it) and an incident_issue. This package cannot call the signals'
+// passes, which import it; TestTheSignalsWritesTakeNoChangeLogLock, in prodevents/signals, holds
+// those and the handler's own write of a check_fail.
+func TestTheRoutesAndTheSignalsWritesTakeNoChangeLogLock(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	blamed, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restorer, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(40)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowOf := func(ref string) func() (string, bool) {
+		return func() (string, bool) {
+			var id string
+			err := pool.QueryRow(ctx, `select id::text from production_events where project_key = 'ALPHA' and source_ref = $1`, ref).Scan(&id)
+			return id, err == nil
+		}
+	}
+	writes := func(event Event) func() error {
+		return func() error {
+			_, _, err := Write(ctx, pool, event)
+			return err
+		}
+	}
+
+	posted := deploy("ALPHA", "ci:deploy-1", at(20))
+	posted.Source = SourceAPI
+	underTheChangeLogLock(t, ctx, pool, "a posted deploy", writes(posted), rowOf("ci:deploy-1"))
+	underTheChangeLogLock(t, ctx, pool, "a posted failure", writes(failure("ALPHA", "alerts:1", blamed.ID, SignalAPI)), rowOf("alerts:1"))
+	flag := failure("ALPHA", PersonSourceRef(blamed.ID, "alice"), blamed.ID, SignalPerson)
+	flag.Source, flag.Actor, flag.Note = SourcePerson, person, "The deploy broke the sign-in page."
+	underTheChangeLogLock(t, ctx, pool, "a person's flag", writes(flag), rowOf(flag.SourceRef))
+
+	failed, ok := rowOf("alerts:1")()
+	if !ok {
+		t.Fatal("the posted failure is not stored")
+	}
+	stateIs := func(predicate string) func() (string, bool) {
+		return func() (string, bool) {
+			var held bool
+			err := pool.QueryRow(ctx, `select exists (select 1 from production_events where id = $1 and `+predicate+`)`, failed).Scan(&held)
+			return failed, err == nil && held
+		}
+	}
+	for _, write := range []struct {
+		what   string
+		change StateChange
+		moved  string
+	}{
+		{"a reject", StateChange{State: StateRejected, Reason: "a staging alert", Actor: person, At: *at(40)}, `state = 'rejected'`},
+		{"a re-count", StateChange{State: StateCounted, Reason: "it was real", Actor: person, At: *at(41)}, `state = 'counted' and state_at is not null`},
+		{"a restore", StateChange{State: StateRestored, Actor: person, At: *at(50)}, `restored_at is not null`},
+	} {
+		underTheChangeLogLock(t, ctx, pool, write.what, func() error {
+			_, err := SetState(ctx, pool, "ALPHA", failed, write.change)
+			return err
+		}, stateIs(write.moved))
+	}
+
+	check := failure("ALPHA", "check:doc/c1@"+blamed.ID, blamed.ID, SignalCheckFail)
+	check.Source, check.PullRequests = SourceCheckResults, []string{"acme/widgets#8"}
+	underTheChangeLogLock(t, ctx, pool, "a check_fail", writes(check), rowOf(check.SourceRef))
+	revert := failure("ALPHA", "revert:acme/widgets#9", blamed.ID, SignalRevert)
+	revert.Source, revert.PullRequests = SourceReverts, []string{"acme/widgets#5"}
+	revert.RestoredAt, revert.RestoredBy, revert.RestoredByDeploy = at(40), &writer, &restorer.ID
+	underTheChangeLogLock(t, ctx, pool, "a revert restored by its deploy", writes(revert), rowOf(revert.SourceRef))
+	incident := failure("ALPHA", "incident:ALPHA-10", blamed.ID, SignalIncidentIssue)
+	incident.Source = SourceIncidentLabel
+	underTheChangeLogLock(t, ctx, pool, "an incident_issue", writes(incident), rowOf(incident.SourceRef))
+}

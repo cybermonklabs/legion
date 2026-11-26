@@ -1073,9 +1073,14 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 // acme/alpha-app's source key alone, not of its plain owner key too, which ALPHA reads by its
 // default, so ALPHA counts it once, not once for its source and once more for the default
 // repository. ALPHA's read counts each among its deploys once and OMEGA's neither, and each reaches
-// ALPHA through its repository: its via_repository is read through the key (viaAsRead). Red under
-// the rule that counts such a deploy in its source's project's own rows, which a project reads
-// through no repository: ALPHA reads 0 of them through a repository.
+// ALPHA through its repository: its via_repository is read through the key (viaAsRead). Deploy-run
+// success counts every deploy run of a repository a source reads the same way, a run that reached
+// production and one that did not alike (acme/alpha-ops' 2002, which ALPHA's rule for it calls no
+// deploy), for the project whose source found it and for no other: ALPHA's read holds acme/alpha-app's
+// 1 of 1 and acme/alpha-ops' 1 of 2, OMEGA's acme/omega-app's 1 of 1, and the runs of acme/alpha-next,
+// which no source reads, count for neither. Red under the rule that counts such a deploy in its
+// source's project's own rows, which a project reads through no repository: ALPHA reads 0 of them
+// through a repository.
 func TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
@@ -1102,5 +1107,93 @@ func TestADeployThatShipsNoPullRequestCountsForItsSourcesProjectAlone(t *testing
 	}
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 2, via: 2}) {
 		t.Errorf("ALPHA's deploy-frequency counts %d deploys, %d through a repository; want 2 and 2", got.n, got.via)
+	}
+	// A deploy run's success is read for the project whose source found it alone, whether or not
+	// the run reached production: each project's non-empty rows of deploy-run-success, by repository.
+	runSuccess := func(project string) []string {
+		t.Helper()
+		var held []string
+		for _, fact := range r.readFacts(t, project) {
+			if strings.HasPrefix(fact, SlugDeployRunSuccess+" runs ") && !strings.Contains(fact, ": n=0 ") {
+				held = append(held, fact)
+			}
+		}
+		return held
+	}
+	for project, want := range map[string][]string{
+		"ALPHA": {
+			"deploy-run-success runs all: n=1 via=1 share=1/1", "deploy-run-success runs acme/alpha-app: n=1 via=1 share=1/1",
+			"deploy-run-success runs all: n=2 via=2 share=1/2", "deploy-run-success runs acme/alpha-ops: n=2 via=2 share=1/2",
+		},
+		"OMEGA": {"deploy-run-success runs all: n=1 via=1 share=1/1", "deploy-run-success runs acme/omega-app: n=1 via=1 share=1/1"},
+	} {
+		slices.Sort(want)
+		if got := runSuccess(project); !slices.Equal(got, want) {
+			t.Errorf("%s's deploy-run-success rows:\n%s\nwant:\n%s", project, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+}
+
+// TestACIJobWithNoPullRequestAndAPushRunThatIsNoDeployCountForEachDefaultRepositoryProject
+// (dispatch://INFRA-978, R12 and A8): a CI job with no pull request, and a push run on main that is
+// no deploy run of its day, count under their repository's plain owner key, which each project
+// whose default repository is that repository reads and no other does. A PR-checks run that names
+// no pull request of acme/alpha, whose default repository is ALPHA's and BETA's (ALPHA's one source
+// reads it, BETA has none), is one of pr-ci's runs for each of the two and for GAMMA, whose default
+// is acme/zeta, none; a push run absent from its day's deploys counts under that key too, where one
+// a deploy holds counts where its deploy does (here its source's key).
+func TestACIJobWithNoPullRequestAndAPushRunThatIsNoDeployCountForEachDefaultRepositoryProject(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	plain := OwnerKey(alphaRepo, nil, nil)
+
+	// The push run, in the attribution itself: no deploy of the day holds run 601, and run 602 is
+	// the one deploy's.
+	a := attribution{lists: map[string]attributionList{}}
+	deploys := []dayDeploy{{member: RunMember(alphaRepo, 602), projects: []counted{{project: sourceKey(alphaRepo), via: true}}}}
+	pushes := a.pushRuns([]delivery.DeliveryRun{
+		{Repo: alphaRepo, RunID: 601, Kind: delivery.DeliveryRunKindDeploy}, {Repo: alphaRepo, RunID: 602, Kind: delivery.DeliveryRunKindDeploy},
+	}, deploys)
+	if got := pushes[0].projects; !slices.Equal(got, []counted{{project: plain, via: true}}) {
+		t.Errorf("a push run no deploy of the day holds counts for %v, want its repository's plain owner key %s", got, plain)
+	}
+	if got := pushes[1].projects; !slices.Equal(got, deploys[0].projects) {
+		t.Errorf("a push run a deploy holds counts for %v, want where its deploy does, %v", got, deploys[0].projects)
+	}
+
+	// A CI job with no pull request, through the refresher's whole pass.
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('ALPHA', 'Alpha', 'alice', 1, $1), ('BETA', 'Beta', 'alice', 1, $1), ('GAMMA', 'Gamma', 'alice', 1, $2)`, alphaRepo, zetaRepo)
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(ruleOfJob("production / apply"), nil))
+	created := sourcesDay.Add(12 * time.Hour)
+	started, completed := created.Add(time.Minute), created.Add(20*time.Minute)
+	if err := delivery.UpsertRun(ctx, pool, delivery.DeliveryRun{
+		Repo: alphaRepo, RunID: 501, Kind: delivery.DeliveryRunKindPRChecks, HeadSHA: fmt.Sprintf("%040d", 501),
+		HeadCommitAt: created.Add(-time.Minute), StartedAt: started, CreatedAt: new(created), CompletedAt: &completed,
+		Conclusion: new(delivery.DeliveryRunConclusionSuccess), URL: "https://github.com/acme/alpha/actions/runs/501",
+		HeadBranch: new("feature/no-pull-request"), Event: new("pull_request"),
+	}); err != nil {
+		t.Fatalf("write the PR-checks run that names no pull request: %v", err)
+	}
+	job := delivery.DeliveryRunJob{Name: "lint", StartedAt: new(started.Add(time.Minute)), CompletedAt: new(completed.Add(-time.Minute)),
+		Conclusion: new(delivery.DeliveryJobConclusionSuccess)}
+	if err := delivery.UpsertRunJobs(ctx, pool, alphaRepo, 501, []delivery.DeliveryRunJob{job}, true); err != nil {
+		t.Fatalf("write the job of the PR-checks run that names no pull request: %v", err)
+	}
+	r.settle(t)
+
+	readers, err := readersOf(ctx, pool, []string{plain})
+	if err != nil {
+		t.Fatalf("read the readers of %s: %v", plain, err)
+	}
+	if got := slices.Sorted(slices.Values(readers[plain])); !slices.Equal(got, []string{"ALPHA", "BETA"}) {
+		t.Errorf("%s is read by %v, want each project whose default repository is %s, ALPHA and BETA", plain, got, alphaRepo)
+	}
+	for project, want := range map[string]defaultTally{"ALPHA": {n: 1, via: 1}, "BETA": {n: 1, via: 1}, "GAMMA": {}} {
+		tallies, _ := r.readTallies(t, project, map[string]string{SlugPRCI: measures.SeriesMinutes}, sourcesDay)
+		if got := tallies[SlugPRCI]; got != want {
+			t.Errorf("%s's pr-ci on %s counts %d runs, %d through a repository; want %d and %d",
+				project, sourcesDay.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+		}
 	}
 }

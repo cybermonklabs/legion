@@ -1119,6 +1119,64 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 	expectTruth(t, "after the posted deploy timing pull requests", r.storedFigures(t), r.truthFigures(t))
 }
 
+// TestAPostedDeployNamingAnotherProjectsPullRequestCountsInItsRoutesProjectAlone (dispatch://INFRA-978,
+// R10, R12 and A8): a deploy posted to OMEGA's route that names acme/alpha-app#9, a pull request
+// of ALPHA's issue that no GitHub deploy ships, counts in OMEGA's deploy-frequency and in no other
+// project's, because the post's token writes OMEGA alone; and the pull request's merge-to-production
+// minutes, from its merge at 16:00 to the post's finish at 17:00, count in OMEGA's rows of its
+// events repository and in none of ALPHA's, whose rows hold no minutes of it.
+func TestAPostedDeployNamingAnotherProjectsPullRequestCountsInItsRoutesProjectAlone(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+	r.exec(t, "ALPHA's issue", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		alphaApp, sourcesDay.AddDate(0, 0, -1))
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: alphaApp, Number: 9, Title: "ALPHA-1: change 9", URL: fmt.Sprintf("https://github.com/%s/pull/9", alphaApp), Author: "dev-ana",
+		CreatedAt: new(at(15)), MergedAt: new(at(16)), IssueKey: new("ALPHA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#9: %v", alphaApp, err)
+	}
+	posted := r.post(t, "OMEGA", "release-9", at(17), "acme/alpha-app#9")
+	r.settle(t)
+
+	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 2, via: 1}} {
+		if got := r.deploysOn(t, project, sourcesDay); got != want {
+			t.Errorf("%s's deploy-frequency on %s counts %d deploys, %d through a repository; want %d and %d",
+				project, sourcesDay.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+		}
+	}
+	if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key <> 'OMEGA'`, PostedMember(posted.ID)); n != 0 {
+		t.Errorf("the posted deploy is counted in %d projects or keys besides OMEGA, want none", n)
+	}
+	for _, member := range []string{PostedMember(posted.ID), PullRequestMember(alphaApp, 9)} {
+		if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2 and project_key = 'OMEGA'`,
+			EventsRepo("OMEGA"), member); n != 1 {
+			t.Errorf("OMEGA's events repository counts %s %d times, want once", member, n)
+		}
+		if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2 and project_key <> 'OMEGA'`,
+			EventsRepo("OMEGA"), member); n != 0 {
+			t.Errorf("OMEGA's events repository counts %s for %d projects or keys besides OMEGA, want none", member, n)
+		}
+	}
+	var minutes []float64
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select coalesce(samples, '{}') from eval_days
+		where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and repo = '' and day = $3
+	`, EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA"), sourcesDay).Scan(&minutes); err != nil {
+		t.Fatalf("read OMEGA's merge-to-production of its events repository: %v", err)
+	}
+	if !slices.Equal(minutes, []float64{60}) {
+		t.Errorf("OMEGA's posted merge-to-production times %v, want acme/alpha-app#9's 60 minutes alone", minutes)
+	}
+	if n := r.count(t, `select count(*) from eval_days where project_key = 'ALPHA' and eval_id = $1 and series = 'minutes' and n > 0`,
+		EvalID("ALPHA", SlugMergeToProduction)); n != 0 {
+		t.Errorf("ALPHA holds %d merge-to-production rows with minutes, want none: the post counts for OMEGA's route alone", n)
+	}
+	expectTruth(t, "after a deploy posted naming another project's pull request", r.storedFigures(t), r.truthFigures(t))
+}
+
 // TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay: once the history has settled with
 // one posted deploy of OMEGA's, a deploy posted later that finished today, a day already built,
 // rewrites that day of OMEGA through its production_events change (pageWork.addChange), and today's
