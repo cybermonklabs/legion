@@ -523,10 +523,12 @@ type Notice struct {
 	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
 	// parked-decision controller notice that relays one of those two carries it as the notice did,
 	// and the publish of a relayed changes request asks again of it whether the review stands (the
-	// daemon's controllerNotice). Every other kind carries none.
+	// daemon's controllerNotice). A basis-changes-requested notice carries it of the person's
+	// changes request on the ancestor's document it reports, which its delivery asks again as it
+	// asks a design-changes-requested notice (ChangesRequest). Every other kind carries none.
 	Review EventMark `json:"review,omitzero"`
 	// Artifact is the Dispatch artifact id of the document that review is of, carried by the same
-	// three: a step's gate can move to another document while its reference (Ref) stays the
+	// kinds: a step's gate can move to another document while its reference (Ref) stays the
 	// step's, and the person's approval of the new document answers no review of the old one
 	// (workflow.SupersedingApproval). A notice an earlier release queued carries none.
 	Artifact string `json:"artifact,omitempty"`
@@ -2813,9 +2815,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !spec && !basisNoticeKind(value.Kind) && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does, and a basis notice's", value.Kind)
 		}
-		if carriesReview(value) && !designReview(decision) {
+		// A person's changes request on an ancestor's document is no spec decision, and its notice
+		// carries the review as a design-changes-requested notice does, since the outbox asks both
+		// again (changesRequestKind).
+		if carriesReview(value) && !designReview(decision) && !changesRequestKind(value.Kind) {
 			return fmt.Errorf("a %s notice carries a review's mark or document; "+
-				"only a design-approved or design-changes-requested notice does", value.Kind)
+				"only a design-approved or design-changes-requested notice does, and a basis-changes-requested one", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
@@ -3323,7 +3328,9 @@ func validNoticeKind(kind NoticeKind) bool {
 // Notice.Actor) as a spec decision's notice does, and which are no spec decision: SpecDecision
 // names none of them, so the backlog relay passes none of them on (a root back from the backlog
 // starts a new generation with no gate, and its architect reads the ancestor again when it
-// registers).
+// registers). basis-changes-requested carries the review's mark and document as well
+// (Notice.Review, Notice.Artifact), as the person's changes request the outbox asks again
+// (ChangesRequest).
 var basisNoticeKinds = []NoticeKind{"basis-ended", "basis-changes-requested", "resting-root"}
 
 // basisNoticeKind says whether kind is one of basisNoticeKinds.

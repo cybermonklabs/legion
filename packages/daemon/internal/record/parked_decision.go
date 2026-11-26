@@ -181,10 +181,10 @@ type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecis
 	queued []QueuedChanges) error
 
 // QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
-// included: a design-changes-requested notice for an architect, or the parked-decision controller
-// notice that relays one (Kind, the row's kind, says which). Row is the row's id, Issue the issue
-// the request was made on (the row's), and Notice the decision the row carries, a relay read as
-// the Notice it is.
+// included: a design-changes-requested or basis-changes-requested notice for an architect, or the
+// parked-decision controller notice that relays a changes request (Kind, the row's kind, says
+// which). Row is the row's id, Issue the row's issue, whose gates the request is asked of, and
+// Notice the decision the row carries, a relay read as the Notice it is.
 type QueuedChanges struct {
 	Row    int64
 	Kind   OutboxKind

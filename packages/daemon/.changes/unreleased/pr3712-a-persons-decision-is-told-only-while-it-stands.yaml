@@ -4,30 +4,32 @@ body: |-
   function decides whether a recorded decision still stands, and every task and notice about one
   asks it: the kept-decision relay, a catch-up at the moment it is delivered, and the resume task,
   which is now written when it is sent. A queued changes request is asked again when it is delivered
-  to the architect, and again when its relay is published to the controller. A kept decision carries
-  Dispatch's own mark of the review, so it is ordered against the approval by Dispatch and not by
-  two clocks, and the only way to clear a generation first forgets a superseded decision and ends a
-  queued changes request the person's approval answered. The sweep's re-send of a lost resume start
-  is also rendered when it is sent. A changes request, queued to its architect, relayed to the
-  controller or kept, is asked at the version reviewed, Dispatch's mark of the review and the
-  document reviewed, so a kept request and its relay get one answer, and an approval of a document
-  the gate has moved to answers neither. The same function decides whether a person's approval
-  still stands: the approval a re-admission kept, a kept or relayed approval, the approval that
-  answered a root's wait, which its resume task names, and the news of an approved version each ask
-  it. An approval stands while the gate still holds that version of that document, or while the
-  step has no gate, as after a re-admission cleared it; so one a later changes request cleared is
-  no longer named, and the news is not told once the gate is gone. The resume task says the
-  approval that answered the wait still stands where only a newer version has closed the gate
-  since, and where it does not stand, it names the later approval or the changes request that
-  ended it, or the other document registered on its step since. The changes request that answered
-  the wait is asked of the document it reviewed too, so an approval of a document registered on
-  its step since does not answer it, and the resume says that the step holds that other document
-  now. The answer to a root's wait records the document, its step and any reviewed version as one
-  value. Store migration 20261112215432 adds `issues.awaiting_answered_artifact`,
-  `issues.awaiting_answered_step`, `issues.awaiting_answered_version` and
-  `issues.awaiting_answered_document_at`, which ties that value to its answer. The resume names
-  the answering document even if the step the resume speaks of is different or later holds
-  another document. An answer an earlier release wrote is asked as before. The kept
-  approval now records the document approved (store migration 20261122212816 adds
-  `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under
-  the daemon API contract entry 20261125181104.
+  to the architect, and again when its relay is published to the controller. The
+  `basis-changes-requested` notice that tells an ancestor's architect of a person's changes request
+  on the ancestor's document is asked the same way, when it is queued and when it is delivered, and
+  carries Dispatch's mark of the review and the document reviewed (`review`, `artifact`). A kept
+  decision carries Dispatch's own mark of the review, so it is ordered against the approval by
+  Dispatch and not by two clocks, and the only way to clear a generation first forgets a superseded
+  decision and ends a queued changes request the person's approval answered. The sweep's re-send of
+  a lost resume start is also rendered when it is sent. A changes request, queued to its architect,
+  relayed to the controller or kept, is asked at the version reviewed, Dispatch's mark of the review
+  and the document reviewed, so a kept request and its relay get one answer, and an approval of a
+  document the gate has moved to answers neither. The same function decides whether a person's
+  approval still stands: the approval a re-admission kept, a kept or relayed approval, the approval
+  that answered a root's wait, which its resume task names, and the news of an approved version each
+  ask it. An approval stands while the gate still holds that version of that document, or while the
+  step has no gate, as after a re-admission cleared it; so one a later changes request cleared is no
+  longer named, and the news is not told once the gate is gone. The resume task says the approval
+  that answered the wait still stands where only a newer version has closed the gate since, and
+  where it does not stand, it names the later approval or the changes request that ended it, or the
+  other document registered on its step since. The changes request that answered the wait is asked
+  of the document it reviewed too, so an approval of a document registered on its step since does
+  not answer it, and the resume says that the step holds that other document now. The answer to a
+  root's wait records the document, its step and any reviewed version as one value. Store migration
+  20261112215432 adds `issues.awaiting_answered_artifact`, `issues.awaiting_answered_step`,
+  `issues.awaiting_answered_version` and `issues.awaiting_answered_document_at`, which ties that
+  value to its answer. The resume names the answering document even if the step the resume speaks of
+  is different or later holds another document. An answer an earlier release wrote is asked as
+  before. The kept approval now records the document approved (store migration 20261122212816 adds
+  `readmitted_approvals.artifact`); a rollback takes the steps docs/kubernetes.md gives under the
+  daemon API contract entry 20261125181104.

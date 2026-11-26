@@ -1024,10 +1024,12 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 }
 
 // A person's review of a design document travels as Dispatch recorded it, its mark and the
-// document reviewed, on the three notices that carry one: the design-approved and
-// design-changes-requested notices that report it, and the parked-decision controller notice that
-// relays either as the notice did, whose publish asks again whether the review stands when it
-// relays a changes request. Every other kind is refused them
+// document reviewed, on the notices that carry one: the design-approved and
+// design-changes-requested notices that report it, the basis-changes-requested notice that reports
+// a changes request on an ancestor's document, which the outbox asks again as it asks a
+// design-changes-requested one (ChangesRequest), and the parked-decision controller notice that
+// relays either spec decision as the notice did, whose publish asks again whether the review stands
+// when it relays a changes request. Every other kind is refused them
 // (TestNewOutboxRowRefusesInvalidPayloads).
 func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
@@ -1038,6 +1040,8 @@ func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 			Artifact: document},
 		Notice{Kind: "design-changes-requested", Version: 3, Reason: reason, Actor: "user:alice",
 			Ref: spec, Review: review, Artifact: document},
+		Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Reason: reason,
+			Actor: "user:alice", Ref: spec, Review: review, Artifact: document},
 		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested,
 			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Reason: reason,
 			Review: review, Artifact: document},

@@ -116,9 +116,11 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
-//   - writes a record.Notice whose kind is in record.SpecDecision's set, which is read from
-//     SpecDecision's own switch and checked against the function, so a kind added there is
-//     covered here;
+//   - writes a record.Notice whose kind tells a person's decision on a design document: a kind in
+//     record.SpecDecision's set, or one the outbox's one rule for which queued rows it asks again
+//     takes as a person's changes request (record.ChangesRequest, through record's
+//     changesRequestKind). Each set is read from its function's own switch and checked against
+//     the function, so a kind added to either is covered here;
 //   - asks record.SpecDecision of a notice's kind, to send the decision it names on (the outbox's
 //     parkDecision relays it to the controller);
 //   - holds a review sentence (decisionReviewSentences) in a string constant, which is rendering
@@ -139,24 +141,26 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     person's approval of a version, and a send of the task that carries it tells that approval
 //     to its audience, so the ask of whether it still stands is a sender's.
 //
-// One notice that names a person's changes request is no sender's here, and stands outside R2:
-// basis-changes-requested, which workflow.Engine.tellBasisChanges queues when a person requests
-// changes on the version of an ancestor's document that a step of a root stands open on. The walk
-// cannot see it: its kind is none of record.SpecDecision's, so no reader of a queued notice asks
-// it again either (record.ChangesRequest), and its words hold no phrase of
-// decisionReviewSentences. Asking would change nothing for the root: the notice queued on the
-// root names the ancestor's document (its Ref is the ancestor's step reference), and
-// workflow.RefSuperseded, asked of the root's gates, finds no step of the root in another issue's
-// reference (refStep) and answers that the request stands. The copy queued on the ancestor, where
-// the daemon records it in a live tree, names the ancestor's own document, which RefSuperseded
-// would resolve to the ancestor's step; nothing asks it there either.
+// A person's changes request on the version of an ancestor's document that a step of a root
+// stands open on is told as basis-changes-requested (workflow.Engine.tellBasisChanges), which is
+// no spec decision and holds no phrase of decisionReviewSentences: the walk sees its writer by the
+// first rule, since record.ChangesRequest takes the kind. The notice is queued twice. The copy
+// keyed by the ancestor, where the daemon records the ancestor in a live tree, names the
+// ancestor's own document, so it is a sender's under R2: tellBasisChanges asks the predicate of
+// the ancestor's gates before it queues it (workflow.NoticeSuperseded), and the delivery and the
+// clear of a generation ask it again, which
+// TestTheAncestorsCopyOfABasisChangesRequestIsToldOnlyWhileItStands drives. The copy keyed by the
+// root stays outside R2: its Ref is the ancestor's step reference, so workflow.RefSuperseded,
+// asked of the root's gates, finds no step of the root in another issue's reference (refStep) and
+// answers that the request stands. The walk cannot tell the two copies apart, since one literal
+// writes both: what holds the ask to the ancestor's copy, and not to the root's, is that behavior.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
-// (and record, for SpecDecision's switch) against the compiler's export data of their
-// dependencies (testtypes.CompiledDependencies) and resolves every call, and every function value
-// a body names, through types.Info to the function it is, so a method that shares a name with
-// another is never mistaken for it.
+// (and record, for the switches of SpecDecision and changesRequestKind) against the compiler's
+// export data of their dependencies (testtypes.CompiledDependencies) and resolves every call, and
+// every function value a body names, through types.Info to the function it is, so a method that
+// shares a name with another is never mistaken for it.
 //
 // The reach is transitive, which bounds what the rule for a publisher proves: it fails a publisher
 // that reaches the predicate through nothing it calls, and no more. The delivery of a notice
@@ -209,14 +213,29 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	t.Parallel()
 	walk := readDecisionWalk(t)
-	kinds := walk.specDecisionKinds(t)
-	for _, kind := range kinds {
-		if _, ok := record.SpecDecision(record.NoticeKind(kind)); !ok {
-			t.Errorf("record.SpecDecision's switch names %q, but SpecDecision(%q) is no decision: the walk read the set wrongly", kind, kind)
-		}
-		if !slices.ContainsFunc(walk.funcs, func(f *decisionFunc) bool { return slices.Contains(f.kinds, kind) }) {
-			t.Errorf("no function of internal/workflow, internal/daemon or internal/admit writes a record.Notice of kind %q: the walk no longer sees where that "+
-				"decision is sent, so it proves nothing of its sender", kind)
+	// The kinds of a notice that tells a person's decision on a design document, read from the
+	// switch of each record function that sets them out, and held to that function's answer.
+	for _, set := range []struct {
+		switchOf, rule string
+		takes          func(record.NoticeKind) bool
+	}{
+		{switchOf: "SpecDecision", rule: "record.SpecDecision", takes: func(kind record.NoticeKind) bool {
+			_, spec := record.SpecDecision(kind)
+			return spec
+		}},
+		{switchOf: "changesRequestKind", rule: "record.ChangesRequest", takes: func(kind record.NoticeKind) bool {
+			_, asks := record.ChangesRequest(record.Notice{Kind: kind})
+			return asks
+		}},
+	} {
+		for _, kind := range walk.recordSwitchKinds(t, set.switchOf) {
+			if !set.takes(record.NoticeKind(kind)) {
+				t.Errorf("record.%s's switch names %q, but %s does not take a notice of it: the walk read the set wrongly", set.switchOf, kind, set.rule)
+			}
+			if !slices.ContainsFunc(walk.funcs, func(f *decisionFunc) bool { return slices.Contains(f.kinds, kind) }) {
+				t.Errorf("no function of internal/workflow, internal/daemon or internal/admit writes a record.Notice of kind %q: the walk no longer sees where that "+
+					"decision is sent, so it proves nothing of its sender", kind)
+			}
 		}
 	}
 	for _, sentence := range decisionReviewSentences {
@@ -467,15 +486,17 @@ func (w *decisionWalk) decisionSenders() []decisionSender {
 	return senders
 }
 
-// specDecisionKinds is record.SpecDecision's set as its switch spells it: every case value, as
-// the type checker reads its constant.
-func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
+// recordSwitchKinds is the set of notice kinds the record function name sets out in its switch, as
+// the switch spells it: every case value, as the type checker reads its constant. The walk reads
+// two: record.SpecDecision's, the kinds a person's spec decision writes, and changesRequestKind's,
+// the kinds record.ChangesRequest takes as a person's changes request, which the outbox asks again.
+func (w *decisionWalk) recordSwitchKinds(t *testing.T, name string) []string {
 	t.Helper()
 	var kinds []string
 	for _, file := range w.record.files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || fn.Name.Name != "SpecDecision" {
+			if !ok || fn.Recv != nil || fn.Name.Name != name {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -486,7 +507,7 @@ func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
 				for _, expr := range clause.List {
 					value := w.record.info.Types[expr].Value
 					if value == nil || value.Kind() != constant.String {
-						t.Fatalf("record.SpecDecision has a case the walk cannot read as a constant: %s", w.record.pos(expr))
+						t.Fatalf("record.%s has a case the walk cannot read as a constant: %s", name, w.record.pos(expr))
 					}
 					kinds = append(kinds, constant.StringVal(value))
 				}
@@ -495,7 +516,7 @@ func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
 		}
 	}
 	if len(kinds) == 0 {
-		t.Fatal("read no kind from record.SpecDecision's switch")
+		t.Fatalf("read no kind from record.%s's switch", name)
 	}
 	return kinds
 }
@@ -561,7 +582,7 @@ func compiledImports(t *testing.T) (*token.FileSet, types.Importer) {
 // asks the predicate of and writes into text through the functions it calls (resolve). It is the
 // one reader of a package's declarations, for the three sender packages (readDecisionWalk) and
 // the planted source (plantedDecisionSource.walk) alike. recordPackage is the record package the
-// walk reads record.SpecDecision's set from (specDecisionKinds), nil for planted source.
+// walk reads the kinds of a person's decision from (recordSwitchKinds), nil for planted source.
 func newDecisionWalk(recordPackage *checkedPackage, pkgs ...*checkedPackage) *decisionWalk {
 	w := &decisionWalk{byName: map[string]*decisionFunc{}, record: recordPackage}
 	for _, pkg := range pkgs {
@@ -653,9 +674,9 @@ func writtenExprs(body *ast.BlockStmt) map[ast.Expr]bool {
 	return written
 }
 
-// readNoticeKind adds to f the spec-decision kind a record.Notice literal writes, or the literal's
-// position to f.unread when its kind is no constant the walk can read: a constant, or a local
-// every assignment of which is one.
+// readNoticeKind adds to f the kind of a person's decision a record.Notice literal writes
+// (decisionNoticeKind), or the literal's position to f.unread when its kind is no constant the
+// walk can read: a constant, or a local every assignment of which is one.
 func readNoticeKind(pkg *checkedPackage, f *decisionFunc, lit *ast.CompositeLit, assigned map[types.Object][]ast.Expr) {
 	for _, elt := range lit.Elts {
 		keyed, ok := elt.(*ast.KeyValueExpr)
@@ -672,11 +693,22 @@ func readNoticeKind(pkg *checkedPackage, f *decisionFunc, lit *ast.CompositeLit,
 			return
 		}
 		for _, value := range values {
-			if _, spec := record.SpecDecision(record.NoticeKind(value)); spec && !slices.Contains(f.kinds, value) {
+			if decisionNoticeKind(record.NoticeKind(value)) && !slices.Contains(f.kinds, value) {
 				f.kinds = append(f.kinds, value)
 			}
 		}
 	}
+}
+
+// decisionNoticeKind says whether a notice of kind tells a person's decision on a design document:
+// record.SpecDecision names kind, or record.ChangesRequest takes a notice of it as a person's
+// changes request, which the outbox asks again.
+func decisionNoticeKind(kind record.NoticeKind) bool {
+	if _, spec := record.SpecDecision(kind); spec {
+		return true
+	}
+	_, asks := record.ChangesRequest(record.Notice{Kind: kind})
+	return asks
 }
 
 // constantStrings is every string expr can hold: its constant value, or the constant value of

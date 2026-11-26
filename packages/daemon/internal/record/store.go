@@ -1787,7 +1787,7 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 }
 
 // ChangesRequest is the person's changes request payload holds, read as the Notice it is, and
-// whether it holds one: a notice whose kind reports a changes request (SpecDecision), or the
+// whether it holds one: a notice whose kind reports a changes request (changesRequestKind), or the
 // parked-decision controller notice that relays one. It is the one rule for which queued rows a
 // reader of the outbox asks again whether the person's approval followed (workflow's
 // NoticeSuperseded): the daemon's delivery of a notice and its publish of a relay (its stillOwed),
@@ -1797,7 +1797,7 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 func ChangesRequest(payload OutboxPayload) (Notice, bool) {
 	switch payload := payload.(type) {
 	case Notice:
-		if decision, spec := SpecDecision(payload.Kind); spec && decision == DecisionDesignChangesRequested {
+		if changesRequestKind(payload.Kind) {
 			return payload, true
 		}
 	case ControllerNotice:
@@ -1808,15 +1808,36 @@ func ChangesRequest(payload OutboxPayload) (Notice, bool) {
 	return Notice{}, false
 }
 
+// changesRequestKind says whether a notice of kind reports a person's changes request on a design
+// document, which ChangesRequest takes: design-changes-requested, the spec decision a review of an
+// issue's own document writes (SpecDecision), and basis-changes-requested, a review of the version
+// of an ancestor's document that a step of a root stands open on (workflow's tellBasisChanges),
+// which is no spec decision. That one is queued on the root and on the ancestor, and each copy
+// names the ancestor's document (Notice.Ref) and carries the review's mark and the document
+// reviewed (Notice.Review, Notice.Artifact). Asked on the ancestor, it is asked of the ancestor's
+// own gate, so a person's approval of that document after the review answers it
+// (dispatch://INFRA-3136/spec R2); asked on the root, whose gates hold no step of another issue's
+// document, it stands (workflow.RefSuperseded). The daemon's test of the senders of a person's
+// decision reads this switch, as it reads SpecDecision's, so a kind added here is a kind it holds
+// every writer of to the one predicate.
+func changesRequestKind(kind NoticeKind) bool {
+	switch kind {
+	case "design-changes-requested", "basis-changes-requested":
+		return true
+	default:
+		return false
+	}
+}
+
 // queuedChanges is every person's changes request the outbox holds on the issues where selects
 // with key as $1, a row a runner has leased included, oldest first: each row ChangesRequest
 // accepts, read as the Notice it is (QueuedChanges). A row the select names that the rule refuses
 // is an error, since the two have drifted apart.
 func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
-		and ((kind = $2 and payload->>'kind' = $3)
-			or (kind = $4 and payload->>'kind' = $5 and payload->>'decision' = $6))
-		order by id`, key, string(OutboxKindNotice), "design-changes-requested",
+		and ((kind = $2 and payload->>'kind' in ($3, $4))
+			or (kind = $5 and payload->>'kind' = $6 and payload->>'decision' = $7))
+		order by id`, key, string(OutboxKindNotice), "design-changes-requested", "basis-changes-requested",
 		string(OutboxKindControllerNotice), string(ParkedDecisionNotice),
 		string(DecisionDesignChangesRequested))
 	if err != nil {
