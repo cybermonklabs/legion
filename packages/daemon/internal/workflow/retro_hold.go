@@ -96,8 +96,8 @@ func (e *Engine) ciWaits(ctx context.Context, tx pgx.Tx, key string) (head strin
 
 // endHoldNotice is the retro-held notice of issue, on w, the walk of its run, held before its
 // retro for reason with detail (retroHold), at the head of pr's: what holds it and what ends the
-// hold.
-func endHoldNotice(issue record.Issue, w Walk, pr *record.PullRequest, reason record.HoldReason, detail []string) record.Notice {
+// hold, and, for a hold for CI, the owner's acts before then (acts, ciActsOf).
+func endHoldNotice(issue record.Issue, w Walk, pr *record.PullRequest, reason record.HoldReason, detail []string, acts ciActs) record.Notice {
 	switch reason {
 	case record.HoldForFix:
 		check, head := "", ""
@@ -110,19 +110,9 @@ func endHoldNotice(issue record.Issue, w Walk, pr *record.PullRequest, reason re
 		_, head := taskHead(pr)
 		return retroHeldFor(fmt.Sprintf("%s passed its last step, and Legion holds it before its retro until each check a CI job runs passes at %s: %s. "+
 			"Nothing is asked of you now: a failure starts a fix where the task has one, else Legion tells you once (ci-failed). ",
-			issue.Key, head, strings.Join(detail, ", ")) + actBeforeCI(w))
+			issue.Key, head, strings.Join(detail, ", ")) + acts.before())
 	}
 	return retroHeldNotice(issue.Key, detail)
-}
-
-// actBeforeCI is what the owner of a task held for its CI can do before CI passes: send it back,
-// and stop its task where the issue runs a plan, since an issue with no plan rows has no task to
-// stop.
-func actBeforeCI(w Walk) string {
-	if w.Stored {
-		return "To act before then, send it back with request_backward_move, or stop its task with stop_task."
-	}
-	return "To act before then, send it back with request_backward_move."
 }
 
 // retroHeldFor is the retro-held notice whose reason is reason, naming the retro and the
@@ -367,7 +357,11 @@ func (e *Engine) rehold(ctx context.Context, tx pgx.Tx, held record.Issue, w Wal
 	}
 	e.logOnCommit(ctx, "workflow: what holds a task before its retro changed", "issue", held.Key, "task", w.Task, "was", was,
 		"reason", reason, "waitsFor", detail)
-	return e.notice(ctx, tx, held.Key, endHoldNotice(held, w, pr, reason, detail))
+	acts, err := e.ciActsOf(ctx, tx, held, w)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, held.Key, endHoldNotice(held, w, pr, reason, detail, acts))
 }
 
 // retroReport is the one answer of the report issue's retro is told, on w, the walk of its run:

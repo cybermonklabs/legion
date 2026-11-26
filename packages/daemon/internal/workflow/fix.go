@@ -236,24 +236,24 @@ func (e *Engine) endFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	}
 	e.logOnCommit(ctx, "workflow: a failed CI check at a task's end that no fix takes is told to its owner", "issue", issue.Key, "task", w.Task,
 		"check", state.Check, "head", pass.head, "fixEnded", fixed)
-	return e.notice(ctx, tx, issue.Key, ciFailedNotice(issue, w, state.Check, pass.head, fixed))
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, ciFailedNotice(issue, w, state.Check, pass.head, fixed, acts))
 }
 
 // ciFailedNotice is the ci-failed notice to the owner of issue, on w, the walk of its run, of
 // check failing at head where no fix takes it, fixEnded where its one fix ran and ended: what
-// failed, and the owner's acts, the move back, and the stop of its task where the issue runs a
-// plan.
-func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded bool) record.Notice {
+// failed, and the owner's acts (acts, ciActsOf): the move back, and the stop of its task only
+// where that stop is taken.
+func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded bool, acts ciActs) record.Notice {
 	why := "no fix takes it"
 	if fixEnded {
 		why += ": its one fix ended"
 	}
-	act := "send it back with request_backward_move"
-	if w.Stored {
-		act = "send the task back with request_backward_move, or stop it with stop_task"
-	}
 	return record.Notice{Kind: "ci-failed", Role: claim.RoleArchitect, Phase: record.StandsAt(issue), Reason: fmt.Sprintf(
-		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, act)}
+		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, acts.decide())}
 }
 
 // stepEntry is the open entry of role's phases row of issue, one raised that its completion has

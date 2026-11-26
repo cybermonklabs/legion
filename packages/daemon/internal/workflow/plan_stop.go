@@ -165,11 +165,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
 	}
-	group, err := e.groupOf(ctx, tx, issue.Key)
+	group, none, err := e.takesNoStop(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if takesNoPlan(group) {
+	if none {
 		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)

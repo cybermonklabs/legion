@@ -2974,7 +2974,11 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, moverOf(ctx), why)); err != nil {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits))
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits, acts))
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design

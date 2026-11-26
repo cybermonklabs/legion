@@ -71,9 +71,13 @@ func (e *Engine) refuseFixName(ctx context.Context, tx pgx.Tx, pass *fixPass, ch
 	if err2 != nil || !told {
 		return err2
 	}
-	notice := ciFailedNotice(issue, w, check, pass.head, false)
+	acts, err2 := e.ciActsOf(ctx, tx, issue, w)
+	if err2 != nil {
+		return err2
+	}
+	notice := ciFailedNotice(issue, w, check, pass.head, false, acts)
 	notice.Reason = fmt.Sprintf("Check %s fails at %s of task %s of %s, and no fix of task %s can run: Legion cannot name a branch beside it (%v). "+
-		"Decide with the person: send the task back with request_backward_move, or stop it with stop_task.", check, pass.head, w.Task, issue.Key, w.Task, err)
+		"Decide with the person: %s.", check, pass.head, w.Task, issue.Key, w.Task, err, acts.decide())
 	return e.notice(ctx, tx, issue.Key, notice)
 }
 

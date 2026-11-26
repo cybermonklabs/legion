@@ -89,6 +89,51 @@ func takesNoPlan(group record.Assignment) bool {
 	return config.PlanGroup(group.Plan) == config.PlanGroupDefault
 }
 
+// takesNoStop is the group of issue key and whether its owner stops none of its tasks: a group
+// that takes no plan from its owner (takesNoPlan) takes no stop of its tasks either. The refusal of
+// a stop (taskStopped) and every text that offers stop_task (ciActsOf) read this one answer, so the
+// offer and the refusal cannot disagree.
+func (e *Engine) takesNoStop(ctx context.Context, tx pgx.Tx, key string) (record.Assignment, bool, error) {
+	group, err := e.groupOf(ctx, tx, key)
+	return group, takesNoPlan(group), err
+}
+
+// ciActs is what the owner of a task can do before its CI passes, which the ci-failed notice
+// (ciFailedNotice), the notice of a fix whose branch cannot be named (refuseFixName), the
+// retro-held notice of a hold for CI (endHoldNotice) and the CI_PENDING refusal (endHoldRefusal)
+// each offer from this one value: send the task back with request_backward_move, always, and stop
+// its task with stop_task (Stop) only where that stop is taken.
+type ciActs struct{ Stop bool }
+
+// ciActsOf is the ciActs of issue on w, the walk of its run: the stop where the issue runs a
+// plan's task, its walk having plan rows and its group taking its owner's stop (takesNoStop). An
+// issue with no plan rows has no task to stop, and a group that runs the project's default steps
+// answers a stop PLAN_NOT_TAKEN.
+func (e *Engine) ciActsOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (ciActs, error) {
+	if !w.Stored {
+		return ciActs{}, nil
+	}
+	_, none, err := e.takesNoStop(ctx, tx, issue.Key)
+	return ciActs{Stop: !none}, err
+}
+
+// decide is the owner's acts as the ci-failed notice names them after "Decide with the person:".
+func (a ciActs) decide() string {
+	if a.Stop {
+		return "send the task back with request_backward_move, or stop it with stop_task"
+	}
+	return "send it back with request_backward_move"
+}
+
+// before is the owner's acts as a hold for CI names them, the retro-held notice's and the
+// CI_PENDING refusal's sentence.
+func (a ciActs) before() string {
+	if a.Stop {
+		return "To act before then, send it back with request_backward_move, or stop its task with stop_task."
+	}
+	return "To act before then, send it back with request_backward_move."
+}
+
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
 // work in this release has plan rows. A plan an earlier owner gave is passed over first
@@ -386,7 +431,7 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 // (fixOrCIHold), on w, the walk of its run, which names what ends the hold: FIX_RUNNING, the
 // fix's end, which moves the task on; CI_PENDING, the CI at its task's head (ciWaits), each check
 // of which starts the retro by passing, or a fix or the owner's notice by failing, and the
-// owner's acts before then: the move back, and the stop of its task where the issue runs a plan.
+// owner's acts before then (ciActsOf).
 func (e *Engine) endHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (*intake.Refusal, error) {
 	if record.HeldFor(issue, record.HoldForFix) {
 		fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
@@ -405,14 +450,14 @@ func (e *Engine) endHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return nil, err
 	}
-	stop := ""
-	if w.Stored {
-		stop = ", or stop its task with stop_task"
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return nil, err
 	}
 	return &intake.Refusal{Status: 409, Code: "CI_PENDING", Message: fmt.Sprintf(
 		"%s passed its last step and waits for CI at %s: %s. Legion starts its retro when each passes; a failure starts a fix where the task has one, else Legion tells you once. "+
-			"To act before then, send it back with request_backward_move%s. This retry changed nothing.",
-		issue.Key, head, strings.Join(waits, ", "), stop)}, nil
+			"%s This retry changed nothing.",
+		issue.Key, head, strings.Join(waits, ", "), acts.before())}, nil
 }
 
 // pastReport is the run that a completion of a phase its issue no longer stands in reports, which
