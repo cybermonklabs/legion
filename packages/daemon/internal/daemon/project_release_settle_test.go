@@ -427,10 +427,7 @@ func TestProjectReleaseCancelsItsWaitForASweepInFlight(t *testing.T) {
 
 	cancelReq()
 	// The pass stays held across this wait, so Start answers only if awaitSweep ends on reqCtx.
-	if !testwait.Holds(sweepInFlightWindow, testwait.Poll, func() bool { return len(answered) > 0 }) {
-		t.Fatalf("Start did not answer while the sweep pass stayed held in flight after its request was cancelled")
-	}
-	got := <-answered
+	got := testwait.Receive(t, "the cancelled start to answer while the pass of the sweep stays held", answered)
 	if got.started || !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("Start = started %t, %v; want started false, %v", got.started, got.err, context.Canceled)
 	}
