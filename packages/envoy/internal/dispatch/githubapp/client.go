@@ -74,10 +74,12 @@ const (
 )
 
 // The Accept values request sends: GitHub's JSON for every call but Ref, which asks for a
-// commit's SHA alone.
+// commit's SHA alone, and ReadDiff, which asks for a commit's or a comparison's patch as git
+// writes it.
 const (
 	mediaTypeJSON = "application/vnd.github+json"
 	mediaTypeSHA  = "application/vnd.github.sha"
+	mediaTypeDiff = "application/vnd.github.diff"
 )
 
 // commitSHA is the whole of Ref's answer: one full commit SHA, lowercase hex.
@@ -89,9 +91,16 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // GraphQL API), so a deadline at ten seconds races GitHub's own: an answer that was about to
 // arrive, success or GitHub's own timeout, is cut off and reported as a bare client timeout
 // instead. This is that bound plus room for the connection and for transferring a response at
-// responseLimit.
+// responseLimit. Every call has it but ReadDiff's, whose bound is DiffTimeout.
 // A var rather than a const so a test can shrink it; nothing outside a test writes it.
 var RequestTimeout = 20 * time.Second
+
+// DiffTimeout bounds one ReadDiff call, as RequestTimeout bounds every other: a patch GitHub
+// writes as a diff can run to tens of megabytes, which takes longer to generate and to transfer
+// than an answer at responseLimit, and the code-survival run reads each patch within a minute
+// (dispatch://INFRA-3206, R2). The caller's own context still wins when it ends sooner.
+// A var rather than a const so a test can shrink it; nothing outside a test writes it.
+var DiffTimeout = 60 * time.Second
 
 // limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
 // is one statement, which a healthy database answers in milliseconds, as the outbox's own
@@ -373,8 +382,9 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		app:  *app,
 		key:  key,
 		base: strings.TrimSuffix(base, "/"),
-		// No Timeout here: request applies RequestTimeout to each call's own context instead,
-		// so a caller that needs a shorter one sets it on the context it passes.
+		// No Timeout here: request applies the call's own bound (RequestTimeout, or ReadDiff's
+		// DiffTimeout) to each call's own context instead, so a caller that needs a shorter one
+		// sets it on the context it passes.
 		http:           &http.Client{},
 		now:            time.Now,
 		tokens:         map[int64]cachedToken{},
@@ -520,7 +530,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 		var installations []Installation
 		for page := 1; ; page++ {
 			target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
-			body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
+			body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit, RequestTimeout)
 			if err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
@@ -674,6 +684,21 @@ func (c *Client) ReadWithin(ctx context.Context, token, path string, limit int64
 	return c.ReadConditionalWithin(ctx, token, path, "", limit)
 }
 
+// ReadDiff is ReadWithin asking GitHub for the diff media type (`Accept:
+// application/vnd.github.diff`), for a commit's patch (`GET /repos/{owner}/{repo}/commits/{sha}`)
+// or a comparison's (`GET /repos/{owner}/{repo}/compare/{base}...{head}`) as git writes it, and
+// bounded by DiffTimeout rather than RequestTimeout. It is the same call in every other way,
+// through request: the shared rate limit holds it, a limit GitHub answers it with is noted and
+// recorded, its failures are noted on the pass's attempt, and a body past limit is a
+// *ResponseTooLargeError. A status GitHub answers with is the caller's to read, as ReadWithin's
+// is: a refusal of the diff (406, 422, or a 5xx naming the diff) is no error here.
+func (c *Client) ReadDiff(ctx context.Context, token, path string, limit int64) ([]byte, int, http.Header, error) {
+	if c == nil {
+		return nil, 0, nil, ErrNoAppKey
+	}
+	return c.request(ctx, c.TokenScope(token), http.MethodGet, c.base+path, "Bearer "+token, mediaTypeDiff, "", nil, limit, DiffTimeout)
+}
+
 // ReadConditionalWithin is ReadWithin with the ETag a caller remembered from this URL's last
 // answer: it sends If-None-Match, so GitHub answers 304 Not Modified when nothing changed, which
 // costs none of the rate limit. A 304 is a status the caller reads, with an empty body, never an
@@ -682,7 +707,7 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
 	}
-	return c.request(ctx, c.TokenScope(token), http.MethodGet, c.base+path, "Bearer "+token, mediaTypeJSON, etag, nil, limit)
+	return c.request(ctx, c.TokenScope(token), http.MethodGet, c.base+path, "Bearer "+token, mediaTypeJSON, etag, nil, limit, RequestTimeout)
 }
 
 // GraphQL posts query/variables to the API origin's /graphql endpoint with an installation token,
@@ -739,7 +764,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	}
 	installation := c.TokenScope(token)
 	target := c.base + "/graphql"
-	body, status, header, err := c.send(ctx, installation, http.MethodPost, target, "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
+	body, status, header, err := c.send(ctx, installation, http.MethodPost, target, "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit, RequestTimeout)
 	if err != nil {
 		return body, status, header, err
 	}
@@ -902,14 +927,15 @@ func (c *Client) do(ctx context.Context, scope, method, target, authorization st
 }
 
 func (c *Client) doLimited(ctx context.Context, scope, method, target, authorization string, limit int64) ([]byte, int, http.Header, error) {
-	return c.request(ctx, scope, method, target, authorization, mediaTypeJSON, "", nil, limit)
+	return c.request(ctx, scope, method, target, authorization, mediaTypeJSON, "", nil, limit, RequestTimeout)
 }
 
 // request performs one API call under scope asking for the accept media type and returns its
-// complete body when it fits within limit, status and headers. body is nil for every GET call;
-// GraphQL is this package's only POST with a body. A non-empty ifNoneMatch sends that ETag as
-// If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
-// caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
+// complete body when it fits within limit, status and headers, the call and its body read within
+// timeout (RequestTimeout, or ReadDiff's DiffTimeout). body is nil for every GET call; GraphQL is
+// this package's only POST with a body. A non-empty ifNoneMatch sends that ETag as If-None-Match,
+// so GitHub answers 304 Not Modified when its answer has not changed since the caller read it,
+// and charges the rate limit nothing for it; an empty one sends no such header.
 //
 // It is send with GitHub's own REST limit read, once: an answer RateLimit reads as a limit is
 // noted on the attempt ctx carries (githubreads), whatever the client and the scope, and
@@ -917,8 +943,8 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // no process sends GitHub anything under that scope before the wait ends. Every REST call of this
 // package goes through here. GraphQL calls send itself and reads, notes and records the limit in
 // its answer itself, which is another detection and another scope (recordGraphQLLimit).
-func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
-	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
+func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64, timeout time.Duration) ([]byte, int, http.Header, error) {
+	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit, timeout)
 	if err != nil {
 		return responseBody, status, header, err
 	}
@@ -958,7 +984,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
 // keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
 // passes the bound in send's errors.
-func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64, timeout time.Duration) ([]byte, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
@@ -970,7 +996,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
@@ -1084,7 +1110,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 	}
 	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) +
 		"/commits/" + url.PathEscape(branch)
-	body, status, _, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
+	body, status, _, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit, RequestTimeout)
 	if err != nil {
 		return "", err
 	}

@@ -1273,13 +1273,19 @@ func headInOwnRepository(repoFull, headRepo string) bool {
 // branch of the pull request's own repository, and whether the attempt read every source there
 // was. complete is the write's leave to replace a stored attribution: an attempt that could not
 // read a source it wanted — a payload that named no head repository, a commit read GitHub
-// refused — may add an attribution but never deletes one (UpsertPullRequestHead).
+// refused — may add an attribution but never deletes one (UpsertPullRequestHead). pages is how
+// many pages of commit messages the attempt asked GitHub for, the failed one included
+// (fetchCommitMessagesWithToken), and unread is the commit read it gave up on, a refusal that is
+// no rate limit, nil where it read them or had no need to: what a caller that counts its requests,
+// or must not take a weaker attribution for the whole one, reads (IssueOf).
 type headAttributionResult struct {
 	issueKey *string
 	source   string
 	messages []string
 	ownHead  bool
 	complete bool
+	pages    int
+	unread   error
 }
 
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
@@ -1375,20 +1381,21 @@ func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, poo
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
-	read, _, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	read, pages, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
-			return headAttributionResult{source: string(sourceNone)}, limited
+			return headAttributionResult{source: string(sourceNone), pages: pages}, limited
 		}
 		logger.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
 		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
+		attributed.pages, attributed.unread = pages, readErr
 		return attributed, nil
 	}
 	facts.CommitMessages = read
 	attributed, err = a.headAttribution(ctx, logger, pool, facts, headRepo)
-	attributed.messages = read
+	attributed.messages, attributed.pages = read, pages
 	return attributed, err
 }
 
@@ -1438,6 +1445,102 @@ func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, cli
 			Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
 			HeadRef: payload.Head.Ref,
 		}, headRepositoryOf(payload), payload.Number)
+}
+
+// PullRequestFacts is what GitHub's list of a repository's pull requests says of one of them that
+// the attribution reads: the repository it is in ("owner/repo"), its number and URL, its title and
+// body, its head branch and the repository that branch lives in ("" where GitHub names none, a
+// deleted fork's). Its commit messages are no fact of the list: IssueOf reads them where it must.
+type PullRequestFacts struct {
+	Repo     string
+	Number   int
+	URL      string
+	Title    string
+	Body     string
+	HeadRef  string
+	HeadRepo string
+}
+
+// IssueOf is the issue Dispatch's attribution gives the pull request pull names, "" where it gives
+// none, by attributeHead's own path and rules, for a caller that read the pull request from a list
+// of GitHub's rather than an event or a read of its own: the code-survival run, for each merged
+// pull request of a branch that pull_request_heads holds no judgement of under this rule
+// (JudgedIssues). The sources run in their order, the first candidate held to the pull request's
+// repository is the issue, and the commit messages are read -- one request per 100 commits, up to
+// maxCommitPages -- only where sources 1 to 4 hold no issue of that repository; an issue whose
+// repository, its own, its parent's or its project's default, is another is passed over whatever
+// source named it. The repository is held under its name of today (refs.Renames.Canonical), as
+// RefreshPullRequestHead holds it. token is asked for the installation token of each page.
+//
+// It answers how many pages of commit messages it asked GitHub for, on every path, so the caller
+// counts them. A rate limit is returned as the *githubapp.RateLimitError. A commit read GitHub
+// refused otherwise is an error here, where attributeHead's own callers write a weaker attribution
+// and read it again later: this caller stores what it is answered for good, and an answer short of
+// the commit messages would credit nobody where the whole read credits an issue.
+func (a *Attributor) IssueOf(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), pull PullRequestFacts) (string, int, error) {
+	repo := a.canonical(pull.Repo)
+	attributed, err := a.attributeHead(ctx, slog.Default(), pool, client, token, attributionFacts{
+		Repo: repo, URL: pull.URL, Title: pull.Title, Body: pull.Body, HeadRef: pull.HeadRef,
+	}, pull.HeadRepo, pull.Number)
+	switch {
+	case err != nil:
+		return "", attributed.pages, err
+	case attributed.unread != nil:
+		return "", attributed.pages, fmt.Errorf("attribute %s PR #%d: its commit messages were not read: %w", repo, pull.Number, attributed.unread)
+	case attributed.issueKey == nil:
+		return "", attributed.pages, nil
+	}
+	return *attributed.issueKey, attributed.pages, nil
+}
+
+// judgedIssuesQuery is JudgedIssues' one statement: the merged rows of one repository, of the
+// numbers asked, that the rule this build judges by has judged. That is the complement of the
+// reconcile's merged arm at this rule (ListStalePullRequestHeads), which offers a merged row again
+// while it is credited to nobody and no read has reached it: a row this rule stamped read,
+// credited or not, and a row credited to an issue under it. The repository is compared without
+// case, as HeadStoredAt compares it, so the index on lower(repo) (pull_request_heads_repo_head)
+// serves it. A row read later wins over one read earlier where two spellings of one repository
+// hold the same number.
+const judgedIssuesQuery = `
+	select number, coalesce(issue_key, '') from pull_request_heads
+	where lower(repo) = lower($1) and number = any($2)
+	  and state = 'merged' and attribution_rule = $3
+	  and (issue_key is not null or checked_at is not null)
+	order by checked_at nulls first`
+
+// JudgedIssues is, for each of numbers, merged pull requests of repo, the issue pull_request_heads
+// holds for it where the rule this build judges by judged it (AttributionRuleVersion): its stored
+// issue_key, "" for one it credited to nobody. A number the answer does not hold has no such
+// judgement, and its caller attributes it itself (IssueOf). One statement for every number, and no
+// GitHub request: the code-survival run reads every merged pull request of its range through it
+// before it spends a request on any.
+func (a *Attributor) JudgedIssues(ctx context.Context, q Querier, repo string, numbers []int) (map[int]string, error) {
+	judged := map[int]string{}
+	if len(numbers) == 0 {
+		return judged, nil
+	}
+	asked := make([]int32, len(numbers))
+	for i, number := range numbers {
+		asked[i] = int32(number)
+	}
+	repo = a.canonical(repo)
+	rows, err := q.Query(ctx, judgedIssuesQuery, repo, asked, AttributionRuleVersion)
+	if err != nil {
+		return nil, fmt.Errorf("read the judged issues of %d pull requests of %s: %w", len(numbers), repo, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var number int
+		var issue string
+		if err := rows.Scan(&number, &issue); err != nil {
+			return nil, fmt.Errorf("read the judged issues of %d pull requests of %s: %w", len(numbers), repo, err)
+		}
+		judged[number] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the judged issues of %d pull requests of %s: %w", len(numbers), repo, err)
+	}
+	return judged, nil
 }
 
 // RefreshPullRequestHead reads one pull request through the App and writes its head row: the

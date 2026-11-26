@@ -155,7 +155,7 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 		return false, ErrNoAppKey
 	}
 	target := c.base + repoPath(owner, repo) + "/commits/" + url.PathEscape(sha)
-	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
+	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit, RequestTimeout)
 	if err != nil {
 		return false, err
 	}

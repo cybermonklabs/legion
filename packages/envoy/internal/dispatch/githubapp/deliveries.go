@@ -55,7 +55,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if err != nil {
 			return nil, err
 		}
-		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
+		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit, RequestTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +101,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return err
 	}
 	target := c.base + "/app/hook/deliveries/" + strconv.FormatInt(deliveryID, 10) + "/attempts"
-	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
+	body, status, header, err := c.request(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit, RequestTimeout)
 	if err != nil {
 		return err
 	}
@@ -725,4 +725,25 @@ func nextLink(header, base string) (string, error) {
 		return target, nil
 	}
 	return "", nil
+}
+
+// NextPage is the path, under the API origin, of the page after the one header came with: the
+// rel="next" target of its Link header as Read takes a path, and "" on the last page. GitHub's
+// link may name the repository by its id (`/repositories/{id}/commits?…&page=2`) rather than the
+// path the first page was asked for; the page is read wherever the link points within the API
+// origin. A link outside it, or longer than nextLinkMaxBytes, is refused as nextLink refuses it,
+// since the next page is read with the caller's installation token.
+func (c *Client) NextPage(header http.Header) (string, error) {
+	if c == nil {
+		return "", ErrNoAppKey
+	}
+	target, err := nextLink(header.Get("Link"), c.base)
+	if err != nil || target == "" {
+		return "", err
+	}
+	path, under := strings.CutPrefix(target, c.base)
+	if !under || !strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("next page link %q leaves the API origin %s", ShownBody(target), c.base)
+	}
+	return path, nil
 }
