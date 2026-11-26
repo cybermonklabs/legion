@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix, readerStep } from "@legion/contracts";
 
 import { expectOnePass, ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
-import { codeRanges } from "./code-ranges";
+import { type CodeRange, codeRanges } from "./code-ranges";
 import { referenceHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
@@ -254,11 +254,7 @@ test("the one-pass bound fails a trim that rescans a closing run for every end i
 // reading to one pass on one shape, by the same count: on a text of four times the units - a line
 // of prose holding a code span, then a fenced block - it takes at most four times its steps, and
 // a few more. A reading that went back over the text before each block it found would take the
-// square. The count shows two shapes this row does not hold, each above one pass (measured with
-// `stepsAtNAndFourN`): a search by halves once a block (`breakAfter`, on blocks parted by blank
-// lines) and once a reference (`isInCode`) adds a factor of about log n, and a paragraph of
-// unclosed backtick runs of distinct widths, each searched for to the paragraph's end, takes
-// about 8 times the steps on 4 times the text.
+// square.
 test("a text of lines holding a code span, each followed by a fenced block, has its code read in one pass", () => {
   const unit = "`CORE-1` and\n```\ncode\n```\n";
   const quarter = 1 << 10;
@@ -270,4 +266,173 @@ test("a text of lines holding a code span, each followed by a fenced block, has 
       ["```\ncode\n```\n", true],
     ]).flat()
   );
+});
+
+// A text of lines holding a code span, each parted from the fenced block after it by a blank
+// line: the paragraph breaks are walked once for all the stretches the blocks leave, each going
+// on from where the last one stopped (`appendCodeSpans`), where a search of them by halves once
+// a block added a factor of about log n.
+test("a text of code spans and fenced blocks parted by blank lines has its code read in one pass", () => {
+  const unit = "`a` b\n\n```\nc\n```\n";
+  const quarter = 1 << 10;
+  const ranges = expectOnePass((n) => codeRanges(unit.repeat(n)), quarter);
+  const text = unit.repeat(4 * quarter);
+  expect(ranges.map((range) => [text.slice(range.start, range.end), range.block])).toEqual(
+    Array.from({ length: 4 * quarter }, () => [
+      ["`a`", false],
+      ["```\nc\n```\n", true],
+    ]).flat()
+  );
+});
+
+/** The reading the row above guards against: `codeRanges`' own, and then, once a block, a search
+ *  of the ranges by halves for where it stands, as the paragraph breaks were once searched for
+ *  the first one past each block. */
+function codeSearchedByHalvesOnceABlock(text: string): CodeRange[] {
+  const ranges = codeRanges(text);
+  for (const block of ranges) {
+    readerStep();
+    if (!block.block) continue;
+    let low = 0;
+    let high = ranges.length;
+    while (low < high) {
+      readerStep();
+      const middle = (low + high) >> 1;
+      if (ranges[middle].start <= block.start) low = middle + 1;
+      else high = middle;
+    }
+  }
+  return ranges;
+}
+
+// The control of the row above: the same bound fails a reading that searches by halves once a
+// block, on the same text.
+test("the one-pass bound fails a code reading that searches by halves once a block", () => {
+  const unit = "`a` b\n\n```\nc\n```\n";
+  const { atN, atFourN } = stepsAtNAndFourN(
+    (n) => codeSearchedByHalvesOnceABlock(unit.repeat(n)),
+    1 << 10
+  );
+  expect(atFourN).toBeGreaterThan(4 * atN + ONE_PASS_SLACK);
+});
+
+// A text of code spans each followed by a reference, one written in the span and one after it:
+// the references of each list - the reference-shaped spans, then the bare keys and `#id`s - are
+// read in order, so each list walks the code ranges once (`codeCursor`), where a search of them
+// by halves once a reference added a factor of about log n.
+test("a text of code spans each followed by a reference has every reference marked in one pass", () => {
+  const unit = "`CORE-1` CORE-2 ";
+  const quarter = 1 << 10;
+  const { references } = expectOnePass(
+    (n) => readTextReferences(unit.repeat(n), { origin }),
+    quarter
+  );
+  expect(references.map(({ inCode, text }) => [text, inCode])).toEqual(
+    Array.from({ length: 4 * quarter }, () => [
+      ["CORE-1", true],
+      ["CORE-2", false],
+    ]).flat()
+  );
+});
+
+/** The marking the row above guards against: `readTextReferences`' own reading, and then, once a
+ *  reference, a search of the text's code ranges by halves for its first character. */
+function inCodeSearchedByHalvesOnceAReference(text: string): boolean[] {
+  const ranges = codeRanges(text);
+  return readTextReferences(text, { origin }).references.map(({ start }) => {
+    readerStep();
+    let low = 0;
+    let high = ranges.length - 1;
+    while (low <= high) {
+      readerStep();
+      const middle = (low + high) >> 1;
+      const range = ranges[middle];
+      if (range.end <= start) low = middle + 1;
+      else if (range.start > start) high = middle - 1;
+      else return true;
+    }
+    return false;
+  });
+}
+
+// The control of the row above: the same bound fails a marking that searches by halves once a
+// reference, on the same text.
+test("the one-pass bound fails a marking that searches the code by halves once a reference", () => {
+  const unit = "`CORE-1` CORE-2 ";
+  const { atN, atFourN } = stepsAtNAndFourN(
+    (n) => inCodeSearchedByHalvesOnceAReference(unit.repeat(n)),
+    1 << 10
+  );
+  expect(atFourN).toBeGreaterThan(4 * atN + ONE_PASS_SLACK);
+});
+
+/** One paragraph of `n` characters: runs of 1, 2, 3 and more backticks, each after a space, as
+ *  many as fit, then spaces to the end. No two runs are as wide, so none closes another, and a
+ *  text four times as long holds about twice as many runs. */
+function unclosedRuns(n: number): string {
+  let text = "";
+  for (let width = 1; text.length + 1 + width <= n; width += 1) {
+    text += ` ${"`".repeat(width)}`;
+  }
+  return text.padEnd(n, " ");
+}
+
+// One paragraph of runs of backticks of distinct widths, none closed: each run's closer is looked
+// for among the text's runs of its own width, read once (`closingRun`), where a search of the
+// rest of the paragraph from each opener took about 8 times the steps on 4 times the text.
+test("a paragraph of unclosed backtick runs of distinct widths has its code read in one pass", () => {
+  expect(expectOnePass((n) => codeRanges(unclosedRuns(n)), 1 << 12)).toEqual([]);
+});
+
+/** Where the run of backticks starting at `at` ends. */
+function backticksEnd(text: string, at: number): number {
+  let end = at;
+  while (text.charAt(end) === "`") {
+    readerStep();
+    end += 1;
+  }
+  return end;
+}
+
+/** The spans the row above reads, read the way it guards against: from each opener, the rest of
+ *  the paragraph is searched again for the next run of the opener's width. */
+function spansRescanningTheParagraph(text: string): [number, number][] {
+  const spans: [number, number][] = [];
+  for (let at = 0; at < text.length; ) {
+    readerStep();
+    if (text.charAt(at) !== "`") {
+      at += 1;
+      continue;
+    }
+    const opener = backticksEnd(text, at);
+    let closer = -1;
+    for (let next = opener; closer < 0 && next < text.length; ) {
+      readerStep();
+      if (text.charAt(next) !== "`") {
+        next += 1;
+        continue;
+      }
+      const end = backticksEnd(text, next);
+      if (end - next === opener - at) closer = next;
+      next = end;
+    }
+    if (closer < 0) {
+      at = opener;
+      continue;
+    }
+    spans.push([at, closer + opener - at]);
+    at = closer + opener - at;
+  }
+  return spans;
+}
+
+// The control of the row above: the same bound fails a span reading that searches the rest of the
+// paragraph again from each opener, on the same text.
+test("the one-pass bound fails a span reading that rescans the paragraph from each opener", () => {
+  const { atN, atFourN } = stepsAtNAndFourN(
+    (n) => spansRescanningTheParagraph(unclosedRuns(n)),
+    1 << 12
+  );
+  expect(spansRescanningTheParagraph(unclosedRuns(1 << 12))).toEqual([]);
+  expect(atFourN).toBeGreaterThan(4 * atN + ONE_PASS_SLACK);
 });

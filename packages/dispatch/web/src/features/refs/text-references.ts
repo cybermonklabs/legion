@@ -1,7 +1,7 @@
 import { isIdPrefix, readerStep, referenceSpans } from "@legion/contracts";
 
 import { routeItem } from "./block-reference";
-import { codeRanges, isInCode } from "./code-ranges";
+import { codeCursor, codeRanges } from "./code-ranges";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -560,8 +560,11 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   // id and kept for the rest of the text.
   const items = () => (kinds ??= itemKinds(facts.items ?? {}, origin));
   // Where this text writes code, read once for the whole of it: a reference is marked by where
-  // its first character stands, which is how the server marks one.
+  // its first character stands, which is how the server marks one. The spans and the bare
+  // candidates are each read in order, so each list walks the ranges once, with a cursor of its
+  // own (`codeCursor`).
   const code = codeRanges(text);
+  const spanInCode = codeCursor(code);
 
   const spans = referenceSpans(text);
   let from = 0;
@@ -590,7 +593,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: span.start + span.value.length,
       form: "address",
-      inCode: isInCode(code, span.start),
+      inCode: spanInCode(span.start),
       named,
       reference: address.reference,
       route: address.route,
@@ -601,6 +604,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   }
   bareCandidates(text, from, text.length, bare);
 
+  const bareInCode = codeCursor(code);
   for (const candidate of bare) {
     readerStep();
     const written = text.slice(candidate.start, candidate.end);
@@ -614,7 +618,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
       references.push({
         end: candidate.end,
         form: "key",
-        inCode: isInCode(code, candidate.start),
+        inCode: bareInCode(candidate.start),
         reference: exists ? `dispatch://${key}` : undefined,
         route: exists ? { key, kind: "issue" } : undefined,
         start: candidate.start,
@@ -638,7 +642,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: candidate.end,
       form: "question",
-      inCode: isInCode(code, candidate.start),
+      inCode: bareInCode(candidate.start),
       named,
       reference,
       route: reference === undefined ? undefined : referenceRouteFromHref(reference, origin),

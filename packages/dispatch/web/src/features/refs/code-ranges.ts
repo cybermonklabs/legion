@@ -514,9 +514,11 @@ function fenceOpener(
     return undefined;
   }
   if (character === BACKTICK) {
-    const stray = text.indexOf("`", past);
-    if (stray >= 0 && stray < end) {
-      return undefined;
+    for (let index = past; index < end; index += 1) {
+      readerStep();
+      if (text.charCodeAt(index) === BACKTICK) {
+        return undefined;
+      }
     }
   }
   return { character, width: past - at };
@@ -772,31 +774,84 @@ function codeBlocks(text: string): Blocks {
   return { blocks, breaks };
 }
 
-/** Where the first run of exactly `width` backticks at or after `from` starts, or -1 when
- *  `[from, to)` holds none: a run of any other length closes no span of that width, so the
- *  search carries on past it. */
-function nextBacktickRun(text: string, from: number, to: number, width: number): number {
-  for (let at = from; at < to; ) {
-    readerStep();
-    const found = text.indexOf("`", at);
-    if (found < 0 || found >= to) {
-      return -1;
+/** The runs of backticks of one width that the search for closing runs has read and closed no
+ *  span with (`closingRun`), and how far the searches of that width have passed through them. */
+interface Runs {
+  /** Where each run of this width starts, in order. */
+  readonly starts: number[];
+  /** The index in `starts` of the first run no search of this width has passed. */
+  next: number;
+}
+
+/** What reading the code spans of a text carries from one stretch of it to the next, the
+ *  stretches the blocks leave and the paragraphs in them being read in order (`codeRanges`). */
+interface SpanReading {
+  readonly text: string;
+  /** The paragraph breaks `codeBlocks` read, in order. */
+  readonly breaks: readonly number[];
+  /** The index in `breaks` of the first break the reading has not passed. */
+  nextBreak: number;
+  /** Where the search for closing runs stopped reading the text (`closingRun`). */
+  scanned: number;
+  /** The runs of backticks that search read and closed no span with, by width. */
+  readonly runs: Map<number, Runs>;
+  /** The code contexts read so far, in order. */
+  readonly found: CodeRange[];
+}
+
+/** Where the first run of exactly `width` backticks starting in `[from, to)` starts, or -1 when
+ *  none does: a run of any other length closes no span of that width. `from` is where an
+ *  opener's run ends, and a text's openers are read in order, so the text is read for runs once,
+ *  each search going on from where the last one stopped (`scanned`) and filing every run it reads
+ *  that closes nothing by its width, where a later opener of that width finds it; each width's
+ *  runs are passed once however many openers look among them. cmark, CommonMark's reference
+ *  parser, likewise keeps where it read the runs of each length (`scan_to_closing_backticks`)
+ *  rather than reading the rest of the paragraph again from each opener. */
+function closingRun(reading: SpanReading, width: number, from: number, to: number): number {
+  const same = reading.runs.get(width);
+  if (same !== undefined) {
+    const { starts } = same;
+    while (same.next < starts.length && starts[same.next] < from) {
+      readerStep();
+      same.next += 1;
     }
-    at = runEnd(text, found, to, BACKTICK);
-    if (at - found === width) {
-      return found;
+    if (same.next < starts.length && starts[same.next] < to) {
+      return starts[same.next];
     }
   }
+  const { text } = reading;
+  for (let at = Math.max(reading.scanned, from); at < to; ) {
+    readerStep();
+    if (text.charCodeAt(at) !== BACKTICK) {
+      at += 1;
+      continue;
+    }
+    const end = runEnd(text, at, to, BACKTICK);
+    if (end - at === width) {
+      reading.scanned = end;
+      return at;
+    }
+    const other = reading.runs.get(end - at);
+    if (other === undefined) {
+      reading.runs.set(end - at, { next: 0, starts: [at] });
+    } else {
+      other.starts.push(at);
+    }
+    at = end;
+  }
+  reading.scanned = to;
   return -1;
 }
 
-/** The code spans of `[from, to)`, a stretch of `text` no paragraph break cuts, appended to
- *  `found`, in order: the run of backticks at a span's start is closed by the next run of
- *  exactly that length, a longer run being no closer, and a run with no closer is literal text
- *  that the next character is read on from. A backslash takes the character after it, so an
- *  escaped backtick opens no span; a run that closes one is read as written, as CommonMark
- *  reads a closer. */
-function appendParagraphSpans(text: string, from: number, to: number, found: CodeRange[]): void {
+/** The code spans of `[from, to)`, a stretch of the text no paragraph break cuts, appended to
+ *  what `reading` found, in order: the run of backticks at a span's start is closed by the next
+ *  run of exactly that length, a longer run being no closer, and a run with no closer is literal
+ *  text that the next character is read on from. A backslash takes the character after it, so
+ *  an escaped backtick opens no span; a run that closes one is read as written, as CommonMark
+ *  reads a closer. The closer is found by `closingRun`, which reads each run of the text once,
+ *  never by reading the rest of the paragraph again from each opener. */
+function appendParagraphSpans(reading: SpanReading, from: number, to: number): void {
+  const { text } = reading;
   for (let at = from; at < to; ) {
     readerStep();
     const character = text.charCodeAt(at);
@@ -810,89 +865,74 @@ function appendParagraphSpans(text: string, from: number, to: number, found: Cod
     }
     const opener = runEnd(text, at, to, BACKTICK);
     const width = opener - at;
-    const closer = nextBacktickRun(text, opener, to, width);
+    const closer = closingRun(reading, width, opener, to);
     if (closer < 0) {
       at = opener;
       continue;
     }
-    found.push({ block: false, end: closer + width, start: at });
+    reading.found.push({ block: false, end: closer + width, start: at });
     at = closer + width;
   }
 }
 
-/** The index in `breaks` of the first paragraph break past `from`: a break on `from` itself cuts
- *  nothing, the paragraph starting there. */
-function breakAfter(breaks: readonly number[], from: number): number {
-  let low = 0;
-  let high = breaks.length;
-  while (low < high) {
+/** The code spans of `[from, to)` appended to what `reading` found, in order, each read inside
+ *  the paragraph that holds it: the search for a span's closing run ends where that paragraph
+ *  ends, at the first of the breaks past where the search began, which `codeBlocks` writes one
+ *  of for every line that ends a paragraph, so an unmatched backtick mutes nothing written past
+ *  its own paragraph. The stretches are read in order, so the breaks are walked once for all of
+ *  them, each going on from where the last one stopped. */
+function appendCodeSpans(reading: SpanReading, from: number, to: number): void {
+  const { breaks } = reading;
+  while (reading.nextBreak < breaks.length && breaks[reading.nextBreak] <= from) {
     readerStep();
-    const middle = (low + high) >> 1;
-    if (breaks[middle] <= from) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
+    reading.nextBreak += 1;
   }
-  return low;
-}
-
-/** The code spans of `[from, to)` appended to `found`, in order, each read inside the paragraph
- *  that holds it: the search for a span's closing run ends where that paragraph ends, at the
- *  first of `breaks` past where the search began, which `codeBlocks` writes one of for every
- *  line that ends a paragraph, so an unmatched backtick mutes nothing written past its own
- *  paragraph. */
-function appendCodeSpans(
-  text: string,
-  from: number,
-  to: number,
-  breaks: readonly number[],
-  found: CodeRange[]
-): void {
   let start = from;
-  for (let index = breakAfter(breaks, from); index < breaks.length && breaks[index] < to; index++) {
+  for (; reading.nextBreak < breaks.length && breaks[reading.nextBreak] < to; reading.nextBreak++) {
     readerStep();
-    appendParagraphSpans(text, start, breaks[index], found);
-    start = breaks[index];
+    appendParagraphSpans(reading, start, breaks[reading.nextBreak]);
+    start = breaks[reading.nextBreak];
   }
-  appendParagraphSpans(text, start, to, found);
+  appendParagraphSpans(reading, start, to);
 }
 
 /** Every code context of `text`, in order and never overlapping: the fenced and indented blocks,
  *  and the code spans of the text they leave. It is read once per reading of a text, by the one
  *  pass that reading already makes (`readTextReferences`), and every reference is marked from it
- *  with `isInCode`. */
+ *  with `codeCursor`. */
 export function codeRanges(text: string): CodeRange[] {
   const { blocks, breaks } = codeBlocks(text);
-  const ranges: CodeRange[] = [];
+  const reading: SpanReading = {
+    breaks,
+    found: [],
+    nextBreak: 0,
+    runs: new Map(),
+    scanned: 0,
+    text,
+  };
   let at = 0;
   for (const block of blocks) {
     readerStep();
-    appendCodeSpans(text, at, block.start, breaks, ranges);
-    ranges.push(block);
+    appendCodeSpans(reading, at, block.start);
+    reading.found.push(block);
     at = block.end;
   }
-  appendCodeSpans(text, at, text.length, breaks, ranges);
-  return ranges;
+  appendCodeSpans(reading, at, text.length);
+  return reading.found;
 }
 
-/** Whether the character at `offset` sits in one of `ranges`, which `codeRanges` wrote in order:
- *  the reference whose first character it is was written in a code context. A binary search, so
- *  a body of many spans costs a reference no more than a body of few. */
-export function isInCode(ranges: readonly CodeRange[], offset: number): boolean {
-  let low = 0;
-  let high = ranges.length - 1;
-  while (low <= high) {
-    readerStep();
-    const middle = (low + high) >> 1;
-    const range = ranges[middle];
-    if (range.end <= offset) {
-      low = middle + 1;
-    } else if (range.start > offset) {
-      high = middle - 1;
-    } else {
-      return true;
+/** Whether the character at each offset it is asked about sits in one of `ranges`, which
+ *  `codeRanges` wrote in order: the reference whose first character it is was written in a code
+ *  context. The offsets are asked in order, never one before the last, so each answer goes on
+ *  through the ranges from where the last one stopped, and a text's references cost one walk of
+ *  its ranges rather than a search of them each. */
+export function codeCursor(ranges: readonly CodeRange[]): (offset: number) => boolean {
+  let next = 0;
+  return (offset) => {
+    while (next < ranges.length && ranges[next].end <= offset) {
+      readerStep();
+      next += 1;
     }
-  }
-  return false;
+    return next < ranges.length && ranges[next].start <= offset;
+  };
 }
