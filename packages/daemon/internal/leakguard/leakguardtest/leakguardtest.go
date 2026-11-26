@@ -16,6 +16,10 @@
 // the guard's own REST visibility read of a repository GitHub answers 404 and 500 for, which a
 // stand-in gh of the guard's tests and of `legion gh`'s prints in the real gh's place.
 //
+// It also holds the fixture private-name rule file (Rules, written by WriteRules) and the
+// invented names its rules refuse and allow: the guard runs the rule file a deployment names, and
+// no Legion binary carries one of its own.
+//
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says
 // the same of itself). It imports the guard not at all, so that the guard's own in-package tests
@@ -28,6 +32,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // CheckName is the shared check's file name, which is how the guard finds it on PATH. The guard
@@ -136,7 +142,7 @@ func Reading(status int, report string) string {
 // stand-in, written once for the package's own home).
 func WriteFile(dir, script string) (string, error) {
 	path := filepath.Join(dir, CheckName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
 		return "", err
 	}
 	return path, nil

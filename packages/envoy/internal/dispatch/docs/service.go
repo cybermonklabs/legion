@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -101,6 +102,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -237,6 +245,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -444,6 +457,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
@@ -913,6 +930,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -925,6 +943,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,

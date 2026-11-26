@@ -161,6 +161,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // orderPause is the project's pause flag as the order table drives it (supervise.Deps.Paused):
@@ -427,6 +428,7 @@ func (k memberKind) woken() memberKind {
 // P's disk, at every end. named is the role and the state each row's message and line name, ""
 // for none.
 func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
+	t.Parallel()
 	const launching, ready, suspended = "implementer (launching)", "implementer (ready)", "implementer (suspended)"
 	for _, row := range []struct {
 		end   roundPodEnd
@@ -1141,20 +1143,41 @@ var (
 // (wokenParked, parkingPace): ten minutes into the round, before its bound.
 var parkedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// parkingPace is a wake pacing that lets every paced launch out at once until park is set, and
-// from then on lets each out at parkedWakeLetOut (supervise.WakePace): the tester's wakes before
-// the round run as each is raised, and the woken implementer's launch waits in the pacing with no
-// process and no pod, as a wave of wakes leaves it.
-type parkingPace struct{ park atomic.Bool }
+// parkingPace is a wake pacing that lets every paced launch out at once until park, and from then
+// on lets the next out at parkedWakeLetOut: the tester's wakes before the round run as each is
+// raised, and the woken implementer's launch waits in the pacing with no process and no pod, as a
+// wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst holds every
+// launch before the park (parkingBurst); park spends what is left of the burst and spreads the
+// release after it to that moment. A fixed-moment Reserve, which these tests once handed the
+// machines, has no pacer equal.
+type parkingPace struct {
+	clock   supervise.Clock
+	limiter *wakepace.Limiter
+	spread  atomic.Int64
+}
 
-// pace is the pacing a rig's machines read (podUpdateRigOptions.wakePace).
-func (p *parkingPace) pace() supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if p.park.Load() {
-			return parkedWakeLetOut
-		}
-		return now
-	}}
+// parkingBurst is how many launches parkingPace lets out at once before its park.
+const parkingBurst = 64
+
+// pace builds the pacing a rig's machines read (podUpdateRigOptions.wakePace) on the rig's clock.
+func (p *parkingPace) pace(clock supervise.Clock) supervise.WakePace {
+	p.clock = clock
+	p.limiter = wakepace.New(1, parkingBurst, func(time.Duration) time.Duration { return time.Duration(p.spread.Load()) })
+	pace := wakePaceOf(p.limiter, clock)
+	pace.Rate, pace.Burst = 1, parkingBurst
+	return pace
+}
+
+// park spends what is left of the burst at the clock's now, and spreads the next paced release to
+// parkedWakeLetOut. The first reservation past the burst is a paced release at the bucket's base,
+// and the one after it comes one interval later, which the spread moves to the let-out.
+func (p *parkingPace) park() {
+	now := p.clock.Now()
+	first := p.limiter.Reserve(now)
+	for !first.After(now) {
+		first = p.limiter.Reserve(now)
+	}
+	p.spread.Store(int64(parkedWakeLetOut.Sub(first.Add(p.limiter.Interval()))))
 }
 
 // suspendedTo is orderedTo for a member the daemon or the operator suspended before the round's
@@ -1201,7 +1224,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	var opts podUpdateRigOptions
 	pacing := &parkingPace{}
 	if kind == wokenParked {
-		opts.wakePace = pacing.pace()
+		opts.wakePace = pacing.pace
 	}
 	rig := newPodUpdateRigWith(t, opts, podUpdateRole{role: implementer, state: supervise.StateQueued}, podUpdateRole{role: tester, state: supervise.StateQueued})
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -1310,7 +1333,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 			t.Fatalf("the resumed implementer is %s at %+v, want it launching in pod %s, its agent not registered", c.State, c.Locator, podUpdatePod)
 		}
 	case wokenParked:
-		pacing.park.Store(true)
+		pacing.park()
 		rig.intoPod(implementer, podUpdatePod)
 		launched := len(rig.launchesOf(implementer))
 		rig.handle(implementer, rig.wakeFor(implementer))

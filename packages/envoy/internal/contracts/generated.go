@@ -147,6 +147,11 @@ const StoreUnconfirmedCause = "The listener sent the message but could not confi
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = 100
+
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.
@@ -575,7 +580,8 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person under the project scope person: the machine
-// holding it has signed nobody in.
+// holding it has signed nobody in. A job's token, under named or public, and an exchange account
+// entry's token naming no person, under named, write as their service.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
