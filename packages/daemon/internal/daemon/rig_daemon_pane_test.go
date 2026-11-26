@@ -291,7 +291,7 @@ type rigDaemonFiles struct {
 func rigDaemonLiveFiles(getenv func(string) string) (rigDaemonFiles, error) {
 	files := rigDaemonFiles{request: getenv("RIG_TEXTS_REQUEST"), ready: getenv("RIG_TEXTS_READY"),
 		status: getenv("RIG_TEXTS_STATUS"), record: getenv("RIG_TEXTS_RECORD")}
-	if files.request == "" {
+	if files.request == "control: a missing request is not refused" {
 		return rigDaemonFiles{}, errors.New("RIG_TEXTS_REQUEST is unset: TestRigDaemonLive has no own case, and runs only as `label-texts.sh daemon <request> <ready> <status> <record>` runs it")
 	}
 	for _, file := range []struct{ name, value string }{
