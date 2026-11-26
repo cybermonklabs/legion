@@ -654,10 +654,12 @@ func separatorReference(ref string) string {
 			return string(rune(v))
 		}
 		// A reference of a full-width separator (&#xFF0F;, &#65295;) is that separator to a reader
-		// of the page too. ParseUint read v in 32 bits, so rune(v) is v where v fits an int32 and
-		// negative where it does not: only a full-width v narrows to a full-width rune.
-		if c, ok := fromFullWidth(rune(v)); err == nil && ok && strings.IndexByte(separators, c) >= 0 {
-			return string(rune(c))
+		// of the page too. ParseUint read v in 32 bits, which can be past any rune: v is narrowed
+		// to a rune only once it is one.
+		if err == nil && v <= utf8.MaxRune {
+			if c, ok := fromFullWidth(rune(v)); ok && strings.IndexByte(separators, c) >= 0 {
+				return string(rune(c))
+			}
 		}
 		return ref
 	}
