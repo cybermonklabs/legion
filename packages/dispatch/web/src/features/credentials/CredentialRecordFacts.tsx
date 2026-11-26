@@ -8,7 +8,7 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { machineName } from "./machineLogins";
+import { machineName } from "./logic/machineLogins";
 
 const LIFETIME_UNITS: ReadonlyArray<{ seconds: number; unit: string }> = [
   { seconds: 86400, unit: "day" },

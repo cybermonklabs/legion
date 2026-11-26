@@ -1,0 +1,11 @@
+spec-check: subject m1, the head of main
+statement envoy-delivers-messages: not met (check a-restart-keeps-the-message is false)
+  check a-sent-message-reaches-a-listener: true (passed, counted from m1)
+statement a-message-reaches-a-late-session: met
+  check a-late-session-gets-the-message: true (passed, counted from m1)
+statement a-message-survives-a-restart: not met (check a-restart-keeps-the-message is false)
+  check a-restart-keeps-the-message: false (failed, counted from m1)
+wait of u-a on a-message-reaches-a-late-session: ends
+wait of u-b on a-message-survives-a-restart: holds (not met)
+wait of u-c on envoy-delivers-messages: ends
+spec-check: cycle of waits: u-a -> a-message-reaches-a-late-session -> u-b -> a-message-survives-a-restart -> u-a

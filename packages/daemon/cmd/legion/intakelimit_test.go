@@ -27,6 +27,7 @@ const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 
 // nothing they could not read in the daemon's own default. The derived half is asserted verbatim
 // for the same reason: the sentence is the deliverable.
 func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	for _, row := range []struct {
 		name     string
 		projects string
