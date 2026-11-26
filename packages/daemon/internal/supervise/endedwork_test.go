@@ -186,7 +186,7 @@ func TestARelaunchRecordsADisplacement(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantCalls("Resume", 1)
-	h.wantEnded(EndedWork{At: at, Cause: endDisplaced, Generation: displaced, Turn: true, TaskTurn: true,
+	h.wantEnded(EndedWork{At: at, Cause: endDisplaced, Displaced: true, Generation: displaced, Turn: true, TaskTurn: true,
 		Background: true, Kinds: []string{"claude-background-task"}, Reported: true})
 	h.wantEndedLine(endDisplaced)
 }
@@ -887,14 +887,15 @@ func (h *harness) wantRelaunchTold(says string) string {
 // left, the record would tell it that the turn it was in was interrupted.
 func TestARelaunchRecordsNoTurnForAProcessLostDuringACompaction(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		lose  func(h *harness)
-		cause string
-		died  bool
+		name      string
+		lose      func(h *harness)
+		cause     string
+		died      bool
+		displaced bool
 	}{
 		{name: "a death", lose: func(h *harness) { h.observe(runtime.Gone) },
 			cause: endDied(runtime.Observation{Kind: runtime.Gone}), died: true},
-		{name: "a displacement", lose: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced},
+		{name: "a displacement", lose: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced, displaced: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, release, compacted := compactingIdle(t)
@@ -903,7 +904,7 @@ func TestARelaunchRecordsNoTurnForAProcessLostDuringACompaction(t *testing.T) {
 			tc.lose(h)
 
 			h.wantState(StateLaunching)
-			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Generation: lost,
+			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Displaced: tc.displaced, Generation: lost,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(tc.cause)
 			release()
@@ -1131,10 +1132,11 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 		{name: "its report says nothing runs", saysNot: []string{"stopped with that process"}},
 	} {
 		for _, tc := range []struct {
-			name  string
-			end   func(h *harness)
-			cause string
-			died  bool
+			name      string
+			end       func(h *harness)
+			cause     string
+			died      bool
+			displaced bool
 		}{
 			{name: "a death", end: func(h *harness) { h.observe(runtime.Gone) },
 				cause: endDied(runtime.Observation{Kind: runtime.Gone}), died: true},
@@ -1145,7 +1147,7 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 				h.deps.PluginContract, h.m.deps.PluginContract = 25, 25
 				h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 			}, cause: endStalePlugin},
-			{name: "a displacement", end: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced},
+			{name: "a displacement", end: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced, displaced: true},
 		} {
 			t.Run(tc.name+": "+report.name, func(t *testing.T) {
 				h, task := idleWithItsResultToCome(t, report.kinds...)
@@ -1157,7 +1159,7 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 				if p := h.pending(); !p.Interrupted || !p.ConfirmedAt.IsZero() {
 					t.Fatalf("the task after the let-go is %+v, want it taken back", p)
 				}
-				h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Generation: cutOff, TaskTurn: true,
+				h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Displaced: tc.displaced, Generation: cutOff, TaskTurn: true,
 					Background: len(report.kinds) > 0, Kinds: report.kinds, Reported: true})
 				sent := len(h.prompts())
 				h.relaunched()

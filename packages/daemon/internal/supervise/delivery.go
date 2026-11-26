@@ -832,8 +832,16 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		return nil
 	}
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
-	// paced launch is about to replace the process a send would reach (launchWaits).
-	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
+	// paced launch is about to replace the process a send would reach (launchWaits), nor one
+	// whose process the runtime last reported gone (Machine.processGone): a gone process takes
+	// no task, so the task waits for the relaunch, whose ready sends it once (finishReady). Every
+	// send of the claim comes through here, so this one hold covers each path that can reach a
+	// claim over its gone process before the relaunch lets that process go: a compaction's end
+	// (compactEnded, afterTurn), the late outcome of a send in flight at the report
+	// (fenceOutcome, refused), a turn's end or a prompt's result the stream delivers late, the
+	// provider-error ladder's wait (promptRetryDue), a pause's end, a hello, and a request that
+	// queues or releases a task (deliverNow, refuseBehindPending, releaseHeld).
+	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() || m.processGone {
 		return nil
 	}
 	// A claim that answered its open update round is handed nothing until the round ends.
@@ -2255,7 +2263,10 @@ func (m *Machine) awaitResult(id string, news []byte) {
 // daemon request (stream's Conn.answer), so the prompt is outstanding with no acknowledgement and
 // its task is not marked read. The wait for its turn is armed from the moment the turn can start:
 // here once the compaction is over, and at its end while it runs (compactEnded). A task its turn
-// already confirmed waits for no turn.
+// already confirmed waits for no turn, and nor does a prompt held over a process the runtime last
+// reported gone (Machine.processGone, watchAgain): that report dropped the compaction with the
+// process (compactionLostProcess), so the send's wait can run out after it, and a gone process
+// starts no turn.
 func (m *Machine) keepHeldPrompt(r PromptRefused) {
 	p := m.claim.Pending
 	if !m.outstandingPrompt(p.ID) {
@@ -2263,7 +2274,7 @@ func (m *Machine) keepHeldPrompt(r PromptRefused) {
 	}
 	m.log.Info("supervise: the prompt's send ran out while the handoff held it; its turn is still the task's",
 		"delivery", p.ID, "error", r.Err)
-	if m.compacting == nil && p.ConfirmedAt.IsZero() {
+	if m.compacting == nil && p.ConfirmedAt.IsZero() && !m.processGone {
 		m.disarm(TimerTurn)
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}

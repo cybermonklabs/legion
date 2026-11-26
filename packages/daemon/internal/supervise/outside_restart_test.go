@@ -10,9 +10,9 @@ package supervise
 // first at D2, and by whether that report is read as an end from outside the pod again or neither
 // way, its reading gone with D1's memory or expired. Three orders beside them have D1's first
 // report read neither way, so died judges the end a death, and every later report, read as
-// outside or not, is a later report of that death (judgedDeath). One has D1's first report the
-// daemon's own replacement of the pod (displaced), and the same pod's end read as outside only
-// after a restart, which lost the runtime's record of that replacement.
+// outside or not, is a later report of that death (judgedDeath). Five have D1's first report the
+// daemon's own replacement of the pod (displaced), and the same pod's end read as outside or
+// neither way only after a restart, which lost the runtime's record of that replacement.
 
 import (
 	"cmp"
@@ -80,6 +80,9 @@ const (
 	// atReportRefused is a report read neither way whose relaunch D2's lifecycle recheck
 	// refuses, as it refused D1's; the store answers the recheck again after it.
 	atReportRefused nextEvent = "the report read neither way, its relaunch refused"
+	// atReportTakeBackRefused is a report read neither way whose take-back of the task the store
+	// refuses; the store answers the take-back again after it.
+	atReportTakeBackRefused nextEvent = "the report read neither way, its take-back refused"
 	// atReportOutsideRefused is a minute passing and then a report read as outside whose
 	// relaunch the lifecycle recheck refuses, as it refused the one before; the store answers
 	// the recheck again after it.
@@ -279,6 +282,26 @@ func besideTheProduct() []outsideOrder {
 			stood: stoodInTaskTurn, displacedFirst: true, takeBack: takeBackTaken, refused: true, restart: true,
 			at: []nextEvent{atReportOutsideRefused, atReportOutsideQueued}, told: endDisplaced,
 		},
+		{
+			name:  "beside the product: displaced first, its take-back refused, restart, the report read neither way, its take-back refused, then the report read neither way",
+			stood: stoodInTaskTurn, displacedFirst: true, takeBack: takeBackRefused, restart: true,
+			at: []nextEvent{atReportTakeBackRefused, atReportNeither}, told: endDisplaced,
+		},
+		{
+			name:  "beside the product: displaced first, its take-back refused, restart, then the report read neither way",
+			stood: stoodInTaskTurn, displacedFirst: true, takeBack: takeBackRefused, restart: true,
+			at: []nextEvent{atReportNeither}, told: endDisplaced,
+		},
+		{
+			name:  "beside the product: displaced first, its relaunch refused, restart, then the report read neither way",
+			stood: stoodInTaskTurn, displacedFirst: true, takeBack: takeBackTaken, refused: true, restart: true,
+			at: []nextEvent{atReportNeither}, told: endDisplaced,
+		},
+		{
+			name:  "beside the product: holding nothing, displaced first, its relaunch refused, restart, then the report read neither way",
+			stood: stoodHoldingNothing, displacedFirst: true, takeBack: takeBackNone, refused: true, restart: true,
+			at: []nextEvent{atReportNeither},
+		},
 	}
 }
 
@@ -311,11 +334,12 @@ type outsideOrder struct {
 	// (recordEnd). Every other row's first report is read as outside, but displacedFirst's.
 	firstNeither bool
 	// displacedFirst is whether D1's first report is the daemon's own replacement of the pod
-	// (runtime.Observation.Displaced), so displaced judges the end first: it records the end
-	// (endDisplaced), takes the task back and relaunches the claim charged nothing, and decides
-	// nothing (Claim.DeathCharged). A later report of the same pod read as outside is that end
-	// again, continued uncharged by endedFromOutside, which types displaced's record of it as an
-	// end from outside the pod (markFromOutside), so the claim reads it decided from outside.
+	// (runtime.Observation.Displaced), so displaced judges the end first: it records the end as
+	// displaced's (EndedWork.Displaced), whatever it ended, takes the task back and relaunches
+	// the claim charged nothing, and decides nothing (Claim.DeathCharged). A later report of the
+	// same pod read neither way is that displacement again (recordedDisplaced); one read as
+	// outside is continued uncharged by endedFromOutside, which types displaced's record of it as
+	// an end from outside the pod (markFromOutside), so the claim reads it decided from outside.
 	displacedFirst bool
 	// cause is the sentence an earlier daemon wrote as the stored record's cause, over the
 	// record D1 typed as an end from outside the pod, and "" for today's endFromOutside.
@@ -421,15 +445,18 @@ func (claimRefusedStore) PutClaim(context.Context, Claim) error { return errStor
 // empty) and the relaunch it parks writes nothing before its turn, so the restarted claim holds
 // the decision with no charge, and the first raise there charges it.
 //
-// One more row beside the product has D1's first report the daemon's own replacement of the pod,
-// whose relaunch the recheck refuses, so the claim stands over the ended process holding
-// displaced's record of the end, which an Uncertain report's write stores, and no decision. After
-// a restart, which lost the runtime's record of that replacement, the same pod's end is read as
-// from outside: endedFromOutside decides it and types displaced's record as an end from outside
-// the pod, keeping its cause, so nothing is charged, the relaunch waits in the second queue, a
-// later report decides nothing again, and the role is told that its pod was replaced. At every
-// step of every row, a claim reads a charged death only where died judged its process
-// (deathUnjudged).
+// Five more rows beside the product have D1's first report the daemon's own replacement of the
+// pod, its take-back or its relaunch refused, so the claim stands over the ended process holding
+// displaced's record of the end, which an Uncertain report's write stores, and no decision.
+// After a restart, which lost the runtime's record of that replacement, the same pod's end is
+// read as from outside in one: endedFromOutside decides it and types displaced's record as an end
+// from outside the pod, keeping its cause and its own type. In the other four it is read neither
+// way, one with its take-back refused first, one over the claim holding nothing: judge sends each
+// such report to displaced (recordedDisplaced), which relaunches the claim again and decides
+// nothing. In all five nothing is charged, no report reaches died, the relaunch waits in the
+// second queue, and the role is told that its pod was replaced where the end cut off its work
+// (displacementRejudged). At every step of every row, a claim reads a charged death only where
+// died judged its process (deathUnjudged).
 //
 // The negative controls: judge routing on decidedFromOutside in place of the record, so a report
 // read neither way over a record with no decision goes to died (rows 16, 18, 20, 22, 24, 26, 28,
@@ -441,9 +468,13 @@ func (claimRefusedStore) PutClaim(context.Context, Claim) error { return errStor
 // outside the pod waits in the first queue; judge sending every report read as outside to
 // endedFromOutside whatever the claim holds, as it did before judgedDeath, so each of the three
 // rows beside the product whose first report is read neither way continues a later report of
-// its death as an end from outside the pod and logs that end's line; and markFromOutside
-// leaving a standing record of the launch untyped, so the displaced row's claim reads a charged
-// death that died never judged once the report read as outside decides it.
+// its death as an end from outside the pod and logs that end's line; markFromOutside leaving a
+// standing record of the launch untyped, so the first displaced row's claim reads a charged
+// death that died never judged once the report read as outside decides it; judge sending a
+// report read neither way over displaced's record to died, so each of the four displaced rows
+// read neither way logs died's line at that report; and displaced leaving no record of an end
+// that ended nothing worth telling (markDisplaced), so D1's store holds no record in the row
+// holding nothing.
 func TestAnEndFromOutsideMetAgainIsContinuedUnchargedInEveryPossibleOrder(t *testing.T) {
 	for _, o := range append(possibleOrders(t), besideTheProduct()...) {
 		t.Run(o.name, o.walk)
@@ -531,7 +562,7 @@ func (o outsideOrder) walk(t *testing.T) {
 	}
 	for _, ev := range o.at {
 		o.reach(h, ev, ended, read, boot)
-		raised = raised || (ev != atReportRefused && ev != atReportOutsideRefused)
+		raised = raised || !slices.Contains([]nextEvent{atReportRefused, atReportOutsideRefused, atReportTakeBackRefused}, ev)
 		want(string(ev), notHeld(h, task), outsideEndQueued(h), o.deathStands(h, read), deathUnjudged(h, ended))
 		o.wantCharged(h, string(ev), raised)
 		want(string(ev), turnEnd.see(h))
@@ -544,8 +575,10 @@ func (o outsideOrder) walk(t *testing.T) {
 	if got := h.budgets(); got != charged {
 		t.Fatalf("a repeated report left budgets %+v, want %+v: it charges nothing new", got, charged)
 	}
-	if !turnEnd.claim.decided {
-		t.Fatalf("a repeated report: the claim reads deathCharged=%v, want the end decided", h.claim().DeathCharged)
+	// displaced decides nothing, so a row it judged first holds a decision only where a report
+	// read as outside decided the end.
+	if decides := !o.displacedFirst || o.readsOutside(); turnEnd.claim.decided != decides {
+		t.Fatalf("a repeated report: the claim reads deathCharged=%v, want the end decided %v", h.claim().DeathCharged, decides)
 	}
 	want("a repeated report", turnEnd.see(h), notHeld(h, task), outsideEndQueued(h), o.deathStands(h, read), deathUnjudged(h, ended))
 
@@ -702,7 +735,20 @@ func (o outsideOrder) reach(h *harness, ev nextEvent, ended runtime.Locator, rea
 			h.t.Fatal("the relaunch the report raised was taken, want the lifecycle recheck's refusal of it")
 		}
 		store.failing = false
+	case atReportTakeBackRefused:
+		h.store.fail("PutDelivery", errStoreRefused)
+		if err := h.handle(RuntimeObservation{Observation: neither}); err == nil {
+			h.t.Fatal("the take-back the report made was written, want the store's refusal of it")
+		}
+		h.store.fail("PutDelivery", nil)
 	}
+}
+
+// readsOutside is whether a report after the end is read as from outside the pod.
+func (o outsideOrder) readsOutside() bool {
+	return slices.ContainsFunc(o.at, func(ev nextEvent) bool {
+		return ev == atReportOutside || ev == atReportOutsideRefused || ev == atReportOutsideQueued
+	})
 }
 
 // turnEndWatch holds the end of the turn (Claim.LastTurnEnd) where the decision of the end put
@@ -797,10 +843,14 @@ func deathRetyped(h *harness, generation uint64) string {
 }
 
 // deathStands is deathRetyped for a row whose first report is read neither way (firstNeither),
-// whose end died judges first, and "" for every other row. No report after that judgement is
-// continued as an end from outside the pod, so the claim logs no line of one at any step.
+// whose end died judges first, displacementRejudged for a row displaced judged first, and "" for
+// every other row. No report after died's judgement is continued as an end from outside the pod,
+// so the claim logs no line of one at any step.
 func (o outsideOrder) deathStands(h *harness, read uint64) string {
-	if !o.firstNeither {
+	switch {
+	case o.displacedFirst:
+		return displacementRejudged(h, read)
+	case !o.firstNeither:
 		return ""
 	}
 	if n := continuedLines(h); n != 0 {
@@ -883,9 +933,9 @@ func (o outsideOrder) deaths() int {
 
 // wantRecord fails unless the claim's record of the end is of the ended launch and says what the
 // row says: typed as an end from outside the pod, under the cause the row's record carries, or
-// displaced's where displaced judged the end first, and telling only where the end cut off work;
-// or, for a death, a death died judged (EndedWork.Died), and nothing that tells where the death
-// cut off no work.
+// displaced's, typed so, where displaced judged the end first, and from outside the pod too only
+// where a report read so came; telling only where the end cut off work; or, for a death, a death
+// died judged (EndedWork.Died), and nothing that tells where the death cut off no work.
 func (o outsideOrder) wantRecord(h *harness, read uint64, when string) {
 	h.t.Helper()
 	got := h.claim().EndedWork
@@ -904,16 +954,16 @@ func (o outsideOrder) wantRecord(h *harness, read uint64, when string) {
 		}
 		return
 	}
-	cause := endFromOutside
+	cause, outside := endFromOutside, !o.displacedFirst || o.readsOutside()
 	switch {
 	case o.cause != "":
 		cause = o.cause
 	case o.displacedFirst:
 		cause = endDisplaced
 	}
-	if !got.FromOutside || got.Cause != cause || got.Tells() != (o.told != "") {
-		h.t.Fatalf("%s: the claim records %+v, want a record of an end from outside the pod under %q that tells %v",
-			when, got, cause, o.told != "")
+	if got.FromOutside != outside || got.Displaced != o.displacedFirst || got.Cause != cause || got.Tells() != (o.told != "") {
+		h.t.Fatalf("%s: the claim records %+v, want a record under %q, from outside the pod %v and displaced's %v, that tells %v",
+			when, got, cause, outside, o.displacedFirst, o.told != "")
 	}
 }
 

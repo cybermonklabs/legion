@@ -587,7 +587,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
-	m.recordEnd(ctx, endDied(m.goneDeath), m.goneDeath.Cause.Kind, false, false)
+	m.recordEnd(ctx, endDied(m.goneDeath), m.goneDeath.Cause.Kind, false, false, false)
 	m.sessionGone(ctx)
 	return m.letProcessGoFor(ctx, request, false, stopSent)
 }

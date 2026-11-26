@@ -72,13 +72,28 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // task is marked as taken by this decision before the record is read (Machine.cutTurnOf), and
 // the record says its turn was cut off. A held suspension's stop then finds that record standing
 // and records no suspension in its place (endHeld), so the next process is told what ended it.
+// The record is typed as displaced's (EndedWork.Displaced), and it is left whatever the end
+// ended (markDisplaced), so a later report of the same launch finds this judgement standing.
 //
 // The cause it records and lets the process go with (launch, letGo) is endDisplaced, an act of the
 // daemon's own: judge sends an end from outside the pod to endedFromOutside, which hands
 // recordDisplaced its own cause, endFromOutside, so the daemon never tells the next process that
 // it made that end.
+//
+// The first judgement of a process stands, and a displacement is one: judge sends here, beside
+// every report the runtime reads as displaced, every report read neither way of a process whose
+// end the claim records as displaced's (recordedDisplaced). After a daemon restart the runtime's
+// record of its own act is gone (sandbox's meanToEndPod), so its report of the same pod comes
+// read neither way, or as from outside the pod, which endedFromOutside decides. Sent to died, a
+// report read neither way would decide a death of the daemon's own replacement: a launch
+// failure, a death where the claim held work, and the relaunch in the first queue. Here it is
+// that displacement again: its line, no record over displaced's, the take-back of a task whose
+// turn it cut off where displaced's own take-back was refused, and the relaunch, charged
+// nothing and waiting in the second queue, whose next process is told the replacement
+// displaced recorded.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	m.recordDisplaced(ctx, observation, endDisplaced, false)
+	m.markDisplaced()
 	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, endDisplaced)
 	return err
 }
@@ -89,8 +104,9 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // endedFromOutside takes the task back and writes its decision after this step and before that
 // one, so the claim it writes carries the record. cause is who ended the process, in the
 // daemon's words, and fromOutside whether that was something outside the pod, which the record
-// carries from its making (EndedWork.FromOutside): endDisplaced and false for displaced,
-// endFromOutside and true for endedFromOutside.
+// carries from its making (EndedWork.FromOutside), and otherwise that displaced judged it
+// (EndedWork.Displaced): endDisplaced and false for displaced, endFromOutside and true for
+// endedFromOutside.
 func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Observation, cause string, fromOutside bool) {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -101,7 +117,7 @@ func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Obser
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
 		"podEndReading", string(observation.EndReading), "detail", observation.Detail, "cause", cause)
-	m.recordGoneEnd(ctx, cause, "", fromOutside, false)
+	m.recordGoneEnd(ctx, cause, "", fromOutside, !fromOutside, false)
 }
 
 // displacedMidTurn is the sentence the replacement of a displaced process logs the take-back of
@@ -217,45 +233,87 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 	return errors.Join(written, err)
 }
 
-// markFromOutside leaves on the claim, for the launch it records, a record of its process's end
-// from outside the pod (EndedWork.FromOutside), whose cause is endFromOutside, whatever that end
-// ended, so the decision's write carries it and every later read of the end reads it as one from
-// outside the pod: a report of the ended process (judge, recordedFromOutside) and the boot's
-// replay of the decision (decidedFromOutside). Where recordGoneEnd recorded the end here
-// (recordDisplaced), that record is it, typed from its making.
+// markFromOutside leaves on the claim, for the launch it records, a record typed as an end from
+// outside the pod (EndedWork.FromOutside), whatever that end ended, so the decision's write
+// carries it and every later read of the end reads it as one from outside the pod: a report of
+// the ended process (judge, recordedFromOutside) and the boot's replay of the decision
+// (decidedFromOutside). A record made here carries endFromOutside as its cause; where
+// recordGoneEnd recorded the end here (recordDisplaced), that record already carries both; and a
+// record that already stands for this launch is typed, keeping its cause where displaced made it
+// and taking this end's where died made it (below).
 //
 // Where the end ended nothing worth telling — no turn running, no task taken back and no
 // background work reported (recordEnd) — recordGoneEnd records nothing, and the record left here
-// is told already, by no delivery (EndedWork.ToldBy empty): no prompt carries it, so the next
-// process is told nothing of such an end, as it is told nothing where no restart comes. A record
-// of an earlier launch that still tells is not marked told: it becomes this launch's record, with
-// this end's cause and moment, as a newer record replaces one still untold (joined), so what the
-// earlier process ended is still told, under the end that came last.
+// is told already, by no delivery (leaveRecord): no prompt carries it, so the next process is
+// told nothing of such an end, as it is told nothing where no restart comes. A record of an
+// earlier launch that still tells is not marked told: it becomes this launch's record, with this
+// end's cause and moment, so what the earlier process ended is still told, under the end that
+// came last.
 //
-// A record of this launch that already stands keeps its cause, its told state and the rest, and
-// is typed as one from outside the pod. A death died judged never comes here (judge,
-// judgedDeath), so that record is this end's own or the one displaced made of the same end
-// first: the daemon replaced the pod, and a later read of it found it ended from outside it, as
-// a restart between the replacement and the pod's end makes it, since the runtime holds its
-// record of the daemon's own act in memory alone (sandbox's meanToEndPod). Typed, the claim reads
-// the end decided from outside the pod: charged nothing, its relaunch waiting in the second
-// queue, relaunched charged nothing by the boot's replay, and decided nothing again by a later
-// report. Left untyped, it would read a charged death (chargedDeath) that nothing judged: its
-// relaunch in the first queue, the replay's relaunch charged a launch failure, and a later report
-// sent to died. The next process is still told the cause displaced recorded first.
+// A record of this launch that already stands keeps its told state and the rest, and is typed as
+// one from outside the pod. A death died judged never comes here (judge, judgedDeath), so that
+// record is this end's own, the one displaced made of the same end first, or the one died made
+// of a death that a verdict finding the process running then cleared (reportedProcess).
+//
+// Displaced's keeps its cause and its own type (EndedWork.Displaced): the daemon replaced the
+// pod, and a later read of it found it ended from outside it, as a restart between the
+// replacement and the pod's end makes it, since the runtime holds its record of the daemon's own
+// act in memory alone (sandbox's meanToEndPod). Typed, the claim reads the end decided from
+// outside the pod: charged nothing, its relaunch waiting in the second queue, relaunched charged
+// nothing by the boot's replay, and decided nothing again by a later report. Left untyped, it
+// would read a charged death (chargedDeath) that nothing judged: its relaunch in the first
+// queue, the replay's relaunch charged a launch failure, and a later report sent to died. The
+// next process is still told the cause displaced recorded first.
+//
+// died's takes this end's cause and drops the kind of the death's (EndedWork.Death): the process
+// ran on after that judgement, so the end that let it go is this one, and the next process is
+// told that its pod was ended from outside it, never that it died, as for every end from outside
+// the pod. What the record says the death's take-back cut off still stands.
 func (m *Machine) markFromOutside() {
-	held := m.claim.EndedWork
-	if held.Cause != "" && held.Generation == m.claim.Generation {
-		m.claim.EndedWork.FromOutside = true
+	held := &m.claim.EndedWork
+	if held.Cause == "" || held.Generation != m.claim.Generation {
+		m.leaveRecord(EndedWork{Cause: endFromOutside, FromOutside: true})
 		return
 	}
-	now := m.deps.Clock.Now()
-	if held.Tells() {
-		held.At, held.Cause, held.Death, held.Died, held.FromOutside, held.Generation = now, endFromOutside, "", false, true, m.claim.Generation
+	if !held.FromOutside && !held.Displaced {
+		held.Cause, held.Death = endFromOutside, ""
+		m.carried.ended = false
+	}
+	held.FromOutside = true
+}
+
+// markDisplaced leaves on the claim, for the launch it records, displaced's record of its end
+// (EndedWork.Displaced), whatever that end ended, as markFromOutside does for an end from outside
+// the pod. Where recordGoneEnd recorded the end (recordDisplaced), that record carries the type
+// already; where the end ended nothing worth telling, the record left here (leaveRecord) carries
+// endDisplaced as its cause. So a later report of the same launch read neither way, on this
+// daemon or after a restart wherever a write carried the record into the store, finds the
+// displacement standing and is that displacement again, charged nothing (recordedDisplaced). A
+// record of this launch that another judgement made first stands as it is.
+func (m *Machine) markDisplaced() {
+	if held := m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation {
+		return
+	}
+	m.leaveRecord(EndedWork{Cause: endDisplaced, Displaced: true})
+}
+
+// leaveRecord leaves typed, under its cause and its type, as the record of the end of the launch
+// the claim records, where no record of that launch stands because the end ended nothing worth
+// telling (markFromOutside, markDisplaced). A record of an earlier launch that still tells becomes
+// this launch's, with typed's cause and type and this moment, as a newer record replaces one
+// still untold (joined), so what the earlier process ended is still told, under the end that came
+// last. Otherwise typed is left told already, by no delivery (EndedWork.ToldBy empty), so no
+// prompt carries it and the next process is told nothing of an end that ended nothing.
+func (m *Machine) leaveRecord(typed EndedWork) {
+	typed.At, typed.Generation = m.deps.Clock.Now(), m.claim.Generation
+	if held := m.claim.EndedWork; held.Tells() {
+		held.At, held.Cause, held.Death, held.Died, held.FromOutside, held.Displaced, held.Generation =
+			typed.At, typed.Cause, "", false, typed.FromOutside, typed.Displaced, typed.Generation
 		m.claim.EndedWork, m.carried.ended = held, false
 		return
 	}
-	m.claim.EndedWork = EndedWork{At: now, Cause: endFromOutside, FromOutside: true, Generation: m.claim.Generation, Told: true}
+	typed.Told = true
+	m.claim.EndedWork = typed
 }
 
 // recordedFromOutside is whether the claim holds the record of the end of the launch it records
@@ -273,6 +331,20 @@ func (m *Machine) markFromOutside() {
 // does not read.
 func (c Claim) recordedFromOutside() bool {
 	return c.EndedWork.FromOutside && c.EndedWork.Generation == c.Generation
+}
+
+// recordedDisplaced is whether the claim holds the record of the end of the launch it records
+// typed as displaced's (EndedWork.Displaced): the daemon judged that end its own replacement of
+// the pod, or its take-over of another runtime's process, before anything else judged it. It
+// reads that typed value and never the record's sentence. Only displaced writes such a record
+// (recordDisplaced, markDisplaced), and it writes one whatever the end ended, so this holds on
+// the daemon that judged the end, and after a restart wherever a write of the claim carried the
+// record into the store. judge sends a report read neither way to displaced where this holds and
+// no death died judged first (judgedDeath), so the daemon's own replacement is never charged as
+// a death; a report read as from outside the pod still goes to endedFromOutside, which types the
+// record as one from outside the pod and leaves this as it stands (markFromOutside).
+func (c Claim) recordedDisplaced() bool {
+	return c.EndedWork.Displaced && c.EndedWork.Generation == c.Generation
 }
 
 // decidedFromOutside is whether the claim's decided end is one from outside the pod: the process
@@ -304,7 +376,10 @@ func (c Claim) chargedDeath() bool {
 // such a claim holds a record of the launch it records (EndedWork.Generation) that says died
 // judged it, over no decision. It reads that typed value and never the record's sentence. The
 // record and the decision go into the store with any write of the claim, so after a restart
-// this holds wherever a write carried either.
+// this holds wherever a write carried either. A verdict that finds the process running clears
+// both, and writes the clear (reportedProcess): the process lives, so the death judged of it is
+// over, and a later end of that process is judged afresh, as one from outside the pod where it
+// is read so.
 //
 // It is the rule that the first judgement of a process stands, in every order. judge sends a
 // report read as from outside the pod (runtime.PodEndNotOurs) to died wherever this holds, and

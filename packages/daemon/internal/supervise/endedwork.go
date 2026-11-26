@@ -24,7 +24,7 @@ import (
 // since that prompt can be a relaunch, a wake and a daemon restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
-// none: Cause is empty, but for the one exception FromOutside states.
+// none: Cause is empty, but for the two exceptions FromOutside and Displaced state.
 type EndedWork struct {
 	// At is when the process was let go, and Cause why: a sentence the daemon writes, beginning
 	// with what the decision that let the process go found (the cause constants and functions
@@ -42,32 +42,55 @@ type EndedWork struct {
 	// FromOutside is whether the end this record is of was one from outside the pod: the runtime
 	// read it so (runtime.PodEndNotOurs) and the daemon recorded it so (endedFromOutside), before
 	// the take-back and the decision that follow. It is written where the record is made
-	// (recordDisplaced, markFromOutside), or by markFromOutside over a record displaced made of
-	// the same end first, never read off Cause, and it is what every decision reads such an end
-	// by: a report of the ended process (judge, recordedFromOutside) and the boot's replay of the
-	// decision after a restart (decidedFromOutside). So a reword of endFromOutside, a sentence
-	// told to roles, leaves the records an earlier daemon wrote read as they were.
+	// (recordDisplaced, markFromOutside), or by markFromOutside over a record of the same launch
+	// that no end from outside the pod made (markFromOutside says which), never read off Cause,
+	// and it is what every decision reads such an end by: a report of the ended process (judge,
+	// recordedFromOutside) and the boot's replay of the decision after a restart
+	// (decidedFromOutside). So a reword of endFromOutside, a sentence told to roles, leaves the
+	// records an earlier daemon wrote read as they were.
 	//
-	// It is the one exception to the rule that a let-go that ended nothing worth telling records
-	// none (recordEnd, Claim.EndedWork, the store's ended_work): an end from outside the pod
-	// always leaves a record of its launch's end, whatever that end ended, so the decision's
-	// write carries this field. Where the end ended nothing worth telling, the record is told
-	// already, by no delivery (Told with ToldBy empty), so no prompt carries it and the next
-	// process is told nothing of that end. It is stored in the claim's JSON with the rest of
-	// the record, and an earlier daemon reading the row passes over the key.
+	// It is one of two exceptions to the rule that a let-go that ended nothing worth telling
+	// records none (recordEnd, Claim.EndedWork, the store's ended_work), Displaced being the
+	// other: an end from outside the pod always leaves a record of its launch's end, whatever
+	// that end ended, so the decision's write carries this field. Where the end ended nothing
+	// worth telling, the record is told already, by no delivery (Told with ToldBy empty), so no
+	// prompt carries it and the next process is told nothing of that end. It is stored in the
+	// claim's JSON with the rest of the record, and an earlier daemon reading the row passes
+	// over the key.
 	FromOutside bool `json:"fromOutside,omitempty"`
 	// Died is whether the end this record is of was a death died judged. died records the end
 	// before its take-back and its decision (recordGoneEnd), and the store can refuse the
 	// take-back, so a record of the claim's launch that says so stands for a judged death whether
-	// or not that death is decided yet. It is written where the record is made (died), as
-	// FromOutside is, never read off Cause, and it is what a later report of the process read as
-	// from outside the pod finds that death by (judge, judgedDeath): the first judgement stands,
-	// and a reword of a sentence leaves the records an earlier daemon wrote read as they were. It
-	// is stored in the claim's JSON with the rest of the record, and an earlier daemon reading the
-	// row passes over the key. A record an earlier daemon stored without it reads as no death died
-	// judged, so where no decision was stored with it, a later report of that end read as outside
-	// goes to endedFromOutside, as it did on that daemon.
+	// or not that death is decided yet. It is written where died judges the end, on the record
+	// it makes or on the one of the same launch it finds standing (died), as FromOutside is,
+	// never read off Cause, and it is what a later report of the process read as from outside
+	// the pod finds that death by (judge, judgedDeath): the first judgement stands, and a reword
+	// of a sentence leaves the records an earlier daemon wrote read as they were. A verdict that
+	// finds the process running clears it, with the charge (reportedProcess): the process lives,
+	// so the death judged of it is over, and a later end of it is judged afresh. It is stored in
+	// the claim's JSON with the rest of the record, and an earlier daemon reading the row passes
+	// over the key. A record an earlier daemon stored without it reads as no death died judged,
+	// so where no decision was stored with it, a later report of that end read as outside goes
+	// to endedFromOutside, as it did on that daemon.
 	Died bool `json:"died,omitempty"`
+	// Displaced is whether the end this record is of was one displaced judged: the daemon's own
+	// replacement of the pod, or its take-over of another runtime's process
+	// (runtime.Observation.Displaced). It is written where the record is made (recordDisplaced,
+	// markDisplaced), as Died and FromOutside are, never read off Cause, and it is what a later
+	// report of the process read neither way finds that judgement by (judge, recordedDisplaced):
+	// the first judgement of a process stands, and a displacement is one, so such a report is
+	// that displacement again, charged nothing, and never a death. A later report read as from
+	// outside the pod types the record as one from outside the pod and leaves this as it is
+	// (markFromOutside), so the record still says displaced judged the end first.
+	//
+	// It is the second exception to the rule FromOutside states: a displacement always leaves a
+	// record of its launch's end, whatever that end ended, told already by no delivery where it
+	// ended nothing worth telling, so a later report finds the judgement standing whatever the
+	// claim held. It is stored in the claim's JSON with the rest of the record, and an earlier
+	// daemon reading the row passes over the key. A record an earlier daemon stored without it
+	// reads as no displacement, so a later report of that end read neither way goes to died, as
+	// it did on that daemon.
+	Displaced bool `json:"displaced,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
 	// is gone (died, displaced) and the let-go that follows it in the same decision or at a wake's
@@ -113,8 +136,9 @@ type EndedWork struct {
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
 	// abandonment of that session ended (forgetSession) and for a record told at its making
-	// (FromOutside). A record not yet told is replaced by a newer one only as the union of the
-	// two (joined), so what the earlier let-go ended is not lost before anyone reads it.
+	// (FromOutside, Displaced). A record not yet told is replaced by a newer one only as the
+	// union of the two (joined), so what the earlier let-go ended is not lost before anyone reads
+	// it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -128,8 +152,8 @@ func (e EndedWork) Tells() bool { return e.Cause != "" && !e.Told }
 // turn either cut off, every background kind either named, and no report where either process
 // left none. What the earlier process ended is still true and still untold, so the newer record
 // keeps it rather than dropping it. The cause, its death and whether the end was from outside the
-// pod are the newer's together, since the last two say what kind of end the cause names; so is
-// whether it was a death died judged (Died).
+// pod are the newer's together, since the last two say what kind of end the cause names; so are
+// whether it was a death died judged (Died) and whether displaced judged it (Displaced).
 func (e EndedWork) joined(newer EndedWork) EndedWork {
 	newer.Turn = newer.Turn || e.Turn
 	newer.TaskTurn = newer.TaskTurn || e.TaskTurn
@@ -330,10 +354,12 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // fromOutside is whether the end is one from outside the pod, which the record carries from its
 // making (EndedWork.FromOutside): true where endedFromOutside records it (recordDisplaced), and
-// false for every other let-go. died is whether the end is a death died judged, which the record
-// carries from its making too (EndedWork.Died): true where died records it, and false for every
-// other let-go.
-func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, died bool) {
+// false for every other let-go. displaced is whether displaced judged the end, which the record
+// carries from its making too (EndedWork.Displaced): true where displaced records it
+// (recordDisplaced), and false for every other let-go. died is whether the end is a death died
+// judged, which the record carries from its making as well (EndedWork.Died): true where died
+// records it, and false for every other let-go.
+func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, displaced, died bool) {
 	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -342,8 +368,8 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 		return
 	}
 	state := m.endState()
-	ended := EndedWork{Cause: cause, Death: death, FromOutside: fromOutside, Died: died, Generation: m.claim.Generation,
-		Turn: state == StateWorking}
+	ended := EndedWork{Cause: cause, Death: death, FromOutside: fromOutside, Displaced: displaced, Died: died,
+		Generation: m.claim.Generation, Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
 	// (interrupted, cutTurnOf), whatever the claim's state: a turn that ended before its prompt's
 	// result came leaves the claim idle with the task confirmed, and a take-back from there sends
@@ -393,12 +419,12 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 // mark to the id it gives the task (interrupted), and letGo clears it with the process. A
 // take-back the store refuses leaves the mark on the task it left confirmed, which no later
 // let-go of this process reads: the record of this launch already stands (EndedWork.Generation).
-// death, fromOutside and died are recordEnd's.
-func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, died bool) {
+// death, fromOutside, displaced and died are recordEnd's.
+func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, displaced, died bool) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
 		m.cutTurnOf = p.ID
 	}
-	m.recordEnd(ctx, cause, death, fromOutside, died)
+	m.recordEnd(ctx, cause, death, fromOutside, displaced, died)
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

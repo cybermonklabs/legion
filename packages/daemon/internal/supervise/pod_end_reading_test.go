@@ -12,6 +12,7 @@ package supervise
 import (
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -596,7 +597,7 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			want := EndedWork{Cause: tc.cause, FromOutside: tc.reading == runtime.PodEndNotOurs,
+			want := EndedWork{Cause: tc.cause, FromOutside: tc.reading == runtime.PodEndNotOurs, Displaced: tc.displaced,
 				Background: true, Kinds: []string{"subagent"}, Reported: true}
 			if tc.idle {
 				h.reach(StateIdle)
@@ -639,11 +640,19 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 // disarm a claim holding a task sent and not confirmed whose relaunch the recheck refuses keeps
 // its process and the armed timer, and moving the clock past the RPC wait charges a prompt failure
 // for a process that no longer exists — for an end from outside the pod, a displacement and a
-// death alike (a death is already its own charge).
+// death alike (a death is already its own charge). Nothing arms it after the verdict either:
+// the acknowledgement of a send in flight when the report came (acked), the held send of a
+// compaction the verdict dropped whose wait then runs out (keepHeldPrompt), and the end of a
+// compaction taken over the gone process, its connection still registered (compactEnded). Nor
+// is the task sent to the gone process: the end of that compaction sends nothing (sendPending,
+// Machine.processGone), and the task waits for the relaunch, which sends it once.
 //
 // The negative controls: judge leaving TimerTurn armed on a gone verdict fails the "refused at the
-// report" subtests (a prompt failure is charged once the wait runs out), and watchAgain arming
-// TimerTurn over a gone process fails the "refused at the parked relaunch's turn" subtests.
+// report" subtests (a prompt failure is charged once the wait runs out), watchAgain arming
+// TimerTurn over a gone process fails the "refused at the parked relaunch's turn" subtests,
+// acked, keepHeldPrompt or compactEnded arming it over a gone process fails the subtests of the
+// late acknowledgement, the held send and the compaction, and sendPending sending over a gone
+// process fails the subtests of the relaunch after the compaction, the task prompted twice.
 func TestAGoneProcessWithARefusedRelaunchDisarmsTheTurnStartTimerForADeathAndAnEndFromOutside(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -720,6 +729,101 @@ func TestAGoneProcessWithARefusedRelaunchDisarmsTheTurnStartTimerForADeathAndAnE
 			}
 			if p := h.pending(); p.ID != acked {
 				t.Fatalf("pending = %+v, want %s kept: no turn timer should have fired", p, acked)
+			}
+		})
+		obs := func(h *harness) RuntimeObservation {
+			return RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
+				At: h.clock.Now(), EndReading: tc.reading, Displaced: tc.displaced}}
+		}
+		// wantNoTurnBound fails unless the wait for a turn stays disarmed past the RPC wait twice
+		// over and nothing but the end itself is charged, in the claim and in the store.
+		wantNoTurnBound := func(t *testing.T, h *harness, after string) {
+			t.Helper()
+			if h.armed(TimerTurn) {
+				t.Errorf("%s armed TimerTurn over the dead process, want it left disarmed", after)
+			}
+			h.advance(2 * testRPC)
+			h.wantBudgets(tc.wantDirect)
+			if stored := h.store.load(h.token).Budgets; stored != tc.wantDirect {
+				t.Fatalf("stored budgets = %+v, want %+v: no prompt failure for a gone process", stored, tc.wantDirect)
+			}
+		}
+		t.Run(tc.name+"/refused at the report, then the send's late acknowledgement", func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			if err := h.m.Handle(h.ctx, RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7}); err != nil {
+				t.Fatal(err)
+			}
+			sent := waitFor(t, "the send", gated.entered)
+			h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			// The send waits at the connection's door, so the report is not waited on behind it.
+			if err := h.m.Handle(h.ctx, obs(h)); err == nil {
+				t.Fatal("the relaunch was taken, want the lifecycle recheck's refusal of it")
+			}
+			gated.release <- struct{}{}
+			h.m.Wait()
+			if !slices.Contains(h.outstanding(), sent) {
+				t.Fatalf("prompts %v are outstanding, want the acknowledged %s among them", h.outstanding(), sent)
+			}
+			wantNoTurnBound(t, h, "the acknowledgement after the gone verdict")
+		})
+		t.Run(tc.name+"/refused at the report under a compaction, then the held send runs out", func(t *testing.T) {
+			h := newHarness(t)
+			gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, unansweredPrompt)
+			h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			if err := h.m.Handle(h.ctx, obs(h)); err == nil {
+				t.Fatal("the relaunch was taken, want the lifecycle recheck's refusal of it")
+			}
+			sendRunsOutUnderTheHandoff(t, h, gated, sent)
+			release()
+			if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+				t.Fatalf("the compaction whose process was lost answered %v, want ErrCompactProcessGone", err)
+			}
+			h.m.Wait()
+			wantNoTurnBound(t, h, "the held send's wait running out after the gone verdict")
+		})
+		t.Run(tc.name+"/refused at the report, then a compaction", func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
+			acked := h.wantPrompts(1)[0].DeliveryID
+			h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			if err := h.handle(obs(h)); err == nil {
+				t.Fatal("the relaunch was taken, want the lifecycle recheck's refusal of it")
+			}
+			if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
+				t.Fatalf("compact: %v", err)
+			}
+			h.m.Wait()
+			wantNoTurnBound(t, h, "the compaction's end after the gone verdict")
+			if p := h.pending(); p.ID != acked {
+				t.Fatalf("pending = %+v, want %s kept: no turn timer should have fired", p, acked)
+			}
+		})
+		t.Run(tc.name+"/refused at the report, then a compaction, then the relaunch", func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
+			h.wantPrompts(1)
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+			if err := h.handle(obs(h)); err == nil {
+				t.Fatal("the relaunch was taken, want the lifecycle recheck's refusal of it")
+			}
+			if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
+				t.Fatalf("compact: %v", err)
+			}
+			h.m.Wait()
+			if prompts := h.prompts(); len(prompts) != 1 {
+				t.Fatalf("the claim was prompted %+v by the compaction's end, want nothing sent to the gone process", prompts)
+			}
+			store.failing = false
+			h.must(obs(h))
+			h.relaunched()
+			if told := h.wantPrompts(2)[1].Message; !strings.HasSuffix(told, "implement the plan") {
+				t.Fatalf("the relaunched process was sent %q, want the task", told)
 			}
 		})
 	}

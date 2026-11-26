@@ -1761,6 +1761,13 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // wait is armed for a turn that has already run. Armed, that wait would outlive the task, whose
 // result confirms nothing more and so disarms nothing (confirmCarrying), and hold the next task
 // behind it (sendPending), or charge the prompt for a turn it ran (noTurn).
+//
+// Nor is a wait armed over a process the runtime last reported gone (Machine.processGone): an
+// acknowledgement whose send was in flight when that report came reaches the claim after it, and
+// a gone process starts no turn, so the wait would charge a prompt failure for a process that no
+// longer exists, where the report itself disarmed the wait (judge) and a parked relaunch's
+// refused turn arms none (watchAgain). The prompt is still recorded outstanding, and the task
+// still marked read, as for every acknowledgement; the relaunch sends the task again.
 func acked(m *Machine, ctx context.Context, ev Event) error {
 	p := m.takeAck(ev)
 	if !p.ConfirmedAt.IsZero() {
@@ -1768,7 +1775,9 @@ func acked(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.markRead(p)
 	m.copyTurnNews(p)
-	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	if !m.processGone {
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	}
 	return m.putPending(ctx)
 }
 

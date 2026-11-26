@@ -72,20 +72,21 @@ const processReadBound = 5 * time.Second
 // asks this about.
 //
 // What the read finds is recorded exactly as the sweep's own report of the same process is
-// recorded (reportedProcess). A running verdict that clears the death charge (Claim.DeathCharged)
-// is written here in the same write judge makes for that report, which is the claim as the
-// machine holds it (persist): whatever an earlier decision set in memory and no write carried
-// yet goes into the store with the clear — in the window a refused relaunch leaves, its launch
-// failure count and its pending cause — exactly as it would at the sweep's next running report.
-// Held in memory alone, the clear would be lost at a restart, the sweep's next report of the live
-// process would find nothing to clear, and the process's next real death would go uncounted
-// toward the deaths limit. The read is not the refusal a caller gives on its answer
-// (dispatch://INFRA-3161 R3): that refusal stops, suspends, forgets, takes back and starts
-// nothing (api's refuseWorkingClaim). Nothing else is judged: no death, no displacement, no
-// repoint, no relaunch and no timer armed. What the answer means is the caller's — the
-// recovery it is read for suspends the claim and starts it again — and a read that relaunched
-// would start a process the caller is about to replace, so the read reports and the caller
-// decides.
+// recorded (reportedProcess). A running verdict that clears the death charge (Claim.DeathCharged),
+// or the record's judgement of that death (EndedWork.Died), is written here in the same write
+// judge makes for that report, which is the claim as the machine holds it (persist): whatever an
+// earlier decision set in memory and no write carried yet goes into the store with the clear — in
+// the window a refused relaunch leaves, its launch failure count and its pending cause — exactly
+// as it would at the sweep's next running report. Held in memory alone, the clear would be lost
+// at a restart, the sweep's next report of the live process would find nothing to clear, the
+// process's next real death would go uncounted toward the deaths limit, and a later end of it
+// read as from outside the pod would be charged as the death that is over (judgedDeath). The
+// read is not the refusal a caller gives on its answer (dispatch://INFRA-3161 R3): that refusal
+// stops, suspends, forgets, takes back and starts nothing (api's refuseWorkingClaim). Nothing
+// else is judged: no death, no displacement, no repoint, no relaunch and no timer armed. What the
+// answer means is the caller's — the recovery it is read for suspends the claim and starts it
+// again — and a read that relaunched would start a process the caller is about to replace, so
+// the read reports and the caller decides.
 func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	m.mu.Lock()
 	defer m.unlock()
@@ -110,14 +111,16 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 		return ProcessUnanswered
 	}
 	if m.reportedProcess(observation) {
-		// The read found the process running, and the charge standing in the store is of a death
-		// that is over (Claim.DeathCharged, reportedProcess). It is written here as judge writes
-		// it, because a clear held in memory alone is lost at a restart and leaves the sweep's
-		// next report of the same live process nothing to clear, so the process's next real death
-		// would go uncounted. A store that will not take it leaves the clear in memory: where the
-		// failure is one the store may take on a retry, the write is marked owed and the repair or
-		// the claim's next write carries it (owes); where the server refused the statement, the
-		// claim's next write that the store takes carries it.
+		// The read found the process running, and the charge or the death judgement standing in
+		// the store is of a death that is over (Claim.DeathCharged, reportedProcess). It is
+		// written here as judge writes it, because a clear held in memory alone is lost at a
+		// restart and leaves the sweep's next report of the same live process nothing to clear,
+		// so the process's next real death would go uncounted, and a later end of it read as
+		// from outside the pod would be charged as that death. A store that will not take it
+		// leaves the clear in memory: where the failure is one the store may take on a retry, the
+		// write is marked owed and the repair or the claim's next write carries it (owes); where
+		// the server refused the statement, the claim's next write that the store takes carries
+		// it.
 		if err := m.persist(ctx); err != nil {
 			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; it stays in memory for the claim's next write the store takes",
 				"incarnation", m.claim.Locator.Incarnation, "error", err)

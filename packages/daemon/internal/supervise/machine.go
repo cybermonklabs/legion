@@ -224,8 +224,8 @@ type Claim struct {
 	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
 	// prompt that tells it can be a relaunch, a wake and a daemon restart away, and a newer
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
-	// whose let-gos ended nothing worth telling records none, but for the one exception
-	// EndedWork.FromOutside states.
+	// whose let-gos ended nothing worth telling records none, but for the two exceptions
+	// EndedWork.FromOutside and EndedWork.Displaced state.
 	EndedWork EndedWork
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
@@ -4341,6 +4341,19 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // launch's record standing and adds none. The record says it is of a death died judged
 // (EndedWork.Died), so a later report of the process read as from outside the pod, which can
 // come before the decision where the take-back is refused, comes back here (judge, judgedDeath).
+// A record of this launch that stood already is typed so too, as this death's judgement: judge
+// sends no report here over a record another judgement made, so it is an earlier death's of the
+// same process, whose judgement a verdict that found the process running cleared
+// (reportedProcess), or one an earlier daemon stored without the type.
+//
+// Over an end already decided (Claim.DeathCharged on entry) nothing of the end is recorded
+// again: the decision recorded what that end ended, or found nothing worth recording, and that
+// stands. Such a report — the sweep's over a relaunch the lifecycle refused, or one after a
+// restart, read as from outside the pod or not — raises the relaunch the decision raised and
+// adds no record of its own. Recorded again, the record would read the launch's activity anew,
+// and a read the store refused where the decision's did not would make a record of a death that
+// cut off no work: one that tells, and wakes a role that held nothing to tell it its process
+// died (queueRelaunch).
 //
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
@@ -4367,7 +4380,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// adds a rune, so the runtime's bound (runtime.PodEndRunes) still holds.
 	m.claim.PodEnd = storetext.FarSideText(observation.PodEnd)
 	ended := endDied(observation)
-	m.recordGoneEnd(ctx, ended, observation.Cause.Kind, false, true)
+	if !m.claim.DeathCharged {
+		m.recordGoneEnd(ctx, ended, observation.Cause.Kind, false, false, true)
+		if held := &m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation {
+			held.Died = true
+		}
+	}
 	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -4439,12 +4457,13 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // the claim records and typed as an end from outside the pod (EndedWork.FromOutside,
 // decidedFromOutside), where a death's record is not, is of an earlier launch, or is none. Such
 // an end is relaunched as that end relaunched it, through relaunchDeath's uncharged branch, which
-// charges no launch failure and waits no backoff, with endFromOutside as what ended the process,
-// so the record the next process is told says its pod was ended from outside it. Relaunched as a
-// death, it would be charged a launch failure and its backoff for an end that charges nothing,
-// and a let-go that found no record of that end would tell the next process that the process
-// died (endRecordedDeath). A report of the process that reaches the claim before this replay is
-// that end again (judge), and raises the relaunch this then finds raised (launchMet).
+// charges no launch failure and waits no backoff, passing endFromOutside as the let-go's cause,
+// so any record letGo makes says its pod was ended from outside it, while a standing record of
+// this launch (this end's own or a displacement's that markFromOutside typed) keeps its cause.
+// Relaunched as a death, it would be charged a launch failure and its backoff for an end that
+// charges nothing, and a let-go that found no record of that end would tell the next process that
+// the process died (endRecordedDeath). A report of the process that reaches the claim before this
+// replay is that end again (judge), and raises the relaunch this then finds raised (launchMet).
 //
 // It raises nothing over a claim whose record moved since the boot read it: a launch started the
 // next generation, or a report found the process running, which clears the charge
@@ -4942,7 +4961,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // in one transaction (carriesPending): written apart, a stop between the two writes would restore
 // a stopped claim whose unsent task reads as served.
 func (m *Machine) letGo(ctx context.Context, cause string) {
-	m.recordEnd(ctx, cause, "", false, false)
+	m.recordEnd(ctx, cause, "", false, false, false)
 	m.disarmAll()
 	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
 	m.wake = nil
@@ -5004,9 +5023,10 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 // (api's relaunchWaits, launchNow, letGo).
 //
 // What that record is read for is written where it is applied (Claim.ProcessGone). The separate
-// record of the charge that keeps one dead process to one death is durable, so a report that
-// clears it is written here, before the guard below: the claim's process is running, the charge
-// standing in the store is of a death that is over, and the window this guard drops is one
+// record of the charge that keeps one dead process to one death is durable, and so is the
+// record's judgement of that death (EndedWork.Died), so a report that clears either is written
+// here, before the guard below: the claim's process is running, the charge and the judgement
+// standing in the store are of a death that is over, and the window this guard drops is one
 // where nothing else writes the claim (Claim.DeathCharged, died). A write the store would not
 // take ends the report, and what the report would have done goes with it: judge returns above
 // the guard and the verdict below it, so the sweep's own work on this observation is not run at
@@ -5064,14 +5084,21 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// neither way since the reading went with the old daemon's memory, and died would charge
 		// it as a death. The first judgement of a process stands, so a report read as outside over
 		// a death of this launch that died judged first goes to died, which handles it as a later
-		// report of that death (judgedDeath). An end the daemon itself made, and one the runtime
-		// read neither way of a process no record from outside the pod covers, are charged exactly
-		// as they were before the reading existed.
+		// report of that death (judgedDeath). A displacement is a judgement too: a report read
+		// neither way of a process whose end the claim records as displaced's
+		// (recordedDisplaced), as a restart that lost the runtime's record of its own act reads
+		// it, is that displacement again, charged nothing, and goes to displaced. An end the
+		// daemon itself made, and one the runtime read neither way of a process that no record
+		// from outside the pod or of a displacement covers, are charged exactly as they were
+		// before the reading existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}
 		if (observation.EndReading == runtime.PodEndNotOurs || m.claim.recordedFromOutside()) && !m.claim.judgedDeath() {
 			return m.endedFromOutside(ctx, observation)
+		}
+		if m.claim.recordedDisplaced() && !m.claim.judgedDeath() {
+			return m.displaced(ctx, observation)
 		}
 		return m.died(ctx, observation)
 	case runtime.StaleAddress:
@@ -5105,21 +5132,32 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 // until one comes (judge's uncertain verdict, probe).
 //
 // Such a verdict clears what was charged for that process's death with it (Claim.DeathCharged),
-// and reports that it did so, for judge to write: the process is running, so the death a later
-// report of it finds is a death of its own. That holds for a death died charged. It leaves the
+// and the judgement of that death the record of the launch carries (EndedWork.Died), and reports
+// that it cleared either, for judge to write: the process is running, so the death judged of it
+// is over, and the end a later report of it finds is judged afresh — a death of its own where
+// it is read neither way, and an end from outside the pod where it is read so, which a death
+// judgement left standing would send to died to be charged as a second death (judgedDeath).
+// That holds for a death died charged, and for one it judged over a take-back the store refused.
+// The clear and the cleared judgement go into the store in the one write, as both go in with
+// any write of the claim, so a restart after it reads the death over as well. It leaves the
 // record of an end from outside the pod (EndedWork.FromOutside) as it stands, because no running
 // verdict follows such an end for the launch the claim records (recordedFromOutside says why).
 // Here and letGo clear both records of a running machine, and NormalizeClaim clears the charge
 // of a claim read back recording no process.
-func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharge bool) {
+func (m *Machine) reportedProcess(observation runtime.Observation) (cleared bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:
 		m.processGone, m.goneDeath = true, observation
 	case ProcessRuns:
-		clearedCharge = m.claim.DeathCharged
+		ended := &m.claim.EndedWork
+		judged := ended.Died && ended.Generation == m.claim.Generation
+		cleared = m.claim.DeathCharged || judged
 		m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
+		if judged {
+			ended.Died = false
+		}
 	}
-	return clearedCharge
+	return cleared
 }
 
 // probe asks the runtime about the claim's process now and judges the answer. A claim can reach

@@ -410,9 +410,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		}
 		abandoned = encoded
 	}
-	// Null is a claim no let-go of whose process ended anything worth telling, but for the one
-	// exception supervise's EndedWork.FromOutside states; one that did records what it ended, for
-	// the next process to be told (supervise's EndedWork, recordEnd).
+	// Null is a claim no let-go of whose process ended anything worth telling, but for the two
+	// exceptions supervise's EndedWork.FromOutside and EndedWork.Displaced state; one that did
+	// records what it ended, for the next process to be told (supervise's EndedWork, recordEnd).
 	var endedWork []byte
 	if c.EndedWork.Cause != "" {
 		encoded, err := json.Marshal(c.EndedWork)
