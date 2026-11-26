@@ -454,7 +454,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
 // slots still admit four app pods holding connections at once (472 of 497) and still refuse five
 // (590), exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. The
-// check states settler is one more again: 118, four pods 472 of 497 and five refused at 590, so it
+// check states settler is one more again: 119, four pods 476 of 497 and five refused at 595, so it
 // moves none either. A deployment on another tier reads SHOW max_connections against its own roll,
 // as sharedPoolSize's note says.
 //
@@ -470,7 +470,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 27
+const LeasePoolSize = 28
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
