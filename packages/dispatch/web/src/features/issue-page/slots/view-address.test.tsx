@@ -4,7 +4,7 @@ import type { NavigateFunction } from "react-router-dom";
 
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import type { ArtifactBlock, Comment, IssueDetails } from "../../../api/types";
+import type { ArtifactBlock, Ask, Comment, IssueDetails } from "../../../api/types";
 import {
   artifact,
   issueDetails,
@@ -596,4 +596,83 @@ test("the comment's address followed again under the Spec view, after a press mo
   await rowTakesFocus(view, SPEC_STATEMENT_ROW, "a press on the statement's row");
   await act(async () => held.navigate?.(`${presetPath(KEY, "spec")}?comment=head-b`));
   await rowTakesFocus(view, SPEC_COMMENT_ROW, "the comment's address followed again");
+});
+
+/** A second statement of the spec, below the first. */
+const SECOND_STATEMENT = "r2";
+
+/** An open approval request on the issue's spec, as the asks read answers it: an ask of the issue
+ *  that names the document it asks about (`artifact_id`) and no block of it, and no node of the
+ *  tree (`tree-drafts.ts`'s `addAsks`). */
+const APPROVAL: Ask & { readonly last_reply: null } = {
+  anchor: null,
+  answer: null,
+  artifact_id: "artifact-spec",
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: { id: "session-1", kind: "session" },
+  block_id: null,
+  created_at: "2026-11-20T09:00:00Z",
+  edited_at: null,
+  id: "6a3e1f0c-2b7d-4c5e-9f18-3d4b5a6c7e80",
+  issue_key: KEY,
+  kind: "approval",
+  last_reply: null,
+  multiple: false,
+  opened_event_id: 1,
+  options: [],
+  question: "Approve spec.md (version 1)?",
+  state: "open",
+  urgency: "med",
+  waiting_on: "human",
+  waiting_on_person: "alice",
+};
+
+// A link to an approval request on the spec - its id beside the Decisions view's address
+// (`?ask=`) - lands on the spec's address with the request marked (`address-target.ts`'s
+// `landingPath`), since the request names the document it asks about and no block of it
+// (`issue/useItemLanding.ts`). That address opens a document (`issue-address.ts`'s
+// `documentItem`), so the stage draws the Spec view and never the outline in its place; the
+// request is no node of the tree, so the view draws its statements with the tab stop and the
+// focus on the first. Where the Spec view's slot drew nothing, the address drew a blank stage.
+test("an approval request marked on the Spec view's address draws the view, with its statements and the focus on the first", async () => {
+  answerVerificationReads();
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: true,
+    issue: KEY,
+    requirements: [STATEMENT, SECOND_STATEMENT].map((block) => ({
+      block_id: block,
+      checks: block === STATEMENT ? 1 : 0,
+      gaps: [],
+      plan_tasks: block === STATEMENT ? 1 : 0,
+      ref: specRef(block),
+      text: `The page draws ${block}.`,
+    })),
+    spec_artifact_id: "artifact-spec",
+  });
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) =>
+    id === "artifact-spec"
+      ? [typedBlock(STATEMENT, "requirement"), typedBlock(SECOND_STATEMENT, "requirement")]
+      : [...(BLOCKS[id] ?? [])]
+  );
+  spyOn(api, "listIssueAsks").mockResolvedValue([APPROVAL]);
+  const view = drawStage(`?mark=${APPROVAL.id}`, { issue: verifiedIssue(), preset: "spec" });
+  const first = await rowTakesFocus(
+    view,
+    SPEC_STATEMENT_ROW,
+    "the approval request's address under Spec"
+  );
+  expect(drawnSlot(view), "the stage drew the outline in place of the Spec view").toBe("the view");
+  expect(
+    [...view.container.querySelectorAll<HTMLElement>("[data-spec-body] [data-spec-statement]")].map(
+      (row) => row.dataset.nodeId
+    ),
+    "the Spec view does not draw the spec's two statements"
+  ).toEqual([blockNodeId(SPEC_SLUG, STATEMENT), blockNodeId(SPEC_SLUG, SECOND_STATEMENT)]);
+  expect(first, "the first statement is not the Spec view's tab stop").toHaveAttribute(
+    "tabindex",
+    "0"
+  );
 });
