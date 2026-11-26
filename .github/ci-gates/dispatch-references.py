@@ -1,0 +1,71 @@
+# The dispatch_references filter, kept by hand: gates ci.yaml's dispatch-references job, a
+# pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no
+# merge; its filter names the eleven spec files and what they test, less than the job reads on
+# purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of
+# those rows. Rule 24 of .github/scripts/check-ci-filters.sh holds it to the spec files the
+# references lane runs.
+# why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
+EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files and what they test, less than the job reads on purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of those rows", [
+    # why: .github/ci-notes/ci.md#dispatch_references-the-workflow-that-holds-the-lanes-jobs-and-the-script-that-holds-its-spec-files
+    '.github/workflows/dispatch-browser.yaml',
+    '.github/scripts/dispatch-browser-shard-suite.sh',
+    '.github/scripts/dispatch-browser-reading-rows.sh',
+    '.github/scripts/dispatch-browser-latest-blobs.sh',
+    '.github/scripts/dispatch-browser-fetch-binaries.sh',
+    # why: .github/ci-notes/ci.md#dispatch_references-the-eleven-spec-files-and-the-helpers-only-they-share
+    'packages/dispatch/e2e/bare-references.e2e.ts',
+    'packages/dispatch/e2e/btw.e2e.ts',
+    'packages/dispatch/e2e/mention-composer.e2e.ts',
+    'packages/dispatch/e2e/mention-reference.e2e.ts',
+    'packages/dispatch/e2e/reference-kinds.e2e.ts',
+    'packages/dispatch/e2e/reference-naming.e2e.ts',
+    'packages/dispatch/e2e/reference-picker.e2e.ts',
+    'packages/dispatch/e2e/reference-titles.e2e.ts',
+    'packages/dispatch/e2e/refetch-budget.e2e.ts',
+    'packages/dispatch/e2e/writing-surfaces.e2e.ts',
+    'packages/dispatch/e2e/search.e2e.ts',
+    'packages/dispatch/e2e/reading-*.e2e.ts',
+    'packages/dispatch/e2e/reading-rows.ts',
+    'packages/dispatch/e2e/parse-count.e2e.ts',
+    'packages/dispatch/e2e/reference-surfaces.ts',
+    'packages/dispatch/e2e/search.ts',
+    'packages/dispatch/e2e/writing-boxes.ts',
+    'packages/dispatch/web/src/features/refs/**',
+    'packages/dispatch/web/src/features/conversation/MentionField.tsx',
+    'packages/dispatch/web/src/features/conversation/MentionComposer.tsx',
+    'packages/dispatch/web/src/features/conversation/ConversationTab.tsx',
+    'packages/dispatch/web/src/features/inbox/ThreadBody.tsx',
+    'packages/dispatch/web/src/features/inbox/AskCard.tsx',
+    'packages/dispatch/web/src/features/inbox/DeclineControl.tsx',
+    'packages/dispatch/web/src/features/inbox/AskThread.tsx',
+    'packages/dispatch/web/src/features/margin/CommentsTab.tsx',
+    'packages/dispatch/web/src/features/margin/ThreadCard.tsx',
+    'packages/dispatch/web/src/features/doc/DocumentRefPicker.tsx',
+    'packages/dispatch/web/src/features/doc/editor.ts',
+    'packages/dispatch/web/src/features/doc/ApprovalChip.tsx',
+    'packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx',
+    'packages/dispatch/web/src/features/agents/AgentsPage.tsx',
+    'packages/dispatch/web/src/features/agent-view/AgentThread.tsx',
+    'packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx',
+    'packages/dispatch/web/src/features/issue/DecisionsPanel.tsx',
+    'packages/dispatch/web/src/features/issue-page/DecisionActions.tsx',
+    'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx',
+    'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx',
+    'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx',
+    'packages/contracts/src/dispatch-text-references*.ts',
+    'packages/contracts/src/reference-spans.ts',
+    'packages/contracts/src/dispatch-writing-boxes.ts',
+    'packages/contracts/src/dispatch-reading-surfaces.ts',
+    # why: .github/ci-notes/ci.md#dispatch_references-the-server-side-of-references
+    'packages/envoy/internal/dispatch/text/**',
+    'packages/envoy/internal/dispatch/refs/**',
+    'packages/envoy/internal/dispatch/pmdoc/**',
+    'packages/envoy/internal/dispatch/api/search*.go',
+    'packages/envoy/internal/dispatch/api/references*.go',
+    'packages/envoy/internal/dispatch/api/comment*.go',
+    'packages/envoy/internal/dispatch/api/replies*.go',
+    'packages/envoy/internal/dispatch/api/reply*.go',
+    'packages/envoy/internal/dispatch/api/agents_known*.go',
+    # why: .github/ci-notes/ci.md#dispatch_references-no-browser-row-compiles-a-go-test-file
+    '!packages/envoy/internal/dispatch/**/*_test.go',
+])

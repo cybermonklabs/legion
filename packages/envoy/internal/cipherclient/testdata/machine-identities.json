@@ -1,0 +1,56 @@
+{
+  "about": [
+    "Each identity AGENT_SECRETS_MACHINE_IDENTITY names, with the variables it needs, in the order its clients read them: a client that is given none of them refuses the first, then the next once the first is set, and builds the identity once all are set.",
+    "clients names the clients that take the kind: go is packages/envoy/internal/cipherclient (MachineIdentity), typescript is packages/cipher-client (machineIdentity). A Go tool refuses device-login by name.",
+    "example is a value each client takes for the variable. TestEveryMachineIdentityReadsTheCorpusVariablesInOrder (machine_identities_test.go) and packages/cipher-client/src/__tests__/machine-identities.test.ts hold each client to this file, which is how the two are held to one list."
+  ],
+  "identities": [
+    {
+      "kind": "kubernetes",
+      "clients": ["go", "typescript"],
+      "variables": [
+        { "name": "AGENT_SECRETS_MACHINE_TOKEN_FILE", "example": "/var/run/secrets/exchange/token" }
+      ]
+    },
+    {
+      "kind": "metadata",
+      "clients": ["go", "typescript"],
+      "variables": [
+        { "name": "AGENT_SECRETS_MACHINE_AUDIENCE", "example": "https://cipher.example" }
+      ]
+    },
+    {
+      "kind": "pool",
+      "clients": ["go", "typescript"],
+      "variables": [
+        { "name": "AGENT_SECRETS_MACHINE_TOKEN_FILE", "example": "/var/run/secrets/pool/token" },
+        { "name": "AGENT_SECRETS_MACHINE_AUDIENCE", "example": "example-machine-client-id" },
+        {
+          "name": "AGENT_SECRETS_POOL_AUDIENCE",
+          "example": "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider"
+        },
+        {
+          "name": "AGENT_SECRETS_POOL_ACCOUNT",
+          "example": "example-fleet@example-project.iam.gserviceaccount.com"
+        }
+      ]
+    },
+    {
+      "kind": "github-actions",
+      "clients": ["go", "typescript"],
+      "variables": [
+        {
+          "name": "ACTIONS_ID_TOKEN_REQUEST_URL",
+          "example": "https://token.actions.example/idtoken?api-version=2.0"
+        },
+        { "name": "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "example": "example-request-token" },
+        { "name": "AGENT_SECRETS_MACHINE_AUDIENCE", "example": "https://cipher.example" }
+      ]
+    },
+    {
+      "kind": "device-login",
+      "clients": ["typescript"],
+      "variables": [{ "name": "AGENT_SECRETS_URL", "example": "https://cipher.example" }]
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+# The packages each leg of a Go job runs. A job that runs in legs runs one copy of itself per leg,
+# at the same time, each over the packages its leg lists here, with the same flags (-race, -skip,
+# -timeout) in every leg; a job of the job's old name then passes only when every leg passed, so
+# its check-run name and ci-ok's reading of it stay as they were.
+#
+# Each package of a module is in exactly one place here: one leg of one job, or `elsewhere`, a
+# job that runs it outside these legs. A package too long for one leg is in several legs of one
+# job, each `- <package>: <group>`, a group of its top-level tests from
+# .github/go-legs/<module>/<package>.yaml, and those places are its one place.
+# .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
+# leg's tests run; which readings are errors that stop a leg and which are warnings it works
+# through is written once, in
+# .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
+# only its own job, so .github/scripts/ci_job_reads.py's
+# hold_daemon_legs, which the changes job imports, holds this module's job keys to the jobs whose
+# legs run (daemon-go, daemon-go-race) and `elsewhere`; with both, none runs in no job.
+#
+# The legs are balanced from measured times: a leg takes as long as its longest package, or as
+# its packages' sum over the runner's four cores when that is longer, and go test starts its
+# packages in the order they are given, so each leg lists its longest first. The times beside the
+# packages are the medians of the four green merge groups after the Postgres service ran with crash
+# safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
+# 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
+# daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
+# ran under a second or has no test.
+# Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+packages/daemon:
+  # daemon-go (.github/workflows/ci-job-daemon-go.yaml, job daemon-go-legs): plain, every package
+  # but the race step's and the text checks. Leg 1 is internal/store's, whose 501 s sets its time,
+  # beside the next three, each on a core of its own; leg 2 is the rest, about 794 s of package
+  # time over four cores, and the steps that run no leg's packages (the race-impossible tests, the
+  # stamped shape gate, the forced-order tests and the Stage 1 proof).
+  daemon-go:
+    1:
+      - internal/store                          # 501 s
+      - internal/runtime/sandbox                # 299 s
+      - cmd/legion                              # 246 s
+      - internal/workflow                       # 223 s
+    2:
+      - internal/workspace                      # 171 s
+      - internal/admit                          # 134 s
+      - internal/api                            # 90 s
+      - internal/leakguard                      # 51 s
+      - internal/classify                       # 39 s
+      - internal/runtime/tmux                   # 38 s
+      - internal/record                         # 29 s
+      - internal/testnats                       # 28 s
+      - internal/repocache                      # 28 s
+      - internal/shim                           # 24 s
+      - internal/podsafety                      # 20 s
+      - internal/supervise                      # 16 s
+      - internal/capabilities                   # 13 s
+      - internal/modeltoken                     # 12 s
+      - internal/stream                         # 12 s
+      - internal/memoryguard                    # 11 s
+      - internal/cipher                         # 11 s
+      - internal/appauth                        # 10 s
+      - internal/procgroup                      # 9 s
+      - internal/pause                          # 9 s
+      - internal/claudebridge                   # 9 s
+      - internal/natsauth                       # 8 s
+      - internal/ompsessions                    # 5 s
+      - internal/fixtureenv                     # 4 s
+      - internal/blockers                       # 3 s
+      - internal/rolefile                       # 2 s
+      - internal/testpg/testdb                  # 1 s
+      - internal/projection                     # 1 s
+      - internal/testpg                         # 1 s
+      - internal/config                         # 1 s
+      - internal/ghconfig
+      - internal/dispatch
+      - internal/prompts
+      - internal/termsafe
+      - internal/bootprobe
+      - internal/testtmp
+      - internal/redact
+      - internal/runtime
+      - internal/registry
+      - internal/store/storetext
+      - internal/testwait
+      - internal/notify
+      - internal/runtime/shellprefix
+      - internal/ghbranch
+      - internal/controller
+      - internal/runtime/workerbin
+      - internal/execfile
+      - internal/githubrest
+      - internal/testfifo
+      - internal/testbin
+      - internal/backoff
+      - internal/clock/clocktest
+      - internal/experiment
+      - internal/ompdirs
+      - internal/omplaunch
+      - internal/store/migrations
+      - internal/plan
+      - internal/runtime/fake
+      - internal/credential
+      - internal/lookpath
+      - internal/ghrepo
+      - internal/claim
+      - internal/claudelaunch
+      - internal/envlisting
+      - internal/phase
+      - internal/testport
+      - internal/reviewround
+      - internal/promptrefs
+      - internal/volumestat
+      - internal/programbound
+      - internal/testkernel
+      - internal/wait
+      - internal/wakepace
+      - internal/capabilities/capabilitiestest
+      - internal/clock
+      - internal/fixturegit
+      - internal/githubtest
+      - internal/leakguard/leakguardtest
+      - internal/pods
+      - internal/runtime/sandbox/rolegitconfig
+      - internal/supervise/supervisetest
+      - internal/testbinary
+      - internal/testbuild
+      - internal/testlog
+      - internal/testnkeys
+      - internal/testtypes
+      - internal/tlsalert
+      - internal/treelifecycle
+  # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
+  # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three
+  # legs, a group of its tests each (.github/go-legs/packages/daemon/internal/daemon.yaml), since
+  # one leg of it alone was the job's time; the four others are leg 4, whose time is
+  # internal/launcher's.
+  daemon-go-race:
+    1:
+      - internal/daemon: 1                      # 537 s whole; 293, 260 and 218 s a group in run 45678673783
+    2:
+      - internal/daemon: 2
+    3:
+      - internal/daemon: 3
+    4:
+      - internal/launcher                       # 306 s
+      - internal/intake                         # 235 s
+      - internal/sessionproxy                   # 8 s
+      - internal/shimwire                       # 2 s
+  # Packages of the module no leg runs, each with the job that does.
+  elsewhere:
+    internal/textcheck: text-checks

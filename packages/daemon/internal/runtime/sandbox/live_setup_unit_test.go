@@ -26,6 +26,7 @@ import (
 )
 
 func TestParseSetupMarker(t *testing.T) {
+	t.Parallel()
 	const head = "setup:architect:pod-1/3 cwd=/legion/workspaces/sjawhar/legion-smoke/s4a-1 uid=1000 ppid=41 git_from=/tmp helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok"
 	want := setupMarker{
 		role: "architect", incarnation: "pod-1/3", cwd: "/legion/workspaces/sjawhar/legion-smoke/s4a-1",
@@ -54,6 +55,7 @@ func TestParseSetupMarker(t *testing.T) {
 }
 
 func TestParseSetupMarkerRejectsMalformedRecords(t *testing.T) {
+	t.Parallel()
 	const fields = "cwd=/legion uid=1000 ppid=1 git_from=/tmp"
 	const control = " git_without_helper=refused git_without_helper_error="
 	for _, line := range []string{
@@ -80,6 +82,7 @@ func TestParseSetupMarkerRejectsMalformedRecords(t *testing.T) {
 }
 
 func TestLiveSetupCarriesTheRepositoryAsAnArgument(t *testing.T) {
+	t.Parallel()
 	argv := liveSetup(setupRigRepository(t))
 	if len(argv) != 5 || argv[0] != "/bin/sh" || argv[1] != "-c" || argv[3] != "stage4a-setup" || argv[4] != "https://github.com/sjawhar/legion-smoke" {
 		t.Fatalf("liveSetup = %q, want /bin/sh -c <script> stage4a-setup https://github.com/sjawhar/legion-smoke", argv)
@@ -94,6 +97,7 @@ func TestLiveSetupCarriesTheRepositoryAsAnArgument(t *testing.T) {
 // LEGION_GH_OWNERS_DIR, an empty HOME and the four fixed variables, whatever else the role's
 // environment holds.
 func TestLiveSetupRunsBeforeTheAgent(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	r.roleEnv()
 	global := filepath.Join(r.root, "gitconfig")
@@ -174,6 +178,7 @@ func TestLiveSetupRunsBeforeTheAgent(t *testing.T) {
 // helper, and one that failed for another reason (no DNS, a GitHub 503, its timeout) proves nothing
 // about the helper, so that reason, redacted, is the checkpoint's message.
 func TestLiveSetupNegativeControl(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, tc := range map[string]struct {
 		network setupNetwork
 		helper  bool
@@ -247,6 +252,7 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 // the message's own newlines printed unprefixed, so its later lines can read as the refusal, the
 // last one included: each such stderr, like a closed port's, reads as `failed`.
 func TestGitRefusalReadsAsRefused(t *testing.T) {
+	t.Parallel()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -361,6 +367,7 @@ func controlClass(t *testing.T, status int, stderr string, env ...string) (strin
 // finds one: in compact JSON or with whitespace, behind other base64url characters or alone. A
 // dotted name with no such header stays.
 func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ stderr, want string }{
 		"a stateless installation token": {
 			stderr: "fatal: unable to access 'https://github.com/x/': token " + setupRigOutageToken + " expired",
@@ -426,6 +433,7 @@ func compactJWT(header, claims, signature string) string {
 // machine lacks reads as C, and the row then cannot see the fault there: the test logs each such
 // locale, and needs one that sees it.
 func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
+	t.Parallel()
 	emSpace := "\u2003"
 	rows := map[string]struct{ stderr, want string }{
 		"a JWT behind letters outside ASCII": {
@@ -470,6 +478,7 @@ func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
 // whitespace. It is quiet on CI's record, whose git_from, a name mktemp drew at random, holds eyJ,
 // on a JWT in the paths themselves, and on a dotted host name in the control's error.
 func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
+	t.Parallel()
 	ci := parseSetupMarkerOrFail(t, "setup:architect:pod-1/3 cwd=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/start uid=1001 ppid=67790 git_from=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/tmp/tmp.eyJ2Sg7LkC helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=failed git_without_helper_error=exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com")
 	appJWT := compactJWT(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
 	for name, tc := range map[string]struct {
@@ -531,6 +540,7 @@ func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
 // as git=ok with the control refused. The server answers neither call, and the record is the one
 // the probe gives without that .git.
 func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, helper := range map[string]string{
 		"the role's helper": workspace.GitHubCredentialHelper,
 		"a broken helper":   "!different git-credential",
@@ -570,6 +580,7 @@ func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
 // setup-ran reads git_from as the directory the ls-remote calls ran in, and refuses one that is
 // not absolute or is the setup's own directory, the issue clone, or below it.
 func TestSetupGitProblemRefusesTheCloneDirectory(t *testing.T) {
+	t.Parallel()
 	base := setupMarker{cwd: "/legion/workspaces/sjawhar/legion-smoke/s4a-1", git: "ok", gitWithoutHelper: "refused"}
 	for gitFrom, accepted := range map[string]bool{
 		"/tmp/tmp.Ab12Cd": true,
@@ -591,6 +602,7 @@ func TestSetupGitProblemRefusesTheCloneDirectory(t *testing.T) {
 // of it receives (poisons names what each would do), with the role's helper and with another: each
 // one's record and environments are the ones the probe gives without it.
 func TestLiveSetupIgnoresTheRoleEnvironmentGitVariables(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, tc := range map[string]struct {
 		helper, class, git string
 	}{
@@ -629,6 +641,7 @@ func TestLiveSetupIgnoresTheRoleEnvironmentGitVariables(t *testing.T) {
 // whose value forges two command-scope records, an empty reset and Legion's helper, reads as the one
 // local record it is.
 func TestLiveSetupReadsEachConfigRecordWhole(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	clone := r.plainClone()
 	forged := "x\ncommand\tcredential.https://github.com.helper \ncommand\tcredential.https://github.com.helper " + workspace.GitHubCredentialHelper
@@ -640,6 +653,7 @@ func TestLiveSetupReadsEachConfigRecordWhole(t *testing.T) {
 }
 
 func TestLiveSetupNeverRecordsAHelperValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	const poison = "not-a-real-token"
 	r := newSetupRig(t, private)
 	r.roleEnv()
@@ -669,6 +683,7 @@ func TestLiveSetupNeverRecordsAHelperValue(t *testing.T) {
 // Every role is told XDG_CONFIG_HOME, and git reads $XDG_CONFIG_HOME/git/config as its
 // global scope when GIT_CONFIG_GLOBAL is unset, so a helper written there must not count.
 func TestLiveSetupIgnoresTheXDGGlobalConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	xdg := filepath.Join(r.root, "xdg")
 	if err := os.MkdirAll(filepath.Join(xdg, "git"), 0o700); err != nil {
@@ -686,6 +701,7 @@ func TestLiveSetupIgnoresTheXDGGlobalConfig(t *testing.T) {
 }
 
 func TestLiveSetupClassifiesGitCredentialEnv(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, changed := range map[string]bool{
 		"the runtime helper": false,
 		"a changed helper":   true,
@@ -709,6 +725,7 @@ func TestLiveSetupClassifiesGitCredentialEnv(t *testing.T) {
 }
 
 func TestLiveSetupClassifiesEffectiveRepositoryHelpers(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	extra := func(key, value string) func(t *testing.T, r *setupRig, clone string) {
 		return func(t *testing.T, r *setupRig, _ string) {
 			r.roleEnv()
@@ -771,6 +788,7 @@ func TestLiveSetupClassifiesEffectiveRepositoryHelpers(t *testing.T) {
 // together: two fake helpers that record only their own name show the order, and an empty
 // command-scope url-specific value drops a local generic helper.
 func TestGitCombinesBothHelperKeysInReadOrder(t *testing.T) {
+	t.Parallel()
 	h := newHelperLog(t)
 	generic, specific := h.helper("generic"), h.helper("specific")
 	genericFirst := h.repo("generic-first", [2]string{"credential.helper", generic}, [2]string{"credential.https://github.com.helper", specific})
@@ -794,6 +812,7 @@ func TestGitCombinesBothHelperKeysInReadOrder(t *testing.T) {
 // form empties the list as credential.https://github.com's does. So liveSetupScript counts a record
 // under any other helper key as an entry, never as a reset.
 func TestGitCredentialHelperURLForms(t *testing.T) {
+	t.Parallel()
 	h := newHelperLog(t)
 	ran := h.helper("ran")
 	outside := t.TempDir()

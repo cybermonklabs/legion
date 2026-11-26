@@ -570,9 +570,9 @@ const GateEntry = z.looseObject({
 type GateEntry = z.infer<typeof GateEntry>;
 /** How a refused call's error result starts when a model's revise in block mode stopped it. */
 const NOT_SENT = "AskGate did not send this call.";
-/** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
- * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
-const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
+/** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
+ * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
+const NO_STORE = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
 /** Every case rig.sh's run_askgate has a prompt for (run-names.ts's SCENARIOS). */
 const ASKGATE_CASES = [...casesOf("askgate")];
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
@@ -707,7 +707,7 @@ function askgateReview(runDir: string, run: string, label: string, askCase: stri
       (c) =>
         c.tool === "bash" &&
         /\bdispatch\s+ask\b/.test(c.command) &&
-        !NO_SEND.test(c.command) &&
+        !NO_STORE.test(c.command) &&
         !NOT_REVIEWS.includes(gates.find((g) => g.toolCallId === c.id)?.outcome ?? "")
     );
     if (call === undefined) return row(false, "askCall=none");
@@ -3535,11 +3535,12 @@ function refusalBlocks(
   const logged = new Set<number>();
   for (const call of calls) {
     // The commands of the call the CLI logged: every one but a `--help` that printed help, and a
-    // `--dry-run` only when its argument check refused it. The CLI checks a command's name before
-    // its flags, so a help call of an unknown command is refused and logged like any usage
-    // refusal. A usage refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could
-    // not name the command, so the ledger line and the printed refusal are one refusal and match
-    // here.
+    // `--dry-run` only when the CLI refused it, whichever check did (the check of a text it reads,
+    // the argument check or the dry run's own step): the CLI logs every refusal and no dry run that
+    // passed. The CLI checks a command's name before its flags, so a help call of an unknown
+    // command is refused and logged like any usage refusal. A usage refusal (`dispatch: …`) is
+    // logged under tool `dispatch` when the CLI could not name the command, so the ledger line and
+    // the printed refusal are one refusal and match here.
     const candidates = ops.flatMap((op, place) =>
       op.kind === "dispatch" &&
       op.step.id === call.step.id &&

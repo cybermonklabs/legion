@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { api } from "../api/client";
@@ -6,6 +6,13 @@ import { mergeIssue } from "../api/issue-cache";
 import { issueQuery } from "../api/queries";
 import type { IssueDetails } from "../api/types";
 import { issue as fixture } from "../features/margin/margin-fixture";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();
