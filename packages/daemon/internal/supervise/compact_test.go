@@ -14,10 +14,10 @@ import (
 const testCompactInstructions = "Write the summary as text."
 
 // ladderStuck is the claim the provider-errors notice names, idle between the ladder's sends:
-// six turns of it in a row ended in a provider error, so the notice at providerErrorRunTold has
-// gone once, the task it owes is unconfirmed on the claim, and the ladder's next step is ten
-// minutes away. ladderSends is how many prompts the connection has seen by then. set, when it is
-// given, changes the dependencies before the machine is built, as workingClaim's own does.
+// six turns of it in a row ended in a provider error, so the project's controller has been told
+// once, the task it owes is unconfirmed on the claim, and the ladder's next step is ten minutes
+// away. ladderSends is how many prompts the connection has seen by then. set, when it is given,
+// changes the dependencies before the machine is built, as workingClaim's own does.
 const ladderSends = providerErrorRunTold
 
 func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
@@ -32,10 +32,10 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 		}
 	}
 	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold {
-		t.Fatalf("the run of provider errors is %d, want the %d at which it is handed on", got, providerErrorRunTold)
+		t.Fatalf("the run of provider errors is %d, want the %d the controller is told at", got, providerErrorRunTold)
 	}
 	if *notices != 1 {
-		t.Fatalf("the run was handed on %d times, want once", *notices)
+		t.Fatalf("the controller was told %d times, want once", *notices)
 	}
 	if got := h.state(); got != StateIdle {
 		t.Fatalf("the claim is %s, want it idle between the ladder's sends", got)
@@ -44,15 +44,15 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 	return h
 }
 
-// A compaction that ran starts the claim's run of provider-error turns again, so the notice at
-// providerErrorRunTold goes a second time after six more refused turns. Without the reset it
-// would go once and not again until another of the run's ends (Claim.ProviderErrorRun), and a
-// compaction the controller asked for would buy it no second look.
+// A compaction that ran starts the claim's run of provider-error turns again, so the project's
+// controller is told a second time after six more refused turns. Without the reset the
+// controller would be told once and never again until a turn of that claim ended with no error
+// at all, and the compaction it asked for would buy it no second look.
 //
 // The owed task goes again at once rather than at the end of the ladder step the compaction
 // interrupted: the next step of that ladder is ten minutes away, and putting the task in front
 // of the shortened session is the whole point of the operation.
-func TestACompactionStartsTheRunOfProviderErrorsAgainSoItIsHandedOnASecondTime(t *testing.T) {
+func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecondTime(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
 	sent := ladderSends
@@ -85,12 +85,12 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoItIsHandedOnASecondTime(t
 	}
 
 	if notices != 2 {
-		t.Fatalf("the runs were handed on %d times, want 2: once for each of the two runs that reached %d", notices, providerErrorRunTold)
+		t.Fatalf("the controller was told %d times, want a second notice after six more refused turns", notices)
 	}
 }
 
 // A handoff Oh My Pi refused resets nothing: the session is as it was, so the run of refused
-// turns it carried still stands and the notice does not go again for it. The owed task goes
+// turns it carried still stands and the controller is not told again for it. The owed task goes
 // again all the same.
 func TestACompactionThatWasRefusedKeepsTheRunOfProviderErrors(t *testing.T) {
 	notices := 0
@@ -555,8 +555,8 @@ func TestACompactionWhoseDisplacedRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTur
 //
 // Read as a lost process — which a parked launch alone says nothing about — the caller would be
 // told its compaction failed for a compaction that ran, the claim would be left working with
-// its run of provider errors still at providerErrorRunTold, and the notice, which goes only as the
-// run reaches that count, could never go a second time.
+// its run of provider errors still at the notice, and the controller, told only at that run,
+// could never be told a second time.
 func TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices, pacedDeps(wakeRate))

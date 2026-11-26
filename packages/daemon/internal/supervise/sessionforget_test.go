@@ -12,11 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// suspendTool is the stop a forget's refusal names for the controller (mayForget), beside the
-// operator's `legion claims suspend`: the controller holds no operator's token, and its `legion`
-// tool's suspend stops the holder's process through the daemon.
-const suspendTool = "the `suspend` of the controller's `legion` tool"
-
 // A session a claim records but does not hold is cleared only once the Envoy listener no longer
 // names it as the claim's role holder (mayForget, review rounds 16 and 17 of #4220). The outbox
 // withholds the claim's role messages only while it records that session, and the listener keeps
@@ -49,7 +44,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	processless := func(t *testing.T, elsewhere []Hold, a answer) (*harness, *int) {
 		h := newHarness(t)
 		h.reach(StateIdle)
-		h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+		h.must(RequestStop{Claim: h.token})
 		h.wantState(StateRetired)
 		for _, name := range elsewhere {
 			h.store.setHold(name, holder)
@@ -74,8 +69,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	}
 	// The bound and the remedy are spelled here rather than read from the code, so a wrong bound
 	// or a remedy that sends the operator to suspend a claim that runs nothing fails the rows
-	// (review round 16 of #4220, #60 and #61). The remedy names the controller's suspend beside
-	// the operator's, since the controller holds no operator's token.
+	// (review round 16 of #4220, #60 and #61).
 	const suspendHolder, theBound, holderRunsNothing = "legion claims suspend --claim " + string(holder),
 		"max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL",
 		"if " + string(holder) + " is suspended, retired or failed, no process of it runs"
@@ -83,9 +77,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		name  string
 		event func(h *harness) Event
 	}{
-		{"forget-session", func(h *harness) Event {
-			return RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator}
-		}},
+		{"forget-session", func(h *harness) Event { return RequestForgetSession{Claim: h.token, Session: session} }},
 		{"retry in a new session", func(h *harness) Event { return RequestRetry{Claim: h.token, FreshSession: true} }},
 	}
 	for _, clear := range clears {
@@ -97,10 +89,10 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			unnamed   bool
 			wait      bool // a refused row is a wait: it matches ErrForgetWaitsForRole and wait.ErrWaiting
 		}{
-			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, suspendTool, holderRunsNothing, theBound}, false, true},
-			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder, suspendTool}, false, true},
-			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, suspendTool, theBound}, false, true},
-			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder, suspendTool}, false, true},
+			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, holderRunsNothing, theBound}, false, true},
+			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false, true},
+			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false, true},
+			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false, true},
 			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false, true},
 			{"refused while the listener refuses the lookup, a fault", every, answer{"", "", fmt.Errorf("look up: %w", &notify.RoleLookupRefused{Status: 401, Reason: "unauthorized"})}, []string{"refuses the lookup", "until an operator fixes"}, false, false},
 			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true, true},
@@ -148,7 +140,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	}
 	t.Run("a claim holding its own session forgets without asking", func(t *testing.T) {
 		h, asked := processless(t, nil, answer{session, "live", nil})
-		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
 		if *asked != 0 {
 			t.Fatalf("the listener was asked %d times, want none: the claim holds %s", *asked, session)
 		}
@@ -165,7 +157,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		for _, name := range every {
 			h.store.setHold(name, "")
 		}
-		err := h.handle(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		err := h.handle(RequestForgetSession{Claim: h.token, Session: session})
 		if *asked != 1 || !errors.Is(err, ErrForgetWaitsForRole) || !strings.Contains(err.Error(), "the process registered under it") {
 			t.Fatalf("the forget of a session held for no claim = %v, asked %d; want a wait naming no claim, asked once", err, *asked)
 		}
@@ -177,7 +169,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		h, asked := processless(t, every, answer{session, "live", nil})
 		h.deps.RoleHolder = nil
 		h.restart()
-		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
 		if *asked != 0 {
 			t.Fatalf("the listener was asked %d times, want none: the daemon has none", *asked)
 		}
@@ -189,7 +181,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		h, asked := processless(t, every, answer{session, "live", nil})
 		down := errors.New("the database is unreachable")
 		h.store.fail("HoldSessions", down)
-		err := h.handle(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		err := h.handle(RequestForgetSession{Claim: h.token, Session: session})
 		var refused *RefusedError
 		if !errors.Is(err, down) || errors.As(err, &refused) || errors.Is(err, wait.ErrWaiting) {
 			t.Fatalf("the forget while the store fails = %v; want the store's error, no refusal and no wait", err)
@@ -201,58 +193,4 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			t.Fatalf("the claim records %q, want %s kept", c.Session, session)
 		}
 	})
-}
-
-// The controller's forget of a session its claim records but does not hold waits for the claim's
-// role as the operator's does (mayForget), which runs after the controller's own checks (askedBy,
-// Claim.HeldAgainst) admit it: refused as a wait, the session kept, while the Envoy listener
-// names that session as the role's live holder, and admitted once no claim names the role, the
-// claim then recording that the controller asked (forgottenBy). The rig is
-// TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole's processless claim, its agent stopped
-// by the controller rather than the operator.
-//
-// The control: forgetSession with no mayForget: the controller's forget clears the session while
-// the listener names it as the role's holder.
-func TestAControllersForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
-	const holder = claim.Token("legion-legion-LEGION-209-tester")
-	h := newHarness(t)
-	h.reach(StateIdle)
-	h.must(RequestStop{Claim: h.token, By: SuspendedByController})
-	h.wantState(StateRetired)
-	for _, name := range RecordedHolds(session, sessionFile) {
-		h.store.setHold(name, holder)
-	}
-	asked, named, state := 0, session, "live"
-	h.deps.RoleHolder = func(_ context.Context, role string) (string, string, error) {
-		asked++
-		if role != string(h.token) {
-			t.Errorf("the forget looked up role %s, want the claim's own, %s", role, h.token)
-		}
-		return named, state, nil
-	}
-	h.restart()
-
-	err := h.handle(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByController})
-	var refused *RefusedError
-	if !errors.As(err, &refused) || !errors.Is(err, ErrForgetWaitsForRole) {
-		t.Fatalf("the controller's forget while the listener names %s as the role's live holder = %v, want mayForget's wait", session, err)
-	}
-	for _, want := range []string{"legion claims suspend --claim " + string(holder), suspendTool} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal = %v, want it to name %q", err, want)
-		}
-	}
-	if asked != 1 {
-		t.Errorf("the listener was asked %d times, want once", asked)
-	}
-	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
-		t.Fatalf("after the refused forget the claim records %q at %q, want %s kept", c.Session, c.SessionFile, session)
-	}
-
-	// Once no claim names the role, the controller's forget clears the session.
-	named, state = "", ""
-	h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByController})
-	if c := h.claim(); c.Session != "" || c.Abandoned.Session != session || !strings.Contains(c.Abandoned.Why, "the project's controller asked") {
-		t.Fatalf("the claim records %q (abandoned %q because %q), want %s cleared at the controller's request", c.Session, c.Abandoned.Session, c.Abandoned.Why, session)
-	}
 }

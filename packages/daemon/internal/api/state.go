@@ -1174,9 +1174,9 @@ type ClaimView struct {
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
-	// provider outage (dispatch://INFRA-956's R2). At a run of six the daemon sends the
-	// provider-errors notice once (internal/daemon's providerErrorRunReached says to whom), so this
-	// key is the only surface that shows the count before or after that notice.
+	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
+	// once, at a run of six, so without this key the number behind that telling stands on no
+	// surface its reader can reach.
 	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
 	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
 	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
@@ -1969,9 +1969,9 @@ func StrandedMoves() []StrandedMove {
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: its machine ignores resume and
-//     deliver, and the operator's retry (`legion claims retry`) reaches its agent as it reaches a
-//     failed one (supervise's askedRetry), but the move named is a workflow start. A start of
+//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
+//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
+//     failed one (supervise's operatorRetry), but the move named is a workflow start. A start of
 //     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
 //     the move is the act that queues such a start: the architect's retry_or_escalate of a held
 //     phase, a transition into the phase, or the tree's close and re-admission for an architect,

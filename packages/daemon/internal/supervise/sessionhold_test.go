@@ -137,7 +137,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.deps.Limits.LaunchFailures = 1
 		h.restart()
 		resumes := len(h.calls("Resume"))
-		err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		err := h.handle(RequestResume{Claim: h.token})
 		var refusal claim.Refusal
 		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
 			t.Fatalf("resuming a claim whose session is held for no claim = %v, want %v", err, claim.SessionHeldRefusal(session))
@@ -518,7 +518,7 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 		h.restart()
 		resumes := len(h.calls("Resume"))
 
-		err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		err := h.handle(RequestResume{Claim: h.token})
 		var refusal claim.Refusal
 		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(stolen) {
 			t.Fatalf("resuming a transcript of %s's Claude session = %v, want %v", holder, err, claim.SessionHeldRefusal(stolen))
@@ -615,7 +615,7 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 		h.restart()
 		resumes := len(h.calls("Resume"))
 
-		err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		err := h.handle(RequestResume{Claim: h.token})
 		var refusal claim.Refusal
 		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal("holder-session.jsonl") {
 			t.Fatalf("resuming a file of the tester's name = %v, want the refusal of its name", err)
@@ -661,7 +661,7 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	h.store.fail("HoldSessions", errors.New("connection refused"))
 	resumes := len(h.calls("Resume"))
 
-	if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, errHoldUnanswered) {
+	if err := h.handle(RequestResume{Claim: h.token}); !errors.Is(err, errHoldUnanswered) {
 		t.Fatalf("resuming with the store not answering the hold = %v, want errHoldUnanswered", err)
 	}
 	if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
@@ -752,7 +752,7 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
 		h.restart()
 		resumes := len(h.calls("Resume"))
-		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		h.must(RequestResume{Claim: h.token})
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 1 || calls[0].Spec.ResumeSessionFile != sessionFile {
 			t.Fatalf("the claim at the cap resumed %+v, want its own session once", calls)
 		}
@@ -784,13 +784,13 @@ func TestAForgottenSessionIsAskedOfTheStoreAgain(t *testing.T) {
 	h.register()
 	h.ready()
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: h.token, Session: session})
 	// The operator's release freed the forgotten session's names, and another claim registered it.
 	for _, name := range RecordedHolds(session, sessionFile) {
 		h.store.setHold(name, taker)
 	}
 	enrolled := len(broker.enrolled())
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
 	h.helloWithIdentity()
 
 	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
@@ -910,7 +910,7 @@ func TestARecordedNameNoHoldCoversIsTakenByNoClaim(t *testing.T) {
 			h.deps.Limits.LaunchFailures = 1
 			h.restart()
 			resumes := len(h.calls("Resume"))
-			err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+			err := h.handle(RequestResume{Claim: h.token})
 			var refusal claim.Refusal
 			if want := claim.SessionNameUnheldRefusal(tc.what); !errors.As(err, &refusal) || refusal != want {
 				t.Fatalf("resuming the claim = %v, want %v", err, want)
@@ -980,12 +980,11 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 
 // An operator's resume of a claim recording a session it does not hold is refused before
 // anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
-// 409 with its sentence, naming the operator's forget-session, after which the agent's next start
-// is in a new session, or the controller's fresh_session, which starts the agent in a new session,
-// and the claim stays suspended with nothing launched and nothing charged.
-// Relaunched, its every launch would be refused by the hold at start and the claim would fail
-// within its launch budget (acceptance of #4220). A rule's resume leaves it suspended the same way.
-// A claim holding its session resumes as before (R9).
+// 409 with its sentence, naming the forget-session that gives the claim a new session, and the
+// claim stays suspended with nothing launched and nothing charged. Relaunched, its every launch
+// would be refused by the hold at start and the claim would fail within its launch budget
+// (acceptance of #4220). A rule's resume leaves it suspended the same way. A claim holding its
+// session resumes as before (R9).
 //
 // The control (the pull request records the run): resume with no resumeRefusal: the operator's
 // resume answers no refusal and the claim is launched into the hold's refusal.
@@ -999,15 +998,13 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	h.wantState(StateSuspended)
 	resumes := len(h.calls("Resume"))
 
-	err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	err := h.handle(RequestResume{Claim: h.token})
 	var refused *RefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("the operator's resume of a claim recording %s, which %s holds = %v, want a refusal", session, other, err)
 	}
-	for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("the refusal %q does not name %q", err, want)
-		}
+	if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+		t.Fatalf("the refusal %q does not name %q", err, want)
 	}
 	h.must(RequestRuleResume{Claim: h.token, Reason: "the outbox starts the claim's phase"})
 	h.wantState(StateSuspended)
@@ -1020,55 +1017,9 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 
 	// Settled for this claim, the resume relaunches its session as before.
 	h.store.setHold(sessionID(session), h.token)
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
 	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {
 		t.Fatalf("the resume of a claim holding its session asked the runtime %d times, want once", len(calls))
-	}
-}
-
-// The controller's resume of an agent it suspended, whose claim records a session another claim
-// holds, is refused by the same check as the operator's (resumeRefusal), which runs after the
-// controller's own checks (askedBy, Claim.HeldAgainst) admit it: a RefusedError naming the
-// operator's forget-session, after which the agent's next start is in a new session, or the
-// controller's own fresh_session, which starts the agent in a new session, the claim still
-// suspended by the controller, nothing launched and nothing charged. Once the claim holds its
-// session, the controller's resume starts the agent again on it.
-//
-// The control: resume with no resumeRefusal: the controller's resume answers no refusal and the
-// agent is launched into the hold's refusal.
-func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
-	const other = claim.Token("legion-legion-LEGION-209-tester")
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.store.setHold(sessionID(session), other)
-	h.restart()
-	h.must(RequestSuspend{Claim: h.token, Reason: "the controller holds the agent", By: SuspendedByController})
-	h.wantState(StateSuspended)
-	resumes := len(h.calls("Resume"))
-
-	err := h.handle(RequestResume{Claim: h.token, By: SuspendedByController})
-	var refused *RefusedError
-	if !errors.As(err, &refused) {
-		t.Fatalf("the controller's resume of an agent whose claim records %s, which %s holds = %v, want a refusal", session, other, err)
-	}
-	for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("the refusal %q does not name %q", err, want)
-		}
-	}
-	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByController || c.Budgets.LaunchFailures != 0 || c.Session != session {
-		t.Fatalf("after the refused resume the claim is %s by %q with %d launch failures recording %q, want it suspended by the controller with none and %s",
-			c.State, c.SuspendedBy, c.Budgets.LaunchFailures, c.Session, session)
-	}
-	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
-		t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
-	}
-
-	// Settled for this claim, the controller's resume relaunches its session.
-	h.store.setHold(sessionID(session), h.token)
-	h.must(RequestResume{Claim: h.token, By: SuspendedByController})
-	if calls := h.calls("Resume")[resumes:]; len(calls) != 1 {
-		t.Fatalf("the controller's resume of an agent whose claim holds its session asked the runtime %d times, want once", len(calls))
 	}
 }
 
@@ -1083,8 +1034,8 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: h.token, Session: session})
+	h.must(RequestResume{Claim: h.token})
 	h.connect()
 	h.register()
 	if c := h.claim(); c.Session != session || c.Abandoned.Session != session {
@@ -1098,11 +1049,6 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 		t.Fatalf("the claim marks its abandoned session released, %+v, though the release freed none of its names", a)
 	}
 }
-
-// freshSessionTool is the remedy a refusal of a session the claim does not hold names for the
-// controller (resumeRefusal), beside the operator's forget-session: the controller holds no
-// operator's token, and its `legion` tool's fresh_session starts the agent in a new session.
-const freshSessionTool = "the `fresh_session` of the controller's `legion` tool"
 
 // wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does
 // not hold (resumeRefusal): a RefusedError, which the operator's route answers 409, and the claim
@@ -1122,9 +1068,8 @@ func wantRefusedResume(t *testing.T, h *harness, err error) {
 
 // An operator's retry of a stopped claim, and an operator's delivery to a suspended one, relaunch
 // the session the claim records, so each is refused one the claim does not hold the way a resume is
-// (resumeRefusal): a RefusedError naming the operator's forget-session and the controller's
-// fresh_session, nothing launched, nothing queued, and the claim left in the state it was in (the
-// side review of 47f29c476c).
+// (resumeRefusal): a RefusedError naming the forget-session to run, nothing launched, nothing
+// queued, and the claim left in the state it was in (the side review of 47f29c476c).
 //
 // The control (the pull request records the run): retry and deliverResuming without resumeRefusal:
 // each answers no refusal and relaunches the claim into the hold's refusal.
@@ -1136,8 +1081,8 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 		state ClaimState
 		ask   func(h *harness) Event
 	}{
-		{"an operator's retry of a stopped claim", func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) }, StateRetired,
-			func(h *harness) Event { return RequestAskedRetry{Claim: h.token, By: SuspendedByOperator} }},
+		{"an operator's retry of a stopped claim", func(h *harness) { h.must(RequestStop{Claim: h.token}) }, StateRetired,
+			func(h *harness) Event { return RequestOperatorRetry{Claim: h.token} }},
 		{"an operator's delivery to a suspended claim", func(h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) }, StateSuspended,
 			func(h *harness) Event { return RequestDeliver{Claim: h.token, Task: "the next task"} }},
 	} {
@@ -1155,10 +1100,8 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 			if !errors.As(err, &refused) {
 				t.Fatalf("%s recording %s, which %s holds = %v, want a refusal", tc.name, session, other, err)
 			}
-			for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("the refusal %q does not name %q", err, want)
-				}
+			if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refusal %q does not name %q", err, want)
 			}
 			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 				t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))

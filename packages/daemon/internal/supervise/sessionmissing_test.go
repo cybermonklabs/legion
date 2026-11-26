@@ -78,7 +78,7 @@ func TestAResumeRefusedForAnyOtherReasonIsChargedAndKeepsTheSession(t *testing.T
 			h.reach(StateSuspended)
 			h.rt.ScriptResume(fake.SpawnResult{Err: refusal})
 
-			h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
+			h.must(RequestResume{Claim: testToken})
 
 			h.wantCalls("Spawn", 1)
 			if c := h.claim(); c.Session != session || c.SessionFile != sessionFile || c.Budgets.LaunchFailures == 0 {

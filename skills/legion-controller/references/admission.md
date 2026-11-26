@@ -1,9 +1,7 @@
 # Reading admission
 
-Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
+Read this when you need to know where an issue stands in admission, or what an `admission.held` word means.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
-The `read_state` summary prints `admission.active`, `admission.waiting` and `admission.blocked` as its `active`, `waiting` and `blocked` lines;
-no read prints `admission.trees` or `admission.held`.
 The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
 ## The lists
@@ -13,9 +11,8 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   A started issue that waits on another issue holds none either, except three roots that keep theirs:
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
-- The live trees: a root is a record whose `tree` is its own key (`read_state` with `issues`).
-  Its tree is live while the root stands in `admission.active` or `admission.waiting`, waits on a person, stands past `admitted` and not `done`, or waits under live work above it, and never while its record carries `lingerUntil`.
-  Use this, not `admission.active`, for which trees run.
+- `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
+  Use it, not `admission.active`, for which trees run.
 
 - `admission.waiting`: the line, in order.
   It is ordered by Dispatch priority first: P0, P1, P2, P3, then the issues with no priority, each issue at its own priority, else at its tree root's.
@@ -37,8 +34,7 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   Nothing to do.
 
 - `phase: done` while `status` is `in_progress`, `testing`, `needs_review` or `retro`:
-  someone else moved a waiting root, or a root waiting on a person lost its label or claim, and the daemon took it out of the workflow.
-  No wake tells you of it.
+  someone else moved a waiting root, or a root waiting on a person lost its label or claim, and the daemon sent `unslotted`.
   Re-admit nothing.
 
 Holding no slot is no fault by itself.
@@ -46,7 +42,6 @@ Holding no slot is no fault by itself.
 ## `admission.held`: what nothing starts
 
 Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it.
-The `tick` wake carries it as `held`, and a held issue's record (`read_state` with `issue`) gives its word's sentence in `why`.
 Each waits for what ends it, in the table's last column.
 Name them in the day's report and take nothing for them.
 
@@ -66,20 +61,6 @@ Name them in the day's report and take nothing for them.
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 
-## Free slots
+## Trees waiting on a root claim
 
-A slot is one issue the daemon started, a root or a child. Free slots are `admission.cap`, less every issue in `admission.active`, less each issue of `admission.waiting` in neither `admission.active` nor `admission.blocked`. The line is ordered by Dispatch priority first; within one priority a returned issue goes before an unstarted one whatever their ranks, by design (the site's concepts page, "Admission and the `legion` label").
-
-## Your moves to `todo`
-
-Every move to `todo` you make is one of these:
-
-- a root you labelled at a person's request, or filed for a clear defect;
-
-- an issue a person asks you to start, a parked one included;
-
-- a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
-
-- a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
-
-- stopped-session work a person's directive in the weekly plan moves to Legion.
+A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root in `admission.trees` still at `phase: admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.

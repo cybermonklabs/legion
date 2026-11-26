@@ -13,7 +13,7 @@ with nobody known, leave out `--assignee`.
 dispatch issue --project <PROJECT> --title 'Legion daily report' --assignee '<email>' --spec-file - <<'EOF'
 ## Summary
 
-Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents also post here the evidence of each clear defect they found that no tree owns, which the controller files for Legion. They ask here whether a problem that needs a decision needs an issue. This issue is not work, so it carries no `legion` label and stays in icebox.
+Legion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. Legion's agents also post here the evidence of each clear defect they found outside their own work, which the controller hands to the tree that owns the code, or files for Legion when no tree does. They ask here whether a problem that needs a decision needs an issue. This issue is not work, so it carries no `legion` label and stays in icebox.
 EOF
 legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 ```
@@ -48,7 +48,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   Those with no pull request, each with the reason its closing message gave (the `message.created` before `issue.closed`, with only the close's own settlement and withdrawal lines between them).
 
 - **Running.**
-  Each root of a live tree (`skill://legion-controller/references/admission.md`) with its phase, and under it each of its issues in `admission.active` with its own;
+  Each root in `admission.trees` with its phase, and under it each of its issues in `admission.active` with its own;
   then `admission.waiting`; then each root the every-turn check found waiting on a claim, with its holder.
 
 - **Waiting on Dispatch links.**
@@ -56,8 +56,9 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   say of each whose `waitingLine.kind` is `waiting_on_issue` that it holds no slot while it waits, nothing of its work stopped, and it takes one again by itself.
 
 - **What nothing starts.**
-  The most recent tick's `held` list grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission.md`);
-  an `unclassified` issue with its `phase` and `status`; each `task_stopped` issue with its `heldFrom`.
+  `admission.held` grouped by `reason`, each group's count, issues and `heldBy`, and what ends it (`skill://legion-controller/references/admission.md`);
+  an `unclassified` issue with its `phase` and `status`;
+  each `task_stopped` issue with its `heldFrom`.
 
 - **Phase workers nothing will prompt.**
   The most recent tick's `silent` list, with each role and how long it has been quiet, or how long its background work has stood (`backgroundSince`).
@@ -69,7 +70,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
 - **Asks resolved with no answer.**
   For each root in `admission.active` or `admission.waiting`, the newest `Asked whether to park:` and `Asked whether to defer:` comment of each key (step 1 of `skill://legion-controller/references/park-asks.md`, once with each prefix) whose ask was resolved with no answer, unless its wait has ended.
 
-- **Free slots**, counted in issues, as `skill://legion-controller/references/admission.md#free-slots` says.
+- **Free slots**, counted in issues, as the skill's "Free slots" says.
 
 - **The priorities.**
   Each plan line the reconciliation before this report moved for the deployment's priorities, and this project's count of work in flight under no priority, both from step 2 of `skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`.
@@ -79,13 +80,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   Nothing when none is open.
 
 - **Stalled work.**
-  Each claim a `provider-errors` wake named, with its role, run and model, and each root an `architect-stalled` or `tree-stalled` wake named since the last report, with the arm, what you did and what it waits on (`skill://legion-controller/references/wakes.md`).
-
-- **Operations you lack.**
-  Each operation of yours you did not run (a `can-i` answer of no, a failed `kubectl`, no daemon label, no or several daemon pods, an `agent-secrets` denial), with the work, the read and its answer;
-  each Slack reply that Slack refused or that the broker granted no token for;
-  and each re-run or mention reply GitHub refused (curl's exit 22), with the status curl printed.
-  Only a person or the operator fixes these: ask no other session to do any of them.
+  Each `provider-errors` run with its model, and each root an `architect-stalled` or `tree-stalled` wake left for the report (`skill://legion-controller/references/wakes.md`).
 
 - **The week** (first report of each UTC week only):
   the numbers of `skill://legion-controller/references/weekly-audit.md`, each beside the command that recounts it.

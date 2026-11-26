@@ -98,7 +98,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 		if len(held) != 1 {
 			t.Fatalf("the keeper logged the wait %d times over three retries, want once:\n%s", len(held), logs)
 		}
-		for _, want := range []string{`"level":"WARN"`, "legion claims suspend --claim legion-legion-legion-943-implementer", "the `suspend` of the controller's `legion` tool", "ten minutes"} {
+		for _, want := range []string{`"level":"WARN"`, "legion claims suspend --claim legion-legion-legion-943-implementer", "ten minutes"} {
 			if !strings.Contains(held[0], want) {
 				t.Errorf("the wait's line %s does not hold %s", held[0], want)
 			}

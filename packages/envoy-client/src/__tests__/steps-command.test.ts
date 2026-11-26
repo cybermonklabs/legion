@@ -277,19 +277,6 @@ describe("dispatch steps", () => {
     );
   });
 
-  // The task and the role print - when the record holds them empty, as every other field does, so
-  // the line keeps its columns. The contract always sends both (StepRecord's task and role).
-  test("a task or a role that is empty prints -", async () => {
-    const { result } = await readSteps({
-      issue: "LEG-1",
-      tasks: [{ task: "default", steps: [{ ...implementer, task: "", role: "" }] }],
-    });
-
-    expect(result.text.split("\n")[1]).toBe(
-      "- 2 step - implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
-    );
-  });
-
   // An issue a draw put in an experiment names the experiment and the variant drawn on each of its
   // records, and the read prints them once, above its steps; an issue whose records name none
   // prints no such line (the first row above).

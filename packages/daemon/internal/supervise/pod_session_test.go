@@ -197,7 +197,7 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 			relaunched <- err
 			return
 		}
-		if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}); err != nil {
+		if err := h.handle(RequestResume{Claim: h.token}); err != nil {
 			relaunched <- err
 			return
 		}
@@ -297,7 +297,7 @@ func TestEachProcessRegistersAtItsLaunchGeneration(t *testing.T) {
 	h.ready()
 	h.rt.ScriptResume(inPod(2))
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
 	hello()
 	h.restart()
 	hello()
@@ -352,7 +352,7 @@ func TestARegistrationReadsTheClaimsCurrentGenerationWhenItIsAnswered(t *testing
 	}
 	h.rt.ScriptResume(inPod(2))
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
 	if got := first(); got != 2 {
 		t.Fatalf("after the relaunch the first process's registration reads the claim's generation as %d, want 2, the claim's current one", got)
 	}

@@ -68,7 +68,7 @@ const (
 	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
-	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 	// wayBackRecoveryStatements is how many statements stand between the phase entry's block's
 	// begin and its commit. The header, the guide and this test all call them the eleven, so a

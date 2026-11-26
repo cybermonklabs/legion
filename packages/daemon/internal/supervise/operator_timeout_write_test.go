@@ -32,7 +32,7 @@ func TestAForcedStopWhoseTaskWriteFailsKeepsTheTaskForTheResume(t *testing.T) {
 	if stored := h.store.load(testToken); stored.Pending == nil || !stored.Pending.Interrupted || !stored.Pending.ConfirmedAt.IsZero() {
 		t.Fatalf("stored after the forced stop %+v, want the interrupted task", stored.Pending)
 	}
-	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: testToken})
 	h.reach(StateReady)
 	if p := h.pending(); !p.Interrupted || p.Task != "Continue testing." {
 		t.Fatalf("after the operator resume pending %+v, want the interrupted phase task", p)

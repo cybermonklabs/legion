@@ -41,7 +41,7 @@ func TestTheMachineKeepsTheLastAnswer(t *testing.T) {
 	h.m.mu.Unlock()
 
 	replaced := h.generation()
-	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestStop{Claim: h.token})
 	h.must(RequestRetry{Claim: h.token, FreshSession: true})
 	h.wantState(StateLaunching)
 	if got := h.m.LastAnswer(); got != (Answer{}) {
@@ -85,7 +85,7 @@ func TestAQueuedAnswerSurvivesAResumeOfTheSameSession(t *testing.T) {
 	before, generation := h.claim().Session, h.generation()
 	h.must(StreamAnswered{Claim: h.token, Model: "earlier/1", Generation: generation})
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
 	h.wantCalls("Resume", 1)
 	h.relaunched()
 	if before == "" || h.claim().Session != before || h.generation() == generation {

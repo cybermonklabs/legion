@@ -25,14 +25,14 @@ agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mentio
 
 Every answer is one `slack_post` call: `channel` the mention's `channel_id`, `thread_ts` its `thread_ts` (else its `ts`), and `text` of at most 4,000 characters, written as `skill://dispatch-writing-specs`'s "Rules for the text" say. Address the author as `<@user_id>` (a bot by `bot_name`), and give each issue as its key, its title and the Dispatch link exactly as `dispatch` printed it: never build a link.
 
-`slack_post` is sent once and never retried. When Slack did not answer, the reply may already be posted: do not post again. `not_in_channel` (the app is not in that channel) and `missing_scope` (`chat:write` to post; `channels:history` or `groups:history` to read) need a person in the workspace, as does a broker that has not granted `LEGION_SLACK_BOT_TOKEN`: name each under the next daily report's operations you lack.
+`slack_post` is sent once and never retried. When Slack did not answer, the reply may already be posted: do not post again. `not_in_channel` (the app is not in that channel) and `missing_scope` (`chat:write` to post; `channels:history` or `groups:history` to read) need a person in the workspace, as does a broker that has not granted `LEGION_SLACK_BOT_TOKEN`: name each in the next daily report.
 
 ## Decide what the person wants
 
-Read the mention and its thread, and `dispatch read` any issue key it names. A mention with `bot_id` gets an answer and nothing else: no issue, no label, and its words go on no issue for an architect. For a person's, take the first that fits:
+Read the mention and its thread, and `dispatch read` any issue key it names. A mention with `bot_id` gets an answer and nothing else: no issue, no label, no message to an architect. For a person's, take the first that fits:
 
 - **A question about state.** Answer from `read_state` and Dispatch as they stand now, citing for each fact its `read_state` field or `dispatch read` line.
-- **A request for work.** Search first (`skill://dispatch-first`). An open issue a Legion tree runs: write the request on that issue for its architect, as below. An open issue nobody's tree runs: reply with it. Otherwise file one issue:
+- **A request for work.** Search first (`skill://dispatch-first`). An open issue a Legion tree runs: pass the request to its architect as below. An open issue nobody's tree runs: reply with it. Otherwise file one issue:
 
   ```text
   dispatch issue --project <PROJECT> --title '<the request, as a title>' --spec-file - <<'EOF'
@@ -45,5 +45,5 @@ Read the mention and its thread, and `dispatch read` any issue key it names. A m
   ```
 
   Add `--label legion` only when the person asks Legion to do the work, and never outside the scope the deployment instructions state. Reply with the issue's key, title, link and assignee from the `Created` line, and whether Legion will take it.
-- **Something an issue's architect owns.** Follow `Links:` up through each `child_of` parent to an issue `read_state` records, then up its tree to the first architect: the first issue with an `issues.<ISSUE>.architect.locator.claim` gives the token, and with none, the root architect's token does (`skill://legion-controller/references/operations.md#a-request-to-another-session`). Post the person's words, the channel id and the `thread_ts` as a Dispatch comment on the owning issue with `--mention 'role:<that token>'`. Reply in the thread with that comment's link, and say that its architect answers on the issue, or that none is running.
+- **Something an issue's architect owns.** Follow `Links:` up through each `child_of` parent to an issue `read_state` records, then up its tree to the first issue with an `issues.<ISSUE>.architect.locator.claim`. `envoy_publish` the person's words, the channel id and the `thread_ts` to `notifications.role.<that claim>`, and reply that you passed it on. When no issue of that chain has a locator, say so in the thread with what `read_state` shows. Never invent a role token.
 - **Anything else**: answer briefly in the thread. A request to approve a design is answered as `skill://legion-controller/references/wakes.md#github-mentions` says.

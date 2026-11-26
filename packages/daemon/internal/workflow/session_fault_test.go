@@ -22,15 +22,20 @@ func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
 		Tree: key, Project: "LEGION", Title: key, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 }
 
-// A forgotten session is posted on the issue and told to its architect, and the controller is told
-// nothing: the worker is running, so nothing is held, and the architect is the one who acts on the
-// report. A copy to the controller would only tell it what the architect already hears (#4065).
-// Its cause decides the words and the notice kind. A session no store holds is told as lost, as it
-// always was. One the pod's launcher could not look up by its id, and Oh My Pi did not resume by
-// that id, is told as forgotten, with that reason, and nothing says it was lost
-// (dispatch://INFRA-4108 R3): the notice's kind is part of what the architect hears, since the
-// outbox publishes each notice as `<kind> on <issue>`.
-func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
+// controllerNoticeKinds is the kind of every notice the outbox holds for the project's controller.
+func controllerNoticeKinds(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	return outboxStrings(t, pool, "select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id", "LEGION-209")
+}
+
+// A forgotten session is posted on the issue and told to its architect and to the controller: the
+// worker is running, so nothing is held, and the report is the whole point. Its cause decides the
+// words and the notice kind. A session no store holds is told as lost, as it always was. One the
+// pod's launcher could not look up by its id, and Oh My Pi did not resume by that id, is told as
+// forgotten, with that reason, and nothing says it was lost (dispatch://INFRA-4108 R3): the
+// notice's kind is part of what the architect and the controller hear, since the outbox publishes
+// each notice as `<kind> on <issue>`.
+func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing.T) {
 	t.Parallel()
 	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
 	for _, row := range []struct {
@@ -91,15 +96,14 @@ func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
 			if reason, told := notices[row.kind]; len(notices) != 1 || !told || !strings.Contains(reason, "fresh agent") {
 				t.Errorf("the architect was told %v, want one %s notice saying a fresh agent runs", notices, row.kind)
 			}
-			if got := controllerNoticesOn(t, pool, "LEGION-209"); len(got) != 0 {
-				t.Errorf("the controller was told %v, want nothing: a %s notice is its architect's", got, row.kind)
+			if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != row.kind {
+				t.Errorf("the controller was told %v, want one %s notice", got, row.kind)
 			}
 		})
 	}
 }
 
-// A session store that cannot be asked is posted on the issue and told to the controller, which
-// opens a finding ask for the operator who owns the store, and it holds no phase: the claim keeps
+// A session store that cannot be asked is told the same way, and holds no phase: the claim keeps
 // its session and the daemon keeps trying.
 func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
 	t.Parallel()
@@ -116,7 +120,7 @@ func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
 	if len(posted) != 1 || !strings.Contains(posted[0], "connection refused") || !strings.Contains(posted[0], "every minute") {
 		t.Fatalf("the issue was told %v, want one message naming the fault and the retry", posted)
 	}
-	if got := controllerNoticesOn(t, pool, "LEGION-209"); len(got) != 1 || got[0] != "session-store-fault" {
+	if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != "session-store-fault" {
 		t.Fatalf("the controller was told %v, want the store fault", got)
 	}
 	var got phase.Phase

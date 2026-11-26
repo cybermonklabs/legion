@@ -361,9 +361,8 @@ func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string 
 	return task
 }
 
-// assertNoAwaitingEffects fails when key's architect was suspended or the controller was told
-// anything of key. A root that enters the wait on a person tells the controller nothing either
-// (#4065), so a caller reads the wait itself from the record.
+// assertNoAwaitingEffects fails when key's architect was suspended or the controller was told the
+// root waits on a person.
 func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	for _, effect := range effects(t, pool) {
@@ -376,7 +375,9 @@ func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 				t.Fatalf("outbox effects = %#v, want no suspend of %s", effects(t, pool), key)
 			}
 		case record.ControllerNotice:
-			t.Fatalf("outbox effects = %#v, want no controller notice for %s, and this one is %s", effects(t, pool), key, payload.Kind)
+			if payload.Kind == record.AwaitingPersonNotice {
+				t.Fatalf("outbox effects = %#v, want no awaiting-person notice for %s", effects(t, pool), key)
+			}
 		}
 	}
 }
@@ -384,7 +385,7 @@ func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 // A registration of a closed gate whose approval request waits on the person is the architect
 // handing the spec to the person: the root keeps the row it took at its admission, so the root
 // waiting behind it waits on, its architect stays live after its turn, and the controller is
-// told nothing, since its skill does nothing for the wait (#4065).
+// told.
 func TestAClosedRegisteredGateKeepsItsRootsRowWhileTheNextRootWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
@@ -414,8 +415,14 @@ func TestAClosedRegisteredGateKeepsItsRootsRowWhileTheNextRootWaits(t *testing.T
 	if state != string(supervise.StateWorking) {
 		t.Fatalf("architect state = %q, want it live while the root waits", state)
 	}
-	if notices := controllerNotices(t, pool); len(notices) != 0 {
-		t.Fatalf("controller notices = %#v, want none for a root that waits on a person", notices)
+	var noticed bool
+	for _, effect := range effects(t, pool) {
+		if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice && strings.Contains(payload.Reason, "keeps its admission slot") {
+			noticed = true
+		}
+	}
+	if !noticed {
+		t.Fatalf("outbox effects = %#v, want awaiting-person controller notice", effects(t, pool))
 	}
 }
 

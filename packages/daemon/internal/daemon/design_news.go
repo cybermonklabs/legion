@@ -469,8 +469,8 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //     is queued for that claim already, or the claim holds a task its worker has not taken yet
 //     (holdsUntakenTask), or the claim is one a news-only start may not reach
 //     (recordedClaimTakesNews): none, behind the entry its phases row names — owed its phase start,
-//     which carries the news — retired, failed, or one a suspension that holds (the operator's or
-//     the controller's) is over, each of which the start that brings its agent back tells;
+//     which carries the news — retired, failed, or suspended by an operator, each of which the
+//     start that revives the claim tells;
 //   - a member in accepting is held by the architect that owns it (newsClaims.holderOf, the owner
 //     walk over the architect claims the record holds: its own architect while that claim holds its
 //     role, else the nearest one above it whose claim does, else the tree root's), and its news

@@ -6,7 +6,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
 
 1. List the triage issues handed to Legion: `dispatch issues --project <PROJECT> --status triage --label legion --all`.
 2. `dispatch read` each and follow `Links:` up through each `child_of` parent (a `child_of` under `Referenced by:` is a child, not the parent).
-3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is the root of a live tree (`skill://legion-controller/references/admission.md`): that tree's architect owns it.
+3. Leave a row whose `issues.<KEY>.tree`, or an ancestor, is a root in `admission.trees`: that tree's architect owns it.
 4. Every other row with no `issues.<KEY>` in `read_state` is a root: [triage it](#triage-a-root). A root a person labelled is queued by the daemon and needs nothing from you.
 5. A root `read_state` records that is back in `triage` was pulled back by a person. Re-admit nothing; ask in your summary: "<KEY> was pulled back to triage; what do you want?".
 

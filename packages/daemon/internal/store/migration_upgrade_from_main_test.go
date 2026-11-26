@@ -206,81 +206,6 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 }
 
-// thisBranchsMigrationsMainLacks are the versions of this branch that main has not recorded: main
-// recorded each step (cybermonklabs/legion#4400) and, after it, read a conflict twice and merged
-// the base forward (cybermonklabs/legion#4464, 20261119003157), fenced each value of the copy of
-// Dispatch's issues (cybermonklabs/legion#4598, 20261120055717) and marked a launch that had Oh My
-// Pi resume a claim's session by its id (cybermonklabs/legion#4581, 20261120042902), and every
-// other embedded version, the step record's three, 20261119003157, 20261120042902 and
-// 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
-// one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
-// rewrites outbox_kind_check over the rows main's daemon left. The upgrade applies all three
-// whatever main's newest version is: Store.apply asks each migration whether its own version is
-// recorded.
-var thisBranchsMigrationsMainLacks = map[int]bool{
-	20261115060739: true, 20261115121838: true, 20261126110259: true,
-}
-
-// A daemon of this release is also deployed over a database main migrated once main recorded each
-// step and each plan rating, read a conflict twice and read a root's design-gate basis, and that
-// database's outbox can hold a row of each of main's newest kinds: main's daemon queues a
-// step_record at each start and end of a step, its roll forward (20261117064152) queues one for
-// each run a rollback left open, it queues a plan_record for each retro that rates its plan, a
-// conflict_confirm for the second read of each head a first read found conflicting, a
-// merge_forward for each message of a merge forward, a design_changes row for each reconcile of a
-// tree's news of its approved design (20261119203047), a phase_ended row for each parent the
-// admission pass moves into awaiting_children in the middle of its worker's phase, and a
-// pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
-// re-parented root (20261122154643). The upgrade applies this branch's kind list with the merge
-// holds change (20261126110259) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows
-// the table holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE
-// 23514) and leave the daemon unable to boot. After the upgrade the outbox takes a
-// merge_holds_changed row, the kind 20261126110259 adds: its list stands above 20261122154643's,
-// which does not name the kind, and is the last word of the check. The negative controls are each
-// of the eight kinds taken out of 20261126110259's list, where the Migrate below then fails on
-// that pending row, and merge_holds_changed taken out of it, where the row queued after the
-// upgrade is refused.
-func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
-	ctx := context.Background()
-	store := emptyStore(t)
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	for _, migration := range all {
-		if thisBranchsMigrationsMainLacks[migration.Version] {
-			continue
-		}
-		if _, err := store.apply(ctx, migration); err != nil {
-			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
-		}
-	}
-	kinds := []string{"step_record", "plan_record", "conflict_confirm", "merge_forward", "design_changes",
-		"phase_ended", "pending_basis_seed", "reparent_seed"}
-	for _, kind := range kinds {
-		if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind); err != nil {
-			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
-		}
-	}
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("upgrade the database main migrated with a row of each of %v pending: %v", kinds, err)
-	}
-	for _, kind := range kinds {
-		var pending int
-		if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, kind).Scan(&pending); err != nil {
-			t.Fatalf("count the %s rows the upgrade left: %v", kind, err)
-		}
-		if pending != 1 {
-			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
-		}
-	}
-	if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`); err != nil {
-		t.Fatalf("queue a merge_holds_changed row after the upgrade: %v", err)
-	}
-}
-
 // releaseDatabase is the database one release left, which this branch's daemon upgrades.
 type releaseDatabase struct {
 	name string
@@ -349,32 +274,28 @@ func upgradeFrom(t *testing.T, release releaseDatabase) {
 	release.check(t, store)
 }
 
-// todaysMainsNewestMigration is the pinned baseline this test upgrades from: main's newest
-// migration at this branch's merge of main f21107b285c7, the sequence of each value of the copy of
-// Dispatch's issues. Main has numbered newer migrations since, and this test does not follow them.
-// It and the other migrations main numbered after this branch's claim_sessions (20261116144907) —
-// the role-holders publication (20261116165926), the reviewer's reviewed commit (20261116234034),
-// the step records' three (20261117000528, 20261117004117, 20261117064152), the plan record's kind
-// list (20261117023932), the pull request statuses (20261117112334), the update ask mark's cutover
-// (20261117200337), the conflict's second read and the merge forward (20261119003157) and the mark
-// of a launch that had Oh My Pi resume a session by its id (20261120042902) — stand above it.
-// A deployment of main applies them first, so this branch's daemon finds a database whose newest
-// recorded version stands above its own new migration.
-const todaysMainsNewestMigration = 20261120055717
+// todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
+// (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
+// this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
+// the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
+// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
+// it. A deployment of main applies them first, so this branch's daemon finds a database whose
+// newest recorded version stands above its own new migration.
+const todaysMainsNewestMigration = 20261117200337
 
 // thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
 const thisBranchsClaimSessions = 20261116144907
 
-// A database main migrated to the pinned baseline, 20261120055717, has recorded every migration
-// up to it but claim_sessions, which is numbered below it. Store.Migrate applies every
+// A database today's main migrated has recorded every migration up to main's newest,
+// 20261117200337, but claim_sessions, which is numbered below it. Store.Migrate applies every
 // migration that database has not recorded, whatever version stands highest (apply asks each
 // migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
-// baseline: claim_sessions is created, and its backfill holds the session a claim of main's daemon
+// newest: claim_sessions is created, and its backfill holds the session a claim of main's daemon
 // recorded for that claim. So this branch's migration keeps its number.
 //
-// The database is built from the migrations numbered up to the pinned baseline alone (review round
-// 13), so a migration added after this test still finds the database that baseline leaves, and the
-// upgrade applies it too, after claim_sessions.
+// The database is built from the migrations numbered up to main's newest alone (review round 13),
+// so a migration added after this test still finds the database today's main left, and the upgrade
+// applies it too, after claim_sessions.
 //
 // The control (the pull request records the run): a loader that skips a migration numbered below
 // the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
@@ -383,7 +304,7 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	ctx := context.Background()
 	const token, session = "legion-legion-legion-901-implementer", "ses_main"
 	upgradeFrom(t, releaseDatabase{
-		name:   "main at the pinned baseline",
+		name:   "today's main",
 		newest: todaysMainsNewestMigration,
 		lacks:  []int{thisBranchsClaimSessions},
 		seed: func(t *testing.T, store *Store) {

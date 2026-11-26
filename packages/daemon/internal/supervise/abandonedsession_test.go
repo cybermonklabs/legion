@@ -52,7 +52,7 @@ func (h *harness) wantAbandonedToldBy(by, when string) {
 func (h *harness) abandonSession() string {
 	h.t.Helper()
 	h.reach(StateIdle)
-	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestStop{Claim: h.token})
 	h.wantState(StateRetired)
 	h.must(RequestRetry{Claim: h.token, FreshSession: true})
 	return "the retry asked for a new session"
@@ -107,27 +107,21 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 }
 
 // Whoever abandons a session, the claim records which one and why in that one's own words: an
-// operator's forget, from `legion claims forget-session` or its retry --fresh-session, the forget
-// of the controller's fresh session, which no operator asked for, and an operator's retry in a new
-// session, which fails nothing and so has no failure to name.
-//
-// The negative control is forgottenBy answering the operator's sentence for every asker: the
-// controller's row then records that an operator cleared the session.
+// operator's `legion claims forget-session`, and an operator's retry in a new session, which fails
+// nothing and so has no failure to name.
 func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		event Event
 		why   string
 	}{
-		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
-		{"the controller's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByController},
-			"the project's controller asked for a fresh session of this agent"},
+		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session}, "forget-session"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+			h.must(RequestStop{Claim: h.token})
 			h.wantState(StateRetired)
 
 			h.must(tc.event)

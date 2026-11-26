@@ -761,7 +761,6 @@
     "LEGION_WORKFLOW_PHASES": "constant",
     "LegionActivityRequest": "schema:strict",
     "LegionActivityRequestBody": "type",
-    "LegionAgentActionResponse": "schema:tolerant",
     "LegionCapabilityReport": "schema:strict",
     "LegionCapabilityReportBody": "type",
     "LegionCapabilityRow": "type",

@@ -32,7 +32,7 @@ const (
 	// words the production check reads (R8).
 	podUpdateBoundLine = "supervise pod update replaced at the bound"
 	// podUpdateRefusedNotice is what the sweep logs when the store will not take a notice's row.
-	podUpdateRefusedNotice = "supervise: tell the controller that an update round is held past its bound; telling again at the next sweep"
+	podUpdateRefusedNotice = "supervise: tell the operator's side that an update round is held past its bound; telling again at the next sweep"
 )
 
 // podUpdateBound is the bound of a round the rig opens at its start: the moment the round ends
@@ -271,7 +271,7 @@ func TestPodUpdateBoundIsReadByTheLastWordBeforeTheReplacement(t *testing.T) {
 
 // Two claims; the operator suspends one, and the other answered and still runs a process in the
 // pod. Past the bound nothing but the operator's suspension holds the pod (readReplacement's
-// waitsForResume), and it does: no ReplacePod is called however long the clock runs. Once the
+// waitsForOperator), and it does: no ReplacePod is called however long the clock runs. Once the
 // operator resumes the suspended claim, after the bound, the bound ends the round.
 func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *testing.T) {
 	t.Parallel()
@@ -816,8 +816,8 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig.rt.FailPodDrift(unread)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
-		if want := unreadPodReason(); notice.Reason != want {
-			t.Errorf("the notice says %q, want %q", notice.Reason, want)
+		if notice.Reason != unreadPodReason {
+			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
 	})
@@ -836,8 +836,8 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig, sweep := withNoProcess(t, supervise.SuspendedByDaemon)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
-		if want := unreadPodReason(); notice.Reason != want {
-			t.Errorf("the notice says %q, want %q", notice.Reason, want)
+		if notice.Reason != unreadPodReason {
+			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})
 	})

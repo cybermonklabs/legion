@@ -144,7 +144,7 @@ func TestForgetSessionDropsAReleasedUncertainLaunchBeforeItStartsAgain(t *testin
 		t.Fatalf("released claim = %+v, want queued with its session kept", got)
 	}
 
-	h.must(RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: testToken, Session: session})
 	h.must(RequestSpawn{Claim: testToken})
 
 	spawns := h.rt.CallsOf("Spawn")

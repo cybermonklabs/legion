@@ -54,7 +54,7 @@ func TestASweepInsideALaunchsReplacementLeavesItsRecordStanding(t *testing.T) {
 
 	token := rig.tokens[claim.RoleImplementer]
 	rig.intoRoundPod(claim.RoleImplementer)
-	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator})
+	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token})
 	mu.Lock()
 	standing := midLaunch
 	mu.Unlock()

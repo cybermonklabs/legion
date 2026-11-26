@@ -236,12 +236,11 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	// in_progress takes it out of the line (record.QueuedRoot needs todo), and admission's pass then
 	// finds a waiting root at a status only a running tree has, in no tree that runs: it leaves the
 	// workflow as a parked root does (releaseUnslotted, workflow's LeaveUnslotted), done and
-	// lingering, with nothing started and nothing told to the controller, which reads the root from
-	// the state (#4065). The person's todo with the label then queues it again (readmit), so it
-	// never reaches the release of a hold (workflow's releaseHeldRoot) and no worker starts in a
-	// tree that has not opened. The leave already set the phase to done and cleared the hold, and a
-	// person's todo is no hand-over, so it is a readmit with no carry: a new generation at admitted,
-	// holding nothing the hand-over carried.
+	// lingering, with one unslotted notice for the controller and nothing started. The person's todo
+	// with the label then queues it again (readmit), so it never reaches the release of a hold
+	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The leave
+	// already set the phase to done and cleared the hold, and a person's todo is no hand-over, so it
+	// is a readmit with no carry: a new generation at admitted, holding nothing the hand-over carried.
 	t.Run("a carried held root a person moves out of the line leaves the workflow, and its todo starts no worker", func(t *testing.T) {
 		const other = "LEGION-9"
 		pool := migratedPool(t)
@@ -249,22 +248,18 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		admission, engine := newAdmission(t, 1, quiet), newEngine()
 		handOverHeldChild(t, pool, admission, engine)
 
-		toldOf := func() []record.ControllerNotice {
-			var told []record.ControllerNotice
-			for _, queued := range effects(t, pool) {
-				if notice, ok := queued.payload.(record.ControllerNotice); ok && queued.issue == child {
-					told = append(told, notice)
-				}
-			}
-			return told
-		}
-		before := toldOf()
 		apply(t, pool, admission, "in-progress", childEvent("in_progress", 3, false), engine)
 		if left := issue(t, pool, child); left.Phase != phase.Done || left.LingerUntil == nil {
 			t.Errorf("the carried child after a person's in_progress = %#v, want it out of the workflow, done and lingering", left)
 		}
-		if told := toldOf(); len(told) != len(before) {
-			t.Errorf("controller notices of %s after a person's in_progress = %+v, want the %d from before it: the controller reads the root from the state", child, told, len(before))
+		var unslotted []record.ControllerNotice
+		for _, queued := range effects(t, pool) {
+			if notice, ok := queued.payload.(record.ControllerNotice); ok && queued.issue == child && notice.Kind == record.UnslottedNotice {
+				unslotted = append(unslotted, notice)
+			}
+		}
+		if len(unslotted) != 1 {
+			t.Errorf("unslotted notices of %s after a person's in_progress = %+v, want one", child, unslotted)
 		}
 		if starts := workerStartsOf(t, pool, child); len(starts) != 0 {
 			t.Errorf("phase worker starts of %s after a person's in_progress = %+v, want none", child, starts)

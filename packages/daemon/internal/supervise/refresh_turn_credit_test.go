@@ -185,7 +185,7 @@ func TestACreditedRefreshPostAClaimIgnoresGivesItsCreditBack(t *testing.T) {
 			h := pacedHarness(t, wakeRate, func(d *Deps) { d.RefreshGate = gate })
 			if state == StateRetired {
 				h.reach(StateIdle)
-				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
+				h.must(RequestStop{Claim: h.token})
 			} else {
 				h.reach(state)
 			}

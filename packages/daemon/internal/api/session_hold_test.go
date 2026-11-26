@@ -194,11 +194,11 @@ func (h *harness) freshSession(token claim.Token, session string, generation uin
 	h.t.Helper()
 	h.suspend(token)
 	m, _ := h.supervisor.Machine(token)
-	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session, By: supervise.SuspendedByOperator}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session}); err != nil {
 		h.t.Fatalf("forget %s's session %s: %v", token, session, err)
 	}
 	h.runtime.ScriptSpawn(fake.SpawnResult{Locator: podLocator(token, "pod-legion-901", generation)})
-	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token}); err != nil {
 		h.t.Fatalf("resume %s: %v", token, err)
 	}
 	h.hello(token, "pod-legion-901", "thumbprint-"+string(token))

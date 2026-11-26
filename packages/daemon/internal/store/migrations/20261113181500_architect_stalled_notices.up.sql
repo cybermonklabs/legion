@@ -31,7 +31,7 @@
 -- header says what each statement prints, why the block runs first and why it drops the wakes
 -- still unsent.
 --
---   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   alter table phases drop column if exists entry_verbatim;
 --   delete from schema_version where version = 20261114061900;

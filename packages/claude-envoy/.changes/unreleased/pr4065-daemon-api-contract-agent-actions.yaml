@@ -1,8 +1,0 @@
-kind: Changed
-body: |-
-  The plugin speaks the daemon API contract of entry 20261125182642 (`agent-actions`), the contract
-  of the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one
-  agent, named by its issue and role) that the controller holds.
-time: 2026-11-20T16:00:00.000000000Z
-custom:
-    Issue: pr4065

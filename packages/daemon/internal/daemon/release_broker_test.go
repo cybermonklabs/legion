@@ -274,7 +274,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	}
 	handle(
 		supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator},
-		supervise.RequestForgetSession{Claim: token, Session: releaseSession, By: supervise.SuspendedByOperator},
+		supervise.RequestForgetSession{Claim: token, Session: releaseSession},
 	)
 	if !slices.Contains(r.holds(), sessionHold) {
 		t.Fatalf("the claim holds %v after it forgot %s, want that session's id among them", r.holds(), releaseSession)

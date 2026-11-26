@@ -294,8 +294,8 @@ func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *test
 // The task is not retired on it (dispatch://INFRA-956 R2): the work the turn was given is still
 // owed, so the task goes back to waiting and the same session is prompted with it again. The
 // claim used to go idle holding nothing, and only an edit of the daemon's store gave the work
-// back. providererror_test.go holds the ladder, the decision and the notice at
-// providerErrorRunTold; this case holds the one line of promptResulted that stopped retiring.
+// back. providererror_test.go holds the ladder, the decision and the controller's notice; this
+// case holds the one line of promptResulted that stopped retiring.
 func TestATurnWhoseWorkEndedInAProviderErrorDoesNotRetireItsTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)

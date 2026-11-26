@@ -562,7 +562,7 @@ func podBackstopReports(t *testing.T) (*harness, *[]StallBackstopStop, time.Time
 	h.start(c)
 	last, swept := stalledSweep(h)
 	loading := h.podRole(claim.RoleArchitect, StateSuspended)
-	h.mustPostTo(loading.m, RequestResume{Claim: loading.token, By: SuspendedByOperator})
+	h.mustPostTo(loading.m, RequestResume{Claim: loading.token})
 	h.wantStarts(loading.token, 1)
 	return h, stops, last, swept, loading
 }

@@ -842,8 +842,8 @@ func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 		retry Event
 	}{
 		{"the architect's retry of a worker", queuedClaim(), RequestRetry{Claim: testToken}},
-		{"the operator's retry of an architect", rootClaim(), RequestAskedRetry{Claim: rootToken, By: SuspendedByOperator}},
-		{"the operator's retry of a phase worker", queuedClaim(), RequestAskedRetry{Claim: testToken, By: SuspendedByOperator}},
+		{"the operator's retry of an architect", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
+		{"the operator's retry of a phase worker", queuedClaim(), RequestOperatorRetry{Claim: testToken}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarnessOf(t, tc.claim)
@@ -886,7 +886,7 @@ func TestTheOperatorsRetryOfTheControllerIsRefused(t *testing.T) {
 			h.wantState(StateFailed)
 			before, calls, puts := h.claim(), len(h.rt.Calls()), len(h.store.history())
 
-			err := h.handle(RequestAskedRetry{Claim: tc.claim.Token, By: SuspendedByOperator})
+			err := h.handle(RequestOperatorRetry{Claim: tc.claim.Token})
 
 			var refused *RefusedError
 			if !errors.As(err, &refused) || !errors.Is(err, ErrRetryNotTheController) || refused.State != StateFailed ||

@@ -37,10 +37,10 @@ func TestAReleaseFreesAClaimsOtherNamesOnlyOnceTheBrokerCarriesNothingOfThem(t *
 		broker := h.withSecrets()
 		h.reach(StateReady)
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
 		const fresh, freshFile = "ses_after_forget", "/state/sessions/after-forget.jsonl"
 		h.store.fillHolds(h.token, MaxHeldNamesPerClaim-h.store.heldBy(h.token)-len(RecordedHolds(fresh, freshFile))+1)
-		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		h.must(RequestResume{Claim: h.token})
 		h.connect()
 		registerFresh := func() error {
 			return h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: fresh, SessionFile: freshFile,
@@ -199,7 +199,7 @@ func TestAReleaseFreesAClaimsOtherNamesOnlyOnceTheBrokerCarriesNothingOfThem(t *
 		broker := h.withSecrets()
 		h.reach(StateReady)
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
 		// The store as a committed release left it: the abandoned session's names freed, the
 		// mark that commit wrote erased by the claim's next write, which wrote memory's claim.
 		h.store.mu.Lock()
@@ -242,7 +242,7 @@ func TestARefusedClaimWriteFreesNoNameOfARelease(t *testing.T) {
 	h.withSecrets()
 	h.reach(StateReady)
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: h.token, Session: session})
 	held := h.store.heldBy(h.token)
 	if held == 0 {
 		t.Fatal("the claim holds no name of the session it abandoned, so a release would free nothing")

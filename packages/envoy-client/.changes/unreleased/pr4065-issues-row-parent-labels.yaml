@@ -1,5 +1,0 @@
-kind: Fixed
-body: '`dispatch issues` prints each issue''s parent (`child of <KEY>`) and its labels in the issue''s text row, as the command''s help says each row carries them, so a reader of the text tells the open roots from their children. A title, a label, or the name of the claim''s or the route''s holder that holds `·`, `,`, `"`, a line break, any other control or line-separating character, or a Unicode format character (a zero-width or bidirectional mark) is printed quoted, as JSON quotes it, with U+0085, U+2028 and U+2029 escaped too, so it cannot split the row or add a part to it: a title or a session title holding ` · child of <KEY>` does not read as a child''s row, and the quotes on a row stay balanced.'
-time: 2026-11-20T13:39:07.000000000Z
-custom:
-    Issue: pr4065

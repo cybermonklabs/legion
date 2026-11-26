@@ -44,8 +44,6 @@ var pauseQueue = []pauseQueued{
 		payload: UpdateAsk{Role: claim.RoleArchitect, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Push your work."}},
 	{name: "a merge-queue message", issue: "LEGION-307", held: true, claim: "legion-legion-legion-307-merger",
 		payload: MergeQueueRemoval{Number: 42, Head: "c0de"}},
-	{name: "a merge-holds change", issue: "LEGION-313", held: true, claim: "legion-legion-legion-313-merger",
-		payload: MergeHoldsChanged{Project: "LEGION"}},
 	{name: "a check's wake", issue: "LEGION-308", held: true, payload: CheckWakeDue{Look: 1, Reason: "the tester's own wake"}},
 	{name: "a check's look bound", issue: "LEGION-309", held: true, payload: CheckLook{Look: 1}},
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},

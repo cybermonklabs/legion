@@ -129,7 +129,7 @@ type Runtime interface {
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
 	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
