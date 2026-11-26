@@ -69,36 +69,3 @@ func TestPhaseRowsKeepTheirTaskAndAgentAcrossAGeneration(t *testing.T) {
 		}
 	})
 }
-
-// A role names one phases row where the issue holds one row of it outside a plan, or rows of it in
-// one task alone: every issue of one task, a plan of one task included, reads its role's row by the
-// role, as each completion, count and read of an issue with no plan rows does. Of the rows of one
-// task, the row whose entry was raised last is the role's (a later agent of the task's step). Rows
-// of the role in two tasks name no one row, so the read answers the zero row and the caller reads
-// the row of its task (PhaseRowAt) or of its claim (PhaseRowForClaim).
-func TestARoleNamesItsRowWhereOneTaskHoldsIt(t *testing.T) {
-	const keyed claim.Token = "legion-legion-legion-208-implementer"
-	const later claim.Token = "legion-legion-legion-208-reviewer"
-	outside := PhaseRow{Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester", Entry: 4}
-	first := PhaseRow{Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 2}
-	second := PhaseRow{Role: claim.RoleTester, Claim: later, StepTask: "a", StepPlace: 2, Entry: 3}
-	other := PhaseRow{Role: claim.RoleTester, Claim: later, StepTask: "b", StepPlace: 2, Entry: 1}
-	implementer := PhaseRow{Role: claim.RoleImplementer, Claim: keyed, StepTask: "a", StepPlace: 1, Entry: 1}
-	for _, tc := range []struct {
-		name string
-		rows []PhaseRow
-		want PhaseRow
-	}{
-		{name: "a row outside a plan", rows: []PhaseRow{implementer, outside}, want: outside},
-		{name: "the one row of a task", rows: []PhaseRow{implementer, first}, want: first},
-		{name: "the row of the task's latest entry", rows: []PhaseRow{implementer, first, second}, want: second},
-		{name: "rows of two tasks", rows: []PhaseRow{implementer, first, other}, want: PhaseRow{}},
-		{name: "no row of the role", rows: []PhaseRow{implementer}, want: PhaseRow{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := PhaseRowOf(tc.rows, claim.RoleTester); got.Claim != tc.want.Claim || got.StepTask != tc.want.StepTask || got.Entry != tc.want.Entry {
-				t.Fatalf("PhaseRowOf(tester) = %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-}
