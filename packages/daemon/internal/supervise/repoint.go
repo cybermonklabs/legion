@@ -229,9 +229,9 @@ const (
 	// new one, which the claim records (launchTries).
 	EndRelaunched ProcessEnd = "relaunched"
 	// EndRelaunchParked is the launch that replaces the process parked by the wake pacing until
-	// its turn (reserveWake, parkWake), with no take-back made at the park: the claim still records
-	// the process and still runs it, its turn and the task that turn serves with it, until that
-	// wake's turn, which is where the take-back is made and the launch stops the process and
+	// its turn (reserveWake, waitOnMachine), with no take-back made at the park: the claim still
+	// records the process and still runs it, its turn and the task that turn serves with it, until
+	// that wake's turn, which is where the take-back is made and the launch stops the process and
 	// brings the session back (launchReplacing, runWake, wakeNow, launchNow) — unless a suspension
 	// held meanwhile ends the claim there instead (endHeld), the lifecycle recheck that turn makes
 	// first refuses the launch and leaves the process as it is (runWake, relaunchRefused), the
@@ -379,8 +379,8 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 //
 // The wake is read first and by identity, because it is the one end the claim alone cannot show:
 // a launch the pacing parked leaves the claim exactly as the replacement found it, process and
-// state and all (parkWake), and the wake the machine holds after is this replacement's only where
-// it is not the one it began with. A launch waiting for its issue pod's start left the claim
+// state and all (waitOnMachine), and the wake the machine holds after is this replacement's only
+// where it is not the one it began with. A launch waiting for its issue pod's start left the claim
 // launching with no process (askPod, wake.park), which alone reads as the relaunch still to make,
 // and its wake is what tells the two apart. The caller holds mu.
 func (m *Machine) endReached(found string, parked *wake) ProcessEnd {

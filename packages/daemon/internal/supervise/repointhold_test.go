@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // overAStaleAddressAfterItsTurn is a claim on the current plugin with R5's bounds set, whose
@@ -133,19 +134,22 @@ func TestTakeUnderAHeldStaleAddressRelaunchOverAViewNotWholeIsRelaunchedUncharge
 }
 
 // delayedReplacement is a replacement of the claim's live process raised during its take's turn,
-// which the wake pacing parks (launchReplacing, reserveWake): raise raises it, the pacing held by
-// another claim's launch reserved just before.
+// which the wake pacing parks (launchReplacing, reserveWake): raise raises it, the pacing's next
+// turn drawn by another wake just before (pacingBusy).
 type delayedReplacement struct {
 	name  string
 	raise func(h *harness)
 }
 
-// pacingBusy is another claim's launch taking the pacing's next turn, so the next launch the
-// harness's claim raises parks behind it.
+// pacingBusy is another wake drawing the pacing's next turn, so the next launch the harness's
+// claim raises parks at the head of the queue, behind that turn, and is let out at the moment the
+// pacer estimates for its place (wakepace.Place.Estimate). The wake joins the second queue and
+// gives its place up at once: a place the pacer lets out at its join has spent the turn the burst
+// still held, and one that waits has drawn the pending turn, which outlives the place and lets out
+// the next place to join.
 func pacingBusy(h *harness) {
 	h.t.Helper()
-	second := h.machineFor(wakeClaim(secondToken, StateQueued))
-	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.deps.WakePace.Pacer.Join(wakepace.Second).Leave()
 }
 
 var delayedReplacements = []delayedReplacement{

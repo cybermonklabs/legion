@@ -127,6 +127,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
+		MessageMarkAt: at.Add(-90 * time.Second),
 		AwaitsPod: &runtime.Locator{
 			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 6),
 			Sandbox: &runtime.SandboxLocator{

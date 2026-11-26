@@ -26,8 +26,7 @@ type claimStop struct {
 }
 
 // stopsOfClaim is the stops the stop transaction was asked of token's claim, in the order asked:
-// the pause stops every claim of the harness whose launch its gate holds, the other claim whose
-// launch took the pacing's turn (pacingBusy) among them.
+// the pause stops every claim of the harness whose launch its gate holds.
 func (s *stopTransaction) stopsOfClaim(token claim.Token) []claimStop {
 	var of []claimStop
 	for _, call := range s.made() {
@@ -108,7 +107,7 @@ type stopOverACompaction struct {
 
 // pausedStopOverACompaction is a claim whose take's turn ended with its report still to come, its
 // session then being compacted with no turn under the compaction (compactHeld). A stall backstop
-// over that compaction parks its relaunch behind another claim's launch (pacingBusy), and the
+// over that compaction parks its relaunch behind a turn another wake drew (pacingBusy), and the
 // relaunch's turn comes under pause 7: the pause's gate holds it, and the gate's own stop is made
 // (pauseStopDue). A second past that stop the take stands for its report, the claim is still
 // working for the compaction, the stop is held to R5's second bound from the stop, and the stop

@@ -14,7 +14,7 @@ import (
 )
 
 // dropWakeFor is an operator's wake never waiting over a claim the gate parked with no process
-// of its own: that park wrote the claim launching (parkWake), so the row the request reaches
+// of its own: that park wrote the claim launching (waitOnMachine), so the row the request reaches
 // would decide a claim that is only waiting its turn. An operator's resume is answered "the
 // claim is not suspended" and an operator's forget-session "the claim has a live process or
 // launch", neither of which is true of such a claim, and an operator's own task is queued behind
@@ -27,20 +27,23 @@ import (
 // A claim parked over a process it still records is dropped for nothing, whatever the request.
 // That park changed neither the claim nor the process, so every row already decides it as it
 // stands, and the wake still holds the only thing that retires that process: a launch whose turn
-// lets it go and arms the next process's timers (wakeNow, parkWake). The one request that may
+// lets it go and arms the next process's timers (wakeNow, waitOnMachine). The one request that may
 // not wait for the turn — an operator's task, whose take is refused while a launch waits
 // (claimHold's launchWaits) — runs that launch where it arrives rather than dropping it
 // (runParkedLaunchNow).
 //
-// The dropped wake's token is not handed back, since the limiter charges on the reserve, so every
-// wake behind it keeps the turn it already holds.
+// The dropped wake keeps its place in the pacing's queue: its TimerWake is taken off the place
+// rather than disarmed (detachWake), so the place waits on with no release to call, and the wakes
+// around it keep their order. A let-out that comes while the wake is off the machine is read when
+// the wake is taken up again (reparkWake), and a wake the decision does not take up gives the
+// place up there.
 //
 // The wake is returned so that a decision which launched nothing can take it up again
 // (reparkWake): a wake that waits must lose nothing, and a refusal, a named ignore or a
 // forget-session leaves the claim exactly where the gate found it, with the launch this wake
 // holds still owed to it.
 //
-// A paced request drops nothing: a second wake request takes no second token, and the claim's
+// A paced request drops nothing: a second wake request takes no second place, and the claim's
 // own wake is the launch it is asking for.
 //
 // Nor does a launch that waits at its issue pod's gate (wake.park) drop for any request. It is no
@@ -55,9 +58,9 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 	dropped := m.wake
 	request, _ := requestName(ev)
 	m.log.Info("supervise: a request that does not wait reached a claim the wake pacing holds over no process; dropping the wake",
-		"request", request, "kind", dropped.kind, "due", dropped.at, "state", dropped.state)
+		"request", request, "kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
 	m.claim.State = dropped.state
-	m.disarm(TimerWake)
+	m.detachWake()
 	m.wake = nil
 	return dropped
 }
@@ -74,7 +77,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // takes it once it is ready.
 //
 // Dropping the wake instead would leave the claim recording a process nothing retires: the park
-// disarmed that process's boot interval, registration deadline and probe interval (parkWake),
+// disarmed that process's boot interval, registration deadline and probe interval (waitOnMachine),
 // the launch that was to replace it would be gone, and every report of it decides nothing while
 // no launch waits only because one does (judge). The next report of that process would charge
 // another launch failure, the death it already charged excepted (died).
@@ -143,12 +146,12 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // (relaunchRefused, Handle): a drop, a retirement or a replacement made before it, with the wake
 // taken off the machine, would leave the claim holding neither the task it had, nor the
 // operator's, nor the launch. So a refusal changes nothing: the pending task, its value, the
-// timers armed and the wake with its turn are left as they were, and the operator's task is
-// refused with the recheck's reason (RefusedError, which the operator's deliver route answers
-// 409), so the operator asks again, and that delivery is decided afresh. The recheck comes before
-// the record is asked whether it owes an untaken task, so over a task it still owes and no newer
-// one replaces, a refusal names the lifecycle rather than the pending delivery; both leave the
-// claim as it was.
+// timers armed and the wake with its place in the pacing are left as they were, and the operator's
+// task is refused with the recheck's reason (RefusedError, which the operator's deliver route
+// answers 409), so the operator asks again, and that delivery is decided afresh. The recheck comes
+// before the record is asked whether it owes an untaken task, so over a task it still owes and no
+// newer one replaces, a refusal names the lifecycle rather than the pending delivery; both leave
+// the claim as it was.
 //
 // A plugin-refresh wake whose fact is gone — the process registered on this daemon's contract
 // inside the wait, or the claim started a turn of its own — relaunches nothing
@@ -159,9 +162,10 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // queue decides. Every launch that will run keeps the recheck above, and a refusal of it still
 // changes nothing.
 //
-// The launch takes no second token — the reservation was taken once, at the gate — so the wakes
-// behind it keep the turns they already hold, and the line it writes says the pacing did not
-// decide when it ran (wakeRan, launchWake).
+// The launch takes no turn of the pacing: disarming its timer gives its place up (placeTimer), and
+// the turn that place would have taken goes to the wake behind it. The daemon is told the launch is
+// let out now (wakeLetOut), and the line it writes says the pacing did not decide when it ran
+// (wakeRan, launchWake).
 //
 // A launch the project pause's gate holds (wake.pause) is not run for the operator's task either:
 // nothing but the controller launches while the project is paused (pauseGate), so the task is
@@ -187,7 +191,7 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		m.log.Warn("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces, and that launch's lifecycle recheck refused it; the task is refused, and the pending task and the launch are left as they were",
-			"kind", m.wake.kind, "due", m.wake.at, "state", m.claim.State, "error", err)
+			"kind", m.wake.kind, "due", m.wake.due(), "state", m.claim.State, "error", err)
 		return &RefusedError{State: m.claim.State, Request: "deliver", Err: fmt.Errorf(
 			"the launch parked over %s's process runs before this task is queued, and its tree's lifecycle check refused that launch, so nothing of the claim changed; ask again once the check passes: %w",
 			m.claim.Token, err)}
@@ -223,10 +227,14 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		}
 	}
 	waiting := m.wake
+	// The estimate is read before the disarm gives the place up (placeTimer): a place that left
+	// estimates the zero time.
+	due := waiting.due()
 	m.wake = nil
 	m.disarm(TimerWake)
 	m.log.Info("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces; that launch runs now and the task goes to the process it starts",
-		"kind", waiting.kind, "due", waiting.at, "state", m.claim.State)
+		"kind", waiting.kind, "due", due, "state", m.claim.State)
+	m.wakeLetOut(m.deps.Clock.Now())
 	return m.launchWake(ctx, waiting, false)
 }
 
@@ -249,11 +257,12 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // holds this launch as it holds every other, so the retry is refused and the wake parked again,
 // for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's gate
 // held whose pause has ended, before the gate's own stop or the resume's event let it out
-// (pauseStopDue, resumePause), runs here too, out of that gate, but unpaced and with no token
-// reserved, where their let-out reserves one for a launch that has not paid (letOutHeldLaunch).
+// (pauseStopDue, resumePause), runs here too, out of that gate, but unpaced and with no place
+// taken, where their let-out takes a place for a launch that has not paid (letOutHeldLaunch).
 //
-// The launch takes no second token, as an operator's task over a parked launch takes none
-// (runParkedLaunchNow): the wakes behind it keep the turns they already hold.
+// The launch takes no turn of the pacing, as an operator's task over a parked launch takes none
+// (runParkedLaunchNow): its place is given up, the turn it would have taken going to the wake
+// behind it, and the daemon is told the launch is let out now (wakeLetOut).
 func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
 	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || m.held != nil {
 		return false, nil
@@ -266,45 +275,56 @@ func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, droppe
 		m.disarm(TimerPause)
 	}
 	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",
-		"kind", dropped.kind, "due", dropped.at, "state", dropped.state)
+		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state)
+	dropped.leave()
 	m.claim.State = StateLaunching
+	m.wakeLetOut(m.deps.Clock.Now())
 	return true, m.runWake(ctx, dropped, false)
 }
 
 // reparkWake takes a dropped wake up again when the decision it was dropped for launched nothing
 // (Handle, after both the named ignore's refusal and the row that acted): the claim is in the
 // state the gate found, with no process and no wake of its own, which is where a refusal, an
-// ignore and a forget-session each leave it — and the launch the wake holds is still owed. It is
-// parked again by the park the gate itself makes (parkWake), at the same release moment, which
-// fires at once if it has passed: the token was taken once, so this costs nothing and the wakes
-// behind it keep their turns.
+// ignore and a forget-session each leave it — and the launch the wake holds is still owed. Its
+// TimerWake is bound to the same place again (bindWake) and the wake is parked by the park the
+// gate itself makes (waitOnMachine): the place kept its spot in its queue while the wake was off
+// the machine (dropWakeFor), so this costs nothing and moves no other wake. A place the pacer let
+// out meanwhile arms TimerWake at its let-out moment, which fires at once, so the wake runs
+// through its own timer as its let-out would have run it.
 //
 // A claim that records a process takes no wake back, which is what the locator in the guard
 // below says: every wake dropped here was parked over no process, so a claim recording one is a
-// claim the decision launched (dropWakeFor).
+// claim the decision launched (dropWakeFor). A dropped wake that is not taken back — that launch,
+// a claim the decision moved on, or a wake the decision raised in its place — gives its place up,
+// the turn it would have taken going to the wake behind it.
 //
 // A write that fails is logged and changes no verdict: the request is answered as the table
 // answered it, and the claim stands as that answer left it, which is what a refusal leaves today.
 // The wake still waits in memory, and a restart loses it as it loses any other.
 //
 // A launch the project pause's gate held goes back to that gate, as it was held, rather than to a
-// moment of the pacing it never had (pauseGate): the gate's own stop is posted again, and it reads
+// place in the pacing it never had (pauseGate): the gate's own stop is posted again, and it reads
 // then whether that pause still holds the claim (pauseStopDue).
 func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
-	if dropped == nil || m.wake != nil || m.claim.Locator != nil || m.claim.State != dropped.state {
+	if dropped == nil {
 		return
 	}
-	m.log.Info("supervise: the request launched nothing; the wake the pacing holds keeps its turn",
-		"kind", dropped.kind, "due", dropped.at, "state", dropped.state, "pause", dropped.pause)
+	if m.wake != nil || m.claim.Locator != nil || m.claim.State != dropped.state {
+		dropped.leave()
+		return
+	}
+	m.log.Info("supervise: the request launched nothing; the wake the pacing holds keeps its place",
+		"kind", dropped.kind, "due", dropped.due(), "state", dropped.state, "pause", dropped.pause)
 	var err error
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
 	} else {
-		err = m.parkWake(ctx, dropped)
+		m.rebindWake(dropped.place)
+		err = m.waitOnMachine(ctx, dropped)
 	}
 	if err != nil {
-		m.log.Warn("supervise: the wake that keeps its turn could not be written; it waits in memory alone",
-			"kind", dropped.kind, "due", dropped.at, "error", err)
+		m.log.Warn("supervise: the wake that keeps its place could not be written; it waits in memory alone",
+			"kind", dropped.kind, "due", dropped.due(), "error", err)
 	}
 }
 

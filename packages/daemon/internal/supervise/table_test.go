@@ -190,6 +190,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestCompact":       {RequestCompact{}},
 		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
+		"MessageMarked":        {MessageMarked{}},
 	}
 	for _, kind := range timers {
 		byType["Timer"] = append(byType["Timer"], Timer{Kind: kind})

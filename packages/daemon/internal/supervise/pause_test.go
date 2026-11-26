@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // pauseFlag is the daemon's pause flag as a test drives it (Deps.Paused): the open pause's id, 0
@@ -172,22 +173,46 @@ func (h *harness) owedStopsNow() []PauseStop {
 	return slices.Clone(h.m.owedStops())
 }
 
-// countedReserve wraps the harness's pacing so a test reads how many tokens were taken from it.
-func countedReserve(h *harness) func() int {
+// countedPacer is a pacer over limiter on clock, as the daemon builds its own (internal/daemon's
+// run), and the count of the places joined in it so far. The pacer reads its clock once at each
+// join and once at each turn it gives (wakepace.Pacer's Join and turn), so the joins are the reads
+// less the turns. read, when not nil, is called at each read, before it. A waiting place has drawn
+// no token, so a count of tokens taken, which these tests once read off a wrapped Reserve, is now
+// a count of the places the machines joined: each paced launch that enters the pacing joins one.
+func countedPacer(clock Clock, limiter *wakepace.Limiter, read func()) (*wakepace.Pacer, func() int) {
 	var mu sync.Mutex
-	taken := 0
-	inner := h.deps.WakePace.Reserve
-	h.deps.WakePace.Reserve = func(now time.Time) time.Time {
+	reads, turns := 0, 0
+	pacer := wakepace.NewPacer(limiter, func() time.Time {
+		if read != nil {
+			read()
+		}
 		mu.Lock()
-		taken++
+		reads++
 		mu.Unlock()
-		return inner(now)
-	}
-	return func() int {
+		return clock.Now()
+	}, func(at time.Time, f func()) {
+		clock.At(at, func() {
+			mu.Lock()
+			turns++
+			mu.Unlock()
+			f()
+		})
+	})
+	return pacer, func() int {
 		mu.Lock()
 		defer mu.Unlock()
-		return taken
+		return reads - turns
 	}
+}
+
+// countedJoins sets the harness's pacing to a pacer of its own over a limiter at the pace
+// pacedDeps sets (countedPacer), before any machine is built over it, and answers how many places
+// the machines have joined in it.
+func countedJoins(h *harness) func() int {
+	limiter := wakepace.New(h.deps.WakePace.Rate, 1, func(time.Duration) time.Duration { return wakePart })
+	pacer, joined := countedPacer(h.deps.Clock, limiter, nil)
+	h.deps.WakePace.Pacer = pacer
+	return joined
 }
 
 // A pause's hold over a claim in a turn survives a start row leased before the pause (decision
@@ -347,7 +372,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 		c := wakeClaim(testToken, StateSuspended)
 		c.SuspendedBy = SuspendedByReleased
 		h, flag, stops := pauseHarness(t, c, pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedJoins(h)
 		h.start(c)
 		flag.set(7)
 
@@ -362,7 +387,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 
 	t.Run("a relaunch over the process of an idle claim that died", func(t *testing.T) {
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedJoins(h)
 		h.start(queuedClaim())
 		h.reach(StateIdle)
 		before := taken()
@@ -376,7 +401,7 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 
 	t.Run("a stalled turn's replacement", func(t *testing.T) {
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
-		taken := countedReserve(h)
+		taken := countedJoins(h)
 		h.start(queuedClaim())
 		last, swept := stalledSweep(h)
 		before := taken()
@@ -425,7 +450,7 @@ func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testin
 			h.wantWaitingWake(WakeLaunch)
 			flag.set(7)
 			pacedDeps(wakeRate)(&h.deps)
-			taken := countedReserve(h)
+			taken := countedJoins(h)
 			h.restart()
 			if c := h.claim(); c.Locator == nil || !c.DeathCharged || c.Pending != nil {
 				t.Fatalf("the restored claim records %+v, want a charged death with a locator and no task that could owe its own launch", c)
@@ -454,7 +479,7 @@ func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testin
 			h.wantState(StateSuspended)
 			h.wantStarts(h.token, 1)
 			if n := taken(); n != 0 {
-				t.Fatalf("the pause's stop took %d paced tokens, want none", n)
+				t.Fatalf("the pause's stop joined %d places in the pacing, want none", n)
 			}
 			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
 		})
@@ -469,24 +494,24 @@ func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testin
 // during the pause. A relaunch held so stops the process it let go first, so that process does not
 // run unrecorded through the pause, and a stop the runtime refuses leaves the launch held all the
 // same, the refusal recorded (pauseHeldTry, stopLetGo). A pause that ends before the gate's stop
-// lets the launch out without the pacing: it took its token and wrote its wake line at the wake
+// lets the launch out without the pacing: it took its turn and wrote its wake line at the wake
 // gate already (wake.paid, wake.ran).
 func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
-	// passed is a harness whose pacing lets every launch out at once, and begins the pause as it
-	// lets out the first launch after arm, past that launch's pause check (reserveWake); taken is
-	// the count of tokens the pacing gave.
+	// passed is a harness whose pacing lets every launch out at once — a pacer over a limiter that
+	// paces nothing, which lets every place out at its join — and begins the pause as it lets out
+	// the first launch after arm, past that launch's pause check (reserveWake); taken is the count
+	// of the places joined in the pacing (countedPacer).
 	passed := func(t *testing.T) (h *harness, flag *pauseFlag, stops *stopTransaction, taken func() int, arm func()) {
 		t.Helper()
 		var armed atomic.Bool
-		h, flag, stops = pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Interval: time.Minute / wakeRate, Reserve: func(now time.Time) time.Time {
-				if armed.CompareAndSwap(true, false) {
-					flag.set(7)
-				}
-				return now
-			}}
+		h, flag, stops = pauseHarness(t, queuedClaim())
+		var pacer *wakepace.Pacer
+		pacer, taken = countedPacer(h.deps.Clock, wakepace.New(0, 1, nil), func() {
+			if armed.CompareAndSwap(true, false) {
+				flag.set(7)
+			}
 		})
-		taken = countedReserve(h)
+		h.deps.WakePace = WakePace{Pacer: pacer, Rate: wakeRate, Burst: 1, Interval: time.Minute / wakeRate}
 		h.start(queuedClaim())
 		return h, flag, stops, taken, func() { armed.Store(true) }
 	}
@@ -523,7 +548,7 @@ func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
 		h.wantStarts(h.token, 0)
 		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
 		if n := taken(); n != 1 {
-			t.Fatalf("the pacing gave %d tokens, want the one the launch took at the wake gate", n)
+			t.Fatalf("the pacing joined %d places, want the one the launch took at the wake gate", n)
 		}
 	})
 
@@ -539,7 +564,7 @@ func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
 		h.wantStarts(h.token, 1)
 		h.wantState(StateLaunching)
 		if n := taken(); n != 1 {
-			t.Fatalf("the pacing gave %d tokens, want the one the launch took at the wake gate", n)
+			t.Fatalf("the pacing joined %d places, want the one the launch took at the wake gate", n)
 		}
 		if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token)); len(lines) != 1 {
 			t.Fatalf("wake lines = %v, want the one the launch wrote at the wake gate", lines)
@@ -1276,11 +1301,11 @@ func TestAResumeWhileAPauseStopsRuntimeCallRunsStillWritesTheStop(t *testing.T) 
 }
 
 // A launch the gate held is let out into the pacing once its pause is over (decision 7): by the
-// resume's event, or by the gate's own stop finding no pause open, it takes a reservation from the
-// limiter, tells the daemon the moment the reservation lets it out, and launches then; a launch
-// that paid before the gate held it (wake.paid) launches at once, with no reservation and no
-// moment told. One held for a pause that a later pause has followed is stopped for the later one,
-// and the earlier pause's resume touches nothing of it.
+// resume's event, or by the gate's own stop finding no pause open, it joins a place in the pacing,
+// tells the daemon the moment the pacer lets that place out, and launches then; a launch that paid
+// before the gate held it (wake.paid) launches at once, with no place of its own and no moment
+// told. One held for a pause that a later pause has followed is stopped for the later one, and the
+// earlier pause's resume touches nothing of it.
 func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing.T) {
 	gate := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int, *[]time.Time) {
 		t.Helper()
@@ -1288,7 +1313,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), func(d *Deps) {
 			d.WakeLetOut = func(_ claim.Token, _ string, _ claim.Role, at time.Time) { stamps = append(stamps, at) }
 		})
-		taken := countedReserve(h)
+		taken := countedJoins(h)
 		h.start(queuedClaim())
 		flag.set(7)
 		h.must(RequestSpawn{Claim: h.token})
@@ -1305,10 +1330,10 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 
 		h.wantStarts(h.token, 1)
 		if n := taken(); n != 1 {
-			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+			t.Fatalf("the let-out joined %d places, want one", n)
 		}
 		if len(*stamps) != 1 || !(*stamps)[0].Equal(h.clock.Now()) {
-			t.Fatalf("the let-out stamped %v, want the reservation's moment, now", *stamps)
+			t.Fatalf("the let-out stamped %v, want the moment the pacer let its place out, now", *stamps)
 		}
 		if h.armed(TimerPause) {
 			t.Fatal("the gate's stop is still posted after the launch was let out")
@@ -1327,7 +1352,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h.wantState(StateLaunching)
 		h.wantStarts(h.token, 1)
 		if n := taken(); n != 1 {
-			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+			t.Fatalf("the let-out joined %d places, want one", n)
 		}
 		stops.wantStops(t)
 	})
@@ -1342,7 +1367,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h.wantState(StateLaunching)
 		h.wantStarts(h.token, 1)
 		if n := taken(); n != 1 {
-			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+			t.Fatalf("the let-out joined %d places, want one", n)
 		}
 		stops.wantStops(t)
 	})
@@ -1357,25 +1382,27 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h.wantState(StateSuspended)
 		h.wantStarts(h.token, 0)
 		if n := taken(); n != 0 {
-			t.Fatalf("the launch took %d tokens, want none while the project is paused", n)
+			t.Fatalf("the launch joined %d places, want none while the project is paused", n)
 		}
 		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 8, LaunchOwed: true}, landed: true})
 	})
 
-	// parked is a harness whose pacing parks every launch a minute out, and the count of tokens
-	// the pacing gave.
+	// parked is a harness whose pacing parks its first launch a minute out — a pacer over a
+	// limiter of one wake a minute whose one token the test spends before any launch — and the
+	// count of the places joined in it (countedPacer).
 	parked := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
 		t.Helper()
-		h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Minute) }}
-		})
-		taken := countedReserve(h)
+		h, flag, stops := pauseHarness(t, queuedClaim())
+		limiter := wakepace.New(1, 1, nil)
+		limiter.Reserve(h.clock.Now())
+		pacer, taken := countedPacer(h.deps.Clock, limiter, nil)
+		h.deps.WakePace = WakePace{Pacer: pacer, Rate: 1, Burst: 1, Interval: limiter.Interval()}
 		h.start(queuedClaim())
 		return h, flag, stops, taken
 	}
 	// letOutOnce is the wake's turn meeting a pause that is over when the gate's own stop, which
 	// the same moment of the clock fires, reads it again: the gate holds the wake and lets it out
-	// at once, and the wake, which has paid, launches on no second token, writing its one line.
+	// at once, and the wake, which has paid, launches on no second place, writing its one line.
 	letOutOnce := func(t *testing.T, h *harness, flag *pauseFlag, stops *stopTransaction, taken func() int, pause int64) {
 		t.Helper()
 		flag.set(pause)
@@ -1389,7 +1416,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		}
 		h.wantStarts(h.token, 1)
 		if n := taken(); n != 1 {
-			t.Fatalf("the pacing gave %d tokens, want the one the wake paid before the pause met it", n)
+			t.Fatalf("the pacing joined %d places, want the one whose let-out the pause met", n)
 		}
 		if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token)); len(lines) != 1 {
 			t.Fatalf("wake lines = %v, want one, written at the let-out", lines)
@@ -1397,8 +1424,8 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		stops.wantStops(t)
 	}
 
-	// A wake the pacing parked took its token at the wake gate; a pause that meets it at its turn
-	// holds it, and its let-out runs it without a second reservation (wake.paid).
+	// A wake the pacing parked took its place at the wake gate; a pause that meets its let-out at
+	// its turn holds it, and its let-out runs it with no second place (wake.paid).
 	t.Run("a wake the pacing parked, met by the pause at its turn", func(t *testing.T) {
 		h, flag, stops, taken := parked(t)
 		h.must(RequestSpawn{Claim: h.token})
@@ -1407,9 +1434,9 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		letOutOnce(t, h, flag, stops, taken, 7)
 	})
 
-	// A launch the gate held at the wake gate paid nothing there; its let-out reserves for it and
-	// parks it, and a second pause that meets it at that turn holds it again, whose let-out takes
-	// no second token (letOutHeldLaunch, wake.paid).
+	// A launch the gate held at the wake gate took no place there; its let-out joins one for it
+	// and parks it, and a second pause that meets it at that turn holds it again, whose let-out
+	// joins no second place (letOutHeldLaunch, wake.paid).
 	t.Run("a let-out the pacing parked, met by a second pause at its turn", func(t *testing.T) {
 		h, flag, stops, taken := parked(t)
 		flag.set(7)
@@ -1418,31 +1445,42 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h.must(ResumePause{Claim: h.token, Pause: 7})
 		h.wantStarts(h.token, 0)
 		if n := taken(); n != 1 {
-			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+			t.Fatalf("the let-out joined %d places, want one", n)
 		}
 
 		letOutOnce(t, h, flag, stops, taken, 8)
 	})
 }
 
-// Every reservation of a paced launch is told to the daemon as the moment the pacing lets it out
-// (decision 14): the one that lets it out now, and the one that parks it, whose moment is the
-// wake's own.
-func TestTheWakeLetOutStampIsTheMomentOfEachReservation(t *testing.T) {
+// Every paced launch is told to the daemon at its let-out, with the moment the pacer let its place
+// out (decision 14), and never at its join: the one the pacer lets out at its join is told then,
+// and the one that waits is told only when its turn comes, of that turn's moment. A launch that
+// waits is told that it waits instead (Deps.WakeQueued), which is what the resume's stuck clock
+// reads to stop for the wait. Before the place-based pacing the parked launch was told its
+// reserved moment at the park; a place has no moment until it is let out, so the stamp moves to
+// the let-out.
+func TestTheWakeLetOutStampIsTheMomentOfEachLetOut(t *testing.T) {
 	type stamp struct {
 		token claim.Token
 		at    time.Time
 	}
 	var mu sync.Mutex
 	var stamps []stamp
+	var queued []claim.Token
 	h := pacedHarness(t, wakeRate, func(d *Deps) {
 		d.WakeLetOut = func(token claim.Token, _ string, _ claim.Role, at time.Time) {
 			mu.Lock()
 			defer mu.Unlock()
 			stamps = append(stamps, stamp{token: token, at: at})
 		}
+		d.WakeQueued = func(token claim.Token, _ string, _ claim.Role) {
+			mu.Lock()
+			defer mu.Unlock()
+			queued = append(queued, token)
+		}
 	})
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	start := h.clock.Now()
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
@@ -1451,15 +1489,79 @@ func TestTheWakeLetOutStampIsTheMomentOfEachReservation(t *testing.T) {
 	if waiting == nil || !waiting.At.After(h.clock.Now()) {
 		t.Fatalf("the second claim holds wake %+v, want one parked behind the first", waiting)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	want := []stamp{{token: h.token, at: h.clock.Now()}, {token: secondToken, at: waiting.At}}
-	if len(stamps) != len(want) {
-		t.Fatalf("the daemon was told %+v, want %+v", stamps, want)
-	}
-	for i := range want {
-		if stamps[i].token != want[i].token || !stamps[i].at.Equal(want[i].at) {
-			t.Fatalf("stamp %d = %+v, want %+v", i, stamps[i], want[i])
+	want := func(t *testing.T, want ...stamp) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(stamps) != len(want) {
+			t.Fatalf("the daemon was told %+v, want %+v", stamps, want)
+		}
+		for i := range want {
+			if stamps[i].token != want[i].token || !stamps[i].at.Equal(want[i].at) {
+				t.Fatalf("stamp %d = %+v, want %+v", i, stamps[i], want[i])
+			}
 		}
 	}
+	want(t, stamp{token: h.token, at: start})
+	mu.Lock()
+	if len(queued) != 1 || queued[0] != secondToken {
+		t.Fatalf("the daemon was told %v began to wait, want the second claim alone", queued)
+	}
+	mu.Unlock()
+
+	h.clock.Advance(waiting.At.Sub(h.clock.Now()))
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	want(t, stamp{token: h.token, at: start}, stamp{token: secondToken, at: waiting.At})
+}
+
+// A wait the daemon was told of ends with no let-out where a request the pacing lets through
+// launches the claim in the waiting wake's place, and the daemon is told that end at the request's
+// moment. The resume's stuck clock stops for a wait (Deps.WakeQueued), so a wait whose end went
+// untold would leave that clock stopped, and a launch that then took no turn would never be
+// reported. A request that launches nothing leaves the wake waiting at its place, and the daemon
+// is told nothing for it.
+func TestAWaitThatEndsWithNoLetOutIsToldAtItsEnd(t *testing.T) {
+	var mu sync.Mutex
+	var queued int
+	var ended []time.Time
+	h := pacedHarness(t, wakeRate, func(d *Deps) {
+		d.WakeQueued = func(token claim.Token, _ string, _ claim.Role) {
+			mu.Lock()
+			defer mu.Unlock()
+			if token == secondToken {
+				queued++
+			}
+		}
+		d.WakeLetOut = func(token claim.Token, _ string, _ claim.Role, at time.Time) {
+			mu.Lock()
+			defer mu.Unlock()
+			if token == secondToken {
+				ended = append(ended, at)
+			}
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
+	want := func(t *testing.T, wantQueued int, wantEnded ...time.Time) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if queued != wantQueued || !slices.EqualFunc(ended, wantEnded, time.Time.Equal) {
+			t.Fatalf("the daemon was told %d waits began and waits ended at %v, want %d and %v", queued, ended, wantQueued, wantEnded)
+		}
+	}
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
+	want(t, 1)
+
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.wantStarts(secondToken, 0)
+	want(t, 1)
+
+	h.clock.Advance(wakePart)
+	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.wantStarts(secondToken, 1)
+	want(t, 1, h.clock.Now())
 }

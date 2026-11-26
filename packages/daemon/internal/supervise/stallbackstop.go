@@ -36,9 +36,12 @@ type StallBackstopStop struct {
 	LastStep time.Time
 	Bound    time.Duration
 	End      ProcessEnd
-	// WakeDue is when the launch the pacing parked is due to run (wake.at, reserveWake), carried
-	// so the owner's notice names that moment rather than guessing at the wait (the daemon's
-	// stallBackstopEnds). It is the zero time for every other end, which queues no wake.
+	// WakeDue is the moment the pacer estimated, when the stop was built, that it lets out the
+	// place of the launch the pacing parked (wakepace.Place.Estimate, reserveWake), carried so the
+	// owner's notice names that estimate rather than guessing at the wait (the daemon's
+	// stallBackstopEnds). It is an estimate and no due moment: a change to the queues or to the
+	// pace can move the let-out earlier or later, so the notice says so. It is the zero time for
+	// every other end, which queues no wake.
 	WakeDue time.Time
 	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
 	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch
@@ -75,9 +78,9 @@ type StallBackstopStop struct {
 //
 // A claim that already holds a wake is decided nothing at all, exactly as refreshPlugin decides
 // nothing over one: that wake is a launch of this same claim waiting its turn in the pacing,
-// and a replacement raised over it would take a second token and replace the wake with a
-// launch that does what the parked one was already going to do. A relaunch parked on the
-// pacing leaves the claim working, so without this guard every sweep of a wave would raise
+// and a replacement raised over it would take a place at the back of the queue and replace the
+// wake with a launch that does what the parked one was already going to do. A relaunch parked on
+// the pacing leaves the claim working, so without this guard every sweep of a wave would raise
 // another. Nothing is lost by returning, and nothing is owed to this request: the wake standing
 // over the claim is what decides the turn — its own turn replaces the stalled process, unless a
 // suspension already waiting or the tree's close ends the claim there instead (wakeNow, letGo) —
@@ -149,7 +152,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	}
 	if m.wake != nil {
 		m.log.Info("supervise: the stall backstop found this claim already queued for a wake; its turn is left to that wake",
-			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+			"kind", m.wake.kind, "due", m.wake.due(), "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
 	suspended := m.held != nil
@@ -189,7 +192,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			// The wake the machine holds now is this replacement's own: the guard above returned
 			// over a claim that already held one, and the end itself is read from a wake that is
 			// not the one the replacement began with (endReached).
-			stop.WakeDue = m.wake.at
+			stop.WakeDue = m.wake.due()
 		}
 		m.deps.StallBackstopped(m.current(), stop)
 	}

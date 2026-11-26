@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // migratedTake is a claim restored in state on a plugin below TaskTakeContract — the harness's
@@ -40,7 +41,8 @@ func restoreMigrated(t *testing.T, paced bool) *harness {
 	h.restore(migratedTake(StateReady))
 	h.connect()
 	if paced {
-		h.deps.WakePace.Reserve(h.clock.Now())
+		// A place the fresh pacer lets out at its join spends the burst's one turn.
+		h.deps.WakePace.Pacer.Join(wakepace.Second)
 	}
 	return h
 }
