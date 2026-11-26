@@ -246,9 +246,10 @@ export const duplicateText = `Delivered by an earlier attempt, so not delivered 
 export const endedByDeleteText = "Ended by the post's delete";
 
 /** What a queued attempt's session is and when it gets the message, said after the session's
- *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention
- *  and message lines (`activityDescription`) read. The hours are the stream's retention, the
- *  same window in which a repeat is recognised (`DELIVERY_DUPLICATE_WINDOW_MS`). */
+ *  name: the one wording of a queued attempt stored for a session, which `queuedParts` and the
+ *  Activity tab's mention and message lines (`activityDescription`) read. The hours are the
+ *  stream's retention, the same window in which a repeat is recognised
+ *  (`DELIVERY_DUPLICATE_WINDOW_MS`). An attempt kept for a role reads `keptForRoleWait` instead. */
 export const queuedWait = `is stopped; it gets the message if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`;
 
 /** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`), the
@@ -258,6 +259,37 @@ export const queuedWait = `is stopped; it gets the message if it runs again with
  *  surface draws it, so a card names it through `AgentName` and a plain line names it as text. */
 export function queuedParts(session: AgentPart): AgentPart[] {
   return ["Queued: ", session, ` ${queuedWait}`];
+}
+
+/** Who gets a message kept for a role, and until when, said after the role: the one wording of a
+ *  queued attempt kept for a role (`keptForRole`), which `keptForRoleParts` and the Activity tab's
+ *  mention and message lines read. The hour is how long the listener keeps a message for a role
+ *  no live session holds, from the moment it stored it (`roleKeepWindow` in
+ *  packages/envoy/cmd/listener/role_keep.go, answered as the publish's `kept_until`). No contract
+ *  carries that window, so it is stated here. */
+export const keptForRoleWait =
+  "the role's next session gets it if one takes the role within one hour";
+
+/** Whether a queued attempt was kept for its role rather than stored for a session. Dispatch
+ *  records a queued attempt that names no session for one target only: a role no live session
+ *  holds and the Legion agent registry holds no entry for, whose project's daemon answers, so the
+ *  listener keeps the message on the role's kept lane for the role's first session
+ *  (sjawhar/legion#2230). A queued attempt stored for a session always names that session, a
+ *  role's holder included. `target` is the delivery's address, and `sessionId` the session its
+ *  attempt recorded, empty or null for none. */
+export function keptForRole(
+  target: string | null | undefined,
+  sessionId: string | null | undefined
+): boolean {
+  return (sessionId ?? "") === "" && target?.startsWith("role:") === true;
+}
+
+/** What a queued attempt kept for a role reads as on the targeted-message card
+ *  (`TargetedMessageCard`) and the Conversation tab's mention line (`ConversationTab`): the
+ *  listener holds the message for the role, and the role's next session gets it inside the keep
+ *  window. `role` is the role's address as the surface draws it. */
+export function keptForRoleParts(role: AgentPart): AgentPart[] {
+  return ["Kept for ", role, `: ${keptForRoleWait}`];
 }
 
 /**

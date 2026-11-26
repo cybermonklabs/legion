@@ -958,7 +958,8 @@ const shapedAnswersContract = 193
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
-// the last number of answers.go's frozenContracts (contracts.go), and it never moves.
+// the last number of answers.go's frozenContracts (contracts.go), and it never moves. The
+// questions-for-controller entry's band stands above it.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -2066,6 +2067,18 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 		view.UpdateState, view.Wake = "", nil
 		return view
 	})
+}
+
+// withoutQuestionsForController is state with no `questionsForController`, the one key
+// questionsForControllerContract added to this route. The key is left off rather than emptied,
+// because the strict reader before the contract refuses it as surely when it is empty as when it
+// names a question, which is why State.MarshalJSON writes the key on every body but this one
+// (State.questionsForControllerHidden), as withoutWakesWaiting leaves off `wakesWaiting`. The flag
+// is set on a value of the state's own, so the state the source answered is left as it was. The
+// band reports a move on every body it serves, as withoutWakesWaiting does.
+func withoutQuestionsForController(state State) (State, bool) {
+	state.QuestionsForController, state.questionsForControllerHidden = nil, true
+	return state, true
 }
 
 // withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key

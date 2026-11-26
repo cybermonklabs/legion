@@ -74,7 +74,7 @@
 # (required, both routes) the ServiceAccount the deployment's pods run as, substituted for the
 # operator route's ${POD_SERVICE_ACCOUNT} placeholder; LEGION_E2E_MODEL_GATEWAY_URL
 # and LEGION_E2E_MODEL_GATEWAY_AUDIENCE (both required under LEGION_E2E_MODEL_ROUTE=gateway, unused
-# under key-file) the gateway's Anthropic endpoint and the token audience it accepts, substituted
+# under key-file) the gateway's /v1/messages base URL and the token audience it accepts, substituted
 # for the operator route's placeholders; LEGION_E2E_WORKER_STREAM_PORT (default 13373, the same
 # name and default Stage 4b reads for its own worker-stream port, since the two collide on it by
 # default) the port the harness binds for the worker stream; LEGION_E2E_SESSION_DB_PORT (required)

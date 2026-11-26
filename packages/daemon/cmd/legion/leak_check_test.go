@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -274,7 +275,8 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 		// the push's guard reads no visibility and starts no gh, and the write is held in the
 		// check, the guard's first child.
 		args []string
-		// seconds is the holding stand-in's sleep for each signal, one per row (holdsStandIn).
+		// seconds is the holding stand-in's sleep for each signal, one per row
+		// (ghroutetest.HoldsStandIn).
 		seconds map[syscall.Signal]string
 	}{
 		{
@@ -297,7 +299,7 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 				seconds := shape.seconds[tc.signal]
 				pidFile := filepath.Join(t.TempDir(), "stand-in")
 				command := legionCommand(t, dir, map[string]string{
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), holdsStandIn(pidFile, seconds)),
+					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghroutetest.HoldsStandIn(pidFile, seconds)),
 				}, shape.args...)
 				command.Stdin = strings.NewReader(shape.stdin)
 				signalWhileHeld(t, command, "legion "+shape.name, pidFile, seconds, "the shared check", tc.signal)

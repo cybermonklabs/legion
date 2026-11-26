@@ -249,11 +249,12 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // roles and cannot hand over any other way: a notice whose owning architect is released, a
 // phase-ended message whose role is (phaseEnded), a hook prompt whose role is, the messages that
 // tell a released merger its pull request left the merge queue (mergeQueueRemoval) or that the
-// project's merge holds changed (mergeHoldsChanged), and a message of a merge forward whose role
-// is released (mergeForwardMessage). Every other delivery is an outbox `start` or a task, for
-// which the supervise machine already resumes a suspended agent (deliverResuming); these six
-// publish to a live session instead, so the row's own retry is what waits for the pod, and this
-// is what makes the pod come back for it to find.
+// project's merge holds changed (mergeHoldsChanged), a message of a merge forward whose role is
+// released (mergeForwardMessage), and a message the answer loop does not answer for a released
+// agent (agentMessage). Every other delivery is an outbox `start` or a task, for which the
+// supervise machine already resumes a suspended agent (deliverResuming); these seven publish to a
+// live session instead, so the row's own retry is what waits for the pod, and this is what makes
+// the pod come back for it to find.
 //
 // It answers whether the row must wait for a launch of the claim, and when that launch runs where
 // the wake pacing holds it. The row waits for a released claim, which it resumes here, and for a
@@ -362,20 +363,29 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	return true, time.Time{}, nil
 }
 
-// wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
-// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
-// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
-// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+// wakeableIssue is the record of issue key, and whether a released claim of it can be woken
+// (wakeable). An issue the daemon keeps no record of is an error, as outbox.issue says.
 func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	root, err := r.root(ctx, issue)
+	wakeable, err := r.wakeable(ctx, issue)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+	return issue, wakeable, nil
+}
+
+// wakeable is whether a released claim of issue can be woken: the issue is in the workflow and its
+// tree does not linger (pods.InWorkflowNotLingering). A claim of an issue that has left the
+// workflow, or whose tree lingers, is a close's to stop, not a wake's to bring back.
+func (r *outbox) wakeable(ctx context.Context, issue record.Issue) (bool, error) {
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return false, err
+	}
+	return root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
 }
 
 // parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that
@@ -413,9 +423,10 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // workflow's wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause
 // (the listener's report of a role message the pause held, or of a message another session sent
 // the role, a CI settlement or a backstop). The resume wakes every lane at once
-// (projectPause.Resumed), so a held notice, hook prompt, merge-queue removal or merge forward's
-// message of the same role can run before that start, or after that other wake, and find the role
-// released under the held wake. Nothing is wrong there, and the line says so at Info. Any other
+// (projectPause.Resumed), so a held notice, hook prompt, merge-queue removal, merge forward's
+// message or message for a released agent of the same role can run before that start, or after
+// that other wake, and find the role released under the held wake. Nothing is wrong there, and
+// the line says so at Info. Any other
 // open resume over a released claim is one whose process never came — a resume the store refused
 // after its take committed, or a daemon that stopped between the two — and the line says so at
 // Warn, as it does when the read fails, with its error: the resume goes ahead either way.

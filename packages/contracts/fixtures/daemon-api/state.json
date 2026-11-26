@@ -1236,6 +1236,43 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
+  "questionsForController": [
+    {
+      "id": "9e2b7c41d05a3f68e1c4a7b0d9f2e536",
+      "issue": "LEGION-208",
+      "role": "implementer",
+      "session": "ses_implementer_208",
+      "asker": "session:ses_architect_208 (LEGION-208 architect)",
+      "ref": "envoy:evt-5521",
+      "reason": "model_calls",
+      "passedAt": "2026-09-22T09:16:40Z",
+      "writes": [
+        {
+          "seq": 1,
+          "command": "pr merge",
+          "repository": "acme/widgets",
+          "exit": 0
+        },
+        {
+          "seq": 3,
+          "command": "api POST repos/acme/widgets/issues/208/comments",
+          "repository": "acme/widgets",
+          "exit": null
+        }
+      ]
+    },
+    {
+      "id": "5f0c2a9e7b14d3866a1e0c4b9d2f7a35",
+      "issue": "LEGION-207",
+      "role": "tester",
+      "session": "ses_tester_207",
+      "asker": "user:octocat",
+      "ref": "dispatch://LEGION-207/message/m-4411",
+      "reason": "not_answered",
+      "passedAt": "2026-09-22T09:14:03Z",
+      "writes": []
+    }
+  ],
   "lowestPluginContract": 46,
   "intakeGiveUps": {
     "consumers": [

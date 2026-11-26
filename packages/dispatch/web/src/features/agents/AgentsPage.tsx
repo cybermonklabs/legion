@@ -215,7 +215,7 @@ function AgentExchangeReply({
           ? undefined
           : {
               answeredBy: answer?.author,
-              attempts: deliveryAttempts(reply.deliveries ?? [], rowTarget(agent)),
+              attempts: deliveryAttempts(reply.deliveries ?? [], rowTarget(agent), reply.target),
               retry: {
                 canAside: capabilities?.includes("aside") !== false,
                 canBtw: capabilities?.includes("btw") !== false,
@@ -308,7 +308,11 @@ function AgentTargetedMessage({
       canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
       canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
       deleted={postDeletion(read.message)}
-      deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
+      deliveries={deliveryAttempts(
+        read.message.deliveries ?? [],
+        rowTarget(agent),
+        read.message.target
+      )}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}

@@ -88,6 +88,8 @@ import {
   endedByDeleteText,
   failureGuidance,
   isSafeRetry,
+  keptForRole,
+  keptForRoleParts,
   MODE_LABELS,
   queuedParts,
   resendable,
@@ -258,7 +260,7 @@ function ConversationReply({
           ? undefined
           : {
               answeredBy: answer?.author,
-              attempts: deliveryAttempts(reply.deliveries ?? [], targetName),
+              attempts: deliveryAttempts(reply.deliveries ?? [], targetName, root.root.target),
               retry: {
                 canAside: capabilities?.includes("aside") !== false,
                 canBtw: capabilities?.includes("btw") !== false,
@@ -636,7 +638,13 @@ function CommentDeliveryList({
             <span>
               <AgentParts parts={[recipient]} /> ·{" "}
               {delivery.state === "queued" ? (
-                <AgentParts parts={queuedParts(recipient)} />
+                <AgentParts
+                  parts={
+                    keptForRole(delivery.target, delivery.session_id)
+                      ? keptForRoleParts(recipient)
+                      : queuedParts(recipient)
+                  }
+                />
               ) : delivery.duplicate === true ? (
                 duplicateText
               ) : ended ? (
@@ -959,7 +967,7 @@ function TargetedMessageTurn({
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
       deleted={postDeletion(item.root)}
-      deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
+      deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName, item.root.target)}
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}

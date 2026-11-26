@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -29,6 +30,7 @@ type bootReads struct {
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
 	sandbox                               sandboxReads      // runtime: kubernetes
+	answers                               answersReads      // with the answer loop on, under either runtime
 }
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
@@ -51,7 +53,8 @@ type variantInstructions struct {
 // seed (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file,
 // the file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch
 // bearer's file, or under dispatch_token_broker the transition token's file where the
-// configuration names one, and the runtime's own reads (readTmux, readSandbox).
+// configuration names one, the runtime's own reads (readTmux, readSandbox), and, with the answer
+// loop on, the answer loop's (readAnswersBoot).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -165,7 +168,71 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if err != nil {
 		return bootReads{}, err
 	}
+	if cfg.Answers != nil {
+		if r.answers, err = readAnswersBoot(*cfg.Answers, cfg.Runtime.Name, cfg.LeakCheck, r.tmux, lookup); err != nil {
+			return bootReads{}, err
+		}
+		// The dispatch tool refuses no boot: a daemon that finds no dispatch command offers none.
+		r.answers.dispatch = answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall)
+	}
 	return r, nil
+}
+
+// answersReads is what the answer loop needs that readBoot reads: gh, the real gh on the daemon's
+// own host its gh tool runs, under either runtime (answersGH); where the shared public leak check
+// that tool's guard runs comes from (answersLeakCheck): leakCheck, the machine's check a tmux
+// daemon resolved, or leakCheckTag, the pin a Kubernetes daemon installs the deployment's setting's
+// check at (installAnswersLeakCheck), exactly one of them set; conversationDSN, the URL of the
+// database the conversations live in: answers.conversation_store.dsn_file's under
+// runtime.kubernetes.session_store postgres, runtime.tmux.session_dsn_file's under
+// runtime.tmux.session_store postgres ("" under any other store), the one place the loop gets that
+// URL from, whichever key named its file; and dispatch, the dispatch command its dispatch tool
+// runs, or why the loop offers none (answersDispatch).
+type answersReads struct {
+	gh                      string
+	leakCheck, leakCheckTag string
+	conversationDSN         string
+	dispatch                dispatchFound
+}
+
+// readAnswersBoot is the answer loop's share of readBoot under runtimeName and the deployment's
+// leak check setting (config's leak_check), tmux what readTmux read (the zero value under
+// kubernetes): its tools, the tmux daemon's own (nil under tmux with no repository), and its
+// session database's URL, which under runtime.tmux.session_store postgres is the conversation
+// store's (config.ConversationStore.DSNFile names the same file). No provider's key is read: the
+// loop reads it for every model call (config.AnswerCredential), so neither boot nor `legion config
+// check` runs an api_key_command.
+func readAnswersBoot(answers config.Answers, runtimeName string, setting leakguard.Setting, tmux tmuxReads, lookup func(string) (string, bool)) (answersReads, error) {
+	var r answersReads
+	var err error
+	if r.gh, err = answersGH(lookup, tmux.tools); err != nil {
+		return answersReads{}, err
+	}
+	if r.leakCheck, r.leakCheckTag, err = answersLeakCheck(runtimeName, setting, lookup); err != nil {
+		return answersReads{}, err
+	}
+	switch file := answers.ConversationStore.DSNFile; {
+	case tmux.sessionDSN != "":
+		r.conversationDSN = tmux.sessionDSN
+	case file != "":
+		if r.conversationDSN, err = readPostgresURL("answers.conversation_store.dsn_file", file); err != nil {
+			return answersReads{}, err
+		}
+	}
+	return r, nil
+}
+
+// readPostgresURL is the postgres:// URL the file a key names holds, refused, naming the key and
+// the file and never what it holds, unless it is one.
+func readPostgresURL(key, file string) (string, error) {
+	dsn, err := config.ReadSecretPointer(key, file)
+	if err != nil {
+		return "", err
+	}
+	if parsed, err := url.Parse(dsn); err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		return "", fmt.Errorf("%s names %s, which holds no postgres:// URL", key, file)
+	}
+	return dsn, nil
 }
 
 // natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
@@ -211,17 +278,20 @@ func (c natsConnection) log(log *slog.Logger) {
 }
 
 // tmuxReads is what a daemon on this host needs that readBoot reads: a launch for each harness its
-// roles run on (resolveLaunchers), and the host's git and jj its own provisioning runs
-// (daemonTools), which no pane is told.
+// roles run on (resolveLaunchers), the host's git and jj its own provisioning runs (daemonTools),
+// which no pane is told, and, under runtime.tmux.session_store postgres, the URL of the session
+// database every pane's Oh My Pi keeps its sessions in, which the boot gate probes (verifyPanes).
 type tmuxReads struct {
-	launches map[runtime.Backend]launchReads // Oh My Pi's absent when boot does not run the host's Oh My Pi
-	tools    map[string]string               // nil without a repository
+	launches   map[runtime.Backend]launchReads // Oh My Pi's absent when boot does not run the host's Oh My Pi
+	tools      map[string]string               // nil without a repository
+	sessionDSN string                          // "" under the files store
 }
 
 // readTmux is tmux's share of readBoot: each backend's launch (resolveLaunchers), Oh My Pi's only
 // when boot runs the host's Oh My Pi (hostOMP), every overlay role_config_files names, which must
-// be a file a pane can read (checkRoleConfigFiles), and, for a configuration with a repository, the
-// host's git and jj Legion runs itself.
+// be a file a pane can read (checkRoleConfigFiles), for a configuration with a repository, the
+// host's git and jj Legion runs itself, and under runtime.tmux.session_store postgres the session
+// database's URL from runtime.tmux.session_dsn_file, which must be a postgres:// URL.
 func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool) (tmuxReads, error) {
 	var r tmuxReads
 	var err error
@@ -233,6 +303,11 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if _, ok := cfg.Projects[cfg.Project]; ok {
 		if r.tools, err = resolveTools(lookup); err != nil {
+			return tmuxReads{}, err
+		}
+	}
+	if file := cfg.Runtime.Tmux.SessionDSN(); file != "" {
+		if r.sessionDSN, err = readPostgresURL("runtime.tmux.session_dsn_file", file); err != nil {
 			return tmuxReads{}, err
 		}
 	}

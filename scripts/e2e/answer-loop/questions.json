@@ -1,0 +1,263 @@
+{
+  "about": "The answer loop's live proof (scripts/e2e/answer-loop.sh) reads this file before any model call. Each agent is given its decision as its first task, so the decision is in its own conversation; each question names the facts its answer must hold (must_contain, every string, case-insensitive) or the reply kind the daemon must log (expect_kind). A22's answer is in a comment the proof person writes on the agent's issue once it stopped (comment), never in its conversation. A23's questions name no key: the row judges that a search ran, that every address the answer cites is among its searches' results and that none was reached with gh or dispatch, not the fact. Each A23 question is about one public news article that is not on GitHub, written down before the run beside its text: the fact its page holds (expected), the page's address (url) and the time the page says it was published (published, its article:published_time). Both articles were published on 24 November 2026, after the training cutoffs of Claude Sonnet 5.5 and GPT-6.1, and the two legs never share a search. Changing a decision or a key is a change to the proof: review it as one.",
+  "model": "claude-sonnet-5-5",
+  "agents": {
+    "architect": {
+      "role": "architect",
+      "kind": "parked",
+      "task": "Record this design decision for the proof service and keep it: the cache layer is write-through with a 7-minute TTL, under the codename COBALT-HERON-41. Write-back was rejected because a crash would lose up to 7 minutes of writes. Reply with one short paragraph restating the decision, the codename and the reason. Run no tool."
+    },
+    "planner": {
+      "role": "planner",
+      "kind": "closed",
+      "task": "Record this plan and keep it: the data migration runs in three batches named AMBER, BIRCH and CEDAR, in that order, and the rollback marker file is rollback-PL-9341.txt. Reply with one short paragraph restating the batches, their order and the marker file. Run no tool."
+    },
+    "tester": {
+      "role": "tester",
+      "kind": "replaced",
+      "task": "Record this test finding and keep it: the flaky test is TestQuartzLantern; it failed 3 of 20 runs, and the root cause is a shared temporary directory, fixed by giving each run t.TempDir(). Reply with one short paragraph restating the test, the failure count, the cause and the fix. Run no tool.",
+      "replacement_task": "Record this rerun result and keep it: after the fix, TestQuartzLantern passed 20 of 20 runs; the rerun's marker is VIOLET-OTTER-88. Reply with one short paragraph restating the result and the marker. Run no tool."
+    },
+    "pre_change": {
+      "role": "reviewer",
+      "kind": "pre-change",
+      "harness": "claude",
+      "task": "Record this release finding and keep it: the release was blocked by the missing SBOM, tracked under the marker SBOM-ZINC-512. Before you restate it, weigh in one sentence whether the missing SBOM alone blocks the release or another release gate could block it too. Then reply with one short paragraph restating the blocker and the marker. Run no tool."
+    },
+    "a6_child": {
+      "role": "tester",
+      "kind": "parked child of a running tree",
+      "task": "Record this test finding and keep it: the flaky test is TestGarnetFalcon; it failed 4 of 25 runs, all on the arm64 runner. Reply with one short paragraph restating the test, the failure count and the runner."
+    },
+    "failed_implementer": {
+      "role": "implementer",
+      "kind": "failed on an issue still in implementing",
+      "task": "Record this implementation finding and keep it: the uploader's retry backs off exponentially from 250 ms, capped at 8 seconds, and the change is tracked under the marker AMBER-KESTREL-63. Reply with one short paragraph restating where the backoff starts, its cap and the marker. Run no tool."
+    },
+    "gpt": {
+      "role": "merger",
+      "kind": "a conversation on GPT-6.1 with reasoning and a tool call, suspended",
+      "harness": "omp",
+      "model": "openai/gpt-6.1-sol",
+      "thinking": "high",
+      "task": "Record this merge finding and keep it: the merge waits on the license scan, tracked under the marker LICENSE-TEAL-207. First make exactly one tool call: run `pwd` with your bash tool. Then weigh in one sentence whether the license scan alone holds the merge or another merge gate could hold it too. Then reply with one short paragraph restating what the merge waits on and the marker."
+    }
+  },
+  "questions": [
+    {
+      "id": "architect-decision",
+      "criteria": ["A1"],
+      "agent": "architect",
+      "text": "Which cache strategy did you decide on, under what codename, and why was the alternative rejected?",
+      "must_contain": ["write-through", "COBALT-HERON-41", "7"]
+    },
+    {
+      "id": "tester-role",
+      "criteria": ["A2"],
+      "agent": "tester",
+      "to": "role",
+      "text": "What was the result of your last TestQuartzLantern run, and its marker?",
+      "must_contain": ["20 of 20", "VIOLET-OTTER-88"]
+    },
+    {
+      "id": "tester-old-session",
+      "criteria": ["A2"],
+      "agent": "tester",
+      "to": "replaced-session",
+      "text": "How many of the 20 TestQuartzLantern runs failed, and what was the root cause?",
+      "must_contain": ["3", "temporary directory"]
+    },
+    {
+      "id": "tester-closed-thread",
+      "criteria": ["A3"],
+      "agent": "tester",
+      "to": "role mention on the closed issue",
+      "text": "Which marker did your TestQuartzLantern rerun after the fix carry, and how many runs passed?",
+      "must_contain": ["VIOLET-OTTER-88", "20"]
+    },
+    {
+      "id": "tester-conversation-page",
+      "criteria": ["A3"],
+      "agent": "tester",
+      "to": "the tester's conversation page, reached through the closed issue's Collaborators view",
+      "text": "Name the test your rerun covered and the marker that rerun carried.",
+      "must_contain": ["TestQuartzLantern", "VIOLET-OTTER-88"]
+    },
+    {
+      "id": "tester-thread-reply",
+      "criteria": ["A20"],
+      "agent": "tester",
+      "to": "a person's reply that mentions nobody, under the tester's answer in the closed issue's thread",
+      "text": "Which test did your rerun after the fix cover, and under which marker was that rerun tracked?",
+      "must_contain": ["TestQuartzLantern", "VIOLET-OTTER-88"]
+    },
+    {
+      "id": "pre-change-scan",
+      "criteria": ["A2"],
+      "agent": "pre_change",
+      "to": "session",
+      "text": "What blocked the release, and under which marker is it tracked?",
+      "must_contain": ["SBOM", "SBOM-ZINC-512"]
+    },
+    {
+      "id": "unanswerable",
+      "criteria": ["A4"],
+      "agent": "planner",
+      "to": "session",
+      "text": "What is the hostname of the production database the migration will run against?",
+      "expect_kind": "not_answered"
+    },
+    {
+      "id": "working-copy",
+      "criteria": ["A5"],
+      "agent": "planner",
+      "to": "session",
+      "text": "Please run the full test suite in your working copy, fix whatever fails, and push the fix.",
+      "expect_kind": "needs_work"
+    },
+    {
+      "id": "in-order-1",
+      "criteria": ["A9"],
+      "agent": "architect",
+      "to": "session",
+      "text": "What TTL did you pick for the cache?",
+      "must_contain": ["7"]
+    },
+    {
+      "id": "in-order-2",
+      "criteria": ["A9"],
+      "agent": "architect",
+      "to": "session",
+      "text": "What would a crash have cost under the rejected strategy?",
+      "must_contain": ["7"]
+    },
+    {
+      "id": "after-resume",
+      "criteria": ["A9"],
+      "agent": "architect",
+      "to": "session",
+      "text": "While you were stopped you were asked two questions. Quote each question and the answer you gave.",
+      "must_contain": ["TTL", "crash"]
+    },
+    {
+      "id": "repository-file",
+      "criteria": ["A15"],
+      "agent": "planner",
+      "to": "session",
+      "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool: which module path does it declare, and which Go version line?",
+      "must_contain": ["example.com/stage4b-fixture", "1.22"]
+    },
+    {
+      "id": "a6-tester-decision",
+      "criteria": ["A6"],
+      "agent": "tester",
+      "to": "a person's reply on the tester's ask",
+      "text": "Decision: yes, keep the 20-run rerun as the release gate. Also, which marker did that rerun carry?",
+      "must_contain": ["VIOLET-OTTER-88"]
+    },
+    {
+      "id": "a6-child-decision",
+      "criteria": ["A6"],
+      "agent": "a6_child",
+      "to": "a person's reply on the parked child's ask",
+      "text": "Decision: yes, quarantine it. Also, which test did you find flaky, and on which runner did it fail?",
+      "must_contain": ["TestGarnetFalcon", "arm64"]
+    },
+    {
+      "id": "gpt-repository-module",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "What does your merge wait on, and under which marker? And read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool: which module path does it declare?",
+      "must_contain": ["LICENSE-TEAL-207", "example.com/stage4b-fixture"]
+    },
+    {
+      "id": "gpt-repository-go",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke again with your gh tool, not from what you read before: which Go version line does it declare, and under which marker is your merge's wait tracked?",
+      "must_contain": ["1.22", "LICENSE-TEAL-207"]
+    },
+    {
+      "id": "gpt-reason-reversed",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod with your gh tool from sjawhar/legion-smoke at the commit whose hash is b0ac86f884e8422d4bc56036128dd23782f348d6 written backwards, character by character; work the hash out before you call. Which module path and which Go version line does it declare?",
+      "must_contain": ["example.com/stage4b-fixture", "1.22"]
+    },
+    {
+      "id": "gpt-reason-square",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool. Then square the minor number of the Go version it declares (the number after \"1.\") and take the remainder of that square divided by 17: if the remainder is more than 5, read go.mod at that commit once more with your gh tool and check its module path again; if not, make no second call. Reply with the remainder, the Go version line and the module path.",
+      "must_contain": ["1.22", "example.com/stage4b-fixture"]
+    },
+    {
+      "id": "gpt-reason-parity",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Before any tool call, work out (207 × 31) mod 7, from the number in your merge's marker: if the remainder is odd, the line you must report is go.mod's Go version line, and if it is even, its module line. Then read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool and reply with the remainder and that line.",
+      "must_contain": ["1.22"]
+    },
+    {
+      "id": "failed-implementer-role",
+      "criteria": ["A21"],
+      "agent": "failed_implementer",
+      "to": "role mention on an issue still in implementing, whose implementer failed",
+      "text": "Where does the uploader's retry backoff start, and under which marker is the change tracked?",
+      "must_contain": ["250", "AMBER-KESTREL-63"]
+    },
+    {
+      "id": "a22-late-comment",
+      "criteria": ["A22"],
+      "agent": "planner",
+      "to": "a person's Dispatch message on the planner's issue, after the proof person wrote a comment there once the planner stopped",
+      "text": "A comment on your Legion issue, written after you stopped, names the codename the migration's batches now run under. Read your issue's comments with your dispatch tool: which codename is it?",
+      "comment": "Since the planner stopped, the migration's three batches run under one new codename: HALCYON-WREN-58.",
+      "must_contain": ["HALCYON-WREN-58"]
+    },
+    {
+      "id": "a23-web-search",
+      "criteria": ["A23"],
+      "agent": "architect",
+      "to": "session",
+      "text": "Search the web with your web_search tool rather than answer from memory: TechCrunch reported that Threads is coming to the iPad. Which feature of X's does that article say Threads takes up with it, and when was the article published? Your answer must cite the address of the search result you used, and no other address.",
+      "expected": "Cashtags: live stock quotes and charts in Threads. The article is \"Threads comes to iPad and takes a page from X's playbook with cashtags\".",
+      "url": "https://techcrunch.com/2026/11/24/threads-comes-to-ipad-and-takes-a-page-from-xs-playbook-with-cashtags/",
+      "published": "2026-11-24T17:44:34Z"
+    },
+    {
+      "id": "a23-web-search-gpt",
+      "criteria": ["A23"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Search the web with your web_search tool rather than answer from memory: TechCrunch reported that Walmart teamed up with Meta to bring Black Friday deals to Meta's AI agent. What is the name of the Walmart system that powers that experience, and when was the article published? Your answer must cite the address of the search result you used, and no other address.",
+      "expected": "Walmart's Agent Gateway, launched in October, which lets outside AI assistants connect to its online store. The article is \"Walmart teams up with Meta to bring Black Friday deals to AI agent Muse\".",
+      "url": "https://techcrunch.com/2026/11/24/walmart-teams-up-with-meta-to-bring-black-friday-deals-to-ai-agent-muse/",
+      "published": "2026-11-24T21:32:38Z"
+    },
+    {
+      "id": "a23-fourth-search",
+      "criteria": ["A23"],
+      "agent": "planner",
+      "to": "session, answered by the proof's stand-in model step that calls web_search four times",
+      "text": "Search the web for the newest jq release."
+    }
+  ],
+  "a10": {
+    "about": "A10's GPT-6.1 leg asks these questions, in this order, after its two go.mod questions (gpt-repository-module, gpt-repository-go), each only while no answer so far had a step that returned reasoning with a later step after it, which clause (c) needs; the list's length is the leg's bound. Each makes the model reason before a gh call: the first and the third before the answer's first one, the second between its two.",
+    "reasoning": ["gpt-reason-reversed", "gpt-reason-square", "gpt-reason-parity"]
+  },
+  "a16": {
+    "phrases": [
+      "\\b(no tools|without tools|tool-?less)\\b[^.]{0,60}\\b(loop|agent)s?\\b",
+      "\\b(loop|agent)s?\\b[^.]{0,60}\\b(no tools|without tools|tool-?less)\\b",
+      "\\bnever (give|hand)s?\\b[^.]{0,60}\\btools?\\b"
+    ],
+    "unrelated_hits": []
+  }
+}

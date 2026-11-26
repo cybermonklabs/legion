@@ -47,6 +47,7 @@ import {
   MAX_ISSUE_COMPONENTS,
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  NO_LIVE_SESSION,
   POST_HISTORY_PAGE_LIMIT,
   PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
@@ -385,6 +386,12 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // send. Generated from RECEIPT_TIMEOUT_CAUSE in packages/contracts so the string Dispatch writes
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
+
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = ${JSON.stringify(NO_LIVE_SESSION)}
 
 // DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
 // Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes

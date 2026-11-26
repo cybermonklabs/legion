@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  An `agentloop` run on `openai-responses` that ends on a fault now gives every step it finished
+  its call's own output items (`Step.Native`), as a run that answers does. A run cut by its time
+  bound, one whose stream failed, one whose model made no reply after it was asked again, and one
+  a callback ended returned its finished steps with no items, so a caller that writes a faulted
+  run's steps into a conversation, as the daemon's answer loop now does to record the `gh` calls
+  an answer made, had no OpenAI turn to write. A call still in progress when the run ended is no
+  step and carries none.
+time: 2026-11-19T16:40:00.000000000Z
+custom:
+    Issue: pr2230

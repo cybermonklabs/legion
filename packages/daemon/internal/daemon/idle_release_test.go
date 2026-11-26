@@ -730,6 +730,68 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 }
 
+// A role stop suspends its claim as released while its release stands, and suspends nothing
+// otherwise: the stop of a release that is over, one whose boundary cancels the release, and one
+// whose claim runs nothing.
+func TestARoleStopSuspendsTheClaimOfAReleaseThatStandsAndNoOther(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// before is what happens between the release's decision and the run of its rows. below is
+		// an id the outbox's own sequence handed out before the release queued its rows
+		// (idleRig.outboxID), which no row holds.
+		before   func(t *testing.T, rig *idleRig, below int64)
+		suspends bool
+	}{
+		{name: "the stop suspends its claim", suspends: true},
+		{name: "the release is over", before: func(t *testing.T, rig *idleRig, _ int64) {
+			// No mark holds the release's rows any more, as a release cancelled or finished
+			// leaves them.
+			if _, err := rig.pool.Exec(context.Background(), `delete from issue_releases where issue = $1`, rig.issue.Key); err != nil {
+				t.Fatalf("end the release: %v", err)
+			}
+		}},
+		{name: "the boundary cancels the release", before: func(t *testing.T, rig *idleRig, below int64) {
+			// A start for another role of the pod whose transaction took its id before the release
+			// queued its rows, not yet due, which the boundary finds
+			// (TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease).
+			if boundary := rig.boundary(t); below >= boundary {
+				t.Fatalf("control: the start's id %d is not below the release's boundary %d", below, boundary)
+			}
+			if _, err := rig.pool.Exec(context.Background(), `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
+				values ($1, 'supervise', $2, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now() + interval '1 hour', '')`,
+				below, rig.issue.Key); err != nil {
+				t.Fatalf("queue a start around the mark: %v", err)
+			}
+		}},
+		{name: "the claim runs nothing", before: func(t *testing.T, rig *idleRig, _ int64) {
+			if err := rig.machine.Handle(context.Background(), supervise.RequestStop{Claim: rig.token}); err != nil {
+				t.Fatalf("retire the claim the stop is for: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			below := rig.outboxID(t)
+			queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+			if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+				t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown", queued)
+			}
+			if tc.before != nil {
+				tc.before(t, rig, below)
+			}
+
+			rig.drain(t)
+
+			got := rig.machine.Claim()
+			if got.Released() != tc.suspends {
+				t.Fatalf("the claim = %s by %s, released %t; want released %t", got.State, got.SuspendedBy, got.Released(), tc.suspends)
+			}
+		})
+	}
+}
+
 // R4's boundary, through the whole daemon path. The boundary is the stop of the first role
 // process of the pod, and until it has run a delivery for a role of the pod cancels the
 // release: one queued below the release's own rows was in flight when the mark was written,

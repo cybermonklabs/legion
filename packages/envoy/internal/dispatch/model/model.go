@@ -3305,9 +3305,12 @@ type CommentDelivery struct {
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a mention the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running
-	// and hands over when that session runs again, or "failed". A reader that asks whether the
-	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
-	// deliveryOutcome).
+	// and hands over when that session runs again, or kept for the next holder of a role whose
+	// Legion pod its daemon released (api/comment_delivery.go publishForRole), or "failed". A
+	// queued attempt kept for a role names no session; its reply is taken from the session the
+	// listener names as the role's holder when the reply comes, which the reply pins as
+	// SessionID (keptRoleReplier). A reader that asks whether the listener took the message
+	// counts "sent" and "queued" alike (api/envoy_resolve.go, deliveryOutcome).
 	State        string    `json:"state"`
 	Error        *string   `json:"error"`
 	ResolveError *string   `json:"resolve_error"`
@@ -3722,9 +3725,12 @@ type MessageDelivery struct {
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a message the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running
-	// and hands over when that session runs again, or "failed". A reader that asks whether the
-	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
-	// deliveryOutcome).
+	// and hands over when that session runs again, or kept for the next holder of a role whose
+	// Legion pod its daemon released (api/comment_delivery.go publishForRole), or "failed". A
+	// queued attempt kept for a role names no session; its reply is taken from the session the
+	// listener names as the role's holder when the reply comes, which the reply pins as
+	// SessionID (keptRoleReplier). A reader that asks whether the listener took the message
+	// counts "sent" and "queued" alike (api/envoy_resolve.go, deliveryOutcome).
 	State     string    `json:"state"`
 	Error     *string   `json:"error"`
 	ReplyID   *string   `json:"reply_id"`

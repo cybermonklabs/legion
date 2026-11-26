@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -34,28 +35,36 @@ const discardReasonRunes = storetext.FarSideErrorRunes
 // Records is what the replay and the discard of give-ups read of the intake (Consumers.Records):
 // the pool the records and every fact are kept in, the consumers' spec, and the repositories
 // GitHub intake hears now, which a replay decodes a GitHub event against as a delivery is decoded.
+// Handoff is the answer loop's handler, which a replay of a hand-off the loop's consumer gave up
+// hands it to (OpenHandoffs); nil where the loop is off, and such a replay then fails.
 type Records struct {
 	Pool         store.TxPool
 	Spec         ConsumerSpec
 	Repositories func() []ghrepo.Repository
+	Handoff      HandoffHandler
 }
 
 // GiveUps replays and discards a project's give-ups, the messages the intake gave up and keeps
 // whole (record.IntakeFailure). A replay applies the stored message through the handling a live
 // delivery takes, with the handlers a live delivery runs, and publishes nothing to the stream, so
-// GiveUps needs no NATS. dropped is the replay's own memory of the checks settlements whose drop
-// it logged (droppedSettlements), as a consumer keeps one, so a settlement replayed again names
-// its drop once.
+// GiveUps needs no NATS; a hand-off the answer loop's consumer gave up, whose consumer is
+// handoffs, goes to handoff, the loop's handler, with the token its subject names. dropped is the
+// replay's own memory of the checks settlements whose drop it logged (droppedSettlements), as a
+// consumer keeps one, so a settlement replayed again names its drop once.
 type GiveUps struct {
 	pool         store.TxPool
 	spec         ConsumerSpec
 	repositories func() []ghrepo.Repository
 	handlers     []Handler
+	handoff      HandoffHandler
+	token        string
+	handoffs     string
 	dropped      *droppedSettlements
 }
 
 // NewGiveUps is the replay and the discard of the give-ups of records' project, a replay applying
-// each fact with handlers. It refuses records that name no pool or no Repositories.
+// each fact with handlers and handing each hand-off to records' Handoff. It refuses records that
+// name no pool or no Repositories.
 func NewGiveUps(records Records, handlers ...Handler) (*GiveUps, error) {
 	if records.Pool == nil {
 		return nil, errors.New("a replay of give-ups needs the Postgres pool they and every fact are kept in")
@@ -67,7 +76,12 @@ func NewGiveUps(records Records, handlers ...Handler) (*GiveUps, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &GiveUps{pool: records.Pool, spec: spec, repositories: records.Repositories, handlers: handlers, dropped: newDroppedSettlements()}, nil
+	token, err := claim.ProjectToken(spec.Project)
+	if err != nil {
+		return nil, err
+	}
+	return &GiveUps{pool: records.Pool, spec: spec, repositories: records.Repositories, handlers: handlers, handoff: records.Handoff,
+		token: token, handoffs: handoffConsumerName(token), dropped: newDroppedSettlements()}, nil
 }
 
 // RequestError is a replay or a discard refused for what it asks, before any statement: a
@@ -79,9 +93,10 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
 // ReplayOutcome is how the replay of one give-up ended. Its fact applied, its fact was applied
-// already, or the message holds no fact, the handling acknowledging it with no transaction: each
-// closes the record as the record.IntakeClosedHow of the same name. Or it failed, which leaves the
-// record open or discarded as it stood, keeping the new error.
+// already, or the message holds no fact, the handling acknowledging it with no transaction, as a
+// hand-off the answer loop dropped with nothing recorded does: each closes the record as the
+// record.IntakeClosedHow of the same name. Or it failed, which leaves the record open or
+// discarded as it stood, keeping the new error.
 type ReplayOutcome string
 
 const (
@@ -154,15 +169,19 @@ func (g *GiveUps) Replay(ctx context.Context, selector record.IntakeSelector, ca
 // against the present. An applied fact and a duplicate
 // close the record inside ApplyFact's own transaction (withReplayClose); a message the handling
 // acknowledges with no transaction, or one that decodes to no fact, closes it in a statement of
-// its own (noFact). A failure keeps its error (failed).
+// its own (closeAlone). A hand-off the answer loop's consumer gave up goes to the loop instead
+// (replayHandoff). A failure keeps its error (failed).
 func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, caller string) ReplayedGiveUp {
 	replayed := ReplayedGiveUp{ID: given.ID, Consumer: given.Consumer, StreamSeq: given.StreamSeq}
+	if given.Consumer == g.handoffs {
+		return g.replayHandoff(ctx, replayed, given, caller)
+	}
 	decoded, err := decodeMessage(given.Subject, g.spec.Project, g.repositories(), given.Payload)
 	if err != nil {
 		return g.failed(ctx, replayed, err)
 	}
 	if decoded.Fact == nil {
-		return g.noFact(ctx, replayed, caller)
+		return g.closeAlone(ctx, replayed, record.IntakeNoFact, caller)
 	}
 	log := func(level slog.Level, line string, attributes ...any) {
 		g.spec.Logger.Log(context.Background(), level, line,
@@ -181,18 +200,46 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 		logDuplicate(log, decoded, given.Consumer, uint64(given.Deliveries))
 		replayed.Outcome = ReplayAlreadyApplied
 	case outcomeAcked:
-		return g.noFact(ctx, replayed, caller)
+		return g.closeAlone(ctx, replayed, record.IntakeNoFact, caller)
 	}
 	return replayed
 }
 
-// noFact closes replayed's record as a replay that found no fact in its message, in a statement
-// of its own: nothing was applied, so no fact's transaction carries the close.
-func (g *GiveUps) noFact(ctx context.Context, replayed ReplayedGiveUp, caller string) ReplayedGiveUp {
+// replayHandoff replays given, a hand-off the answer loop's consumer gave up, as a live delivery
+// hands it over (consumeHandoff): decoded and held to its subject, then handed to the loop's
+// handler within AckWait. The loop records it in transactions of its own and takes one handed
+// off again as a repeat, so the record is closed in a statement of its own after (closeAlone): as
+// applied, or as no fact where the loop dropped the hand-off with nothing recorded
+// (HandoffHandler's dropped). A daemon whose loop is off has no handler, and the replay fails.
+func (g *GiveUps) replayHandoff(ctx context.Context, replayed ReplayedGiveUp, given record.IntakeFailure, caller string) ReplayedGiveUp {
+	handoff, err := handoffOn(given.Subject, g.token, given.Payload)
+	if err != nil {
+		return g.failed(ctx, replayed, err)
+	}
+	if g.handoff == nil {
+		return g.failed(ctx, replayed, errors.New("the answer loop is off, so nothing takes the hand-off"))
+	}
+	work, cancel := context.WithTimeout(ctx, g.spec.AckWait)
+	dropped, err := g.handoff(work, handoff, given.Payload)
+	cancel()
+	if err != nil {
+		return g.failed(ctx, replayed, err)
+	}
+	if dropped {
+		return g.closeAlone(ctx, replayed, record.IntakeNoFact, caller)
+	}
+	return g.closeAlone(ctx, replayed, record.IntakeApplied, caller)
+}
+
+// closeAlone closes replayed's record as how, in a statement of its own: no fact's transaction
+// carries the close, since the replay found no fact in its message, or the answer loop dropped
+// its hand-off (record.IntakeNoFact), or the loop applied a hand-off in transactions of its own
+// (record.IntakeApplied).
+func (g *GiveUps) closeAlone(ctx context.Context, replayed ReplayedGiveUp, how record.IntakeClosedHow, caller string) ReplayedGiveUp {
 	var closed bool
 	err := g.write(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		closed, err = record.NewStore().CloseIntakeGiveUp(ctx, tx, g.spec.Project, replayed.ID, record.IntakeNoFact, caller, g.spec.Now())
+		closed, err = record.NewStore().CloseIntakeGiveUp(ctx, tx, g.spec.Project, replayed.ID, how, caller, g.spec.Now())
 		return err
 	})
 	if err == nil && !closed {
@@ -201,7 +248,7 @@ func (g *GiveUps) noFact(ctx context.Context, replayed ReplayedGiveUp, caller st
 	if err != nil {
 		return g.failed(ctx, replayed, err)
 	}
-	replayed.Outcome = ReplayNoFact
+	replayed.Outcome = ReplayOutcome(how)
 	return replayed
 }
 

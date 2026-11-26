@@ -82,6 +82,8 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
+	// answers is the answer loop where it is on (config.Answers settled), nil where it is off.
+	answers *answering
 	// conn is the Envoy NATS connection. It is written only on run's own goroutine while the
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which
 	// retries it, and a failed attempt stores nil (daemon.go). Every one of those writes is
@@ -420,7 +422,11 @@ func (w *workflowRuntime) callBounds() appCallBounds {
 	return productionAppCalls()
 }
 
-// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
+// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError): the one
+// line the daemon draws between a failure a wait may end and one no wait changes, for the boot's
+// App reads and mints, its repository reads (bootReadTransient), and the install of the answer
+// loop's shared public leak check, whose tarball read is reported in the same type
+// (installAnswersLeakCheck's transientReads).
 func appTransient(err error) bool {
 	var transient *appauth.TransientError
 	return errors.As(err, &transient)
@@ -1241,17 +1247,29 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	servesNone := len(w.repositories.liveNames()) == 0
 	// The give-up bound takes intake's production values (ConsumerSpec's defaults), and a give-up's
 	// notice wakes its outbox lane through the records' own lane wake once it commits.
-	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
+	spec := intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		WakeOutbox: w.wakeOutbox,
-	})
+	}
+	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, spec)
 	if err != nil {
 		conn.Close()
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
+	}
+	if w.answers != nil {
+		// The answer loop's hand-offs (listenerwire.LegionHandoffSubject): the listener hands this
+		// project's stopped agents' messages to the daemon there. The consumer takes the intake's
+		// spec, so a hand-off the loop keeps failing on is given up and kept as an intake message is.
+		w.answers.handoffs, err = intake.OpenHandoffs(ctx, js, w.pool, spec)
+		if err != nil {
+			conn.Close()
+			w.conn.Store(nil)
+			return natsauth.WithLastError(err, conn)
+		}
 	}
 	if servesNone {
 		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
@@ -1901,9 +1919,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
 // (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
-// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
-// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// unrecorded issue is answered while (keptRepository), is read from the runtime
+// (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename pass under, the
+// outbox's podEnded, which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -2334,6 +2352,18 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		w.outbox.Run(store.ForConcurrentWorker(running))
 		return nil
 	})
+	if w.answers != nil {
+		group.Go(func() error {
+			if err := w.answers.handoffs.Run(store.ForConcurrentWorker(running), w.answers.loop.Receive); err != nil {
+				return fmt.Errorf("the answer loop's hand-offs stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
+			}
+			return nil
+		})
+		group.Go(func() error {
+			w.answers.loop.Run(store.ForConcurrentWorker(running))
+			return nil
+		})
+	}
 	group.Go(func() error {
 		w.pollHoldRelease(store.ForConcurrentWorker(running))
 		return nil

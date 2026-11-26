@@ -116,6 +116,7 @@
     ]
   },
   "consumers": [],
+  "questionsForController": [],
   "intakeGiveUps": {
     "consumers": [],
     "newest": []

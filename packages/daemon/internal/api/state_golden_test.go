@@ -1071,6 +1071,26 @@ func populatedState(t *testing.T) State {
 		},
 		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
+		// The stopped implementer of LEGION-208 merged its pull request with gh and then passed
+		// model_calls, and a comment it began when the daemon stopped has no exit; the stopped
+		// tester of LEGION-207 could not answer a person's question from its conversation. The
+		// answer loop passed both to the controller.
+		QuestionsForController: []QuestionForController{
+			{
+				ID: "9e2b7c41d05a3f68e1c4a7b0d9f2e536", Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer_208",
+				Asker: "session:ses_architect_208 (LEGION-208 architect)", Ref: "envoy:evt-5521", Reason: "model_calls",
+				PassedAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
+				Writes: []record.AgentQuestionWrite{
+					{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: new(int)},
+					{Seq: 3, Command: "api POST repos/acme/widgets/issues/208/comments", Repository: "acme/widgets"},
+				},
+			},
+			{
+				ID: "5f0c2a9e7b14d3866a1e0c4b9d2f7a35", Issue: "LEGION-207", Role: claim.RoleTester, Session: "ses_tester_207",
+				Asker: "user:octocat", Ref: "dispatch://LEGION-207/message/m-4411", Reason: "not_answered",
+				PassedAt: time.Date(2026, 9, 22, 9, 14, 3, 0, time.UTC),
+			},
+		},
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
 		// messages waiting and has handled none for over a minute; the listener-wake consumer's
@@ -1289,10 +1309,11 @@ func TestStateGolden(t *testing.T) {
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
+// (withoutGateBasis, gateBasisContract's row), the four other rows of stateNarrowings above the
 // contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
-// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row)
-// and no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row),
+// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row),
+// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row) and no
+// `questionsForController` (withoutQuestionsForController, questionsForControllerContract's row),
 // and every other key as a caller at shapedAnswersContract is served it, since no other
 // row of stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
 // shapedAnswersContract's row and pauseContract's stand at or below the contract it is served at,

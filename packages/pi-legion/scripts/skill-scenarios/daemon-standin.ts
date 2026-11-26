@@ -88,10 +88,12 @@ const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", r
  * live records name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
- * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
- * carries it empty, as a daemon at this contract serves a caller in no pod holding no wake.
- * `settings` is the daemon's resolved legion.yaml with no credential in it, also required; the rig
- * has no file, so it carries the two keys the reader types at the daemon's defaults. */
+ * `wakesWaiting`, the wakes the pacing holds until their turn, and `questionsForController`, the
+ * questions the answer loop passed to the controller, are optional to the reader; the rig carries
+ * each empty, as a daemon at this contract serves a caller in no pod holding no wake and no
+ * question. `settings` is the daemon's resolved legion.yaml with no credential in it, also
+ * required; the rig has no file, so it carries the two keys the reader types at the daemon's
+ * defaults. */
 const STATE = LegionStateResponse.parse({
   daemon: { project, schemaVersion: 1, boots: 1, firstBootAt: startedAt, startedAt },
   admission: { cap: 1, active: [issue], waiting: [], trees: [issue], blocked: [] },
@@ -119,6 +121,7 @@ const STATE = LegionStateResponse.parse({
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
+  questionsForController: [],
 });
 
 /** `GET /healthz`: that this stand-in is serving, and the project its state names, which is the

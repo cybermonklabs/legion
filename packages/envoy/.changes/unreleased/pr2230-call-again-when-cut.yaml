@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `agentloop.Request` gains `CallAgainWhenCut`, the most times a run makes a model call again
+  whose reply the provider cut for length, and `agentloop.Step` gains `Dropped`. A cut reply is
+  not sent back to the model: the next call is sent the run's messages as they stood before the
+  cut call, so neither its request nor the conversation holds any of the cut reply, and that
+  call's reply answers in its place. The call made again is a call of the run like any other:
+  `Bounds.Calls` counts it, it offers no tool and carries `LastCall` where it is the last allowed
+  call, it is made only while `Bounds.Time` is left, its cache marks fall where the cut call's
+  did, and `Check` reads its reply. The cut call stays in `Result.Steps`, marked `Dropped` so a
+  caller that writes the steps back into a conversation leaves it out, and its usage stays in
+  `Result.Usage`. A second cut, or one with no model call or no time left, ends the run with
+  `FaultLength` as before. A zero `CallAgainWhenCut` sends exactly what a run sent before the
+  field existed.
+time: 2026-11-19T06:22:01.000000000Z
+custom:
+    Issue: pr2230

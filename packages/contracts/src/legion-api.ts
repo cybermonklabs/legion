@@ -760,6 +760,43 @@ const legionHeldOutboxRow = z.object({
   waitsOn: z.number().int().positive().optional(),
 });
 
+/** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` write the daemon's
+ * answer loop ran before passing the question on (the questions-for-controller entry). It gives
+ * the sequence among the question's calls and the command words (`pr merge`; for `gh api`, `api PUT
+ * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
+ * exit status, `null` where gh answered none, since it could not start or the daemon stopped
+ * while it ran. The daemon writes every field; the reader takes each as optional, since no plugin
+ * code reads them (LEGION_ANSWER_READS). */
+const legionQuestionWrite = z.object({
+  seq: z.number().int().positive().optional(),
+  command: nonEmptyString.optional(),
+  repository: z.string().optional(),
+  exit: z.number().int().nullable().optional(),
+});
+
+/** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
+ * passed on in an `agent-question` notice (the questions-for-controller entry). It includes the
+ * question's id, the agent's issue, role and session, who asked (`user:<login>` or `session:<id>`
+ * with the asking session's title when known), where (a `dispatch://` reference or `envoy:<event id>`), why it was
+ * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
+ * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`,
+ * `held_for_cyber_policy`), when, and every `gh` write the loop ran for it (`writes`, never null),
+ * so the controller does not decide on the question without knowing what the agent already
+ * merged, approved or posted. `asker` and `ref` are empty for a question whose recorded hand-off
+ * no longer reads. The daemon writes every field;
+ * the reader takes each as optional, since no plugin code reads them (LEGION_ANSWER_READS). */
+const legionQuestionForController = z.object({
+  id: nonEmptyString.optional(),
+  issue: issueKey.optional(),
+  role: z.enum(LEGION_ROLES).optional(),
+  session: nonEmptyString.optional(),
+  asker: z.string().optional(),
+  ref: z.string().optional(),
+  reason: nonEmptyString.optional(),
+  passedAt: timestamp.optional(),
+  writes: z.array(legionQuestionWrite).optional(),
+});
+
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the pacing's estimate at the read
@@ -1532,7 +1569,13 @@ const legionPaused = z.object({
  * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
  * tokens its launches hand out, written only under `dispatch_token_broker` (contract 275); the
  * route strips it for a caller below 275, read the same way (`api.stateFor`,
- * `withoutDispatchCredential`). */
+ * `withoutDispatchCredential`).
+ * `questionsForController` is every question the answer loop passed to the controller in the last
+ * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
+ * only, so a controller that starts later reads here what it missed. The questions-for-controller
+ * entry makes the key optional, like `wakesWaiting`. Strict readers before #2788 refuse it and
+ * newer readers below the entry discard it. The route omits it only for callers below the entry's
+ * contract (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1552,6 +1595,7 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories.optional(),
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
+  questionsForController: z.array(legionQuestionForController).max(100).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
   // process and record one, absent where no claim does (contract 193). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is

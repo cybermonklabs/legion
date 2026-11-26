@@ -17,10 +17,13 @@ import (
 // that session, whose last try found no live session for it, which this process has a publisher
 // for, and which does not ask for a session that is running now.
 //
-// "no live session" is the one answer that says neither the listener's registry nor its
-// known-session store holds the session: the registry read's 404 (resolveDeliveryTarget) and the
-// send's own 404 are that fact, so a person sees one outcome for it. A session either store holds
-// is the listener's to queue, and it answers the send stopped (deliveryOutcome).
+// "no live session" (contracts.NoLiveSession) is the one answer that says neither the listener's
+// registry nor its known-session store holds the session: the registry read's 404
+// (resolveDeliveryTarget) and the send's own 404 are that fact, so a person sees one outcome for
+// it. A session either store holds is the listener's to queue, and it answers the send stopped
+// (deliveryOutcome). A send to a stopped Legion agent's session that the Legion agent registry
+// named, and that the listener refused or only stored, is judged by the listener's own answer for
+// the route (sendOutcome.refused), as it would be with no registry.
 //
 // queueForUnknownSession builds the subject from the attempt's session (attemptSessionID), and
 // for a record the registry calls gone that is the id the listener answered rather than the one
@@ -36,7 +39,7 @@ import (
 func (s *server) mayQueueForUnknownSession(
 	message model.Message, pending pendingMessageDelivery, connectedOnly bool, failure string,
 ) bool {
-	if s.deps.AgentPublisher == nil || connectedOnly || !strings.HasPrefix(failure, noLiveSessionPrefix) {
+	if s.deps.AgentPublisher == nil || connectedOnly || !strings.HasPrefix(failure, contracts.NoLiveSession) {
 		return false
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
@@ -51,9 +54,12 @@ func (s *server) mayQueueForUnknownSession(
 // none and duplicate when the stream already held it.
 //
 // The listener's delivery of that copy finds no record of the session and gives it up after its
-// retry window with the agent wake, which brings a released Legion pod back. The session reads the
-// copy from its consumer when it registers again under its id, since that consumer starts at the
-// first message stored on the subject that the session has not acknowledged. A repeat under the
+// retry window with the agent wake, which brings a released Legion pod back. For a stopped Legion
+// agent whose project answers, an agent whose idle pod the daemon released among them, the
+// give-up hands the copy to the agent's daemon in place of the notice and the wake
+// (offerAgentDeliveryToLegion in packages/envoy/cmd/listener/legion_handoff.go). The session reads
+// the copy from its consumer when it registers again under its id, since that consumer starts at
+// the first message stored on the subject that the session has not acknowledged. A repeat under the
 // same key - the delivery sweep resuming an attempt whose sender died between this publish and its
 // settle, or a Retry in the same mode - is the duplicate the stream reports, not a second copy.
 //

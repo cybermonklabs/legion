@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The MCP server's state reader accepts `questionsForController` from `GET /legion/v1/state`.
+  The `questions-for-controller` daemon API entry (`20261125161252`) adds this list of questions
+  that the daemon's answer loop passed to the controller in the last seven days. The packed plugin
+  declares the contract of its build in `package.json` as `legion.daemonApiVersion`. A session
+  registers with a daemon that speaks that same contract.
+time: 2026-11-06T22:00:00.000000000Z
+custom:
+    Issue: pr2230

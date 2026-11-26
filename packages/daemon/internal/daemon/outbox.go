@@ -294,13 +294,14 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // (heldTopic), is made only while that claim holds the session it records
 // (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
 // its process, and that process keeps the Envoy role its session claimed, so a notice, a role
-// message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message or a
-// controller notice would reach a process working under another claim's session, or one no claim
-// holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
-// notify.ErrNoHolder, which every executor already answers its own way: a notice is held for its
-// architect; a merge-queue removal, a merge forward's message, a controller notice and a role
-// message a project's pause still owes its role (heldMessageOwed) wait; and any other role
-// message, a hook's prompt and an update ask finish undelivered. So an operator's settle of the
+// message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message, a
+// message for a released agent or a controller notice would reach a process working under another
+// claim's session, or one no claim holds (review rounds 13 to 16 of #4220). Such a publish is not
+// made and answers notify.ErrNoHolder, which every executor already answers its own way: a notice
+// is held for its architect; a merge-queue removal, a merge forward's message, a message for a
+// released agent, a controller notice and a role message a project's pause still owes its role
+// (heldMessageOwed) wait; and any other role message, a hook's prompt and an update ask finish
+// undelivered. So an operator's settle of the
 // name lets a waiting row's next attempt through, while a row that finished undelivered is not
 // sent again (review round 13 of #4220, note 36). A store that does not answer publishes nothing
 // and fails the attempt, which the row's backoff retries.
@@ -1023,6 +1024,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.AgentMessage:
+		return r.agentMessage(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -2535,7 +2538,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Six other executors publish to a role's topic, each with its own rules for what the publisher
+// Seven other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
@@ -2545,15 +2548,17 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
 // removal from the merge queue and of a change of the merge holds, hold the row for a topic with
 // no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go); and
+// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go);
 // mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
 // claim has neither failed nor retired and the merge forward still stands at the row's head
-// (merge_forward.go). Those three publish through the deliverHeld they share. Each of those six
-// publishes with keep: false: deliverNotice and the three through deliverHeld hold their own row,
-// and a kept copy beside it would be a second keeper of one message; roleMessage's message is
-// stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
-// whether or not the role answers. So whoever changes the rule for a topic with no holder must
-// read all eight executors, not this function alone.
+// (merge_forward.go); and agentMessage, a message for an agent whose claim the daemon released,
+// holds its row the same way while the role's claim has neither failed nor retired and its issue
+// can be woken (agent_message.go). Those four publish through the deliverHeld they share. Each of
+// those seven publishes with keep: false: deliverNotice and the four through deliverHeld hold
+// their own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
+// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
+// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
+// must read all nine executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {

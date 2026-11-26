@@ -41,8 +41,8 @@ var errHangup = errors.New(syscall.SIGHUP.String() + " signal received")
 // hangupCancels is ctx, cancelled with errHangup as well when a SIGHUP reaches this process before
 // stop is called. It is for a command's own work that runs in a process group of its own: `legion
 // gh`'s git reads of the repository's configuration and remotes (ghRepoGitConfigRefusal,
-// gitLines) and its help reads (readGhHelp), the leak guard's children, which `legion gh` and
-// `legion leak-check` both run, and the curl of the credential helper's fork read
+// ghroute.ReadGitRemotes) and its help reads (ghroute.ReadHelp), the leak guard's children, which
+// `legion gh` and `legion leak-check` both run, and the curl of the credential helper's fork read
 // (readForkUpstream) (each started with procgroup.Configure under the context it is given). A
 // pane that closes sends its SIGHUP to the terminal's foreground group,
 // which that work is not in, and main catches no SIGHUP, so without this the signal would kill

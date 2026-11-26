@@ -864,6 +864,10 @@ func transportFailure(err error) error {
 	return &TransientError{Err: err}
 }
 
+// DaemonSessionPrefix opens the session the daemon writes Dispatch as, so a reader recognises the
+// daemon's own writes by it (DaemonSession).
+const DaemonSessionPrefix = "legion-daemon:"
+
 // DaemonSession is the session of the Legion daemon of the project it is given,
 // legion-daemon:<PROJECT>, PROJECT being key up to its first "-": a project key is its own project.
 // Every write of a client made with no option names the session of the key it is on, which is how
@@ -872,7 +876,7 @@ func transportFailure(err error) error {
 // names that session instead.
 func DaemonSession(key string) string {
 	project, _, _ := strings.Cut(key, "-")
-	return "legion-daemon:" + project
+	return DaemonSessionPrefix + project
 }
 
 // actor is the actor a write on key names: the session the client writes as (WritesAs), or, for a
@@ -882,6 +886,12 @@ func (c *HTTPClient) actor(key string) actor {
 		return actor{Kind: "session", ID: c.session}
 	}
 	return actor{Kind: "session", ID: DaemonSession(key)}
+}
+
+// sessionActor is the actor a write made in an agent's name carries: the agent's own session, as
+// the answer loop posts a stopped agent's answer (replies.go), where actor is the daemon's.
+func sessionActor(session string) actor {
+	return actor{Kind: "session", ID: session}
 }
 
 func dispatchError(status int, statusText string, payload []byte) *Error {

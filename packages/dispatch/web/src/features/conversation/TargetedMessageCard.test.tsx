@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
 } from "@legion/contracts";
@@ -28,6 +29,7 @@ function card(props: {
   capabilities?: readonly string[];
   deleted?: PostDeletion;
   onRetry?: (delivery: "aside" | "btw" | "steer") => void;
+  targetName?: string;
 }) {
   const capabilities = props.capabilities ?? ["aside", "btw", "steer"];
   return (
@@ -41,7 +43,7 @@ function card(props: {
         deliveries={props.attempts}
         header={null}
         onRetry={props.onRetry ?? (() => {})}
-        targetName="planner"
+        targetName={props.targetName ?? "planner"}
         turnID="turn-1"
       />
     </ul>
@@ -138,14 +140,13 @@ test("an ordinary sent attempt still reads as sent", () => {
 // that a same-mode retry publishes a second frame. The card promises a safe retry, and offers the
 // button the promise describes, only inside that window.
 test("a failed attempt inside the duplicate window promises a safe retry and offers it", () => {
-  const view = render(card({ attempts: [attempt({ error: "no live session s1" })] }));
+  const failure = `${NO_LIVE_SESSION} s1`;
+  const view = render(card({ attempts: [attempt({ error: failure })] }));
   try {
     // A cause with no trailing punctuation gets a separator, and a failure that never reached
     // the listener is not told a different mode would deliver it "again".
     expect(
-      screen.getByText(
-        `Failed: no live session s1. ${safeRetryGuidance("card", "no live session s1")}`
-      )
+      screen.getByText(`Failed: ${failure}. ${safeRetryGuidance("card", failure)}`)
     ).toBeTruthy();
     expect(screen.queryByText(/sending in a different mode/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -187,7 +188,7 @@ test("a send whose store the listener could not confirm is named as such and tol
   } finally {
     view.unmount();
   }
-  const control = render(card({ attempts: [attempt({ error: "no live session s1" })] }));
+  const control = render(card({ attempts: [attempt({ error: `${NO_LIVE_SESSION} s1` })] }));
   try {
     expect(
       screen.queryByText(/sending in a different mode delivers it again/)
@@ -200,11 +201,11 @@ test("a send whose store the listener could not confirm is named as such and tol
 test("a failed attempt past the duplicate window makes no promise and offers no Retry", () => {
   const stale = attempt({
     createdAt: new Date(Date.now() - DELIVERY_DUPLICATE_WINDOW_MS - 60_000).toISOString(),
-    error: "no live session s1",
+    error: `${NO_LIVE_SESSION} s1`,
   });
   const view = render(card({ attempts: [stale] }));
   try {
-    expect(screen.getByText("Failed: no live session s1")).toBeTruthy();
+    expect(screen.getByText(`Failed: ${NO_LIVE_SESSION} s1`)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     // The mode-change actions stay: they are a different key and genuinely deliver.
     expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();
@@ -278,6 +279,58 @@ test("a duplicate BTW still reads as waiting on an answer", () => {
   );
   try {
     expect(screen.getByText(/Asking planner \(BTW\)/)).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// sjawhar/legion#2230. A role-routed message to a role whose Legion pod its daemon released is
+// kept by the listener for the role's next session, for one hour. The card says so, rather than
+// calling the role a stopped session that gets it within 72 hours, and offers no Retry: the
+// listener took the message, and a repeat would keep a second copy for the same role.
+test("a queued attempt kept for a role reads as kept for the role's next session, with no Retry", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  const view = render(
+    card({
+      attempts: [attempt({ delivery: "aside", keptForRole: true, state: "queued" })],
+      targetName: role,
+    })
+  );
+  try {
+    expect(
+      screen.getByText(
+        `Kept for ${role}: the role's next session gets it if one takes the role within one hour`
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(/is stopped/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The session wording stays for a queued attempt stored for a session, and for an earlier
+// attempt the history lists beneath a later one, each attempt read on its own.
+test("a queued attempt stored for a session keeps the session wording, beside an earlier kept one", () => {
+  const view = render(
+    card({
+      attempts: [
+        attempt({ attempt: 1, keptForRole: true, state: "queued", targetName: "role:planner" }),
+        attempt({ attempt: 2, state: "queued" }),
+      ],
+    })
+  );
+  try {
+    expect(
+      screen.getByText(
+        "Queued: planner is stopped; it gets the message if it runs again within 72 hours"
+      )
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /^Attempt 1: Kept for role:planner: the role's next session gets it if one takes the role within one hour$/
+      )
+    ).toBeTruthy();
   } finally {
     view.unmount();
   }

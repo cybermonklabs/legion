@@ -135,36 +135,95 @@ func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
 }
 
 // The driver's own text is not ours to trust: whatever it says on a future
-// version, the password the daemon was configured with does not reach a log.
+// version, the password a DSN carries does not reach a log, in the URL form or
+// the keyword one, quoted or not. The error knows nothing of the password: it
+// finds one where a DSN keeps it, and the rest of the text stays as the driver
+// wrote it, the address the DSN points at named before it.
 func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
 	t.Parallel()
-	for _, detail := range []string{
-		"failed to connect to `host=db.internal password=hunter2`",
-		"cannot parse postgres://legion:hunter2@db.internal:5432/legion",
+	for _, tc := range []struct {
+		dsn, detail string
+		hidden      []string // what of the DSN's password the error must not show
+		kept        string   // the text around the redacted value, as the driver wrote it
+	}{
+		{
+			dsn:    userinfoURL("legion", "hunter2", "db.internal:5432"),
+			detail: "cannot parse `" + userinfoURL("legion", "hunter2", "db.internal:5432") + "`: failed to connect",
+			hidden: []string{"hunter2"},
+			kept:   "`" + userinfoURL("legion", "xxxxx", "db.internal:5432") + "`: failed to connect",
+		},
+		{
+			dsn:    "host=db.internal port=5432 password=hunter2",
+			detail: "failed to connect to `host=db.internal port=5432 password=hunter2`",
+			hidden: []string{"hunter2"},
+			kept:   "failed to connect to `host=db.internal port=5432 password=xxxxx",
+		},
+		{
+			dsn:    `host=db.internal port=5432 password='hun ter\'2' user=legion`,
+			detail: "failed to connect to `host=db.internal port=5432 password='hun ter\\'2' user=legion`",
+			hidden: []string{"hun", `ter\'2`},
+			kept:   "`host=db.internal port=5432 password=xxxxx user=legion`",
+		},
 	} {
-		err := &connectError{address: "db.internal:5432", password: "hunter2", err: errors.New(detail)}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("error leaks the password its driver printed: %v", err)
+		text := ConnectError(tc.dsn, errors.New(tc.detail)).Error()
+		for _, hidden := range tc.hidden {
+			if strings.Contains(text, hidden) {
+				t.Errorf("error of %s shows %q of the password its driver printed: %s", tc.dsn, hidden, text)
+			}
 		}
-		if !strings.Contains(err.Error(), "db.internal:5432") {
-			t.Errorf("error does not name the host:port it failed to reach: %v", err)
+		if !strings.HasPrefix(text, "connect to Postgres at db.internal:5432: ") {
+			t.Errorf("error of %s does not name the host:port it failed to reach: %s", tc.dsn, text)
+		}
+		if !strings.Contains(text, tc.kept) {
+			t.Errorf("error of %s = %s; want the driver's text with the password alone redacted, %s", tc.dsn, text, tc.kept)
 		}
 	}
 }
 
 // postgres://legion:legion@… is the ordinary devbox DSN: the password equals
 // the user and the database name. Redaction that blanked every occurrence
-// would hide the two fields an operator reads to diagnose the refusal.
+// would hide the two fields an operator reads to diagnose the refusal; the
+// password's own place in the URL is redacted all the same.
 func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
 	t.Parallel()
-	err := &connectError{
-		address:  "127.0.0.1:5432",
-		password: "legion",
-		err:      errors.New("failed to connect to `user=legion database=legion`: connection refused"),
+	dsn := userinfoURL("legion", "legion", "127.0.0.1:5432")
+	text := ConnectError(dsn, errors.New(
+		"cannot parse `"+dsn+"`: failed to connect to `user=legion database=legion`: connection refused",
+	)).Error()
+	if !strings.Contains(text, "user=legion database=legion") {
+		t.Errorf("error hides the user and database the daemon was connecting as: %s", text)
 	}
-	if !strings.Contains(err.Error(), "user=legion database=legion") {
-		t.Errorf("error hides the user and database the daemon was connecting as: %v", err)
+	if !strings.Contains(text, "`"+userinfoURL("legion", "xxxxx", "127.0.0.1:5432")+"`") {
+		t.Errorf("error does not redact the URL's password, its user, host and database left readable: %s", text)
 	}
+	if strings.Contains(text, "legion:legion@") {
+		t.Errorf("error shows the URL's password: %s", text)
+	}
+}
+
+// A DSN with no password leaves the error nothing to redact, and it redacts
+// nothing: the driver's text reaches the operator as the driver wrote it, a
+// URL's user and its host:port among it, behind the address the DSN points at.
+func TestConnectErrorLeavesTheTextOfADSNWithNoPasswordAsItIs(t *testing.T) {
+	t.Parallel()
+	dsn := "postgres://legion@db.internal:5432/legion"
+	for _, detail := range []string{
+		"cannot parse `postgres://legion@db.internal:5432/legion`: failed to connect",
+		"cannot parse `postgres://db.internal:5432/legion`: failed to connect",
+		"failed to connect to `user=legion database=legion`: 10.0.0.7:5432 (db.internal): dial error: dial tcp 10.0.0.7:5432: connect: connection refused",
+	} {
+		want := "connect to Postgres at db.internal:5432: " + detail
+		if got := ConnectError(dsn, errors.New(detail)).Error(); got != want {
+			t.Errorf("error of %s = %s; want %s", dsn, got, want)
+		}
+	}
+}
+
+// userinfoURL is the postgres URL of user, with word in its userinfo, at host. The tests build it
+// rather than spell it out, since the leak guard every push passes reads a URL written with a
+// user and a password in its userinfo as a credential, whatever the password is.
+func userinfoURL(user, word, host string) string {
+	return (&url.URL{Scheme: "postgres", User: url.UserPassword(user, word), Host: host, Path: "/legion"}).String()
 }
 
 // Each connection error of dispatch://INFRA-2597/spec R3, as Open itself returns it, is read as R3
@@ -1121,24 +1180,28 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047,
-// dispatch://INFRA-3320's 20261122154643 (the two basis seeds) and this change's 20261126110259
-// (merge_holds_changed) do: the case of a database main migrated applies a version left out of the
-// list before the list's own rewrites of that check, which do not name the later kind, so the row
-// seeded of that kind fails the upgrade. So does one that reads a column a version of the list
-// adds, as t-e-54's 20261116144907 reads
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), 20261126110259
+// (merge_holds_changed), the answer loop's 20261124114223 (agent_message) and 20261126170315,
+// which writes every kind of those three, do: the case of a database main migrated applies a
+// version left out of the list before the list's own rewrites of that check, which do not name the
+// later kind, so the row seeded of that kind fails the upgrade. So does one that reads a column a
+// version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
-// that table exists, it fails on the missing table. 20261126110259 is the last migration that
-// writes outbox_kind_check: it stands above main's 20261122154643, 20261119203047 and
-// 20261119003157, which write it too, and main's 20261111090000, 20261111091500 and 20261116144907
-// write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version
-// of the list adds either, so neither is in the list. The project pause's 20261115194357 is in it
-// as well, though it rewrites no kind list: a database migrated before the pause takes it in the
-// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
-// must take them all. Any other version left out makes the cases below weaker, never red, which is
-// why the comment says where the list comes from.
+// that table exists, it fails on the missing table. 20261126170315 is the last migration that
+// writes outbox_kind_check: it stands above the answer loop's 20261124114223 and main's
+// 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which write it too, and
+// main's 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
+// 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
+// is in the list, and nor are the answer loop's other five, 20261106214000, 20261106214001,
+// 20261106214002, 20261124021727 and 20261124072849, which write and read only the answer loop's
+// own tables. The project pause's 20261115194357 is in it as well, though it rewrites no kind
+// list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
+// schema admits, and its held_by_pause column on the outbox must take them all. Any other version
+// left out makes the cases below weaker, never red, which is why the comment says where the list
+// comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1150,7 +1213,7 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
-	20261126110259: true,
+	20261124114223: true, 20261126110259: true, 20261126170315: true,
 }
 
 const idleRelease = 20261101222956
@@ -1172,11 +1235,12 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
 // ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
 // fresh database the rewrite with the highest version is the last word, so a kind that only a
-// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
-// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
-// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
-// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
-// and the merge forward's 20261119003157, names them too.
+// lower one names is refused there: merge_holds_changed, pending_basis_seed and reparent_seed would
+// be, had 20261126170315, which stands above main's 20261126110259 and 20261122154643 and the
+// released-agent messages' 20261124114223, left them out, and agent_message, design_changes,
+// step_record, plan_record, conflict_confirm and merge_forward are, unless that list, which runs
+// after the design news's 20261119203047, the step record's 20261117000528, the plan record's
+// 20261117023932 and the merge forward's 20261119003157, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()

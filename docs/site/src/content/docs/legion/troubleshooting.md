@@ -2063,6 +2063,8 @@ the daemon gave up waits for a replay ([A message the intake gave up](#a-message
 
 The daemon takes each GitHub event, each Dispatch event and each wake report of the Envoy listener
 as a message of one of its three durable consumers ([GitHub events wait](#github-events-wait)).
+With the answer loop on, a fourth, `legion-go-<project>-answers`, takes each message the listener
+hands the daemon for a stopped agent, and everything below holds for it too.
 When the handling of a message fails, the daemon puts the message back, and JetStream delivers it
 again: one second after the first failure, and twice as long after each later failure, up to five
 minutes. When GitHub's rate limit names a longer wait, the daemon waits that long. Each failure
@@ -2080,12 +2082,15 @@ transaction:
 - `read the reviewer's repository permission`
 - `retryable intake processing failure`
 
+A hand-off that the answer loop fails on writes one more: `hand-off not recorded; it is delivered
+again`.
+
 Three more name a write of the record itself, which failed, so the message waits for its next
 delivery rather than being given up: `record the give-up of a message that does not decode`,
 `a message that does not decode has no metadata to record it under` and `give up a message whose
 delivery did not end`. A record write that fails after a failed handling writes the warning
 `intake: the give-up record of a delivery was not written; the delivery goes on without it`, then
-that handling's own line from the six above.
+that handling's own line from those above.
 
 From the first failure the daemon keeps the whole message in its database, with the error of the
 last failure.
@@ -2136,17 +2141,20 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    The controller reads the counts in `read_state`'s summary, as
    `intake give-ups <consumer> open <n> newest seq <seq>`, and the record ids in the notice.
 2. **Find the cause in the last error.** The subject names the event:
-   `notifications.dispatch.issue.<KEY>.…` is an event of that issue, and
-   `notifications.github.<owner>.<repo>.…` an event of that repository. Search the daemon's log
-   for the give-up line with `record=<id>`. The controller's tools show no record's error: a replay
-   of one record by its id answers `failed` with the error, and leaves the record as it was.
+   `notifications.dispatch.issue.<KEY>.…` is an event of that issue,
+   `notifications.github.<owner>.<repo>.…` an event of that repository, and
+   `notifications.legion.<project>.agents.<session>` a message for that stopped agent's session.
+   Search the daemon's log for the give-up line with `record=<id>`. The controller's tools show no
+   record's error: a replay of one record by its id answers `failed` with the error, and leaves
+   the record as it was.
 3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
    Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
    cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
    that already works on that code, or hand the defect over as an issue for Legion. The controller
    hands over a clear defect as its skill says.
 4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
-   handling a live delivery takes, and publishes nothing to the stream. It judges the fact against
+   handling a live delivery takes, a hand-off through the answer loop, which takes one it recorded
+   already as a repeat, and a replay publishes nothing to the stream. It judges the fact against
    the records as they stand now: however late the replay comes, a fact older than what an issue
    or a pull request holds moves no record back, and it wakes no worker for a head the pull
    request has left. Replay one record by its id, an open one or a discarded one, or every open
@@ -2158,10 +2166,13 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    legion intake replay --config legion.yaml --operator-token-file operator-token --consumer legion-go-WIDGETS-dispatch --through-seq 48213
    ```
 
-   Read the outcome of each record. `applied` (its fact applied now), `already applied` (the
-   daemon had applied the same fact before, so nothing changed) and `no fact` (the message holds
-   nothing the daemon acts on now, such as an event of a repository it no longer hears) each close
-   the record. `failed`, with its error, leaves the record as it was. One call takes at most 100
+   Read the outcome of each record. `applied` (its fact applied now, or the answer loop recorded
+   the hand-off), `already applied` (the daemon had applied the same fact before, so nothing
+   changed) and `no fact` (the message holds nothing the daemon acts on now, such as an event of a
+   repository it no longer hears, or a hand-off the answer loop dropped with nothing recorded,
+   such as one for a conversation the daemon does not hold, or one that asks nothing of an agent
+   the daemon did not release) each close the record. `failed`, with its error, leaves the record
+   as it was; a hand-off's replay fails while the answer loop is off. One call takes at most 100
    records, the lowest stream sequences first, and `remaining` counts the open records of the
    selection left after it: make the same call again. A record that fails stays open and comes
    first again at the next call, so once 100 records keep failing, no bulk call reaches the

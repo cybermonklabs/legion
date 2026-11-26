@@ -4,8 +4,8 @@
 // the listener's PUT routes; Dispatch reads it through the GET routes (cmd/listener/api.go).
 //
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
-// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is
-// reserved for the daemon's own record (INFRA-204), and no read here reaches it: every read is a
+// issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is the
+// daemon's answering record (Project, INFRA-204), which no agent read reaches: every one is a
 // session key or an issue or role prefix. A write claims the session key first, by compare-and-swap,
 // and writes the index keys after it, so a session two writes race for is listed under the winner's
 // issue alone. Nothing is ever deleted, so a closed issue's agents keep their entries and no read
@@ -26,7 +26,8 @@ import (
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
 // declares (listenerwire.LegionAgentEntry). Readers ignore fields they do not know, so a later
-// writer may add some.
+// writer may add some, and an entry an earlier writer stored with a field since dropped, such as
+// the `released` of an idle-released claim, reads as the entry without it.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -63,8 +64,9 @@ var (
 	projectTokenPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 	// issueKeyPattern is a Dispatch issue key (claim.IsIssueKey, DISPATCH_KEY_PATTERN).
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-	// roleTokenPattern is a workflow role's token: legion-<project>-<issue project>-<number>-<role>.
-	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-[a-z0-9]+-[0-9]+-(` + strings.Join(Roles, "|") + `)$`)
+	// roleTokenPattern is a workflow role's token: legion-<project>-<issue project>-<number>-<role>,
+	// each captured in that order (RoleTokenParts).
+	roleTokenPattern = regexp.MustCompile(`^legion-([a-z0-9]+)-([a-z0-9]+)-([0-9]+)-(` + strings.Join(Roles, "|") + `)$`)
 )
 
 // ErrInvalid is a session id, issue key, role token or entry the registry refuses. Each refusal
@@ -156,17 +158,25 @@ func RoleToken(project, issue, role string) string {
 	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + role
 }
 
+// RoleTokenParts reads a role token back to the Legion project token and the issue key RoleToken
+// built it from: legion-<legion_project>-<issue lower-cased>-<role> (roleTokenPattern). A token
+// ValidateRoleToken refuses reads as neither.
+func RoleTokenParts(token string) (project, issue string) {
+	if ValidateRoleToken(token) != nil {
+		return "", ""
+	}
+	m := roleTokenPattern.FindStringSubmatch(token)
+	return m[1], strings.ToUpper(m[2]) + "-" + m[3]
+}
+
 // Validate refuses an entry the registry does not store. Both writes, one entry and a batch, refuse
 // through it, so they refuse the same entries.
 func Validate(entry Entry) error {
 	if err := ValidateSessionID(entry.SessionID); err != nil {
 		return err
 	}
-	if len(entry.LegionProject) > maxProjectBytes {
-		return invalid("legion_project is %d bytes, past %d", len(entry.LegionProject), maxProjectBytes)
-	}
-	if !projectTokenPattern.MatchString(entry.LegionProject) {
-		return invalid("legion_project %q is not a Legion project token (lower-case letters and digits)", entry.LegionProject)
+	if err := ValidateProject(entry.LegionProject); err != nil {
+		return err
 	}
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err

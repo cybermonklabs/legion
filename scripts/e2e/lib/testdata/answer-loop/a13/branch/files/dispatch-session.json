@@ -1,0 +1,17 @@
+[
+  {
+    "accepted_as": null,
+    "accepted_at": null,
+    "attempt": 1,
+    "delivery": "steer",
+    "duplicate": false,
+    "envelope_id": "aaaa3333aaaa3333aaaa3333aaaa3333",
+    "error": null,
+    "reply_id": null,
+    "requested_by": {
+      "kind": "user"
+    },
+    "session_id": "session-architect",
+    "state": "queued"
+  }
+]

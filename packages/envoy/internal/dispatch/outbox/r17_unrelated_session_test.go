@@ -111,8 +111,8 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	time.Sleep(500 * time.Millisecond)
 	// The sender finds no holder and fails the attempt, as it does within a round trip.
-	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
-		firstID, target); err != nil {
+	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = $3 where comment_id = $1 and target = $2`,
+		firstID, target, contracts.NoLiveSession); err != nil {
 		t.Fatal(err)
 	}
 	dueNow(t, rig.database, first.ID)

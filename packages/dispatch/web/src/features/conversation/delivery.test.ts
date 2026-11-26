@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   DELIVERY_DUPLICATE_WINDOW_MS,
+  NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
 } from "@legion/contracts";
@@ -12,6 +13,8 @@ import {
   deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
+  keptForRole,
+  keptForRoleParts,
   noDeliveryLine,
   plainDelivery,
   queuedParts,
@@ -67,6 +70,24 @@ test("a queued attempt is never offered a retry, and reads as stored for a stopp
     "Queued: ",
     { sessionId: "s1", storedTitle: undefined },
     " is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+// sjawhar/legion#2230. A queued attempt that names no session was kept by the listener for the
+// role it was addressed to, whose Legion pod its daemon released: it waits on the role's kept
+// lane for one hour, for the role's next session. A queued attempt that names a session was
+// stored for that session, a role's holder included, and keeps the session wording.
+test("a queued role attempt with no session reads as kept for the role's next session", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(keptForRole(role, "")).toBe(true);
+  expect(keptForRole(role, null)).toBe(true);
+  expect(keptForRole(role, "s1")).toBe(false);
+  expect(keptForRole("session:s1", "")).toBe(false);
+  expect(keptForRole(null, "")).toBe(false);
+  expect(keptForRoleParts(role)).toEqual([
+    "Kept for ",
+    role,
+    ": the role's next session gets it if one takes the role within one hour",
   ]);
 });
 
@@ -139,8 +160,8 @@ test("an unparseable timestamp is not promised anything", () => {
 // Only the receipt-timeout cause ends in a sentence, so joining with a bare space ran every
 // other cause into the guidance: "Failed: no live session Retry won't deliver it twice."
 test("the guidance is separated from a cause that has no trailing punctuation", () => {
-  expect(withGuidance("Failed: no live session", "Retry won't deliver it twice.")).toBe(
-    "Failed: no live session. Retry won't deliver it twice."
+  expect(withGuidance(`Failed: ${NO_LIVE_SESSION}`, "Retry won't deliver it twice.")).toBe(
+    `Failed: ${NO_LIVE_SESSION}. Retry won't deliver it twice.`
   );
   expect(withGuidance(`Failed: ${RECEIPT_TIMEOUT_CAUSE}`, "Retry won't deliver it twice.")).toBe(
     `Failed: ${RECEIPT_TIMEOUT_CAUSE} Retry won't deliver it twice.`
@@ -154,7 +175,7 @@ test("the mode-change clause is offered only for a send that may have landed, an
   const modeChange = "sending in a different mode delivers it again";
   expect(safeRetryGuidance("card", RECEIPT_TIMEOUT_CAUSE)).toContain(modeChange);
   expect(safeRetryGuidance("card", STORE_UNCONFIRMED_CAUSE)).toContain(modeChange);
-  expect(safeRetryGuidance("card", "no live session s1")).not.toContain(modeChange);
+  expect(safeRetryGuidance("card", `${NO_LIVE_SESSION} s1`)).not.toContain(modeChange);
   expect(safeRetryGuidance("card", null)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", RECEIPT_TIMEOUT_CAUSE)).not.toContain(modeChange);
   expect(safeRetryGuidance("mention", STORE_UNCONFIRMED_CAUSE)).not.toContain(modeChange);

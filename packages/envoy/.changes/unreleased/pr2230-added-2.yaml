@@ -1,0 +1,56 @@
+kind: Added
+body: |-
+  Dispatch records a stopped Legion agent as a delivery's recipient. A targeted
+  message (on an issue or on the agent's conversation page) or a mention whose session the
+  listener holds no live record of or calls gone, or whose role has no live holder, is looked up
+  in the listener's Legion agent registry (`GET /v1/legion/agents/sessions/{id}`, or for a role
+  its token's newest entry from `GET /v1/legion/agents/roles/{token}`). A session the registry
+  names is the attempt's session only while its project's daemon answers for its stopped agents:
+  each registry read now carries `answering`, the flag the project's answering record last
+  stated (false when the project has stated none), which is the condition the listener's
+  hand-off reads. Such a session is the attempt's session whatever the delivery mode (the
+  capability check is skipped), the send goes to it through the listener, which hands it to the
+  agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
+  that attempt is accepted. That send carries no role mark, a role's route included, so it
+  needs no Dispatch identity at the listener. A send that checks the attempt's pinned session
+  again first - a mention's, and a targeted message's after a listener take-over or when a sweep
+  resumes it - finds the listener's known-session record of that stopped session and is marked
+  with the role.
+  The listener's send route then hands a send marked with a role whose claim does not name its
+  target to the daemon of that role's newest session, while no session holds the role live and
+  on the conditions a role publish's hand-off has (its project answering, the session gone,
+  whether its issue has left the workflow or not), and answers it 200 with that
+  session as recipient, rather than keep it on the role's kept lane. A role that another session
+  holds live, such as one a person's resumed or forked session took over, is kept on that lane
+  for that holder, with nothing handed to the stopped session's daemon.
+  A target the registry does not name, or names for a project that
+  does not answer (its daemon runs without `answers`, or it never said it does), keeps the
+  listener's own answer and is sent nothing, but for the roles kept for their next holder below:
+  a mention fails `no live session <id>`, a role message gets the listener's no-holder text
+  naming no session, and a targeted message to a session is queued by Dispatch on the session's
+  own subject. A registry read that does not
+  answer is logged and changes nothing, and a send the listener refuses because no daemon
+  answers for that agent, or answers `state: stopped` because it only stored the message for the
+  stopped session, records the listener's own answer and session, as with no registry: a mention
+  fails, and a targeted message to the session is queued by Dispatch, whose copy the listener
+  hands to the agent's daemon at its give-up when that daemon answers by then. The Dispatch Envoy
+  client's `Role` reports the listener's 404 as an error matching `ErrNoHolder`, and `Send`'s 404
+  as one matching `ErrNotFound`, each carrying the listener's own text.
+
+  A role's newest entry names its session whether that entry's issue has left the workflow or
+  not: a worker that failed, or that the workflow, an operator or the daemon's idle release
+  suspended, is answered by its daemon as a finished role's last worker is, and a session whose
+  idle pod the daemon released is named like any other stopped agent.
+  A role the registry holds no entry for while its project answers is kept for its first holder:
+  Dispatch publishes the message on the role's topic, the listener keeps it on the role's kept
+  lane and wakes the role, and the attempt records `queued`.
+  `GET /v1/legion/agents/roles/{token}` now answers `{"entries":[…],"answering":<bool>}`, the
+  flag the role token's own project last stated written out beside the entries, an empty list's
+  included (an edge listener answers it only for a role of one of its token's projects), and the
+  Dispatch Envoy client's `RoleAgents` returns both. A role with no entry whose project does not
+  answer, a registry read that does not answer, and a role that is no Legion workflow role keep
+  the listener's own no-holder answer, recorded against no session; Dispatch does not ask the
+  registry about the last.
+time: 2026-11-08T10:01:00.000000000Z
+custom:
+    Issue: pr2230

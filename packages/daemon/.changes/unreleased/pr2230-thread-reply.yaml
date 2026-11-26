@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The answer loop answers a person's reply in a Dispatch comment thread that mentions nobody.
+  Such a reply is a question for the one stopped agent whose comment it follows: the author of
+  the newest comment before the reply when an agent wrote it, else the author of the thread's root
+  when an agent wrote that. The loop's own answer counts as the agent's comment, so a reply under
+  it is answered too. Dispatch sends a person's reply to every agent that wrote in the thread, and
+  every daemon that gets it reads the thread and finds the same answerer, so one agent answers and
+  the others skip it. An agent's reply in such a thread is no question to the loop, a reply that
+  mentions anyone is answered only as a mention, and a reply in the thread of a document that no
+  issue holds is not answered.
+  The answer is posted as a reply in the same thread, once: the loop reads the thread first, as it
+  reads an ask's. The model may reply that such a reply asks nothing, and then nothing is posted.
+  Store migration `20261124021727_answer_questions_thread_reply` adds the question's kind,
+  `thread_reply`, to `answer_questions`.
+time: 2026-11-24T02:17:27.000000000Z
+custom:
+    Issue: pr2230

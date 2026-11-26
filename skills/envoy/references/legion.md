@@ -12,6 +12,7 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   - `holder_lapsed`: the holder has not registered within the live window. It keeps the role (`claim_released: false`), nothing replaces it, and the daemon holds its notice and publishes it again.
     A publish of yours to such a role is kept: `202` with `kept_reason: holder_lapsed` and `kept_until`.
   - `delivery_failed`: the stream stored no forward for the holder. It releases no claim.
-- A role message to a released Legion role is kept for one hour and wakes the role. The woken session gets it as an Envoy card with `kept_at`, which can come before the daemon's task.
+- A role message to a released Legion role goes to the role's daemon while that daemon answers for its stopped agents (`answers`): the listener hands it off, answers `200` with the role's newest session as `recipient`, and the daemon decides whether it wakes the role.
+  While no daemon answers, it is kept for one hour and wakes the role, and the woken session gets it as an Envoy card with `kept_at`, which can come before the daemon's task.
 - A role send the listener refuses `404` also raises an exception on `notifications.envoy.exceptions.notifications.role.<role>`, naming `unclaimed` or `holder_lapsed`.
   No consumer acts on it, and the daemon decides by itself whether to send its own refused message again: never re-send a refused message by hand because of one.

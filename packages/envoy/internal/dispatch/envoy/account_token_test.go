@@ -410,7 +410,7 @@ func TestASecondTryThatWasNeverWrittenIsNoReceiptTimeout(t *testing.T) {
 		t.Fatalf("a second try that was never written = %v, want ErrUnreachable and not ErrReceiptTimeout", err)
 	}
 
-	if control := sendTransportError(context.DeadlineExceeded, true); !errors.Is(control, ErrReceiptTimeout) {
+	if control := sendTransportError(sendRoute, context.DeadlineExceeded, true); !errors.Is(control, ErrReceiptTimeout) {
 		t.Fatalf("control: a written send that timed out = %v, want ErrReceiptTimeout", control)
 	}
 }

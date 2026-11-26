@@ -792,7 +792,9 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	}
 	// The error keeps its prefix - Dispatch classifies a delivery failure on the "no live
 	// session " one - the state the refusal was decided on stands beside it, and, this listener
-	// having no registration to name for a target that never registered, the error says so.
+	// having no registration to name for a target that never registered, the error says so. The
+	// body is spelt out rather than built from contracts.NoLiveSession, so a change to the
+	// constant, which changes the wire, fails here.
 	if got, want := strings.TrimSpace(answered.Body.String()), fmt.Sprintf(`{"error":"no live session %s; this listener does not know when it last registered","state":"gone"}`, target); got != want {
 		t.Fatalf("the 404 body is %s, want %s", got, want)
 	}
@@ -817,7 +819,7 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	if !strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
 		t.Fatalf("the refusal reads %q, want it to begin %q", refusal.Error, busUnansweredPrefix)
 	}
-	if strings.Contains(refusal.Error, "no live session") {
+	if strings.Contains(refusal.Error, contracts.NoLiveSession) {
 		t.Fatalf("the refusal reads %q: an unanswered read must not be reported as the session being gone", refusal.Error)
 	}
 	if got := unanswered.Header().Get("Retry-After"); got != "1" {

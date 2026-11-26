@@ -55,10 +55,10 @@ func openedCommand(f *fakeServerRuntime) string {
 // A claim that records its session and no file of it is resumed from a folder of the pane's own
 // sessions directory (Launcher.SessionsDir), where Oh My Pi keeps the sessions of every working
 // directory: the newest regular file `*_<id>.jsonl` one folder down, which the pane's command
-// resumes as it resumes a recorded file. A directory of that name, a session whose id shares the
-// first 30 characters, a subagent's file and a file two folders down are none of it. With no such
-// file the Resume answers runtime.ErrSessionFileMissing, naming the id and the directory, and
-// opens no pane.
+// resumes as it resumes a recorded file, logged as the file found by its id. A directory of that
+// name, a session whose id shares the first 30 characters, a subagent's file and a file two
+// folders down are none of it. With no such file the Resume answers runtime.ErrSessionFileMissing
+// in the folders' own sentence, naming the id and the directory, and opens no pane.
 func TestAResumeOfASessionNamedByItsIDAloneFindsItsFile(t *testing.T) {
 	ctx := context.Background()
 	written := time.Date(2026, 11, 19, 22, 12, 27, 829_000_000, time.UTC)
@@ -70,9 +70,12 @@ func TestAResumeOfASessionNamedByItsIDAloneFindsItsFile(t *testing.T) {
 	}
 	missing := func(t *testing.T, f *fakeServerRuntime) {
 		t.Helper()
-		_, err := f.Resume(ctx, nil, byID(t, f))
-		if !errors.Is(err, runtime.ErrSessionFileMissing) || !strings.Contains(err.Error(), resumeSessionID) || !strings.Contains(err.Error(), paneSessions(f)) {
-			t.Errorf("Resume of session %s = %v, want runtime.ErrSessionFileMissing naming the id and %s", resumeSessionID, err, paneSessions(f))
+		spec := byID(t, f)
+		_, err := f.Resume(ctx, nil, spec)
+		want := "resume " + string(spec.Claim) + ": the recorded session file is missing: no folder of the pane's OMP sessions directory " +
+			paneSessions(f) + " holds a file of session " + resumeSessionID
+		if !errors.Is(err, runtime.ErrSessionFileMissing) || err.Error() != want {
+			t.Errorf("Resume of session %s = %v, want runtime.ErrSessionFileMissing: %q", resumeSessionID, err, want)
 		}
 		if opened(f.argvs) {
 			t.Error("a resume of a session found nowhere opened a pane")
@@ -80,7 +83,8 @@ func TestAResumeOfASessionNamedByItsIDAloneFindsItsFile(t *testing.T) {
 	}
 
 	t.Run("the newest of its files one folder down", func(t *testing.T) {
-		f := homed(t)
+		var logs strings.Builder
+		f := homedLogging(t, slog.New(slog.NewTextHandler(&logs, nil)))
 		sessions := paneSessions(f)
 		older := filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl")
 		newest := filepath.Join(sessions, "--state-workspaces-acme-widgets-legion-43--", "2026-11-19T23-12-27-829Z_"+resumeSessionID+".jsonl")
@@ -104,6 +108,10 @@ func TestAResumeOfASessionNamedByItsIDAloneFindsItsFile(t *testing.T) {
 		}
 		if command := openedCommand(f); !strings.Contains(command, "--resume="+newest) || strings.Contains(command, "--resume="+resumeSessionID) {
 			t.Errorf("the pane's command = %q, want it to resume %s", command, newest)
+		}
+		resumed := logLines(logs.String(), "tmux runtime: resuming a OMP session the claim recorded no file of, from the file found by its id")
+		if len(resumed) != 1 || !strings.Contains(resumed[0], "sessionFile="+newest) {
+			t.Errorf("the resume logged %q, want one line naming the file found by its id, %s; log: %s", resumed, newest, logs.String())
 		}
 	})
 

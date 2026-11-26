@@ -292,8 +292,24 @@ export async function setLegionRegistryState(state: RegistryState): Promise<void
   await fixtureRequest("/__fixture/legion-registry", "PUT", { state });
 }
 
+/** Sets the answering flag the fake listener's Legion projects last stated, which its registry
+ *  reads answer on each entry and on the role read: whether a daemon answers for the project's
+ *  stopped agents, so Dispatch keeps a message for a role with no entry for its first holder. It
+ *  is false until set; a session reseed keeps it, and `resetFakeEnvoy` puts it back. */
+export async function setLegionAnswering(answering: boolean): Promise<void> {
+  await fixtureRequest("/__fixture/legion-answering", "PUT", { answering });
+}
+
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {
   return (await fixtureRequest("/__fixture/sends", "GET")).json() as Promise<
+    Record<string, unknown>[]
+  >;
+}
+
+/** Every publish the fake listener's publish route took, in order: a role's topic, the send's own
+ *  fields and `keep`, as Dispatch writes one for a role it keeps a message for. */
+export async function getPublishedMessages(): Promise<Record<string, unknown>[]> {
+  return (await fixtureRequest("/__fixture/publishes", "GET")).json() as Promise<
     Record<string, unknown>[]
   >;
 }

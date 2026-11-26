@@ -2437,14 +2437,7 @@ func (w *workflowRuntime) unrecordedRepository(ctx context.Context, key string) 
 		w.workLaunched(ctx, kept.Name)
 		return kept.Name, kept.DefaultBranch, nil
 	}
-	issue, err := w.dispatch.GetIssue(ctx, key)
-	if err != nil {
-		return ghrepo.Repository{}, "", fmt.Errorf("read the repository of %s from Dispatch: %w", key, err)
-	}
-	if issue.ResolvedRepo == "" {
-		return ghrepo.Repository{}, "", fmt.Errorf("%s names no repository: set the repository of %s, or the default repository of project %s, in Dispatch", key, key, cmp.Or(issue.Project, w.dispatchProject))
-	}
-	repo, err := ghrepo.Parse("the repository Dispatch resolves "+key+" to", issue.ResolvedRepo)
+	repo, err := w.resolvedRepository(ctx, key)
 	if err != nil {
 		return ghrepo.Repository{}, "", err
 	}
@@ -2460,6 +2453,40 @@ func (w *workflowRuntime) unrecordedRepository(ctx context.Context, key string) 
 	}
 	w.launched[strings.ToLower(key)] = read
 	return read.Name, read.DefaultBranch, nil
+}
+
+// questionRepository is the repository issue key works as a question to its stopped agent reads
+// it (recordFacts), from issue, key's record as the caller's own transaction read it and nil
+// where the workflow does not record key: the record's repository, else the one kept for the
+// issue at its launch (keptRepository), else the one Dispatch resolves the issue to
+// (resolvedRepository). The answer loop starts no pod, so this read launches nothing: unlike
+// unrecordedRepository it reads nothing of GitHub, adds the repository to neither the cache set
+// nor what GitHub intake hears (workLaunched), and keeps nothing for the issue, whose next launch
+// therefore reads Dispatch and prepares as its first would.
+func (w *workflowRuntime) questionRepository(ctx context.Context, key string, issue *record.Issue) (ghrepo.Repository, error) {
+	if issue != nil {
+		return issue.Repository()
+	}
+	if kept, held := w.keptRepository(key); held {
+		return kept.Name, nil
+	}
+	return w.resolvedRepository(ctx, key)
+}
+
+// resolvedRepository is the repository Dispatch resolves key, an issue the workflow does not
+// record, to (dispatch.Issue.ResolvedRepo), as Dispatch answers now: what the issue's launch
+// prepares (unrecordedRepository) and what a question about it reads (questionRepository), so
+// both refuse a Dispatch that does not answer and an issue that resolves to no repository in the
+// same words.
+func (w *workflowRuntime) resolvedRepository(ctx context.Context, key string) (ghrepo.Repository, error) {
+	issue, err := w.dispatch.GetIssue(ctx, key)
+	if err != nil {
+		return ghrepo.Repository{}, fmt.Errorf("read the repository of %s from Dispatch: %w", key, err)
+	}
+	if issue.ResolvedRepo == "" {
+		return ghrepo.Repository{}, fmt.Errorf("%s names no repository: set the repository of %s, or the default repository of project %s, in Dispatch", key, key, cmp.Or(issue.Project, w.dispatchProject))
+	}
+	return ghrepo.Parse("the repository Dispatch resolves "+key+" to", issue.ResolvedRepo)
 }
 
 // keptRepository is the repository kept for key, an issue the workflow does not record, at its

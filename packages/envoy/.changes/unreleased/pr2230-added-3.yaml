@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  A send, a send marked with a role, or a role publish repeated under one key, whose first copy
+  the listener handed to a stopped Legion agent's daemon, is answered with the hand-off the stream
+  holds, as every repeat the stream recognises is. The listener reads that first hand-off back
+  from `notifications.legion.<legion_project>.agents.<session>`, where the hand-off's own MsgId
+  stored it, at the sequence the stream's duplicate verdict named. The repeat's own sender, the
+  same `source` and `source_session`, gets that hand-off's envelope whole, with
+  `duplicate: true`; another request that sends `Envoy-Reads: key-taken` learns only that the
+  key is taken, the copy's `event_id` and times; and any other request gets the envelope the
+  listener built for it, whose `event_id` no stored message carries, with `duplicate: true`, as
+  a repeat of any other message is. A verdict that names the request's own first hand-off, which
+  the bus's resend after a closed connection can, answers no `duplicate`. A hand-off that cannot
+  be read back is answered `503` with `Retry-After: 1` under
+  `envoy: the stream already knows this message's id, and no stored copy of it was read`, with
+  `code: maybe_stored` after a resend.
+time: 2026-11-23T06:54:51.000000000Z
+custom:
+    Issue: pr2230

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -93,6 +94,9 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		}
 	}
 
+	// At the credential's contract the daemon serves the object. Only entry bands can
+	// still narrow the state. The questions-for-controller band must name its drop.
+	state = carriedState(t)
 	at, narrowings := stateNarrowedStating(t, state, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
@@ -105,6 +109,12 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
+	want := narrowingsExpected(state, dispatchCredentialContract)
+	if !slices.Contains(want, "questionsForController") || slices.Contains(want, "dispatchCredential") {
+		t.Fatalf("a caller stating %d expects narrowing lines %v, want questionsForController but not dispatchCredential",
+			dispatchCredentialContract, want)
+	}
+	wantNarrowings(t, narrowings, dispatchCredentialContract, want)
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {

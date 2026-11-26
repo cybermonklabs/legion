@@ -29,6 +29,13 @@ type streamInfoLookup interface {
 	StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error)
 }
 
+// optedOutOfHandoff reports whether body carried "handoff": false
+// (listenerwire.MessageBody.Handoff), which keeps its message from being handed to a stopped
+// Legion agent's daemon (handOffToLegion).
+func optedOutOfHandoff(body listenerwire.MessageBody) bool {
+	return body.Handoff != nil && !*body.Handoff
+}
+
 // noLiveSession is the refusal body for sessionID in state, with the last registration the
 // registry can still name for it (lastSeenOf). When it can name none the text says so after the
 // kept prefix, because the two cases call for different acts and a missing field names neither:
@@ -37,7 +44,7 @@ type streamInfoLookup interface {
 // registered here — may be alive on another listener (dispatch://INFRA-392, A6).
 func noLiveSession(sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, state session.State) listenerwire.NoLiveSessionRefusal {
 	refusal := listenerwire.NoLiveSessionRefusal{
-		Error:    fmt.Sprintf("no live session %s", sessionID),
+		Error:    contracts.NoLiveSession + " " + sessionID,
 		State:    state,
 		LastSeen: lastSeenOf(sessions, sessionID, entry),
 	}
@@ -796,6 +803,15 @@ const senderStampReadTimeout = 1 * time.Second
 //     by the entry's age.
 //   - An entry within the gone horizon whose probe met no responders: 200, state stopped,
 //     recipient_state by the entry's age and last_seen the entry's. The probe wins over age.
+//   - No entry, or one past the gone horizon, for a stopped Legion agent whose daemon answers for
+//     it (handOffToLegion: the agent registry names the session and its project last said it
+//     answers, an agent whose idle issue pod the daemon released among them), whether or not a
+//     known-session record stands: 200, recipient the session and state empty, the message handed
+//     to that daemon, stored for no session and raising no wake report. A repeat under one
+//     idempotency key whose hand-off the stream already held is answered that hand-off's
+//     envelope, read back as a stored copy is and with duplicate where it is another request's
+//     (answerHandedOff), or the stored-copy 503 when it cannot be read back. A connected_only send
+//     and one carrying "handoff": false are never handed off.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
 //     recipient_state gone and last_seen the record's. The message is stored either way, and
 //     Envoy keeps it for 72 hours, so a session that runs again under the same id gets it from
@@ -808,29 +824,33 @@ const senderStampReadTimeout = 1 * time.Second
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,
 // and a store or a bus that did not answer earns the 503 that asks the sender to try the same
-// route again. A target with no entry within the gone horizon raises the wake report whatever the
-// record says, exactly where a 404 always raised it; one whose probe met no responders raises
-// none, as a lingering entry never did. A target that cannot take the payload's delivery mode
-// (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
-// record) is the 403 naming it. Every one of those answers is written through record, so this
-// route's one line per request is written with it.
+// route again. A target with no entry within the gone horizon that is not handed off raises the
+// wake report whatever the record says, exactly where a 404 always raised it; one whose probe met
+// no responders raises none, as a lingering entry never did. A target that cannot take the
+// payload's delivery mode (deliveryModeVerdict for a session with an entry,
+// stoppedDeliveryModeVerdict for one with only a record) is the 403 naming it. Every one of those
+// answers is written through record, so this route's one line per request is written with it.
 //
 // Before any of them, a message of an agent session whose count under the operator's sender limit
 // is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
 // (senderLimit.admit). A counted message costs its sender one where the wake is reported, and the
-// stream's answer to its publish marks the rest by the rule the topic publish shares
-// (senderCharge.published): a copy the stream stored or may have stored costs one, a copy it
-// already held costs nothing, also after the wake, and a publish that sent nothing costs only the
-// wake, if one was reported.
+// stream's answer to its publish, or to its hand-off's, marks the rest by the rule the topic
+// publish shares (senderCharge.published): a copy the stream stored or may have stored costs one,
+// a copy it already held costs nothing, also after the wake, and a publish that sent nothing costs
+// only the wake, if one was reported.
 //
 // A send carrying role, the role a Dispatch send for a route to a role is sent for, is taken only
 // from Dispatch's own verified principal (refuseRoleMark): any other caller carrying it is the
 // 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
 // role's claim is read before the target (answerRoleSend): a claim naming the target sends as
-// above, and a claim naming another session, or none, keeps the message for the role's next live
-// holder and answers 202 kept, so the role's message never lands on the subject of a session that
-// no longer holds the role, unless the send asked connected_only, which is the 409 a stopped
-// target gives, with nothing kept. A claim read that did not answer is the bus-unavailable 503.
+// above, and a claim naming another session, or none, keeps the message for a session that holds
+// the role live and answers 202 kept, and with no live holder hands it to the daemon of the role's
+// newest Legion session, finished or not, and answers 200 with that session as recipient
+// (handOffToLegion on the role token), or else keeps it for the role's next live holder and
+// answers 202 kept (handOffOrKeepRoleSend), so the role's message never lands on the subject of a
+// session that no longer holds the role, unless the send asked connected_only, which is the 409 a
+// stopped target gives, with nothing kept. A claim read that did not answer is the bus-unavailable
+// 503, and so is a resolution of the holder it names that did not answer.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -920,6 +940,42 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		hasEntry := err == nil
 		var known session.KnownSession
 		if errors.Is(err, nats.ErrKeyNotFound) {
+			// A stopped Legion agent whose daemon answers for it takes the message through that
+			// daemon (handOffToLegion), ahead of the known-session record below: that record
+			// stores the message for a session that runs again, and a stopped Legion agent's
+			// daemon answers it now from the agent's own conversation. The sender reads the 200 a
+			// delivered message gets. An agent whose idle issue pod the daemon released is handed
+			// off too, and its daemon decides whether the message wakes it. A connected-only send
+			// is not handed off: it asks for a stopped target to be refused, and a daemon answering
+			// in the agent's place is not the agent connected.
+			handed, handoffErr := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+				envelope: item, session: targetSession, stampSender: true,
+				optedOut: optedOutOfHandoff(body) || request.ConnectedOnly,
+			})
+			if handoffErr != nil {
+				charge.published(bus.StoredAck{}, handoffErr)
+				record.refuseBusUnavailable(w, handoffErr)
+				return
+			}
+			if handed != nil {
+				charge.published(handed.ack, nil)
+				// A repeat whose first send was handed off is answered the hand-off the stream
+				// holds, as a repeat this route publishes is answered its stored copy
+				// (answerHandedOff, publishHeld).
+				duplicate, answerErr := answerHandedOff(ctx, d.client, record, senderOf(r, item), handed, &item)
+				if answerErr != nil {
+					record.refuseBusUnavailable(w, answerErr)
+					return
+				}
+				record.accept(w, listenerwire.SendResponse{
+					Envelope:       item,
+					ExpectsReply:   expectsReplyAnswer(body.ExpectsReply, item.ExpectsReply),
+					Recipient:      handed.TargetSession,
+					RecipientState: recipientState,
+					Duplicate:      duplicate,
+				})
+				return
+			}
 			var recorded bool
 			known, recorded = d.known.Get(targetSession)
 			// A send to a stopped session the bus would refuse before sending anything, because
@@ -934,10 +990,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 					return
 				}
 			}
-			// A session of a released Legion issue pod is gone from the bucket with its pod, and
-			// this answer is the only sight of the message meant for it: the wake is reported so
-			// the pod comes back, whether its record lets the message be stored for it below or
-			// the 404 here leaves the sender's next attempt to reach it.
+			// Nothing took the message. A session of a released Legion issue pod is gone from the
+			// bucket with its pod, and this answer is the only sight of the message meant for it
+			// that no daemon answers: the wake is reported so the pod comes back, whether its
+			// record lets the message be stored for it below or the 404 here leaves the sender's
+			// next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
 			// The wake is what this message costs its sender, whatever is answered below, but for
 			// a publish the bus refused because a narrowing began after the check above, which
@@ -1391,7 +1448,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
+			sendToRole(ctx, w, edgeScopeOf(r, nil), record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, optedOutOfHandoff(request.MessageBody), arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -3724,9 +3781,10 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/roles/", roleGetHandler(d, logger))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
-	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
-	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))
+	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d, logger))
+	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d, logger))
 	v1.HandleFunc("/v1/legion/agents/roles/", legionAgentRoleHandler(d))
+	v1.HandleFunc("/v1/legion/projects/", legionProjectHandler(d, logger))
 
 	// A DELETE here removes every interest of a session, so its record is left naming none and a
 	// publish counts it for nothing, and its consumer is refollowed on what is left, as the

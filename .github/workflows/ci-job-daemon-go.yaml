@@ -50,15 +50,16 @@ name: CI job daemon-go
 #     job keeps a setup-go of its own — its held-port, CI-filter and build-tag-lister steps still
 #     run go — but no restore: the entry holds what compiling packages/daemon leaves behind, and
 #     those steps compile a scratch module and the envoy listener instead.
-# No Bun and no install: the tests of this module that needed the workspace built, or the
-# repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
-# `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
-# partition of skills/ with scripts/pi-plugin-prepack.sh — which are
-# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips all three by
-# name. What is left here that names bun runs no pack: handoff_records_live_test.go's is behind
-# `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
-# workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
-# tests and no test of this job (dispatch://INFRA-1413, A4).
+# Bun in daemon-go alone, for .github/actions/install-claude-code, which adds the pinned Claude
+# Code with it into the runner's temporary directory; no workspace install and no pack. The tests
+# of this module that needed the workspace built, or the repository's skills, are
+# internal/daemon's three that load a plugin on the real Oh My Pi — the `bun pm pack` of the two
+# plugins and the two prompt probes, one of which stages each plugin's partition of skills/ with
+# scripts/pi-plugin-prepack.sh — which are .github/workflows/ci-job-plugin-pack.yaml's now, and
+# the race step below skips all three by name. What is left here that names bun runs no pack:
+# handoff_records_live_test.go's is behind `//go:build e2e`, which no step here compiles. So this
+# job's filter names no lockfile, no workspace manifest and no skill, and a change to bun.lock or
+# to one skill runs the plugin-pack tests and no test of this job (dispatch://INFRA-1413, A4).
 #
 # Each job's last step reports ci-ok for the caller: when that job's own result decides a
 # merge-group run at the front of the queue, it posts the failing ci-ok at once
@@ -187,6 +188,13 @@ jobs:
       # image ships, and refuse on GitHub Actions without one. The pin is read from
       # .omp-pin, the repository's one copy of it (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
+
+      # internal/conversation/claude's contract tests run the pinned Claude Code against a stand-in
+      # Messages endpoint and refuse on GitHub Actions without one. The pin is read from
+      # .claude-code-pin, the repository's one copy of it, and installed with Bun, which no step
+      # above installs (.github/actions/install-claude-code needs it on PATH).
+      - uses: ./.github/actions/setup-bun
+      - uses: ./.github/actions/install-claude-code
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
       # ships, and refuses on GitHub Actions without one (.github/actions/install-uv). The action

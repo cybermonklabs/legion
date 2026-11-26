@@ -1430,12 +1430,22 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	return claim.HolderSessionID, nil
 }
 
-// leaderRoleClaims is the claim side (roles.ClaimStore) of the kept lane handover's resolution of
-// the role's holder: each claim read is the role bucket stream leader's
-// (store.Registry.RoleClaimFromLeader). On a replicated bucket a direct get can answer the claim
-// as it stood before a takeover; the handover would then walk the lane for the previous holder,
-// whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the lane up
-// with the copy left on it until the next sweep, minutes later.
+// leaderRoleClaims is the claim side (roles.ClaimStore) of each resolution of a role's holder that
+// must not read the claim from before a takeover: each claim read is the role bucket stream
+// leader's (store.Registry.RoleClaimFromLeader), since on a replicated bucket a direct get can
+// answer the claim as it stood before a takeover, naming the previous holder. Three resolutions
+// read through it:
+//
+//   - the kept lane handover's (handOverKeptRole), which on a stale claim would walk the lane for
+//     the previous holder, whose drain hold (roleKeepDrainHolds, a leader read) refuses every
+//     forward, and give the lane up with the copy left on it until the next sweep, minutes later;
+//   - the marked send's, before it hands the send off or keeps it (handOffOrKeepRoleSend);
+//   - the publish route's confirmation of a miss before it hands the message off
+//     (roleSend.missConfirmed).
+//
+// On a stale claim, each of the last two would find the previous holder, which is not live, and
+// hand the message to that holder's daemon, while the session that took the role never receives
+// it.
 type leaderRoleClaims struct{ registry *store.Registry }
 
 func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {

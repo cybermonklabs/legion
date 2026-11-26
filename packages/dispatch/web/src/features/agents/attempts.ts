@@ -1,33 +1,44 @@
 import type { MessageDelivery } from "../../api/types";
-import { deliveryMode, deliveryOutcomeState, rowAnsweredWithError } from "../conversation/delivery";
+import {
+  deliveryMode,
+  deliveryOutcomeState,
+  keptForRole,
+  rowAnsweredWithError,
+} from "../conversation/delivery";
 import type { TargetedMessageAttempt } from "../conversation/TargetedMessageCard";
 import type { AgentPart } from "../refs/AgentName";
 
 /** A message's delivery attempts as `TargetedMessageCard` shows them. Each names the session it
  *  reached (an agent part, drawn by `AgentName`), so an earlier attempt keeps naming that session
- *  after a role hands off; an attempt that recorded none names `targetName`. Shared by an agent
- *  card's conversation and by a broadcast's recipient list, so a delivery reads the same
- *  wherever it is shown. */
+ *  after a role hands off; an attempt that recorded none names `targetName`. `target` is the
+ *  message's address, which says whether a queued attempt that recorded no session was kept for
+ *  a role (`keptForRole`). Shared by an agent card's conversation and by a broadcast's recipient
+ *  list, so a delivery reads the same wherever it is shown. */
 export function deliveryAttempts(
   deliveries: readonly MessageDelivery[],
-  targetName: AgentPart
+  targetName: AgentPart,
+  target: string | null
 ): TargetedMessageAttempt[] {
-  return deliveries.map((attempt) => ({
-    // The route table carries `accepted_as` as a plain string; `user_turn` is the one word that
-    // says the session took the message as its user's own turn, and no other reads as one.
-    acceptedAs: attempt.accepted_as === "user_turn" ? "user_turn" : null,
-    attempt: attempt.attempt,
-    answeredWithError: rowAnsweredWithError(attempt),
-    createdAt: attempt.created_at,
-    // A mode the route table leaves a plain string, narrowed to the closed list the picker
-    // offers; Dispatch writes no other, and the card's own default for a missing mode is Send.
-    delivery: deliveryMode(attempt.delivery) ?? "steer",
-    duplicate: attempt.duplicate,
-    error: attempt.error,
-    state: deliveryOutcomeState(attempt.state),
-    targetName:
-      attempt.session_id === ""
-        ? targetName
-        : { sessionId: attempt.session_id, storedTitle: undefined },
-  }));
+  return deliveries.map((attempt) => {
+    const state = deliveryOutcomeState(attempt.state);
+    return {
+      // The route table carries `accepted_as` as a plain string; `user_turn` is the one word that
+      // says the session took the message as its user's own turn, and no other reads as one.
+      acceptedAs: attempt.accepted_as === "user_turn" ? "user_turn" : null,
+      attempt: attempt.attempt,
+      answeredWithError: rowAnsweredWithError(attempt),
+      createdAt: attempt.created_at,
+      // A mode the route table leaves a plain string, narrowed to the closed list the picker
+      // offers; Dispatch writes no other, and the card's own default for a missing mode is Send.
+      delivery: deliveryMode(attempt.delivery) ?? "steer",
+      duplicate: attempt.duplicate,
+      error: attempt.error,
+      keptForRole: state === "queued" && keptForRole(target, attempt.session_id),
+      state,
+      targetName:
+        attempt.session_id === ""
+          ? targetName
+          : { sessionId: attempt.session_id, storedTitle: undefined },
+    };
+  });
 }

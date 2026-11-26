@@ -833,9 +833,9 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 }
 
 // An ask reads back with its state and who closed it, as GET /api/v1/asks/{id} answers it beside
-// the ask's thread, which is not the daemon's to read: a resolved ask names its resolver, an
-// answered one the person whose answer closed it, and an open one nobody. An answer that names no
-// state is an error, and an ask Dispatch does not have is Missing.
+// the ask's thread, which this read leaves to AskThread (replies.go): a resolved ask names its
+// resolver, an answered one the person whose answer closed it, and an open one nobody. An answer
+// that names no state is an error, and an ask Dispatch does not have is Missing.
 func TestAskReadsTheStateAndWhoClosedIt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
@@ -1431,15 +1431,22 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable: TestEveryWriteNamesTheSessionItsClientWritesAs
 // holds each write of its table to the session its client writes as, so a write the client gains
 // and the table does not hold could name another session unseen. Every exported method of
-// *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
-// the two lists hold is a method the client has.
+// *HTTPClient is a row of that table, one of the reads below, which send no actor, or one of the
+// answer loop's writes below, which name the stopped agent's own session they are given whatever
+// session the client writes as (replies.go's sessionActor), and which
+// TestAnAnswerIsPostedAsTheAgentsSession holds to that session; and each name the lists hold is a
+// method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
-	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
-		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
-		"Whoami"}
+	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "AskThread", "Thread", "Reviews",
+		"DocumentVersion", "EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges",
+		"PlanDocument", "Handoff", "Whoami"}
+	agentWrites := []string{"ReplyToMessage", "ReplyToComment", "ReplyOnAsk", "ReplyInThread"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"
+	}
+	for _, write := range agentWrites {
+		listed[write] = "the list of the answer loop's writes"
 	}
 	for _, write := range clientWrites() {
 		listed[write.method] = "the table of writes"
@@ -1450,7 +1457,7 @@ func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
 		name := methods.Method(i).Name
 		exported[name] = true
 		if _, ok := listed[name]; !ok {
-			t.Errorf("(*HTTPClient).%s is neither a row of clientWrites nor in this test's list of reads: a write is a row of that table, which holds it to the session its client writes as, and a read sends no actor", name)
+			t.Errorf("(*HTTPClient).%s is neither a row of clientWrites nor in this test's list of reads or of the answer loop's writes: a write is a row of that table, which holds it to the session its client writes as, a read sends no actor, and an answer loop's write names the agent's own session", name)
 		}
 	}
 	for name, list := range listed {

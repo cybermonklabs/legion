@@ -28,12 +28,16 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 
 // publishPastInProcess makes publish, and makes it again inProcessPause later each time a
 // clustered stream refuses it as still in process under another publish under the same message
-// id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. The
-// message routes take it - the send route and the publish route's team and captured topics
-// (sendHandler, publishHandler, through publishHeld) - and so do a role forward
-// (startRoleForward, which every role send, role-lane delivery and kept-lane walk forwards
-// through), a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a resend
-// that meets its own earlier attempt still being stored, as a hub failover leaves one, is
+// id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. It is
+// this package's one handling of that refusal, for every publish of its own whose answer a request
+// is answered or charged by - the send route's publish (sendHandler) and the publish route's of a
+// team or captured topic (publishHandler), both through publishHeld; a role forward
+// (startRoleForward), which the publish route's role sends (sendToRole), the role lane's
+// deliveries (roleForwarder) and the kept lane's walks (walkKeptRole) forward through; and a
+// hand-off to a stopped Legion agent's daemon (handOffToLegion), which a send, a role publish, a
+// send marked with a role and an agent subject's give-up (offerAgentDeliveryToLegion) hand off
+// through - and for a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a
+// resend that meets its own earlier attempt still being stored, as a hub failover leaves one, is
 // answered with that attempt's copy rather than as a bus that did not answer.
 //
 // The listener's other publishes under a message id do not take it, and the earlier publish the

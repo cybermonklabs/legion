@@ -113,8 +113,8 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	// Both senders resolve, find no session and fail their attempts, as they do within a round
 	// trip: the forward goes then, under the event's own key prefixed.
 	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1
-	`, commentID); err != nil {
+		update comment_deliveries set state = 'failed', error = $2 where comment_id = $1
+	`, commentID, contracts.NoLiveSession); err != nil {
 		t.Fatalf("fail the comment's mentions: %v", err)
 	}
 	dueNow(t, rig.database, comment.ID)

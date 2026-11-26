@@ -676,15 +676,15 @@ var claimViewStates = valuesFrom(ServingFloor,
 // floorRoles is every role a claim could hold at ServingFloor, named constant by constant. It
 // names each one rather than reading claim.Roles, as failureCauses does its causes, because these
 // lists record the contract a value arrived at: a role added to claim.Roles later arrives at its
-// own contract and not at the floor, at the wakes' or at the pause's.
+// own contract and not at the floor, at the wakes', at the pause's or at the questions'.
 var floorRoles = []claim.Role{
 	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 	claim.RoleReviewer, claim.RoleMerger,
 }
 
-// claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
-// registration's, the wake's and the pause stop's, those last two at their own arrivals
-// (wakeRoles, pauseStopRoles). The list has not moved since the floor.
+// claimRoles is every role a claim can hold, which five rows share: the stranded report's, the
+// registration's, the wake's, the pause stop's and the question's, those last three at their own
+// arrivals (wakeRoles, pauseStopRoles, questionRoles). The list has not moved since the floor.
 var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that

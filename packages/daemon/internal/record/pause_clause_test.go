@@ -49,6 +49,8 @@ var pauseQueue = []pauseQueued{
 	{name: "a check's wake", issue: "LEGION-308", held: true, payload: CheckWakeDue{Look: 1, Reason: "the tester's own wake"}},
 	{name: "a check's look bound", issue: "LEGION-309", held: true, payload: CheckLook{Look: 1}},
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},
+	{name: "a message for a released agent", issue: "LEGION-313", held: true, claim: "legion-legion-legion-313-implementer",
+		payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: "user:person@example.com sent you, in a Dispatch message on LEGION-313:\nThanks."}},
 	{name: "the controller's notice", issue: "LEGION", payload: ControllerNotice{Kind: TickNotice}},
 	{name: "a suspend", issue: "LEGION-311",
 		payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-311", Role: claim.RoleImplementer, Generation: 1, Reason: "parked"}},

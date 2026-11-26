@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The answer loop's system prompt tells the stopped agent that its conversation is its first
+  source: it answers from its conversation what the conversation holds, and uses its tools only
+  for the rest. In 12 replays of one answer, the answers made 15 `gh` calls in all with this
+  sentence and 22 without it.
+  The daemon refuses a reply whose text is a placeholder. The text of a reply of any kind but
+  `none` is a placeholder when it is one word of letters alone (no digit, no punctuation, no
+  space), is neither yes nor no, and is no word of the agent's conversation, the question or the
+  answer's `gh` results, raw JSON read with each escape such as `\n` as a space. The rule does not
+  read its own refused placeholder and reason that an earlier answer appended to the conversation,
+  so a placeholder refused once is refused again on a later question. Such a reply is asked for
+  once again with the reason, as a reply the form's other rules refuse is, within the same
+  `model_calls`, `answer_seconds` and `output_tokens`; a second placeholder, or one made on the
+  last allowed call, is `malformed`. The rule is that narrow because a wider one refuses right
+  answers: in a replay, refusing any one word or any text under 12 characters refused all 12
+  answers that were a marker alone, while this rule refused none of 24 terse right answers (the
+  marker, and `No` to a yes-or-no question).
+time: 2026-11-19T09:01:08.000000000Z
+custom:
+    Issue: pr2230

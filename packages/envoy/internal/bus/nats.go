@@ -2493,9 +2493,10 @@ func streamFull(err error) error {
 // names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
 // ErrRefused: the same publish sent again once the earlier one is stored is answered as a
 // duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
-// retries for (PublishStoredAck, PublishAckWithin; cmd/listener's publishPastInProcess, which the
-// listener's message routes, role forwards, keep and takeover copy take, and whose doc names the
-// publishes that do not, the webhook routes' among them). The error still matches nats-server's
+// retries for (PublishStoredAck, PublishAckWithin, PublishRetained; cmd/listener's
+// publishPastInProcess, which the listener's message routes, role forwards, hand-offs to a
+// stopped Legion agent's daemon, keep and takeover copy take, and whose doc names the publishes
+// that do not, the webhook routes' among them). The error still matches nats-server's
 // *nats.APIError.
 var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
 
@@ -2877,6 +2878,34 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 		return 0, cursorMoved(err)
 	}
 	return ack.Sequence, nil
+}
+
+// PublishRetained publishes data, bytes of the caller's own rather than an envelope, to subject on
+// the notification stream within ctx's bound as PublishCursorAt's, and returns the stream's
+// acknowledgement, as PublishStoredAck does for an envelope. subject must be one the stream
+// captures (StreamCaptures): JetStream answers a publish to any other only with "no responders",
+// or not at all, so one it does not capture is refused here rather than waited out. A msgID that
+// is not empty is the publish's Nats-Msg-Id, so the stream keeps one copy of every publish under
+// it within its duplicate window, and a publish under one it already holds comes back Duplicate,
+// with the sequence of that copy, and Resent where it answers a resend. The listener hands a
+// stopped Legion agent's message to its daemon this way (cmd/listener/legion_handoff.go), under a
+// MsgId every listener derives alike, so the copies two listeners publish for one bus message
+// collapse. Its refusals are sendStored's: ErrPublishDenied, ErrTooLarge, ErrStreamFull,
+// ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
+// same id, and ctx's error when ctx ends first; a failure after a send nothing answered wraps
+// ErrUnacknowledged, since the stream may hold the copy.
+func (c *Client) PublishRetained(ctx context.Context, subject string, data []byte, msgID string) (StoredAck, error) {
+	if err := checkSubject(subject); err != nil {
+		return StoredAck{}, err
+	}
+	if !StreamCaptures(subject) {
+		return StoredAck{}, fmt.Errorf("the notification stream does not capture %q", subject)
+	}
+	var id nats.PubOpt
+	if msgID != "" {
+		id = nats.MsgId(msgID)
+	}
+	return c.publishStoredRaw(ctx, subject, data, id)
 }
 
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of

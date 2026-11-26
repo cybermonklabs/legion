@@ -146,7 +146,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 		t.Fatalf("settled deliveries = %#v, want one per mention", settled)
 	}
 	for index, attempt := range settled {
-		want := "no live session " + ended[index]
+		want := contracts.NoLiveSession + " " + ended[index]
 		if attempt.State != "failed" || attempt.Error == nil || *attempt.Error != want {
 			t.Fatalf("delivery = %#v, want failed with %q: the mentioned session is ended", attempt, want)
 		}
@@ -444,7 +444,7 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 	}
 	settled := settledCommentDeliveries(t, database, created.ID)
 	if len(settled) != 1 || settled[0].State != "failed" ||
-		settled[0].Error == nil || *settled[0].Error != "no live session s1" {
+		settled[0].Error == nil || *settled[0].Error != contracts.NoLiveSession+" s1" {
 		t.Fatalf("the refused mention settled %#v, want attempt 1 failed with the listener's own answer", settled)
 	}
 

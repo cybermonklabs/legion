@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  `agentloop.Request` gains `Check`, a caller's own check of the Final object, and `AskAgain`,
+  the most times a run asks again. A reply whose value the check refuses is answered, in the
+  same run, with the check's error text as a user message after that reply, and the model is
+  asked for the reply again: the run goes on from its own messages, the refused reply as the
+  provider returned it (thinking and its signature, or the reasoning item, included), then that
+  sentence. Every ask again stays inside the run's bounds: `Bounds.Calls` counts every call of
+  the run, the last allowed call still offers no tool, no ask is made once `Bounds.Time` has
+  passed, and each call keeps the output token bound. Tool calls are numbered on across the
+  asks, `Result.Steps` holds every call in order with the sentence on the refused step
+  (`Step.AskedAgain`), `Result.Usage` sums them all, and the cache marks stay within the four
+  Anthropic allows, the newest on the sentence. When the asks or the bounds are spent the run
+  returns the last reply as before, its value set and no fault, so the caller's own refusal of
+  it stands. A request with no `Check` sends exactly what it sent before, and a `Check` without
+  a `Final` is a request the loop refuses to run.
+time: 2026-11-17T19:06:57.000000000Z
+custom:
+    Issue: pr2230

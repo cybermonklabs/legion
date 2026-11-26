@@ -244,20 +244,39 @@ Either way the forward to the live holder is stored on
 the holder's inbox, and it counts as delivered once the stream has stored it, so a holder that
 restarts or loses its connection gets the forward once when it is back. No session answers a
 receipt for one.
+A Legion daemon that answers for its stopped agents
+([Running Legion](/legion/legion/running-legion/#legionyaml), `answers`) reads such a message from
+`notifications.legion.<project>.agents.<session>`: where the registry names the target session and
+its project last said it answers, the listener hands the message off there in place of the `404`,
+the stored `stopped` answer, the `202` keep or the exception, and the caller reads the same `200` a
+delivered message gets. A role is handed off to its newest session whether its issue has left the
+workflow or not, and a session whose idle pod the daemon released is handed off like any other
+stopped session: the daemon decides what wakes it. A message handed off raises no wake report,
+and costs its sender what its publish stored, as a send's own publish does. A role the registry
+holds no entry for keeps the message for its first holder and wakes it. An edge listener hands
+nothing off: its grant
+(`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
+(`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject
+`notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so
+a role publish through an edge listener to a role nobody holds is answered as it was before the
+hand-off: `404`, with nothing kept.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:
 `unclaimed` when nothing claims the role and nothing was kept, or `holder_lapsed` when the claim's
-holder is no longer live and nothing was kept. That exception is only a bus signal: nothing
-re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
-itself.
+holder is no longer live and nothing was kept. A publish the listener hands off to a daemon that
+answers for stopped agents is refused by nothing, so it raises none. That exception is only a bus
+signal: nothing re-sends a refused publish except the Legion daemon's own outbox notice, whose row
+retries by itself.
 
 ### What a restored session gets
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
-the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass. Either way it is kept and wakes the role. When the role comes
+minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. While no daemon
+answers for the role's project, a message to the role is then kept as `holder_lapsed`, and as
+`unclaimed` once the role claim reaper releases the claim at its next pass. Either way it is kept
+and wakes the role. While a daemon answers for the project, the listener hands the message to that
+daemon instead, which decides what wakes the role. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
@@ -490,7 +509,10 @@ Legion's daemon reads Dispatch, GitHub and listener events from the stream throu
 consumer per project for each: `legion-go-<project>-dispatch` (filtering
 `notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
 the project works in) and
-`legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
+`legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake); and,
+with the daemon's answer loop on, a fourth, `legion-go-<project>-answers` (filtering
+`notifications.legion.<project>.agents.>`, `<project>` the Legion project token), which reads the
+messages handed to it for its stopped agents.
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
 
@@ -520,7 +542,7 @@ consumer as not idle and holds the roots its listing shows behind their log, the
 releases them on the consumer's own count, and the daemon's log names the refused subject.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
-not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,
+not just the daemon's own: a holder of the daemon's seed can read, recreate with another filter,
 and drain any consumer of the stream, every host's listener consumer and another project's daemon
 consumers included. It can also create a push consumer whose delivery subject is any subject at
 all, so it can send the stream's messages to subjects it may not publish to itself: role lanes,

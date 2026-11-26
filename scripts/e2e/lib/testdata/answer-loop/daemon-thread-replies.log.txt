@@ -1,0 +1,7 @@
+=== boot at 2026-11-24T05:10:00Z (answers-files.yaml)
+{"time":"2026-11-24T05:11:02.000Z","level":"INFO","msg":"answers: hand-off is no question; not answered","event":"evt-reply-control","issue":"ALX-3","role":"tester","session":"session-tester","because":"a reply in a comment thread whose root and newest comment before the reply no agent wrote"}
+{"time":"2026-11-24T05:11:02.500Z","level":"INFO","msg":"answers: hand-off is no question; not answered","event":"evt-reply-control","issue":"ALX-3","role":"tester","session":"session-tester-old","because":"a reply in a comment thread whose root and newest comment before the reply no agent wrote"}
+not JSON: a line the daemon's own runtime printed
+{"time":"2026-11-24T05:11:03.000Z","level":"INFO","msg":"answers: hand-off is no question; not answered","event":"evt-reply","issue":"ALX-3","role":"tester","session":"session-tester-old","because":"a reply in a comment thread that session session-tester answers, as the author of its newest comment before the reply"}
+{"time":"2026-11-24T05:11:40.000Z","level":"INFO","msg":"answers: hand-off is no question; not answered","event":"evt-root","issue":"ALX-3","role":"tester","session":"session-tester","because":"a root comment that does not mention the agent"}
+{"time":"2026-11-24T05:12:10.000Z","level":"INFO","msg":"answers: question","question":"q-thread","issue":"ALX-3","role":"tester","session":"session-tester","state":"posted","because":"a reply in a comment thread whose root and newest comment before the reply no agent wrote"}

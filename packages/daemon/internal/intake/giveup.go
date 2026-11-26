@@ -505,10 +505,16 @@ func deliveredCount(metadata *jetstream.MsgMetadata) uint64 {
 // too, which no statement wrote since that pass, is given up (SweepPassedFailures). The second
 // pass is what spares a message just acknowledged: the floor moves at its acknowledgement, and its
 // row's delete follows in the same handling, so by the next pass the row is gone. The lists are
-// kept in memory: a restart starts the count again.
+// kept in memory: a restart starts the count again. A sweep reads the ack floors of the durable
+// consumers names, on stream, and gives up under spec, in pool: the intake's three
+// (Consumers.failureSweep), and the answer loop's hand-off consumer, which runs a sweep of its own
+// (Handoffs.Run).
 type failureSweep struct {
-	consumers *Consumers
-	previous  map[string]sweptPass
+	spec     ConsumerSpec
+	pool     store.TxPool
+	stream   jetstream.Stream
+	names    []string
+	previous map[string]sweptPass
 }
 
 // sweptPass is one consumer's last pass: when it began, and the open failures it listed.
@@ -517,29 +523,39 @@ type sweptPass struct {
 	listed map[int64]bool
 }
 
-// sweepFailures runs a failureSweep every sweepEvery until ctx ends.
+// failureSweep is the sweep of the three durable consumers.
+func (c *Consumers) failureSweep() *failureSweep {
+	project := c.spec.Project
+	return &failureSweep{spec: c.spec, pool: c.pool, stream: c.stream,
+		names: []string{dispatchConsumerName(project), githubConsumerName(project), wakeConsumerName(project)}}
+}
+
+// sweepFailures runs the sweep of the three durable consumers every sweepEvery until ctx ends.
 func (c *Consumers) sweepFailures(ctx context.Context) error {
+	return c.failureSweep().run(ctx, c.sweepEvery)
+}
+
+// run makes a pass each period of every until ctx ends.
+func (s *failureSweep) run(ctx context.Context, every time.Duration) error {
 	ctx = store.ForConcurrentWorker(ctx)
-	sweep := &failureSweep{consumers: c}
-	ticker := time.NewTicker(c.sweepEvery)
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			sweep.pass(ctx)
+			s.pass(ctx)
 		}
 	}
 }
 
-// pass is one pass of the sweep over the three durable consumers.
+// pass is one pass of the sweep over its consumers.
 func (s *failureSweep) pass(ctx context.Context) {
 	if s.previous == nil {
 		s.previous = map[string]sweptPass{}
 	}
-	project := s.consumers.spec.Project
-	for _, name := range []string{dispatchConsumerName(project), githubConsumerName(project), wakeConsumerName(project)} {
+	for _, name := range s.names {
 		if pass, ok := s.sweepConsumer(ctx, name); ok {
 			s.previous[name] = pass
 		}
@@ -550,11 +566,10 @@ func (s *failureSweep) pass(ctx context.Context) {
 // read the floor, list the open failures or give up those it found: the pass before it then
 // stands, and the next pass compares against it.
 func (s *failureSweep) sweepConsumer(ctx context.Context, name string) (sweptPass, bool) {
-	c := s.consumers
-	spec := c.spec
+	spec := s.spec
 	at := spec.Now()
 	read, cancel := context.WithTimeout(ctx, consumerLagBound)
-	consumer, err := c.stream.Consumer(read, name)
+	consumer, err := s.stream.Consumer(read, name)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
@@ -569,7 +584,7 @@ func (s *failureSweep) sweepConsumer(ctx context.Context, name string) (sweptPas
 	}
 	records := record.NewStore()
 	var listed []record.OpenFailure
-	if err := store.TransactWith(ctx, c.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var listErr error
 		listed, listErr = records.ListPassedFailures(ctx, tx, spec.Project, name, floor)
 		return listErr
@@ -604,10 +619,9 @@ func (s *failureSweep) sweepConsumer(ctx context.Context, name string) (sweptPas
 // previous one, which began at listedAt, listed at or below its ack floor (SweepPassedFailures),
 // in one transaction, and logs each give-up with floor, this pass's ack floor, once it commits.
 func (s *failureSweep) giveUpPassed(ctx context.Context, passed []int64, listedAt time.Time, floor uint64) error {
-	c := s.consumers
-	spec := c.spec
+	spec := s.spec
 	now := spec.Now()
-	return store.Transact(ctx, c.pool, func(ctx context.Context, tx pgx.Tx) error {
+	return store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		given, err := record.NewStore().SweepPassedFailures(ctx, tx, spec.Project, passed, listedAt, now)
 		if err != nil {
 			return err

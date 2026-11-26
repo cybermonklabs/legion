@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The answer loop answers while its project is paused, as it does while the project runs: each
+  answer is posted where it was asked, and its cost counts in the day's spend. During the pause the
+  answer's tools read and do not write: each `gh` and `dispatch` call that writes is refused as the
+  call's result, with the pause as its reason, and the system prompt says the project is paused.
+  A model call that ends in the provider's fault during the pause keeps its question for the
+  resume, which wakes the loop: nothing is posted or passed to the controller, and the next answer
+  is given the tool calls the failed one made. The pause still starts no role: every wake the loop
+  leads to waits for the resume.
+time: 2026-11-20T02:42:20.000000000Z
+custom:
+    Issue: pr2230

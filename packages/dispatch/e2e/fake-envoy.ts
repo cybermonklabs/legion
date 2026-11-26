@@ -1,4 +1,10 @@
-import { type ExpectsReply, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import {
+  type ExpectsReply,
+  LEGION_ROLES,
+  type LegionRole,
+  NO_LIVE_SESSION,
+  ROLE_TOPIC_PREFIX,
+} from "@legion/contracts";
 import { connect, type KV, StringCodec } from "nats";
 import type { TmuxPlace } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
@@ -33,6 +39,26 @@ interface SentMessage {
    *  switch. */
   readonly connected_only?: boolean;
 }
+
+/** A publish through the listener's publish route (`POST /v1/messages/publish`), as Dispatch's
+ *  listener client writes one for a role it keeps a message for (`PublishToRole`): the role's
+ *  topic, the send's own fields, and `keep`, which a role publish leaves unset or sets true to have
+ *  the listener keep the message for the role's next holder. */
+interface PublishedMessage {
+  readonly topic: string;
+  readonly source: string;
+  readonly message: string;
+  readonly payload: string;
+  readonly idempotency_key: string;
+  readonly urgency?: string;
+  readonly expects_reply?: ExpectsReply;
+  readonly keep?: boolean;
+}
+
+/** How long the real listener keeps a role message no live session holds, for the role's next
+ *  holder (`roleKeepWindow` in packages/envoy/cmd/listener/role_keep.go): the end of that hour is
+ *  the `kept_until` a kept publish is answered with. */
+const ROLE_KEEP_WINDOW_MS = 3_600_000;
 
 /** A persisted interest row, served as seeded. `updated_at` is the row's own last write;
  *  `last_seen` is the session's last heartbeat as the listener still knows it, which a listener
@@ -200,7 +226,13 @@ interface FakeEnvoyState {
   legionAgents: FakeLegionAgent[];
   /** How the three registry reads answer, which a session reseed keeps as it keeps the entries. */
   legionRegistry: RegistryState;
+  /** The answering flag every Legion project last stated (`project.<legion_project>`), which the
+   *  registry reads answer as `answering` on each entry and on the role read; false, as for a
+   *  project that stated none, until a test sets it. A session reseed keeps it. */
+  legionAnswering: boolean;
   readonly sentMessages: SentMessage[];
+  /** Every publish the publish route took, in order, a refused one included. */
+  readonly publishes: PublishedMessage[];
   /** (idempotency key, recipient) pairs this stand-in has already published, the stream's own
    *  duplicate window for the life of the fixture. Cleared with the session seed. */
   readonly publishedKeys: Set<string>;
@@ -215,11 +247,13 @@ function emptyState(): FakeEnvoyState {
   return {
     interests: [],
     legionAgents: [],
+    legionAnswering: false,
     legionRegistry: "ok",
     lists: "ok",
     listsRetryAfterSeconds: LISTENER_REFILLING_RETRY_AFTER_SECONDS,
     liveSessions: new Set(),
     publishedKeys: new Set(),
+    publishes: [],
     records: new Map(),
     sendDelays: new Map(),
     sendStates: new Map(),
@@ -372,6 +406,7 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
           return [
             {
               ...agent,
+              answering: state.legionAnswering,
               live: registrationIsLive(agent.session_id),
               recorded_at: agent.recorded_at ?? agent.started_at,
               replaced_at: next?.started_at ?? null,
@@ -388,6 +423,14 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
 function liveHolder(role: string): FakeSession | undefined {
   return state.sessions.find(
     (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
+  );
+}
+
+/** The real listener's unclaimed refusal: the answer for a role with no live holder. */
+function unclaimedRefusal(role: string): Response {
+  return Response.json(
+    { claim_revision: 0, error: `no holder for role ${role}`, reason: "unclaimed" },
+    { status: 404 }
   );
 }
 
@@ -458,8 +501,9 @@ const server = Bun.serve({
     if (request.method === "GET" && url.pathname.startsWith("/v1/roles/")) {
       const role = decodeURIComponent(url.pathname.slice("/v1/roles/".length));
       const holder = liveHolder(role);
-      if (holder === undefined)
-        return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
+      // No holder is the real listener's unclaimed refusal, reason and claim revision included:
+      // Dispatch reads a role lookup's 404 as no holder only where its body names a reason.
+      if (holder === undefined) return unclaimedRefusal(role);
       const holderState = stateOf(holder.session_id);
       // An unresponsive holder keeps the role: the lookup refuses to answer with it unless the
       // caller asked for that state, and it releases nothing either way, as the real listener's
@@ -505,17 +549,17 @@ const server = Bun.serve({
       const session = state.sessions.find((item) => item.session_id === sessionID);
       const stopped = state.stoppedSessions.has(sessionID);
       if (record === "absent" || session === undefined || (stopped && !includes(url, "stopped"))) {
-        return Response.json({ error: `no live session ${sessionID}` }, { status: 404 });
+        return Response.json({ error: `${NO_LIVE_SESSION} ${sessionID}` }, { status: 404 });
       }
       if (stopped) return Response.json(stoppedBody(session));
       const answered = asAnswered(session, Date.now());
       // A session past the live window is the 404 it always was unless the caller asked for it
       // with include=unresponsive, and that refusal keeps the "no live session <id>" prefix
-      // Dispatch classifies on, with the state and the heartbeat added beside it.
+      // (NO_LIVE_SESSION) Dispatch classifies on, with the state and the heartbeat added beside it.
       if (answered.state === "unresponsive" && !includes(url, "unresponsive")) {
         return Response.json(
           {
-            error: `no live session ${sessionID}`,
+            error: `${NO_LIVE_SESSION} ${sessionID}`,
             last_seen: answered.last_seen,
             state: answered.state,
           },
@@ -543,6 +587,7 @@ const server = Bun.serve({
       const token = decodeURIComponent(url.pathname.slice("/v1/legion/agents/roles/".length));
       if (state.legionRegistry !== "ok") return registryRefusal(state.legionRegistry);
       return Response.json({
+        answering: state.legionAnswering,
         entries: legionAnswer(state.legionAgents.filter((agent) => agent.role_token === token)),
       });
     }
@@ -578,7 +623,7 @@ const server = Bun.serve({
         (!known && !isLive(message.target_session))
       ) {
         return Response.json(
-          { error: `no live session ${message.target_session}` },
+          { error: `${NO_LIVE_SESSION} ${message.target_session}` },
           { status: 404 }
         );
       }
@@ -616,13 +661,60 @@ const server = Bun.serve({
           : {}),
       });
     }
+    // The publish route (packages/envoy/cmd/listener/api.go publishHandler, confirmed.go
+    // roleSend) for the one kind of topic Dispatch publishes to, a role's: a live holder of the
+    // role takes the message, answered 200 naming it; a role no live session holds - nobody claims
+    // it, or its holder is unresponsive - keeps it on the role's kept lane for the role's next
+    // holder, answered 202 `kept` with the end of the copy's hour, unless the publish asked
+    // `keep: false`, which keeps nothing and is answered with the role lookup's 404
+    // (roleSend.noHolder, roleSend.kept). Every publish is recorded, a refused one included; a
+    // topic other than a role's is refused, since nothing here publishes to one.
+    if (request.method === "POST" && url.pathname === "/v1/messages/publish") {
+      const published = (await request.json()) as PublishedMessage;
+      state.publishes.push(published);
+      if (!published.topic.startsWith(ROLE_TOPIC_PREFIX)) {
+        return Response.json(
+          { error: `this fake listener publishes to role topics alone, not ${published.topic}` },
+          { status: 400 }
+        );
+      }
+      const role = published.topic.slice(ROLE_TOPIC_PREFIX.length);
+      const eventID = `publish-${state.publishes.length}`;
+      const holder = state.sessions.find(
+        (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
+      );
+      const holderState = holder === undefined ? undefined : stateOf(holder.session_id);
+      if (holder !== undefined && holderState === "live") {
+        return Response.json({
+          event_id: eventID,
+          holder: holder.session_id,
+          holder_state: holderState,
+          topic: published.topic,
+        });
+      }
+      if (published.keep === false) {
+        return unclaimedRefusal(role);
+      }
+      return Response.json(
+        {
+          event_id: eventID,
+          kept: true,
+          kept_reason: holder === undefined ? "unclaimed" : "holder_lapsed",
+          kept_until: Date.now() + ROLE_KEEP_WINDOW_MS,
+          topic: published.topic,
+          ...(holder === undefined ? {} : { holder: holder.session_id, holder_state: holderState }),
+        },
+        { status: 202 }
+      );
+    }
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {
       state = emptyState();
       return Response.json({ ok: true });
     }
-    // A reseed starts the sessions over (their live set, send statuses, sends and duplicate
-    // window) and keeps the persisted subscriptions, the list answer and the Legion agent
-    // registry - its entries and whether it can be read at all - which a test sets on their own.
+    // A reseed starts the sessions over (their live set, send statuses, sends, publishes and
+    // duplicate window) and keeps the persisted subscriptions, the list answer and the Legion agent
+    // registry - its entries, whether it can be read at all and what its projects last stated -
+    // which a test sets on their own.
     if (request.method === "PUT" && url.pathname === "/__fixture/sessions") {
       const sessions = (await request.json()) as FakeSession[];
       const ids = sessions.map((session) => session.session_id);
@@ -630,6 +722,7 @@ const server = Bun.serve({
         ...emptyState(),
         interests: state.interests,
         legionAgents: state.legionAgents,
+        legionAnswering: state.legionAnswering,
         legionRegistry: state.legionRegistry,
         lists: state.lists,
         listsRetryAfterSeconds: state.listsRetryAfterSeconds,
@@ -727,6 +820,15 @@ const server = Bun.serve({
       }
       state.legionRegistry = body.state;
       return Response.json({ state: state.legionRegistry });
+    }
+    // The answering flag the Legion projects last stated, which the registry reads answer.
+    if (request.method === "PUT" && url.pathname === "/__fixture/legion-answering") {
+      const body = (await request.json()) as { answering?: unknown };
+      if (typeof body.answering !== "boolean") {
+        return Response.json({ error: "answering must be true or false" }, { status: 400 });
+      }
+      state.legionAnswering = body.answering;
+      return Response.json({ answering: state.legionAnswering });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/lists") {
       const body = (await request.json()) as { retry_after_seconds?: number; state?: ListsState };
@@ -846,6 +948,9 @@ const server = Bun.serve({
     }
     if (request.method === "GET" && url.pathname === "/__fixture/sends") {
       return Response.json(state.sentMessages);
+    }
+    if (request.method === "GET" && url.pathname === "/__fixture/publishes") {
+      return Response.json(state.publishes);
     }
     if (request.method === "GET" && url.pathname === "/v1/interests/") {
       if (state.lists !== "ok") return listRefusal(state.lists, state.listsRetryAfterSeconds);

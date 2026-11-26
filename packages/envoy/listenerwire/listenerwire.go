@@ -1,13 +1,18 @@
 // Package listenerwire holds the bodies of the Envoy listener's HTTP API that its Go clients send
 // and read: the requests of POST /v1/interests/subscribe, POST /v1/messages/send, POST
-// /v1/messages/publish and POST /v1/interests/unsubscribe, the answers of those and of GET
-// /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
-// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
-// states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
-// its Go clients: the broker's wake (internal/cipher/wake), Dispatch's client
-// (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
-// the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
-// controller probe, which is another module and so needs this package public.
+// /v1/messages/publish, POST /v1/interests/unsubscribe, the PUT routes of /v1/legion/agents and PUT
+// /v1/legion/projects/<legion_project>, the answers of those and of GET /v1/sessions, GET
+// /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET routes of
+// /v1/legion/agents and DELETE /v1/sessions/<session_id>, the hand-off the listener publishes for a
+// stopped Legion agent's daemon (LegionHandoff) and the subject it publishes it on
+// (LegionHandoffSubject), and the envelope and the states they carry. The
+// listener (cmd/listener) writes and reads these types, and so does each of its Go clients: the
+// broker's wake (internal/cipher/wake), Dispatch's client (internal/dispatch/envoy), the load-test
+// harness's listener client (loadtest/listenerclient), the refill rig
+// (internal/testnats/cmd/refillrig), and the Legion daemon's publisher, controller probe and agent
+// registry writer, which are another module and so need this package public. LegionHandoff is not
+// an HTTP body: the listener publishes it on the bus, and the daemon's hand-off reader
+// (internal/intake) decodes it.
 //
 // It imports the standard library alone (deps_test.go), so a client links nothing of the server
 // by reading its bodies, and clients_test.go holds each of those clients to these types: one that
@@ -18,10 +23,13 @@
 // A request's fields are omitempty but where the listener reads an absent field differently from
 // an empty one: the listener only decodes a request, so each client sends the fields it sets. A
 // field whose absence the listener reads differently is a pointer, written whenever the client
-// sets it (MessageBody.Payload, PublishRequest.Keep, SubscribeDelivery.Resume and
-// SubscribeResume.Seq), or carries no omitempty, so an empty value arrives as the empty value it is
-// (SubscribeRequest.Topics and Capabilities). An answer's fields carry the tags the listener has
-// always written them with.
+// sets it (MessageBody.Payload and Handoff, PublishRequest.Keep, SubscribeDelivery.Resume,
+// SubscribeResume.Seq and LegionProjectRequest.Answering), or carries no omitempty, so an empty
+// value arrives as the empty value it is (SubscribeRequest.Topics and Capabilities). An answer's
+// fields carry the tags the listener has always written them with. LegionAgentEntry is both: the
+// daemon's registry writes send it and the registry's reads answer it, so its fields the daemon
+// leaves out are omitempty, and the listener writes each of them on every answer it gives
+// (recorded_at).
 package listenerwire
 
 import "encoding/json"
@@ -124,6 +132,11 @@ type MessageBody struct {
 	// read raw and parsed by ParseExpectsReply rather than decoded as one Go type.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	ExpiresAt    *int64          `json:"expires_at,omitempty"`
+	// Handoff false keeps the message from being handed to a stopped Legion agent's daemon (the
+	// listener's handOffToLegion): the daemon's own notices carry it, so a notice to a stopped
+	// agent is refused or kept as it would be with no hand-off. Absent and true are alike, so it is
+	// written only by a client that sets it.
+	Handoff *bool `json:"handoff,omitempty"`
 }
 
 // SendRequest is the body of POST /v1/messages/send: a message for one session.
@@ -174,8 +187,14 @@ type PublishRequest struct {
 // minted once for its message, which @legion/envoy-client mints for every send that names none,
 // so a repeat of either gets it. The listener's sender limit reads the same verdict and charges
 // such a repeat nothing (its senderCharge.published), unless the verdict answers the bus's resend
-// after a closed connection (bus.StoredAck.Resent). Absent means false, which is what an older
-// listener's answer reads as.
+// after a closed connection (bus.StoredAck.Resent). A send handed to a stopped Legion agent's
+// daemon (the listener's handOffToLegion) answers the verdict of that hand-off's publish instead,
+// whose MsgId comes from the envelope's dedupe key whatever that key names, so a repeat under one
+// idempotency key gets it whoever minted the key. Its envelope then comes from the hand-off the
+// stream holds, read back on the hand-off's own subject (the listener's answerHandedOff) by the
+// rules above, as a live session's repeat's does, and its charge is the wake its send reported,
+// which the verdict does not cancel. Absent means false, which is what an older listener's answer
+// reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
@@ -196,7 +215,10 @@ type SendResponse struct {
 	// connected or stopped, by the rules the listener's sendHandler states. It is a field of its
 	// own rather than a fourth value of RecipientState, because every released plugin reads that
 	// one as a closed list of three and would fail to read an answer carrying a fourth; a client
-	// older than this field drops it. stopped is never a SessionState.
+	// older than this field drops it. stopped is never a SessionState. A send handed to a stopped
+	// Legion agent's daemon (the listener's handOffToLegion) was stored for no session and probed
+	// none, so it carries neither word: it is empty, which a client reads as connected, since that
+	// daemon answers it now from the agent's own conversation.
 	State string `json:"state"`
 	// LastSeen is that recipient's last registration (Unix ms), so an unresponsive recipient's
 	// sender can say how long it has been stalled: its entry's where it holds one, else its
@@ -235,9 +257,10 @@ type KeptSendResponse struct {
 // NoLiveSessionRefusal is the 404 of a send, or of a registry lookup, for a session the listener
 // will not answer for: one no record is held for or whose record is past the gone horizon. State
 // and LastSeen say which of those it was and when the session last registered, and the error
-// keeps the "no live session <id>" prefix exactly: Dispatch classifies a delivery failure by that
-// prefix (internal/dispatch/api/envoy_resolve.go), so a listener that says more must still say it
-// after those words, and a Dispatch that reads only the prefix is unaffected.
+// keeps the "no live session <id>" prefix exactly (NO_LIVE_SESSION in @legion/contracts,
+// contracts.NoLiveSession in the listener's module, then the id): Dispatch classifies a delivery
+// failure by that prefix (internal/dispatch/api/envoy_resolve.go), so a listener that says more
+// must still say it after those words, and a Dispatch that reads only the prefix is unaffected.
 type NoLiveSessionRefusal struct {
 	Error    string       `json:"error"`
 	State    SessionState `json:"state"`
@@ -270,6 +293,10 @@ type PublishResponse struct {
 	// carries (RoleRefusal.Reason): unclaimed for a role no claim holds, and holder_lapsed for a
 	// claim whose holder is not live, which the listener keeps for too (its roleKeepable).
 	KeptReason RoleState `json:"kept_reason,omitempty"`
+	// Recipient is the stopped Legion agent a role publish with no live holder was handed to (the
+	// listener's handOffToLegion), in place of the holder a delivered one names, and is absent
+	// from every other answer.
+	Recipient string `json:"recipient,omitempty"`
 	// KeptUntil is when the kept copy's hour ends, in milliseconds since the epoch: the time the
 	// stream stored the copy plus the listener's roleKeepWindow, against which the walk measures
 	// its age. A repeat of a dedupe key whose copy is still on the lane inside its hour stores
@@ -297,7 +324,11 @@ type PublishResponse struct {
 	// them. A role send's 200 carries it for a forward the stream already held for its holder (the
 	// listener's roleSend.deliveredHeld), whatever the key's form, since every forward has a
 	// message id, and its 202 for a repeat whose kept copy is another request's (roleSend.kept).
-	// Absent means false, which is what an older listener's answer reads as.
+	// Beside Recipient it reports that the stream already held the hand-off of a role publish
+	// with no live holder, under the MsgId the listener builds from the envelope's dedupe key, a
+	// role publish repeated under one dedupe_key or idempotency_key, and the envelope comes from
+	// that hand-off's copy (the listener's answerHandedOff), as SendResponse.Duplicate does for a
+	// send. Absent means false, which is what an older listener's answer reads as.
 	Duplicate bool `json:"duplicate,omitempty"`
 	// Warnings names a role send's role when its topic named it in the old form, the role alone,
 	// with its new form, project first ("<old> is the old form of <new>; name <new>",
@@ -653,7 +684,9 @@ type CapabilityRefusal struct {
 }
 
 // LegionAgentEntry is one Legion session as the listener's Legion agent registry stores it
-// (internal/legionagents). Readers ignore fields they do not know, so a later writer may add some.
+// (internal/legionagents), and as the Legion daemon's mirror writes it (PUT
+// /v1/legion/agents/sessions/<session_id>, and each entry of LegionAgentBatch). Readers ignore
+// fields they do not know, so a later writer may add some.
 type LegionAgentEntry struct {
 	// SessionID is the Oh My Pi or Claude Code session id.
 	SessionID string `json:"session_id"`
@@ -675,8 +708,9 @@ type LegionAgentEntry struct {
 	// StartedAt is when the session started, RFC 3339 UTC.
 	StartedAt string `json:"started_at"`
 	// RecordedAt is when the listener first recorded the session, RFC 3339 UTC. The listener sets
-	// it; a writer's value is ignored.
-	RecordedAt string `json:"recorded_at"`
+	// it on every entry it stores and answers; a writer's value is ignored, so a writer leaves it
+	// out.
+	RecordedAt string `json:"recorded_at,omitempty"`
 }
 
 // LegionAgent is an entry with what a read derives from the other sessions of its role token,
@@ -689,20 +723,95 @@ type LegionAgent struct {
 }
 
 // LegionAgentAnswer is one Legion agent registry entry as a read answers it: the entry, the
-// session that replaced it within its role token (LegionAgent), and whether its session is
-// answering now. Both are derived at the read and neither is stored.
+// session that replaced it within its role token (LegionAgent), whether its session is answering
+// now, and whether its project's daemon answers for it. All three are derived at the read and none
+// is stored.
 //
 // Live is the session's own registration state, as every reader of the session registry judges
 // it (session.StateOf): true only while that registration is within the live window, never
 // membership alone, of the session cache or of the registry. So live false does not say the agent
 // has ended: a session past the live window is unresponsive and keeps everything of its own, and
 // only a session the registry calls gone has stopped.
+//
+// Answering is the flag the entry's project last stated in its answering record (LegionProject),
+// false while the project has stated none: the condition the listener's hand-off reads on the
+// project (its answeringAgent). A reader that sends a message to a stopped agent so that its
+// daemon answers it (Dispatch's registeredAgent and unheldRoleTarget) sends it only while this is
+// true, since a send the listener hands to no daemon is stored for a session that will not run
+// again. A listener that predates the field leaves it out, which decodes as false.
 type LegionAgentAnswer struct {
 	LegionAgent
-	Live bool `json:"live"`
+	Live      bool `json:"live"`
+	Answering bool `json:"answering"`
 }
 
 // LegionAgentList is a listing's answer, `[]` when the registry holds no entry.
 type LegionAgentList struct {
 	Entries []LegionAgentAnswer `json:"entries"`
+}
+
+// LegionRoleAgentList is the role read's answer (GET /v1/legion/agents/roles/<role_token>): the
+// role token's entries, newest first, the first being its current holder, and Answering, the flag
+// the role token's own project last stated in its answering record, false while the project has
+// stated none. It is written out whether the read holds entries or not, so a reader learns whether
+// a daemon answers for a role the registry holds no entry for: Dispatch keeps a message for such a
+// role for its first holder only while one does (unheldRoleTarget). An edge listener answers it
+// only for a role of one of its token's projects, and false for any other. A listener that
+// predates the field leaves it out, which decodes as false.
+type LegionRoleAgentList struct {
+	LegionAgentList
+	Answering bool `json:"answering"`
+}
+
+// LegionAgentBatch is the body of PUT /v1/legion/agents, a batch of at most 256 entries
+// (legionagents.MaxBatch) in at most 1 MiB, and its 200's answer: the entries as stored, each
+// with its recorded_at.
+type LegionAgentBatch struct {
+	Entries []LegionAgentEntry `json:"entries"`
+}
+
+// LegionProjectRequest is the body of PUT /v1/legion/projects/<legion_project>: the project's
+// answering record, which the Legion daemon writes at boot and every minute (its agent registry
+// mirror's heartbeat). Answering is a pointer because the listener refuses a body that leaves it
+// out, 400, rather than read it as false. UpdatedAt is RFC 3339 UTC.
+type LegionProjectRequest struct {
+	Answering *bool  `json:"answering,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// LegionProject is a Legion project's answering record as the registry stores it, under the key
+// project.<legion_project>, and as PUT /v1/legion/projects/<legion_project> answers it: whether
+// the project's daemon answers for its stopped agents, and when it last said so (RFC 3339 UTC).
+// The listener hands the project's messages to the daemon while Answering is true, whether or not
+// the daemon runs now: only the flag it last stated counts, never the record's age, so a daemon
+// that stated true and stopped still gets its agents' messages, which JetStream holds until it
+// reads them. UpdatedAt is for an operator's reading.
+type LegionProject struct {
+	Answering bool   `json:"answering"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// LegionHandoff is what the listener publishes, on LegionHandoffSubject(<legion_project>,
+// <session_id>), for a message no session took that a stopped Legion agent's daemon answers in its
+// place: the topic the message was for (the agent's own, or its role's), the agent session it is
+// for (the session addressed, or the role's newest), that session's role token and Legion project
+// token, and the envelope exactly as it would have been delivered to the agent. It is
+// LegionAgentHandoffSchema (packages/contracts/src/legion-handoff.ts), which the daemon's
+// hand-off reader decodes (intake.Handoff in packages/daemon).
+type LegionHandoff struct {
+	OriginalTopic string   `json:"original_topic"`
+	TargetSession string   `json:"target_session"`
+	RoleToken     string   `json:"role_token"`
+	Project       string   `json:"project"`
+	Envelope      Envelope `json:"envelope"`
+}
+
+// LegionHandoffSubject is the subject the listener publishes a LegionHandoff for session on,
+// notifications.legion.<project>.agents.<session>, project being the Legion project token role
+// tokens carry (not the Dispatch project key). The notification stream retains it, and the
+// project's daemon reads every hand-off through one durable consumer filtered to
+// LegionHandoffSubject(project, ">") (intake.OpenHandoffs in packages/daemon). It is
+// legionAgentHandoffSubject in packages/contracts/src/legion-handoff.ts.
+func LegionHandoffSubject(project, session string) string {
+	return "notifications.legion." + project + ".agents." + session
 }

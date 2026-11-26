@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `PUT /v1/legion/projects/{legion_project}` writes a Legion project's answering record,
+  `{"answering": <bool>, "updated_at": "<RFC 3339 UTC>"}`, stored as `project.<legion_project>` in
+  the `legion_agents` bucket, and answers the record as stored. The record says whether the
+  listener hands the project's stopped agents' messages to its daemon. A path that is not a Legion
+  project token (lower-case letters and digits, at most 64 bytes), a body without `answering` and
+  an `updated_at` that is not an RFC 3339 UTC time are each a 400, a body past 1 MiB is a 413, and
+  none writes anything. The route refuses with 403 a request that presents a secrets-broker access
+  token, since such a token always names a session: the refusal answers `this access token acts
+  as session <id>, and a secrets-broker access token may not write the Legion agent registry`,
+  writes nothing, and logs one WARN line naming the token's session and the path, never the token.
+  An edge listener refuses every write with its own 403, as it does for the agent registry's other
+  writes. The Legion daemon writes the record with its Envoy bearer (`envoy_token_file`), which
+  names no session.
+time: 2026-11-26T12:00:41.000000000Z
+custom:
+    Issue: pr2230

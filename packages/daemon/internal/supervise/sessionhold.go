@@ -482,12 +482,13 @@ func RecordedHolds(session, sessionFile string) []Hold {
 // byIDHolds is every name a resume of session by its id alone runs under (Machine.start, for a
 // claim that records a session and no file): the session id, and the id an Oh My Pi file
 // `<timestamp>_<id>.jsonl` gives (HoldFileID), since that resume continues the file whose name
-// ends in `_<id>.jsonl` — the newest such row of the launcher's session table, the newest such
-// file one folder below the tmux pane's sessions directory, or the file Oh My Pi's own
-// `--resume=<id>` finds. The file's base name is not known before the agent registers it, and
-// that registration holds it with the rest (register, RecordedHolds). RecordedHolds(session, "")
-// gives the session id alone, which is all its callers need: each acts on a registered process or
-// its session, and a claim with no file has no registered process. An empty session, or one past
+// ends in `_<id>.jsonl` — the newest such row of the launcher's session table or, under
+// runtime.tmux.session_store postgres, of the tmux runtime's, the newest such file one folder
+// below the tmux pane's sessions directory, or the file Oh My Pi's own `--resume=<id>` finds. The
+// file's base name is not known before the agent registers it, and that registration holds it
+// with the rest (register, RecordedHolds). RecordedHolds(session, "") gives the session id alone,
+// which is all its callers need: each acts on a registered process or its session, and a claim
+// with no file has no registered process. An empty session, or one past
 // claim.MaxSessionNameBytes, names nothing, as in RecordedHolds.
 func byIDHolds(session string) []Hold {
 	if session == "" || len(session) > claim.MaxSessionNameBytes {

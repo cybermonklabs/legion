@@ -1,5 +1,6 @@
 import {
   DELIVERY_DUPLICATE_WINDOW_HOURS,
+  NO_LIVE_SESSION,
   RECEIPT_TIMEOUT_CAUSE,
   SETTLED_DELIVERY_STATES,
 } from "../../../packages/contracts/src/dispatch-api";
@@ -220,9 +221,14 @@ export const CAUSES: Readonly<Record<string, CauseEntry>> = {
   },
 };
 
+/** The errors `mentionErrorClass` reads as a session that is not live: one that opens with
+ *  `NO_LIVE_SESSION`, the listener's and Dispatch's words for it, or one that says
+ *  `session not found` or `not live`. */
+const SESSION_NOT_LIVE = new RegExp(`^${NO_LIVE_SESSION}\\b|session not found|not live`, "i");
+
 /** A mention delivery's error, as the rule of its `mention-failed` cause. */
 export function mentionErrorClass(error: string): "session-not-live" | "receipt-timeout" | "other" {
-  if (/^no live session\b|session not found|not live/i.test(error)) return "session-not-live";
+  if (SESSION_NOT_LIVE.test(error)) return "session-not-live";
   if (error === RECEIPT_TIMEOUT_CAUSE) return "receipt-timeout";
   return "other";
 }

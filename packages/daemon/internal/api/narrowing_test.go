@@ -342,7 +342,11 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// causeTimesContract, with the Dispatch credential stripped, the highest frozen row, and then
 	// each entry's band above it. It reads carriedState and frozenStateNarrowings, so it holds no
 	// entry to be the newest (R4 of dispatch://INFRA-1569): an entry's band, above every frozen
-	// row, writes the line narrowingsExpected counts for it after the Dispatch credential's.
+	// row, writes the line narrowingsExpected counts for it after the Dispatch credential's. The
+	// questions-for-controller entry's number stands above that row, so its key is held back from
+	// each of those callers too, and from each caller from the Dispatch credential's contract up
+	// to below the entry's own number, who is served the Dispatch credential (under its setting)
+	// without the questions.
 	t.Run("the highest frozen narrowing writes its own line", func(t *testing.T) {
 		state := carriedState(t)
 		highest := frozenStateNarrowings[len(frozenStateNarrowings)-1].contract
@@ -360,14 +364,30 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			if err := json.Unmarshal(body, &served); err != nil || served.Contract.Caller != causeTimesContract {
 				t.Fatalf("caller at %d was served contract %d (%v), want %d", caller, served.Contract.Caller, err, causeTimesContract)
 			}
-			if bytes.Contains(body, []byte(`"dispatchCredential"`)) {
-				t.Errorf("caller at %d was served dispatchCredential", caller)
+			for _, key := range []string{"dispatchCredential", "questionsForController"} {
+				if bytes.Contains(body, []byte(`"`+key+`"`)) {
+					t.Errorf("caller at %d was served %s", caller, key)
+				}
 			}
 			want := narrowingsExpected(state, caller)
 			if len(want) == 0 || want[0] != "dispatchCredential" {
 				t.Fatalf("a caller at %d expects the lines %v, want the Dispatch credential row's first", caller, want)
 			}
 			wantNarrowings(t, narrowings, caller, want)
+		}
+		for caller := highest; caller < entryNumber(questionsForControllerContract); caller++ {
+			body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
+			mark, _ := contractServed(t, body)
+			if mark["caller"] != float64(caller) {
+				t.Fatalf("caller at %d was served contract %v, want its own contract", caller, mark["caller"])
+			}
+			if _, carried := dispatchCredentialServed(t, body); !carried {
+				t.Errorf("caller at %d was served no dispatchCredential", caller)
+			}
+			if bytes.Contains(body, []byte(`"questionsForController"`)) {
+				t.Errorf("caller at %d was served questionsForController", caller)
+			}
+			wantNarrowings(t, narrowings, caller, narrowingsExpected(state, caller))
 		}
 	})
 
@@ -532,6 +552,46 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		wantNarrowings(t, narrowings, assignmentsContract-1, narrowingsExpected(state, assignmentsContract-1))
 	})
 
+	// The questions narrowing is a row of the table like every other, so a caller below it is
+	// told what it lost. A plugin from shapedAnswersContract on states its contract in the header
+	// and no pod's claims place it (podContracts), so the caller one contract below the entry's
+	// number states that contract, from the pod whose claims record it too: the log holds the line
+	// of that row and of every row above it and nothing else, and the row's own line is named here
+	// as a literal, as the assignments line is below, naming the contract the caller stated and
+	// no pod. The entry's number is the build's own (entryNumber), which an entry before it in the
+	// build's order moves, so no number of it is written here.
+	t.Run("the questions narrowing writes its own line for a caller that states its contract", func(t *testing.T) {
+		entry := entryNumber(questionsForControllerContract)
+		stated := entry - 1
+		state := carriedState(t)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(stated), stated)
+
+		if bytes.Contains(body, []byte(`"questionsForController"`)) {
+			t.Errorf("the body served to a caller stating %d carries `questionsForController`, the key the entry numbered %d added: %s",
+				stated, entry, body)
+		}
+		want := narrowingsExpected(state, stated)
+		if len(narrowings) != len(want) {
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+				len(narrowings), stated, len(want), narrowings)
+		}
+		named := false
+		for i, line := range narrowings {
+			if line.Dropped != want[i] {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, stated, line.Dropped, want[i])
+			}
+			if line.PluginContract != stated || line.Pod != "" {
+				t.Errorf("line %d of a caller stating %d names contract %d in pod %q, want %d in no pod",
+					i, stated, line.PluginContract, line.Pod, stated)
+			}
+			named = named || line.Dropped == "questionsForController"
+		}
+		if !named {
+			t.Errorf("a caller stating %d was served no line saying it dropped %q; the daemon wrote %+v",
+				stated, "questionsForController", narrowings)
+		}
+	})
+
 	// The assignments line is named here as a literal rather than read from stateNarrowings,
 	// because every other row of this file reads its expectation and its answer from that same
 	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
@@ -643,9 +703,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 // bands of the body's own keys do change the bytes, because every state carries
 // `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
 // `lowestPluginContract` for these claims, the repositories block, which the band of
-// repositoriesLiveContract writes in contract 152's shape whatever it names, and `intakeGiveUps`,
-// all but withoutRepositoryApps: this state serves no repository, so that band has no `apps` to
-// take and logs nothing.
+// repositoriesLiveContract writes in contract 152's shape whatever it names, `intakeGiveUps`
+// and `questionsForController`. This state serves no repository, so withoutRepositoryApps
+// has no `apps` to take and logs nothing.
 func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	const below = supervise.PodUpdateContract - 1
 	claims := podClaims(below)

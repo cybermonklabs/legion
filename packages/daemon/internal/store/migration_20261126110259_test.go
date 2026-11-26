@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // mergeHoldsChangedVersion is the version of the migration this file tests, so the test can
@@ -15,7 +18,11 @@ const mergeHoldsChangedVersion = 20261126110259
 // constraint does not name, so the row could not be queued before this migration, and the
 // transaction that applied the document's event would fail with it: the negative control is that
 // refusal, read before the migration, on a database that already carries the basis seeds' list
-// (20261122154643), which this version stands above. After it the row is queued, and so is every
+// (20261122154643), which this version stands above: a database main migrated, so the answer
+// loop's six migrations (answerLoopMigrations), which stand below this version and which no
+// database main migrated records, are left out of it, since 20261124114223 among them admits the
+// kind too (migration_upgrade_from_main_test.go says why), and the upgrade applies them with this
+// one. After it the row is queued, and so is every
 // kind the constraint already named, thirty-three in all, conflict_confirm, merge_forward,
 // design_changes, phase_ended, pending_basis_seed and reparent_seed among them, since the migration
 // rewrites the list whole and a kind left out would stop its own effect. A kind that is none is
@@ -23,13 +30,24 @@ const mergeHoldsChangedVersion = 20261126110259
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
-	migrateThrough(t, store, mergeHoldsChangedVersion-1)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version >= mergeHoldsChangedVersion || slices.Contains(answerLoopMigrations, migration.Version) {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
+		}
+	}
 	queue := func(kind string) error {
 		_, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
 		return err
 	}
-	err := queue("merge_holds_changed")
+	err = queue("merge_holds_changed")
 	if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a merge_holds_changed row before the migration = %v, want the kind constraint to refuse it: it is the row the migration exists for", err)
 	}

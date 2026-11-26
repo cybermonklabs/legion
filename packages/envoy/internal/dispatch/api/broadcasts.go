@@ -413,7 +413,7 @@ func resolveBroadcastTargets(
 		session, ok := live[sessionID]
 		switch {
 		case !ok, session.State == dispatchenvoy.StateGone:
-			targets = append(targets, broadcastTarget{sessionID: sessionID, reason: "no live session"})
+			targets = append(targets, broadcastTarget{sessionID: sessionID, reason: contracts.NoLiveSession})
 		case !advertisesDelivery(session, delivery):
 			targets = append(targets, broadcastTarget{
 				sessionID: sessionID, title: session.Title, reason: "does not advertise " + delivery,

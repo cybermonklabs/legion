@@ -79,7 +79,11 @@ type sandboxReads struct {
 // Oh My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file
 // (a launch carries its Dispatch token in its start command's Files), no secretsd provider keys
 // (a pod mounts its keys from the providers Secret), and no host gh, git, or jj (a pod runs the
-// image's).
+// image's). The host tools a Kubernetes daemon runs itself are the answer loop's gh and its
+// dispatch command, with the bun that command runs on, which readBoot resolves only when the
+// answer loop is on (answersGH, answersDispatch), beside the deployment's leak check setting and
+// the pin of the shared public leak check the gh tool's guard runs, which the daemon installs and
+// runs itself (answersLeakCheck).
 func readSandbox(cfg config.Config, project string, credential sandbox.DispatchCredential, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)

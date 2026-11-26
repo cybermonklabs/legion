@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The `questions-for-controller` daemon API entry (`20261125161252`) adds `questionsForController`
+  to the Legion state. It lists questions to stopped agents that the answer loop passed to the
+  controller in the last seven days
+  (id, issue, role, session, asker, ref, reason, passedAt, and writes, each `gh` call that writes
+  which the loop ran for the question, as `{seq, command, repository, exit}`), newest first and at
+  most 100. The controller's `agent-question` notice is a live wake only, so a controller that
+  starts later reads here what it missed.
+time: 2026-11-06T22:01:00.000000000Z
+custom:
+    Issue: pr2230

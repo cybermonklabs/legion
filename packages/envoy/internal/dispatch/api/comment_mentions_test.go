@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -139,7 +140,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 		t.Fatalf("offline delivery in the create response = %#v, want its pending attempt", created.Deliveries)
 	}
 	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 || settled[0].State != "failed" ||
-		settled[0].SessionID != nil || settled[0].Error == nil || *settled[0].Error != "no live session gone" {
+		settled[0].SessionID != nil || settled[0].Error == nil || *settled[0].Error != contracts.NoLiveSession+" gone" {
 		t.Fatalf("offline delivery = %#v, want a failed delivery with no resolved session", settled)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")

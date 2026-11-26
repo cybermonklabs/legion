@@ -10,9 +10,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// thisBranchsMigrations are the versions this branch adds (dispatch://INFRA-714), which main has
-// not recorded; main carries every other version of the embedded set and nothing of its own beyond
-// mainsNewestMigration. Store.apply asks each migration whether its own version is recorded, so an
+// thisBranchsMigrations are the versions missing from the historical main fixture at
+// mainsNewestMigration. They include later main releases as well as this branch's migrations.
+// Store.apply asks each migration whether its own version is recorded, so an
 // upgrade of a database main migrated applies exactly these, in version order, over main's rows —
 // the three that rewrite outbox_kind_check (20261105081500, 20261107095842 and 20261108152000)
 // after main's own 20261108000545, which added the claim-release kind, and after main's
@@ -34,10 +34,12 @@ import (
 // own before main recorded its newest, and main took three more only after it recorded its newest
 // (cybermonklabs/legion#3575's experiment assignments, 20261111045636, and
 // cybermonklabs/legion#3519's pod volume notices and pod end, 20261111090000 and 20261111091500),
-// which a database main migrated has not recorded either. That list is closed: a migration written
-// now takes a timestamp of now, far above main's newest. Main recorded nothing above its newest, so
-// a database main migrated lacks every version above it, and a migration added since joins the set
-// with no edit here.
+// which a database main migrated has not recorded either. The answer loop's three tables
+// (20261106214000, 20261106214001 and 20261106214002) stand below main's newest too: their branch
+// wrote them before main recorded its newest, and a database main migrated has not recorded them
+// either. That list is closed: a migration written now takes a timestamp of now, far above main's
+// newest. Main recorded nothing above its newest, so a database main migrated lacks every version
+// above it, and a migration added since joins the set with no edit here.
 //
 // What the upgrade needs of a migration of the set is what this test holds: one that rewrites
 // outbox_kind_check admits the kind of every row still queued when it runs — main's
@@ -72,13 +74,16 @@ var thisBranchsMigrationsAtOrBelowMainsNewest = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
+	20261106214000, 20261106214001, 20261106214002,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111090000,
 	20261111091500, 20261111181500,
 }
 
 // mainsNewestMigration is the newest version main carried at the forward merge of 2026-11-12
 // that brought it into dispatch://INFRA-714's branch: the claim's failure cause. Every embedded
-// version above it is this branch's (thisBranchsMigrations).
+// version above it is this branch's (thisBranchsMigrations). The fixtures of the two later tests
+// start from later, pinned mains (todaysMainsNewestMigration and
+// answerMigrationsFixtureNewestMigration).
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -362,11 +367,12 @@ func upgradeFrom(t *testing.T, release releaseDatabase) {
 // recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261120055717
 
-// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
+// thisBranchsClaimSessions is the migration that this historical fixture excludes.
 const thisBranchsClaimSessions = 20261116144907
 
 // A database main migrated to the pinned baseline, 20261120055717, has recorded every migration
-// up to it but claim_sessions, which is numbered below it. Store.Migrate applies every
+// up to it but claim_sessions, which is numbered below it, and the answer loop's three tables
+// (answerLoopTables), which stand below it too. Store.Migrate applies every
 // migration that database has not recorded, whatever version stands highest (apply asks each
 // migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
 // baseline: claim_sessions is created, and its backfill holds the session a claim of main's daemon
@@ -385,7 +391,7 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	upgradeFrom(t, releaseDatabase{
 		name:   "main at the pinned baseline",
 		newest: todaysMainsNewestMigration,
-		lacks:  []int{thisBranchsClaimSessions},
+		lacks:  append([]int{thisBranchsClaimSessions}, answerLoopTables...),
 		seed: func(t *testing.T, store *Store) {
 			if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -444,7 +450,9 @@ const mainsAppliedSequence = 20261121170714
 // three, above its newest. Store.Migrate asks each embedded migration whether its own version is
 // recorded (apply) and never compares it with the newest, so each upgrade applies the versions that
 // database lacks, below its newest and above it alike, and leaves every embedded version recorded
-// once.
+// once. None of these databases holds the answer loop's three tables (answerLoopTables), which
+// dispatch://INFRA-204's branch wrote below every newest here and brought to this test at its
+// merge of 26d8c86dd614, so each lacks them too, below its newest.
 //
 // Main's database holds an outbox row of each kind its own kind check admits, read off that check:
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
@@ -495,28 +503,28 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion},
+			lacks:  append([]int{gateBasisVersion, awaitingChildrenVersion}, answerLoopTables...),
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 4ad19fe8459c",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
+			lacks:  append([]int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion}, answerLoopTables...),
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 8517faba31ac",
 			newest: startFailureAfterReadyVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
+			lacks:  append([]int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion}, answerLoopTables...),
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
+			lacks:  append([]int{issuePlansVersion, mainsAppliedSequence}, answerLoopTables...),
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261121170714 names these columns and no other (record's
 				// PutDispatchIssue).
@@ -536,7 +544,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 03ac783258da",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion},
+			lacks:  append([]int{issuePlansVersion}, answerLoopTables...),
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261117034837 names no step of a phases row.
 				for _, seed := range []string{
@@ -560,6 +568,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at dc73ab2f7f06",
 			newest: basisSeedsVersion,
+			lacks:  answerLoopTables,
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123165139 names these seven columns of a draw and no other
 				// (record's PutAssignments).
@@ -584,7 +593,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 8af2e555670f",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{keepsNoWorkspaceVersion},
+			lacks:  append([]int{keepsNoWorkspaceVersion}, answerLoopTables...),
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123212127 keeps a claim's start failure through every later
 				// ready (record's claims columns as that release writes them).
@@ -607,4 +616,134 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 	} {
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
+}
+
+// answerMigrationsFixtureNewestMigration is the pinned newest version of the answer-migration
+// fixture: cybermonklabs/legion#5505's claim held-for, the newest migration on main at
+// 26d8c86dd614, this branch's merge of main before a2ac5fd7aceb. It is a pin, not live main's
+// newest: main numbers later migrations above it (the merge holds change, 20261126110259, among
+// them), and the test counts each such embedded migration as pending rather than seeding it, as it
+// counts this branch's 20261126170315. The seed includes issue
+// priority, claim sessions, the experiment assignment plan, the claim cause times, #5372's release
+// teardown, #4392's issue pod disks, #5385's production check failed looks, #5575's claims tree
+// and dispatch://INFRA-3320's three: the gate basis, the phase awaiting_children and the kind list
+// with the two basis seeds (20261122154643).
+const answerMigrationsFixtureNewestMigration = 20261125223008
+
+// currentMainsNewestMigration is main's newest migration at this branch's merge of main
+// a2ac5fd7aceb: the kind list with the merge holds change (20261126110259), which stands above
+// every answer-loop migration and below this branch's 20261126170315.
+const currentMainsNewestMigration = 20261126110259
+
+// answerLoopMigrations are the answer loop's six migrations, every one of them numbered below
+// answerMigrationsFixtureNewestMigration, and answerLoopTables the first three of them, its three
+// tables, which stand below the newest of every older fixture of this file too: no database main
+// migrated records any of them.
+var (
+	answerLoopMigrations = []int{20261106214000, 20261106214001, 20261106214002, 20261124021727, 20261124072849, 20261124114223}
+	answerLoopTables     = answerLoopMigrations[:3:3]
+)
+
+// A database migrated to the pinned fixture records every embedded migration up to
+// answerMigrationsFixtureNewestMigration but the six answer-loop ones: the three tables, thread
+// replies, call tools and released-agent messages. All six stand below the pin, so the upgrade
+// applies each once though the database already records a higher version. Every embedded migration
+// numbered above the pin is pending as well, so the upgrade applies it after the six, and the
+// store's highest version becomes the newest embedded one: the pin itself when nothing newer is
+// embedded. The seed is a pin, not current main: a database current main migrated holds main's
+// migrations above the pin already, where this test applies them after the answer migrations.
+func TestAPinnedMainFixtureAppliesTheAnswerMigrationsAndThenThoseAboveThePin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	answers := map[int]bool{}
+	for _, version := range answerLoopMigrations {
+		answers[version] = true
+	}
+	var seed []migrations.Migration
+	found, later, newest := map[int]bool{}, 0, 0
+	for _, migration := range all {
+		switch {
+		case answers[migration.Version]:
+			found[migration.Version] = true
+		case migration.Version <= answerMigrationsFixtureNewestMigration:
+			seed = append(seed, migration)
+		default:
+			later++
+		}
+		newest = max(newest, migration.Version)
+	}
+	for version := range answers {
+		if !found[version] {
+			t.Fatalf("the embedded set has no answer migration %d, so this test cannot hold that the upgrade applies it", version)
+		}
+	}
+	if _, err := store.migrate(ctx, seed); err != nil {
+		t.Fatalf("migrate the database to the pinned fixture: %v", err)
+	}
+	if got, err := store.SchemaVersion(ctx); err != nil || got != answerMigrationsFixtureNewestMigration {
+		t.Fatalf("the pinned fixture reports version %d (%v), want its pin, %d", got, err, answerMigrationsFixtureNewestMigration)
+	}
+	if applied, err := store.Migrate(ctx); err != nil || applied != len(answers)+later {
+		t.Fatalf("the upgrade from the pinned fixture applied %d (%v), want %d: the %d answer migrations and the %d numbered after the pin",
+			applied, err, len(answers)+later, len(answers), later)
+	}
+	for version := range answers {
+		var count int
+		if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, version).Scan(&count); err != nil || count != 1 {
+			t.Errorf("migration %d recorded %d times after the upgrade (%v), want once", version, count, err)
+		}
+	}
+	if got, err := store.SchemaVersion(ctx); err != nil || got != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", got, err, newest)
+	}
+}
+
+// A database current main migrated (currentMainsNewestMigration) can hold a queued pending-basis
+// seed, a re-parent seed and a merge-holds message: the boot queues a pending-basis seed for every
+// step that waits on an ancestor's approval request, a read that fails keeps its row on its
+// backoff, and a merge_holds_changed row waits until the merger's session holds its role. This
+// tree's upgrade applies the answer loop's six migrations below that newest, and 20261124114223
+// among them writes the kind check again before 20261126170315 does: `ADD CONSTRAINT … CHECK`
+// validates every row the table holds, so a list there that left any of the three kinds out would
+// fail the upgrade (SQLSTATE 23514), and the daemon would fail its boot on every restart until
+// someone deleted the rows. The upgrade keeps the three rows, and the outbox takes an
+// agent_message row after it. The negative controls are 20261124114223's list without the two
+// seeds, as it stood before this branch's merge of 26d8c86dd614, and without merge_holds_changed,
+// as it stood before its merge of a2ac5fd7aceb: the upgrade then fails on the first seeded row of
+// a kind the list leaves out.
+func TestADatabaseCurrentMainMigratedKeepsItsQueuedBasisSeedsThroughTheUpgrade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	queued := []string{"pending_basis_seed", "reparent_seed", "merge_holds_changed"}
+	upgradeFrom(t, releaseDatabase{
+		name:   "main at a2ac5fd7aceb",
+		newest: currentMainsNewestMigration,
+		lacks:  answerLoopMigrations,
+		seed: func(t *testing.T, store *Store) {
+			for _, kind := range queued {
+				if err := queueRowOfKind(store, kind); err != nil {
+					t.Fatalf("queue the %s row current main's daemon writes: %v", kind, err)
+				}
+			}
+		},
+		check: func(t *testing.T, store *Store) {
+			for _, kind := range queued {
+				var rows int
+				if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, kind).Scan(&rows); err != nil {
+					t.Fatalf("count the %s rows the upgrade left: %v", kind, err)
+				}
+				if rows != 1 {
+					t.Errorf("%s rows after the upgrade = %d, want the queued one kept", kind, rows)
+				}
+			}
+			if err := queueRowOfKind(store, "agent_message"); err != nil {
+				t.Errorf("queue an agent_message row after the upgrade: %v", err)
+			}
+		},
+	})
 }

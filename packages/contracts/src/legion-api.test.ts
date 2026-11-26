@@ -3168,18 +3168,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
   // stands the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
-  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`). So the golden's
-  // issues, rows and claim views are compared without them. One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
-  // row is served here without its `source`, every other field of it and every other row as the
-  // state golden holds them. The gate-basis entry's value strips take nothing more here: the strip
-  // of its two step statuses takes the `gatedSteps` its band has taken already, and the golden
-  // holds no issue in `awaiting_children` and no held row of it.
+  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and the
+  // questions-for-controller entry's, which takes `questionsForController` off the state. So the
+  // golden's issues, rows and claim views are compared without them. One value strip stands above
+  // 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so
+  // that row is served here without its `source`, every other field of it and every other row as
+  // the state golden holds them. The gate-basis entry's value strips take nothing more here: the
+  // strip of its two step statuses takes the `gatedSteps` its band has taken already, and the
+  // golden holds no issue in `awaiting_children` and no held row of it.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
   expect(served.contract).toEqual({ caller: Math.max(...recordedBelow) });
   expect("intakeGiveUps" in served).toBeFalse();
+  expect(served).not.toHaveProperty("questionsForController");
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -3192,6 +3194,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
+    questionsForController: _questions,
     ...rest
   } = fixtureBody("state.json");
   if (!isJsonObject(rest.issues)) {
@@ -3454,6 +3457,84 @@ test("the state golden names the held lifecycle rows, and the list may be left o
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.heldOutboxRows;
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
+});
+
+// The questions-for-controller entry: the golden carries the question LEGION-208's stopped
+// implementer passed model_calls on after it merged with gh, naming that merge and a
+// comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
+// a state with none carries an empty list rather than none. What is refused is a question of a
+// role this build does not know and a write with no command. No plugin code reads a question's
+// fields, so a question without its `passedAt` or its `writes` is read rather than refused
+// (LEGION_ANSWER_READS). The key is optional, like `wakesWaiting`: the daemon leaves it out for
+// callers below the entry's contract because older strict readers refuse it even when empty
+// (`api.stateFor`, `withoutQuestionsForController`). So a body
+// without the key parses, and a reader of it learns nothing about which questions were passed
+// rather than losing the whole state.
+test("the state golden lists the questions passed to the controller, and the key may be absent", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.questionsForController).toEqual([
+    {
+      id: "9e2b7c41d05a3f68e1c4a7b0d9f2e536",
+      issue: "LEGION-208",
+      role: "implementer",
+      session: "ses_implementer_208",
+      asker: "session:ses_architect_208 (LEGION-208 architect)",
+      ref: "envoy:evt-5521",
+      reason: "model_calls",
+      passedAt: "2026-09-22T09:16:40Z",
+      writes: [
+        { seq: 1, command: "pr merge", repository: "acme/widgets", exit: 0 },
+        {
+          seq: 3,
+          command: "api POST repos/acme/widgets/issues/208/comments",
+          repository: "acme/widgets",
+          exit: null,
+        },
+      ],
+    },
+    {
+      id: "5f0c2a9e7b14d3866a1e0c4b9d2f7a35",
+      issue: "LEGION-207",
+      role: "tester",
+      session: "ses_tester_207",
+      asker: "user:octocat",
+      ref: "dispatch://LEGION-207/message/m-4411",
+      reason: "not_answered",
+      passedAt: "2026-09-22T09:14:03Z",
+      writes: [],
+    },
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).questionsForController).toEqual(
+    []
+  );
+
+  const unrolled = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  unrolled.questionsForController = [{ ...unrolled.questionsForController[0], role: "controller" }];
+  expect(LegionStateResponse.safeParse(unrolled).success).toBeFalse();
+
+  const undated = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  const { passedAt: _, ...withoutPassedAt } = undated.questionsForController[0] ?? {};
+  undated.questionsForController = [withoutPassedAt];
+  expect(LegionStateResponse.safeParse(undated).success).toBeTrue();
+
+  const unwritten = fixture("state.json") as { questionsForController: Record<string, unknown>[] };
+  const { writes: __, ...withoutWrites } = unwritten.questionsForController[1] ?? {};
+  unwritten.questionsForController = [withoutWrites];
+  expect(LegionStateResponse.safeParse(unwritten).success).toBeTrue();
+
+  const uncommanded = fixture("state.json") as {
+    questionsForController: { writes: Record<string, unknown>[] }[];
+  };
+  const [merged] = uncommanded.questionsForController;
+  if (merged === undefined) throw new Error("the golden lists no question");
+  merged.writes = [{ ...merged.writes[0], command: "" }];
+  expect(LegionStateResponse.safeParse(uncommanded).success).toBeFalse();
+
+  const stripped = fixture("state.json") as Record<string, unknown>;
+  delete stripped.questionsForController;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.questionsForController).toBeUndefined();
 });
 
 // The wakes the pacing holds (contract 53): the golden names one of each kind the daemon paces,

@@ -1,0 +1,25 @@
+kind: Changed
+body: |-
+  On the Messages API (`anthropic-messages` and `azure-anthropic`), an `agentloop` model call that
+  offers the model a tool now carries no `Request.Final` schema: the run's HTTP transport takes
+  `output_config.format` out of a body whose `tools` holds a tool and whose `tool_choice` is not
+  `none`, keeps the rest of `output_config` (the model's effort) and every other byte as the SDK
+  wrote them, takes out an `output_config` that held the format alone, and logs no warning for it.
+  The run's last allowed call, which offers no tool, and every call of a run with no tools, such as
+  the secrets broker's model judge, carry the schema in `Final`'s order as before, and
+  `openai-responses` and `openai-chat` carry it on every call. With the schema on every call, the
+  Claude answers of the Legion daemon's answer loop that needed no tool still made tool calls up to
+  the call bound: in two proof runs 18 of 135 answers with no fault took all 8 of their calls. The
+  requests of proof run 45683361567, replayed through the model gateway against
+  `claude-sonnet-5-5`, one model call each, replied on 19 of the 162 samples where a reply was
+  possible with the schema and on 100 of them without it, and 120 of the 121 replies made without
+  it were exactly the reply object. The run still checks every reply against `Final`. On the
+  Messages API, if a call offered a tool and its reply does not match `Final`, the run drops
+  the reply while there is time left. It marks the step `Step.Dropped`. The next call is the
+  last. It gets the same messages, no tools, the schema and `LastCall`. The dropped reply
+  does not return to the model. The last call returns its value or fault without another
+  attempt. The dropped call counts toward `Bounds.Calls` and `Result.Usage`, but not toward
+  `AskAgain` or `CallAgainWhenCut`.
+time: 2026-11-26T01:24:14.000000000Z
+custom:
+    Issue: pr2230

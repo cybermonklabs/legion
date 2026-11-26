@@ -180,7 +180,7 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 	for _, item := range created.Excluded {
 		excluded[item.SessionID] = item.Reason
 	}
-	if excluded["reviewer"] != "does not advertise steer" || excluded["ghost"] != "no live session" {
+	if excluded["reviewer"] != "does not advertise steer" || excluded["ghost"] != contracts.NoLiveSession {
 		t.Fatalf("excluded = %#v", created.Excluded)
 	}
 	if len(excluded) != 2 {
@@ -411,7 +411,7 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	if body := response.Body.String(); !strings.Contains(body, "Reviewer does not advertise steer") ||
-		!strings.Contains(body, "ghost no live session") {
+		!strings.Contains(body, "ghost "+contracts.NoLiveSession) {
 		t.Fatalf("the refusal must name each reason: %s", body)
 	}
 	if got := sends.targets(); len(got) != 0 {

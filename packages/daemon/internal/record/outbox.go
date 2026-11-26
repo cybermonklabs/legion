@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/sjawhar/envoy/steprecord"
@@ -95,6 +96,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindAgentMessage gives an agent of the issue whose claim the daemon released a
+	// message its answer loop does not answer for it, waking the claim for it (AgentMessage).
+	OutboxKindAgentMessage OutboxKind = "agent_message"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -114,17 +118,20 @@ const (
 // (hook_prompt), the messages that tell the merger its pull request left the merge queue
 // (merge_queue_removal) and that the project's merge holds changed (merge_holds_changed), the
 // messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to the
-// worker of the phase the issue stays in (merge_forward), and an update round's ask, which goes to
-// any role whose process runs in the issue's pod, its architect included (update_ask). It also runs
-// the two reads of GitHub that come before a message: the read before a merge-queue removal's
-// message (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// worker of the phase the issue stays in (merge_forward), an update round's ask, which goes to
+// any role whose process runs in the issue's pod, its architect included (update_ask), and a
+// message for an agent whose claim the daemon released that the answer loop does not answer for
+// it (agent_message). It also runs the two reads of GitHub that come before a message: the read
+// before a merge-queue removal's message (merge_queue_read), and the second read of a head a first
+// read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
 // open children ended its phase, a role given the words a hook fired on a move back, told that its
 // pull request left the merge queue or that the merge holds changed, asked to merge the base
-// forward or to hold while that merge runs, or asked to get ready for the replacement of its pod
-// must hear it while that is news, not after whatever the architect that owns its issue is owed.
+// forward or to hold while that merge runs, asked to get ready for the replacement of its pod, or
+// given a message that came for it while it was released must hear it while that is news, not
+// after whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -157,7 +164,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindAgentMessage},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -208,18 +215,18 @@ type pauseHold struct {
 // pauseHolds is the one list of the rows a project's pause holds (decision 9 of
 // dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
 // or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
-// notice (which resumes a released architect, the daemon's wakeForDelivery), the five messages to
-// one role (phase_ended, hook_prompt, role_message, update_ask, merge_forward), the merger's
-// merge-queue message and its message that the project's merge holds changed
-// (merge_holds_changed, which resumes a released merger as the merge-queue message does), and the
-// three rows of a production check (check_wake, check_look, check_bound). Every other row runs
-// while the project is paused: the stops (a supervise row of any other op, issue_suspend,
-// issue_release), a supervise row that takes back a stopped phase's task (`retire_task`), the
-// reads and writes of Dispatch (the gate, pending-basis and re-parent seeds among them), the
-// reconcile of a tree's news of its approved design (design_changes), which reads Dispatch and
-// writes the news record and tells a role only by a news-only start, which is a start this list
-// holds, and the controller's notices (controller_notice), since the pause never holds the
-// controller (spec Design item 8).
+// notice (which resumes a released architect, the daemon's wakeForDelivery), the six messages to
+// one role (phase_ended, hook_prompt, role_message, update_ask, merge_forward, and agent_message,
+// which wakes a released agent), the merger's merge-queue message and its message that the
+// project's merge holds changed (merge_holds_changed, which resumes a released merger as the
+// merge-queue message does), and the three rows of a production check (check_wake, check_look,
+// check_bound). Every other row runs while the project is paused: the stops (a supervise row of
+// any other op, issue_suspend, issue_release), a supervise row that takes back a stopped phase's
+// task (`retire_task`), the reads and writes of Dispatch (the gate, pending-basis and re-parent
+// seeds among them), the reconcile of a tree's news of its approved design (design_changes), which
+// reads Dispatch and writes the news record and tells a role only by a news-only start, which is a
+// start this list holds, and the controller's notices (controller_notice), since the pause never
+// holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -236,6 +243,7 @@ var pauseHolds = []pauseHold{
 	{kind: OutboxKindMergeForward},
 	{kind: OutboxKindMergeQueueRemoval},
 	{kind: OutboxKindMergeHoldsChanged},
+	{kind: OutboxKindAgentMessage},
 	{kind: OutboxKindCheckWake},
 	{kind: OutboxKindCheckLook},
 	{kind: OutboxKindCheckBound},
@@ -479,6 +487,13 @@ type Notice struct {
 	// the legion.yaml line that records a decision; a gap is the operator's to close or decide, a
 	// live row's the session's environment to fix, and neither is the controller's.
 	OpenCapabilities []string `json:"openCapabilities,omitempty"`
+	// Question is an agent-question notice's account of the question the answer loop passed on,
+	// and absent from every other kind; the notice's Role is the agent's and its Reason why the
+	// question was passed on.
+	Question *AgentQuestion `json:"question,omitempty"`
+	// AgentDecision is an agent-decision notice's account of the person's decision the answer loop
+	// passed on, and absent from every other kind; the notice's Role is the agent's.
+	AgentDecision *AgentDecision `json:"agent_decision,omitempty"`
 	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (INFRA-225),
 	// one it has still to start or one it started that gave its admission slot back for the wait,
 	// with what each still waits on. Only a tick controller
@@ -716,6 +731,74 @@ func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
 		out.Sizes = []VolumeSize{}
 	}
 	return json.Marshal(out)
+}
+
+// AgentQuestion is a question to a stopped agent that the daemon's answer loop passed to the
+// controller (an agent-question notice): the question's id (answer_questions), the agent's issue
+// and session, who asked (`user:<login>`, or `session:<id>` with the asking session's title when
+// the listener stamped one), where it was asked (a dispatch:// reference, or `envoy:<event id>`),
+// its text, cut at AgentQuestionTextLimit characters with a note saying so, and every gh call that
+// writes which the loop ran for it before it was passed on, absent for none.
+type AgentQuestion struct {
+	ID      string               `json:"id"`
+	Issue   string               `json:"issue"`
+	Session string               `json:"session"`
+	Asker   string               `json:"asker"`
+	Ref     string               `json:"ref"`
+	Text    string               `json:"text"`
+	Writes  []AgentQuestionWrite `json:"writes,omitempty"`
+}
+
+// AgentQuestionWrite is one gh call that writes which the answer loop ran for a question
+// (ghtool.Writes): its seq among the question's calls, its command words (for gh api its method
+// and endpoint), the repository its arguments name ("" for none), and gh's exit status, null
+// where gh answered none, since it could not start or the daemon stopped while it ran.
+type AgentQuestionWrite struct {
+	Seq        int    `json:"seq"`
+	Command    string `json:"command"`
+	Repository string `json:"repository"`
+	Exit       *int   `json:"exit"`
+}
+
+// AgentDecision is a person's decision on an ask a stopped agent opened, which the daemon's answer
+// loop passed on (an agent-decision notice): the decision's id (`dispatch:<event id>` of the ask's
+// answer, or `dispatch:<comment id>` of a reply that hands the ask back to the agent), the agent's
+// issue and session, the person who decided (`user:<login>`), where (`dispatch://<KEY>/ask/<id>`
+// or `dispatch://<KEY>/comment/<id>`), and what they decided (the options they selected and their
+// text), cut as AgentDecisionText cuts it.
+type AgentDecision struct {
+	ID      string `json:"id"`
+	Issue   string `json:"issue"`
+	Session string `json:"session"`
+	Asker   string `json:"asker"`
+	Ref     string `json:"ref"`
+	Text    string `json:"text"`
+}
+
+// AgentQuestionTextLimit is the most characters of a question's or a decision's text an
+// agent-question or agent-decision notice carries; the rest is left out, and a note says how long
+// the text was and where to read it.
+const AgentQuestionTextLimit = 2000
+
+// AgentQuestionText is text as an agent-question notice carries it: whole when it is at most
+// AgentQuestionTextLimit characters, otherwise its first AgentQuestionTextLimit characters and a
+// note naming its length and ref, where the whole question is.
+func AgentQuestionText(text, ref string) string { return cutNoticeText(text, ref, "question") }
+
+// AgentDecisionText is text as an agent-decision notice carries it, cut as AgentQuestionText cuts a
+// question's.
+func AgentDecisionText(text, ref string) string { return cutNoticeText(text, ref, "decision") }
+
+func cutNoticeText(text, ref, what string) string {
+	runes := 0
+	for i := range text {
+		if runes == AgentQuestionTextLimit {
+			return text[:i] + fmt.Sprintf("\n\n[cut: the %s is %d characters; the first %d are shown, the whole %s is at %s]",
+				what, utf8.RuneCountInString(text), AgentQuestionTextLimit, what, ref)
+		}
+		runes++
+	}
+	return text
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -1028,6 +1111,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // it, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement
 // by issue is refused or not offered (runtime.IssuePodReplacer): otherwise the daemon replaces
 // that pod by issue at the bound. It is told once per round (the daemon's reconcilePodUpdates).
+// An agent-question notice names a question to a stopped agent that the daemon's answer loop
+// passed on, with its account (Notice.Question), the agent's role and why (Reason), once per
+// question (the daemon's PassOn).
 // A provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
@@ -1043,7 +1129,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // the role whose turn it is and the state of its pull request, and what the controller is to
 // decide. It is told once for each stall: the daemon marks the root with the movement the notice
 // was told for, and tells again only once the tree moves past that mark. When admission sends
-// each is its rule (admit.Admission.wakeController and its callers,
+// each of the others is its rule (admit.Admission.wakeController and its callers,
 // admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
@@ -1101,6 +1187,7 @@ const (
 	TickNotice             NoticeKind = "tick"
 	ParkedDecisionNotice   NoticeKind = "parked-decision"
 	UpdateStalledNotice    NoticeKind = "update-stalled"
+	AgentQuestionNotice    NoticeKind = "agent-question"
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
@@ -1176,6 +1263,14 @@ type ArchitectStall struct {
 	Arm        ArchitectStallArm
 	At         time.Time
 }
+
+// AgentDecisionNotice names a person's decision on an ask a stopped agent opened — their answer to
+// it, or their reply that hands it back to the agent — which the daemon's answer loop passed on,
+// with its account (Notice.AgentDecision) and the agent's role, once per decision (the daemon's
+// Decide). It is an architect's notice, sent to the architect that owns the agent's issue while that
+// architect holds its role, and the controller's otherwise, in a controller notice row of the same
+// kind.
+const AgentDecisionNotice NoticeKind = "agent-decision"
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
@@ -1704,6 +1799,33 @@ type RoleMessage struct {
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
+
+// AgentMessage is one message for an agent of the issue whose claim the daemon released (an idle
+// release of its issue pod, or a project's pause, which suspends a claim the same way), which the
+// answer loop does not answer for it (answerloop.Wakes, internal/daemon's releasedWakes): a
+// person's decision on its ask; every other Dispatch event that reached it, asks it nothing and is
+// no act of its own session (a message, comment or reply, an edit or resolution of one, the answer
+// to, a reply on, or the resolution or edit of an ask it follows but did not open, a hand-back, a
+// claim, an issue event or a delivery receipt: answerloop.Verdict.ForAgent); a message of a source
+// no agent answers; a question whose reply the loop does not post; and the loop's own answer to it
+// as an asker. Role is the agent's role on the row's issue, whose topic the runner publishes Text
+// to, and Session the session the message was handed off for, which the row's log lines name.
+// Text is the whole of what the agent is told: the message as it would have read it, and, when the
+// loop already answered a question in that message, the sentence that says where.
+//
+// Unlike RoleMessage it wakes a released claim, and it holds the message until a session of the
+// role takes it, as a merge-queue removal does (internal/daemon's outbox.agentMessage,
+// deliverHeld): the message is a person's or an agent's own, which nothing else repeats, and a
+// kept copy lives one hour from its publish, which a wake the pacing or a pause holds can
+// outlast. It ends undelivered once the role's claim has failed or retired, or once the issue has
+// left the workflow or its tree lingers, since no wake brings the claim back then.
+type AgentMessage struct {
+	Role    claim.Role `json:"role"`
+	Session string     `json:"session"`
+	Text    string     `json:"text"`
+}
+
+func (AgentMessage) OutboxKind() OutboxKind { return OutboxKindAgentMessage }
 
 // GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
 // project row so a person reading Dispatch sees what holds a tree's work without reading the
@@ -2713,6 +2835,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindAgentMessage:
+		value := AgentMessage{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindStepRecord:
 		value := StepRecord{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2833,6 +2961,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if value.Question != nil {
+			return fmt.Errorf("a %s notice carries a question; only a controller's agent-question notice does", value.Kind)
+		}
+		if err := validAgentDecision(value.Kind, value.AgentDecision); err != nil {
+			return err
+		}
 		if _, spec := SpecDecision(value.Kind); !spec && !basisNoticeKind(value.Kind) && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does, and a basis notice's", value.Kind)
 		}
@@ -2871,6 +3005,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
+		}
+		if (value.Kind == AgentQuestionNotice) != (value.Question != nil) {
+			return fmt.Errorf("a %s controller notice carries a question only when it is an agent-question notice", value.Kind)
+		}
+		if value.Question != nil && value.Question.ID == "" {
+			return fmt.Errorf("an agent-question notice names its question's id")
+		}
+		if err := validAgentDecision(value.Kind, value.AgentDecision); err != nil {
+			return err
 		}
 		if value.Kind == ParkedDecisionNotice {
 			if !validDecisionKind(value.Decision) || value.Root == "" || value.Ref == "" || !PersonActor(value.Actor) {
@@ -3127,6 +3270,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
+	case AgentMessage:
+		if !claim.IsRole(value.Role) {
+			return fmt.Errorf("a message for a released agent names the agent's role on the issue; %q is no role", value.Role)
+		}
+		if value.Session == "" || value.Text == "" {
+			return fmt.Errorf("a message for a released agent names the session it was handed off for and carries the text the agent is told")
+		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
@@ -3283,6 +3433,7 @@ var validNoticeKinds = []NoticeKind{
 	"basis-ended", "basis-changes-requested", "resting-root",
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
+	AgentDecisionNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
 	"task-stopped", "plan-not-taken", "retro-held",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
@@ -3331,6 +3482,18 @@ const WorkspaceTakenNotice NoticeKind = "workspace-taken"
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
+}
+
+// validAgentDecision checks that a notice of kind carries a decision's account when, and only
+// when, it is an agent-decision notice, and that the account names its decision's id.
+func validAgentDecision(kind NoticeKind, decision *AgentDecision) error {
+	if (kind == AgentDecisionNotice) != (decision != nil) {
+		return fmt.Errorf("a %s notice carries a decision only when it is an agent-decision notice", kind)
+	}
+	if decision != nil && decision.ID == "" {
+		return fmt.Errorf("an agent-decision notice names its decision's id")
+	}
+	return nil
 }
 
 // basisNoticeKinds are the notices of a step on an ancestor's approval, which may carry the
@@ -3431,8 +3594,8 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
-		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, AgentQuestionNotice,
+		TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

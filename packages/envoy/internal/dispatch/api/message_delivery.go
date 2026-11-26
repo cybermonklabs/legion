@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -299,12 +300,13 @@ type pendingMessageDelivery struct {
 	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
 	// own issue-less Send or Aside (not one an agent wrote for them), no broadcast's copy, whose
 	// body is one switch line. The listener then refuses a stopped target rather than storing the
-	// message for it: attempt 1's own send, the delivery sweep's resume, a Retry and a mode change
-	// alike. No row records the switch rule, which each send judges from the message and the mode
-	// it is sent in: a switch an earlier release stored has rows with no flag, which a resume
-	// claims as they stand, and the rule's verdict for a Send must not pass to a Use BTW instead,
-	// which changes no model. Every other message - an issue message, a broadcast copy, a BTW, a
-	// session's message - is queued for a stopped session.
+	// message for it, and no role is kept for its next holder either (publishForRole): attempt 1's
+	// own send, the delivery sweep's resume, a Retry and a mode change alike. No row records the
+	// switch rule, which each send judges from the message and the mode it is sent in: a switch an
+	// earlier release stored has rows with no flag, which a resume claims as they stand, and the
+	// rule's verdict for a Send must not pass to a Use BTW instead, which changes no model. Every
+	// other message - an issue message, a broadcast copy, a BTW, a session's message - is queued
+	// for a stopped session, and a role-routed one for the first holder of a role with no entry.
 	connectedOnly bool
 	frame         []byte
 	// message is the message this attempt is sent with, carrying the text its row held under the
@@ -725,7 +727,9 @@ func messageDeliveryReceipt(
 }
 
 // completeMessageDelivery is the settle transaction of a targeted delivery: it records what the
-// send did and appends the message.delivery receipt, holding no listener call.
+// send did and appends the message.delivery receipt, holding no listener call. The attempt's
+// session is written back with the outcome, which changes it only for a send the listener
+// refused to a session the registry named (deliverMessageResuming).
 func (s *server) completeMessageDelivery(
 	ctx context.Context,
 	message model.Message,
@@ -742,10 +746,11 @@ func (s *server) completeMessageDelivery(
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
 			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
-				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
+				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
 				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
+				pending.resolved.attemptSessionID,
 			))
 			return settled, err
 		},
@@ -880,6 +885,17 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
+	// The listener refused the session the registry named, or only stored the send for it with no
+	// daemon taking it (state stopped), or this connected-only send met a role the registry would
+	// have it kept for, which no such send is, so the attempt records the
+	// session and title the listener's own answer gave, as it did before the registry existed: none
+	// for a role, the requested id for a session. An attempt pinned to a session earlier is one
+	// whose message targets that session, which that answer names too.
+	if refused := outcome.refused; refused != nil {
+		pending.resolved.attemptSessionID, pending.resolved.title = refused.attemptSessionID, refused.title
+	}
+	// That answer is then the attempt's as it would be with no registry, so a session neither of
+	// the listener's stores holds is queued by Dispatch itself all the same.
 	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
 		// The last try was a listener call with nothing held, and a delete that committed during it
 		// settled the attempt and moved its claim (queueDeletedPostSettlement); a copy published
@@ -1080,6 +1096,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A reply to an attempt Dispatch kept for a role is taken from the session holding that role
+	// now, which only the listener can say, so it is read here with nothing held, before the
+	// transaction opens (keptMessageReplier).
+	kept, err := s.keptMessageReplier(r.Context(), r.PathValue("id"), input.Attempt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1147,6 +1171,25 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
+	}
+	if kept.takes(messageTarget(message.Target), attempt.SessionID, attempt.State, actor.ID) {
+		// The role's holder answers the attempt kept for its role: the attempt is pinned to it,
+		// guarded on still naming no session, so every later reply of this attempt passes the
+		// check below as its own. A later live holder of the role passes it too, by the
+		// role-holder rule every attempt sent for a role takes (roleHolderReply).
+		pinned, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
+			update message_deliveries set session_id = $3
+			where message_id = $1 and attempt = $2 and coalesce(session_id, '') = '' and state = 'queued'
+			returning `+messageDeliveryColumns,
+			message.ID, input.Attempt, actor.ID,
+		))
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err == nil {
+			attempt = pinned
+		}
 	}
 	// The session the attempt names answers it, and so does the session that holds the role the
 	// message went to now, while it is live: a different session that took the role from the one
@@ -1252,6 +1295,35 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), events...)
 	WriteJSON(w, status, response)
+}
+
+// keptMessageReplier is who may answer attempt of a targeted message when that attempt is one
+// Dispatch kept for a role (keptRoleAttempt), and nobody otherwise. It reads the attempt through
+// the pool and then the listener, before the reply's transaction opens; the transaction judges the
+// row again under its lock (keptRoleReplier.takes). An attempt past message_deliveries.attempt's
+// range names no delivery and is read for nobody, as the role-holder read above it skips one
+// (fitsIntegerColumn): the transaction answers it not found.
+func (s *server) keptMessageReplier(ctx context.Context, messageID string, attempt int) (keptRoleReplier, error) {
+	if _, err := uuid.Parse(messageID); err != nil || !fitsIntegerColumn(attempt) {
+		return keptRoleReplier{}, nil
+	}
+	var target *string
+	var sessionID, state string
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select m.target, coalesce(d.session_id, ''), d.state
+		from messages m join message_deliveries d on d.message_id = m.id
+		where m.id = $1 and d.attempt = $2
+	`, messageID, attempt).Scan(&target, &sessionID, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return keptRoleReplier{}, nil
+	}
+	if err != nil {
+		return keptRoleReplier{}, err
+	}
+	if !keptRoleAttempt(messageTarget(target), sessionID, state) {
+		return keptRoleReplier{}, nil
+	}
+	return s.keptRoleHolder(ctx, messageTarget(target))
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.

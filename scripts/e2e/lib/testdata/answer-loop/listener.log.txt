@@ -1,0 +1,9 @@
+{"time":"2026-11-08T21:53:26.690Z","level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:10735"}
+this line is not JSON at all
+{"time":"2026-11-08T22:01:30.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-one","session_id":"session-architect","subject":"legion.alx.answers"}
+{"time":"2026-11-08T22:01:31.000Z","level":"INFO","msg":"listener delivered a message to a live session","event_id":"event-three","session_id":"session-architect"}
+{"time":"2026-11-08T22:02:20.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-two","session_id":"session-tester-old","subject":"legion.alx.answers"}
+{"time":"2026-11-08T22:02:22.000Z","level":"INFO","msg":"listener handed a message to its legion daemon","event_id":"event-four","session_id":"session-tester-old","subject":"legion.alx.answers"}
+{"time":"2026-11-08T22:05:03.023Z","level":"INFO","msg":"listener handed a message to its legion daemon","machine_id":"legion-e2eal-1","session_id":"session-planner","topic":"notifications.agent.session-planner","event_id":"event-planner","subject":"notifications.legion.alf4242.agents.session-planner","duplicate":false}
+{"time":"2026-11-08T22:05:03.107Z","level":"INFO","msg":"listener handed a message to its legion daemon","machine_id":"legion-e2eal-1","session_id":"session-planner","topic":"notifications.agent.session-planner","event_id":"event-planner-repeat","subject":"notifications.legion.alf4242.agents.session-planner","duplicate":true}
+{"time":"2026-11-08T22:05:09.809Z","level":"INFO","msg":"listener handed a message to its legion daemon","machine_id":"legion-e2eal-1","session_id":"session-planner","topic":"notifications.agent.session-planner","event_id":"event-planner-restart","subject":"notifications.legion.alf4242.agents.session-planner","duplicate":true}

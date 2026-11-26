@@ -7,5 +7,5 @@ body: |-
   fetches none of them. Measured on such a clone of cybermonklabs/legion pushing one new commit,
   the check took 6.2 s and fetched nothing, where the check without that change had started 219
   fetches when it was stopped at 15 minutes. `legion gh`'s list of reads is proven against
-  `leak-check-v21` too (`ghReadsProvenCheck`), so a call that writes nothing still skips the
+  `leak-check-v21` too (`ghroute.ReadsProvenCheckTag`), so a call that writes nothing still skips the
   visibility read in a pod on the new pin.

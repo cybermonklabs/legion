@@ -63,6 +63,38 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 	}
 }
 
+// A send the listener refuses with its 404 - no live session under the target, and no daemon it
+// handed the message to - is ErrNotFound carrying the listener's own text, the one refusal Dispatch
+// may answer with the listener's resolution of the route. Any other refusal is not.
+func TestSendSeparatesNoLiveSessionFromOtherRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		body     string
+		notFound bool
+	}{
+		{name: "no live session", status: http.StatusNotFound, body: `{"error":"no live session s1"}`, notFound: true},
+		{name: "a 404 with no reason", status: http.StatusNotFound},
+		{name: "a capability refusal", status: http.StatusForbidden, body: `{"error":"session s1 (planner) does not advertise steer"}`},
+		{name: "the listener broke", status: http.StatusInternalServerError, body: `{"error":"nats: timeout"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer listener.Close()
+			_, err := New(listener.URL).Send(context.Background(), SendInput{TargetSession: "s1", Message: "hello"})
+			if err == nil || errors.Is(err, ErrNotFound) != tc.notFound {
+				t.Fatalf("send = %v, want ErrNotFound %v", err, tc.notFound)
+			}
+			if tc.notFound && err.Error() != "no live session s1" {
+				t.Fatalf("send error = %q, want the listener's own text", err)
+			}
+		})
+	}
+}
+
 // A send's window runs on the clock WithClock names: a listener that holds the send is still
 // waited for however long the machine takes, until the clock reaches the window the call armed,
 // and the send then fails as the receipt timeout it is. The window is armed before the request
@@ -549,13 +581,45 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"no holder for role legion-planner"}`))
+		_, _ = w.Write([]byte(`{"error":"no holder for role legion-planner","reason":"unclaimed"}`))
 	}))
 	defer listener.Close()
 
 	_, err := New(listener.URL).Role(context.Background(), "legion-planner")
 	if err == nil || err.Error() != "no holder for role legion-planner" {
 		t.Fatalf("role error = %v, want listener error text", err)
+	}
+	if !errors.Is(err, ErrNoRoleHolder) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("role error = %v, want ErrNoRoleHolder and not ErrUnavailable", err)
+	}
+}
+
+// Only the listener's 404 naming a no-holder reason (roleholder.IsNoHolderReason) says the role has
+// no holder. A failure the listener names in its body under any other status - its role read
+// failing on NATS, say - a 404 that names nothing, and a 404 whose body names no such reason say
+// nothing about the holder.
+func TestRoleReportsOnlyTheListener404AsNoHolder(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "a NATS failure", status: http.StatusServiceUnavailable, body: `{"error":"nats: timeout"}`},
+		{name: "a 404 naming nothing", status: http.StatusNotFound},
+		{name: "a 404 naming no no-holder reason", status: http.StatusNotFound, body: `{"error":"no holder for role legion-planner"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer listener.Close()
+
+			_, err := New(listener.URL).Role(context.Background(), "legion-planner")
+			if err == nil || errors.Is(err, ErrNoRoleHolder) {
+				t.Fatalf("role error = %v, want a failure that is not ErrNoRoleHolder", err)
+			}
+		})
 	}
 }
 
@@ -614,10 +678,10 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 
 // A listener that is starting answers every /v1 route 503 with a JSON reason ("service starting",
 // cmd/listener/starting_gate.go's startingGate), and a gateway in front of one that is gone answers
-// 502 or 504, so on a role lookup and on a send alike those are ErrUnavailable - a caller's "ask
-// again" - whatever body they carry, and the error keeps the listener's reason because a person
-// reads it.
-// A 4xx is the listener's answer, never unavailable: that is the discriminating control.
+// 502 or 504, so on a role lookup, a send and a role publish alike those are ErrUnavailable - a
+// caller's "ask again" - whatever body they carry, and the error keeps the listener's reason
+// because a person reads it. A 4xx is the listener's answer, never unavailable: that is the
+// discriminating control.
 func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) error{
 		"role": func(client *Client) error {
@@ -626,6 +690,10 @@ func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 		},
 		"send": func(client *Client) error {
 			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
+			return err
+		},
+		"publish": func(client *Client) error {
+			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Message: "m", IdempotencyKey: "k"})
 			return err
 		},
 	}
@@ -930,7 +998,7 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 
 const legionAgentRow = `{"session_id":"ses-old","legion_project":"acme","issue":"ACME-448","role":"reviewer",` +
 	`"role_token":"legion-acme-acme-448-reviewer","title":"Legion reviewer · ACME-448","harness":"omp",` +
-	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
+	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,"answering":true,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
 func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
@@ -943,7 +1011,7 @@ func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 			StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z",
 		},
 		ReplacedBy: &newer, ReplacedAt: &at,
-	}}
+	}, Answering: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent = %#v, want %#v", got, want)
 	}
@@ -1012,7 +1080,8 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
 		{"by role token", "/v1/legion/agents/roles/legion-acme-acme-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			role, err := c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			return role.Entries, err
 		}},
 		{"by issue", "/v1/legion/agents", "issue=ACME-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.IssueAgents(context.Background(), "ACME-448")
@@ -1043,13 +1112,40 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 	}
 }
 
+// RoleAgents reads the role read's own `answering` beside its entries: the flag the role token's
+// project last stated, which an empty list carries too, and false where the listener leaves it out,
+// as one that predates the field does. The control is the same listing answering true, which reads
+// true.
+func TestRoleAgentsReadTheRolesAnsweringFlag(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		entries int
+		want    bool
+	}{
+		{`{"entries":[],"answering":true}`, 0, true},
+		{`{"entries":[` + legionAgentRow + `],"answering":true}`, 1, true},
+		{`{"entries":[],"answering":false}`, 0, false},
+		{`{"entries":[]}`, 0, false},
+	} {
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		role, err := New(listener.URL).RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+		listener.Close()
+		if err != nil || role.Entries == nil || len(role.Entries) != tc.entries || role.Answering != tc.want {
+			t.Fatalf("%s: role = %#v, %v; want %d entries and answering %t", tc.body, role, err, tc.entries, tc.want)
+		}
+	}
+}
+
 // A listing the listener does not answer with a 200, or answers with a body that does not decode,
 // or that cannot be reached, is ErrUnavailable: never an empty list a caller would take for no
 // agents.
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
 		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
-			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			role, err := c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
+			return role.Entries, err
 		},
 		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.IssueAgents(context.Background(), "ACME-448")
@@ -1107,6 +1203,10 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
 			return err
 		},
+		"publish": func(client *Client) error {
+			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Message: "m", IdempotencyKey: "k"})
+			return err
+		},
 	}
 	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
@@ -1144,5 +1244,137 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			}
 		}
 		listener.Close()
+	}
+}
+
+// A role publish is the listener's publish route under a role topic, carrying what a send carries
+// and asking the listener to keep the message: the body names the role's topic, Dispatch as its
+// source, the frame as a JSON string, the key, the urgency, expects_reply and keep true, and
+// names no session. The route's three answers are told apart by status: 200 a live holder took
+// it, 202 the listener kept it until kept_until, 404 nothing was kept - ErrNoRoleHolder carrying the
+// listener's own text.
+func TestPublishToRoleAnswersEachStatus(t *testing.T) {
+	const role = "legion-infra-infra-204-planner"
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   RolePublishResult
+		// refusal is the listener's own text a refused publish reports alone, which is not
+		// ErrUnavailable; a failure with none is ErrUnavailable.
+		refusal  string
+		noHolder bool
+	}{
+		{
+			name: "a live holder took it", status: http.StatusOK,
+			body: `{"event_id":"envelope-1","topic":"notifications.role.` + role + `","holder":"s1","holder_state":"live"}`,
+			want: RolePublishResult{EnvelopeID: "envelope-1"},
+		},
+		{
+			name: "the listener kept it for the role's next holder", status: http.StatusAccepted,
+			body: `{"event_id":"envelope-2","kept":true,"kept_reason":"unclaimed","kept_until":1793003600000}`,
+			want: RolePublishResult{EnvelopeID: "envelope-2", Kept: true, KeptUntil: 1793003600000},
+		},
+		{
+			name: "nothing was kept", status: http.StatusNotFound,
+			body:    `{"error":"no holder for role ` + role + `","reason":"unclaimed","claim_revision":0}`,
+			refusal: "no holder for role " + role, noHolder: true,
+		},
+		{name: "a 404 naming nothing", status: http.StatusNotFound},
+		{
+			name: "a holder that does not take the mode", status: http.StatusForbidden,
+			body:    `{"error":"session s1 (planner) does not advertise steer","reason":"capability"}`,
+			refusal: "session s1 (planner) does not advertise steer",
+		},
+		{name: "a listener that is starting", status: http.StatusServiceUnavailable, body: `{"error":"service starting"}`},
+		{name: "an answer that does not decode", status: http.StatusAccepted, body: `{"event_id":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked map[string]any
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer listener-token" {
+					t.Errorf("Authorization = %q, want Bearer listener-token", got)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
+					t.Errorf("decode the publish: %v", err)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer listener.Close()
+			result, err := New(listener.URL, WithToken("listener-token")).PublishToRole(context.Background(), RolePublishInput{
+				Role:           role,
+				Message:        "Who planned this?",
+				Payload:        json.RawMessage(`{"event":{"type":"message.created"},"delivery":{"attempt":1,"mode":"aside"}}`),
+				IdempotencyKey: "message-1:aside",
+				Urgency:        "high",
+				ExpectsReply:   "optional",
+			})
+			want := map[string]any{
+				"topic": "notifications.role." + role, "source": "dispatch", "message": "Who planned this?",
+				"payload":         `{"event":{"type":"message.created"},"delivery":{"attempt":1,"mode":"aside"}}`,
+				"idempotency_key": "message-1:aside", "urgency": "high", "expects_reply": "optional", "keep": true,
+			}
+			if !reflect.DeepEqual(asked, want) {
+				t.Fatalf("publish body = %#v, want %#v", asked, want)
+			}
+			switch {
+			case tc.want != RolePublishResult{}:
+				if err != nil || result != tc.want {
+					t.Fatalf("publish = %#v, %v; want %#v", result, err, tc.want)
+				}
+			case err == nil:
+				t.Fatalf("publish answered %d = %#v, want a failure", tc.status, result)
+			case errors.Is(err, ErrNoRoleHolder) != tc.noHolder:
+				t.Fatalf("publish answered %d: err = %v, want ErrNoRoleHolder %v", tc.status, err, tc.noHolder)
+			case errors.Is(err, ErrUnavailable) != (tc.refusal == ""):
+				t.Fatalf("publish answered %d: err = %v, want ErrUnavailable %v", tc.status, err, tc.refusal == "")
+			case tc.refusal != "" && err.Error() != tc.refusal:
+				t.Fatalf("publish answered %d: err = %q, want the listener's own text %q", tc.status, err, tc.refusal)
+			}
+		})
+	}
+}
+
+// A publish whose answer misses the client's window may have been kept or forwarded, so it is a
+// receipt timeout, as a send's is; a publish refused outright is not.
+func TestPublishToRoleDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
+	held := make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode publish: %v", err)
+		}
+		if request.IdempotencyKey == "refused:steer" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"message is required"}`))
+			return
+		}
+		<-held
+	}))
+	defer func() {
+		close(held)
+		listener.Close()
+	}()
+
+	_, err := New(listener.URL, WithTimeout(150*time.Millisecond)).PublishToRole(context.Background(), RolePublishInput{
+		Role: "legion-planner", Message: "held past the window", IdempotencyKey: "held:steer",
+	})
+	if !errors.Is(err, ErrReceiptTimeout) || !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("publish that missed the window = %v, want ErrReceiptTimeout and ErrUnreachable", err)
+	}
+	if !strings.Contains(err.Error(), "POST /v1/messages/publish") {
+		t.Fatalf("publish that missed the window = %q, want it to name the publish route", err)
+	}
+	_, err = New(listener.URL).PublishToRole(context.Background(), RolePublishInput{
+		Role: "legion-planner", Message: "refused outright", IdempotencyKey: "refused:steer",
+	})
+	if err == nil || errors.Is(err, ErrReceiptTimeout) || err.Error() != "message is required" {
+		t.Fatalf("refused publish = %v, want the listener's reason and no receipt timeout", err)
 	}
 }

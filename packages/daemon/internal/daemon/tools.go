@@ -12,8 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // daemonTools are the binaries Legion itself runs on the host, or hands a pane: the git and jj of
@@ -27,7 +31,8 @@ import (
 // exec later, and provisioning makes no commit. The jj wrapper does no harm either: `legion jj`
 // runs every command but a push on the next jj with its own words, provisioning's commands and
 // checkJJVersion's `jj --version` with no read before them, since each is a built-in jj command or
-// a version flag, and provisioning runs no push.
+// a version flag, and provisioning runs no push. The answer loop's gh tool runs the same real gh
+// (answersGH).
 var daemonTools = []string{"git", "jj", "gh"}
 
 // toolEnv is the daemon's own override for a tool at boot, LEGION_<TOOL>_PATH. A pane is told
@@ -83,6 +88,195 @@ func resolveTool(lookupEnv func(string) (string, bool), tool string) (string, er
 		}
 	}
 	return "", nil
+}
+
+// answersGH is the real gh the answer loop's gh tool runs on the daemon's own host, which a daemon
+// with the answer loop on resolves at boot under either runtime: the gh resolveTools already
+// resolved for a tmux daemon's own tools, else resolveTool's (LEGION_GH_PATH, or the first gh on
+// PATH, never a script). A Kubernetes daemon resolves none otherwise, since its pods run the image's gh. Boot is
+// refused, naming gh and its override, when neither gives one.
+func answersGH(lookupEnv func(string) (string, bool), resolved map[string]string) (string, error) {
+	if gh := resolved["gh"]; gh != "" {
+		return gh, nil
+	}
+	gh, err := resolveTool(lookupEnv, "gh")
+	if err != nil {
+		return "", err
+	}
+	if gh == "" {
+		return "", fmt.Errorf("answers needs gh on the daemon's host, which the answer loop's gh tool runs, and none was found: set %s to an absolute executable path, or put gh on PATH", toolEnv("gh"))
+	}
+	return gh, nil
+}
+
+// dispatchInstall is where the worker image keeps the dispatch command, the Envoy plugin's /bin/sh
+// shim that execs bun on its bundled CLI (the image build's last step runs its --help,
+// docs/kubernetes.md). The image's PATH does not hold that directory, and a Kubernetes daemon runs
+// from that image, so this is where such a daemon finds it.
+const dispatchInstall = "/opt/legion/pi-envoy/bin/dispatch"
+
+// dispatchFound is what boot found for the answer loop's dispatch tool: the dispatch command, bun's
+// directory, which that command's shim starts bun from, and the daemon's Dispatch token file, made
+// absolute; or, where the loop offers no dispatch tool, why (absent), and none of the three.
+type dispatchFound struct {
+	dispatch, bunDir, tokenFile string
+	absent                      string
+}
+
+// answersDispatch is the dispatch command the answer loop's dispatch tool runs, which a daemon with
+// the answer loop on finds at boot under either runtime, as it finds the loop's gh: the
+// LEGION_DISPATCH_PATH override, which must be an absolute executable, else the first dispatch on
+// PATH, else install where it is executable (dispatchInstall, the worker image's). Unlike gh, a
+// script is taken: the Envoy plugin's dispatch is a /bin/sh shim. bun, which that shim starts by
+// name, is LEGION_BUN_PATH or else the first bun on PATH, and the tool runs with its directory on
+// PATH. The tool runs against the daemon's own Dispatch, dispatchURL, with its token, tokenFile.
+// Where the daemon names no dispatch_url, no dispatch_token_file (tokenFile "", as under
+// dispatch_token_broker, whose token acts only as the daemon's own session), finds no dispatch, or
+// no bun for it, nothing refuses the boot: the loop offers no dispatch tool, and absent says why,
+// which the boot line and `legion config check` name (loopTools). An empty tokenFile is never made
+// absolute, which would name the daemon's working directory as the tool's token file.
+func answersDispatch(lookupEnv func(string) (string, bool), dispatchURL, tokenFile, install string) dispatchFound {
+	if dispatchURL == "" {
+		return dispatchFound{absent: "no dispatch_url, so no Dispatch to run it against"}
+	}
+	if tokenFile == "" {
+		return dispatchFound{absent: "no dispatch_token_file, so no Dispatch token for an agent's session"}
+	}
+	dispatch, err := resolveTool(lookupEnv, "dispatch")
+	if err != nil {
+		return dispatchFound{absent: err.Error()}
+	}
+	if dispatch == "" && isExecutable(install) {
+		dispatch = install
+	}
+	if dispatch == "" {
+		return dispatchFound{absent: fmt.Sprintf("no dispatch command on PATH or at %s (set %s)", install, toolEnv("dispatch"))}
+	}
+	bun, err := resolveTool(lookupEnv, "bun")
+	if err != nil {
+		return dispatchFound{absent: err.Error()}
+	}
+	if bun == "" {
+		return dispatchFound{absent: fmt.Sprintf("no bun for %s, which runs on it (set %s, or put bun on PATH)", dispatch, toolEnv("bun"))}
+	}
+	token, err := filepath.Abs(tokenFile)
+	if err != nil {
+		return dispatchFound{absent: fmt.Sprintf("dispatch_token_file %s: %v", tokenFile, err)}
+	}
+	return dispatchFound{dispatch: dispatch, bunDir: filepath.Dir(bun), tokenFile: token}
+}
+
+// loopTools are the answer loop's tools as boot found them: each the loop offers, in the loop's
+// order, and each it does not offer with why.
+type loopTools struct {
+	offered []string
+	absent  [][2]string
+}
+
+// loopToolsOf is the loop's tools with dispatch as boot found it and web_search as answers
+// configures it: gh, which boot refuses to start without; dispatch where boot found its command;
+// and web_search where answers offers it (config.Answers.WebSearchOff).
+func loopToolsOf(dispatch dispatchFound, answers config.Answers) loopTools {
+	tools := loopTools{offered: []string{store.ToolGH}}
+	if dispatch.dispatch != "" {
+		tools.offered = append(tools.offered, store.ToolDispatch)
+	} else {
+		tools.absent = append(tools.absent, [2]string{store.ToolDispatch, dispatch.absent})
+	}
+	if off := answers.WebSearchOff(); off == "" {
+		tools.offered = append(tools.offered, store.ToolWebSearch)
+	} else {
+		tools.absent = append(tools.absent, [2]string{store.ToolWebSearch, off})
+	}
+	return tools
+}
+
+// answersToolsLine is the message of the boot's one line naming the loop's tools, which an
+// after_merge check of INFRA's boot log reads, as its keys: tools, the list of those the loop
+// offers, and one key per tool it does not offer, named for the tool, holding why.
+const answersToolsLine = "answers: tools"
+
+// attrs are the line's keys and values (answersToolsLine).
+func (t loopTools) attrs() []any {
+	attrs := []any{"tools", t.offered}
+	for _, absent := range t.absent {
+		attrs = append(attrs, absent[0], absent[1])
+	}
+	return attrs
+}
+
+// String is the line as `legion config check` prints it, in the words of the boot's line:
+// `answers: tools [gh dispatch web_search]`, and after the list, for each tool the loop does not
+// offer, `; <tool>: <why>`.
+func (t loopTools) String() string {
+	line := fmt.Sprintf("%s [%s]", answersToolsLine, strings.Join(t.offered, " "))
+	for _, absent := range t.absent {
+		line += fmt.Sprintf("; %s: %s", absent[0], absent[1])
+	}
+	return line
+}
+
+// AnswersToolsLine is `legion config check`'s line naming the answer loop's tools, read from the
+// daemon's environment (lookup) as boot reads it (answersDispatch) and from cfg's answers
+// (loopToolsOf), and false for a configuration without answers, whose daemon runs no loop.
+func AnswersToolsLine(cfg config.Config, lookup func(string) (string, bool)) (string, bool) {
+	if cfg.Answers == nil {
+		return "", false
+	}
+	return loopToolsOf(answersDispatch(lookup, cfg.DispatchURL, cfg.DispatchTokenFile, dispatchInstall), *cfg.Answers).String(), true
+}
+
+// answersLeakCheck is where the shared public leak check comes from that the answer loop's gh tool
+// runs before every call (ghtool.Host.LeakCheck), which a daemon with the answer loop on reads at
+// boot beside its gh (answersGH); answersTools states the one rule each runtime keeps. Under tmux
+// it is the machine's own check, resolved in the daemon's environment as a pane's is (leakguard's
+// Resolve): boot refuses a machine that carries none, and the gh tool resolves the check again at
+// each call the same way (ghtool.MachineLeakCheck). Under kubernetes it is the check the
+// deployment's setting names (config's leak_check, leakguard.Setting), which the daemon reads from
+// that repository at the tag it installs the check at once its GitHub App can read it, and holds to
+// that manifest digest (installAnswersLeakCheck): its environment's LEGION_LEAK_CHECK_TAG, the pin
+// the worker image sets for every container it runs, a pod's launcher's and the daemon's alike,
+// since a Kubernetes daemon's environment holds none of the three places a check is resolved from.
+// Boot is refused, naming the check and where it looked, when neither gives one: a Kubernetes
+// deployment that names no setting, whose roles start without a check, is refused naming its two
+// settings, before the pin is read.
+func answersLeakCheck(runtimeName string, setting leakguard.Setting, lookupEnv func(string) (string, bool)) (check, tag string, err error) {
+	if runtimeName == "kubernetes" {
+		const needs = "answers needs the shared public leak check, which the answer loop's gh tool runs before every call"
+		if !setting.Configured() {
+			return "", "", errors.New(needs + ", and a Kubernetes daemon reads it from the repository the deployment's leak check setting names, " +
+				"which names none: set " + leakguard.RepositoryVar + " and " + leakguard.ManifestVar + " in the daemon's environment, " +
+				"or leak_check.repository and leak_check.manifest_sha256 in legion.yaml")
+		}
+		const pin = needs + ", and a Kubernetes daemon installs it at the tag " + leakguard.TagVariable + " names"
+		tag, _ = lookupEnv(leakguard.TagVariable)
+		switch {
+		case tag == "":
+			return "", "", errors.New(pin + ", which the daemon's environment does not set: run the daemon from the worker image, " +
+				"which sets it to the image's pin, or set it to the tag runtime.kubernetes.image pins (its ARG LEAK_CHECK_TAG)")
+		case !shimwire.ValidLeakCheckTag(tag):
+			return "", "", fmt.Errorf("%s, which is %q, not of the published shape leak-check-v<n>", pin, tag)
+		}
+		return "", tag, nil
+	}
+	if check, err = leakguard.New(leakguard.Options{Env: leakCheckEnviron(lookupEnv)}).Resolve(); err != nil {
+		return "", "", fmt.Errorf("answers needs the shared public leak check on the daemon's host, which the answer loop's gh tool runs before every call, "+
+			"and none was found: %w: install it with the check's own installer, or set %s to its path", err, leakguard.CheckVar)
+	}
+	return check, "", nil
+}
+
+// leakCheckEnviron is the daemon's environment as the shared check is resolved from it: the four
+// names leakguard's Resolve reads (the variable naming the check, PATH, and the two that place the
+// configuration home), and never nil, which the guard would read as this process's environment.
+func leakCheckEnviron(lookupEnv func(string) (string, bool)) []string {
+	env := []string{}
+	for _, name := range []string{leakguard.CheckVar, "PATH", "XDG_CONFIG_HOME", "HOME"} {
+		if value, ok := lookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
 }
 
 // RefuseScriptGH refuses gh, the first gh on PATH, when it is a script, a file whose first two

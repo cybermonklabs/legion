@@ -4,7 +4,7 @@ package listenerwire_test
 // the export data of `go list -deps -export`, which it runs in each module's own directory, and
 // the load-test harness's main package is parsed for a listener route named outside its client.
 //ci:builds packages/envoy ./internal/cipher/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig TestListenerClientsUseListenerwire wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)
-//ci:builds packages/daemon ./internal/notify ./internal/controller TestListenerClientsUseListenerwire wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)
+//ci:builds packages/daemon ./internal/notify ./internal/controller ./internal/registrywrite TestListenerClientsUseListenerwire wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)
 //ci:reads packages/envoy/loadtest/*.go !**/*_test.go TestTheLoadTestCallsTheListenerOnlyThroughItsClient lists the load-test package's Go files and parses each, test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)
 
 import (
@@ -23,9 +23,11 @@ import (
 
 // The listener's Go clients encode every request body and decode every answer with a type this
 // package declares, and copy none, whole or in part: the broker's wake, Dispatch's client, the
-// load-test rigs' listener client and the refill rig, and the daemon's publisher and controller
-// probe, which is another module and so is read by its own directory. A type with the same
-// fields, a map and an anonymous struct are each a finding.
+// load-test rigs' listener client and the refill rig, and the daemon's publisher (its notices and
+// the answer loop's sends in a stopped agent's name), controller probe and agent registry writer
+// (the mirror's registry writes and its answering beat, internal/registrywrite), which are another
+// module and so are read by their own directory. A type with the same fields, a map and an
+// anonymous struct are each a finding.
 func TestListenerClientsUseListenerwire(t *testing.T) {
 	const wire = "github.com/sjawhar/envoy/listenerwire"
 	for _, clients := range []struct {
@@ -33,7 +35,7 @@ func TestListenerClientsUseListenerwire(t *testing.T) {
 		pkgs []string
 	}{
 		{dir: "..", pkgs: []string{"./internal/cipher/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"}},
-		{dir: "../../daemon", pkgs: []string{"./internal/notify", "./internal/controller"}},
+		{dir: "../../daemon", pkgs: []string{"./internal/notify", "./internal/controller", "./internal/registrywrite"}},
 	} {
 		for _, finding := range wirecheck.Check(t, clients.dir, clients.pkgs, wire, nil) {
 			t.Errorf("%s: %s", clients.dir, finding)

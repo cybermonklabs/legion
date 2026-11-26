@@ -72,8 +72,8 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	// The lapsed attempt's resend fails; the live one is still being sent, and its sender can
 	// pin it to this very claimant.
 	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2
-	`, commentID, lapsed); err != nil {
+		update comment_deliveries set state = 'failed', error = $3 where comment_id = $1 and target = $2
+	`, commentID, lapsed, contracts.NoLiveSession); err != nil {
 		t.Fatalf("fail the resend of the mention of %s: %v", lapsed, err)
 	}
 
@@ -92,8 +92,8 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	// The live attempt's sender finds no session and fails it: nothing is pinned, so the copy is
 	// the outbox's and the pass that reads the row next publishes it.
 	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2
-	`, commentID, live); err != nil {
+		update comment_deliveries set state = 'failed', error = $3 where comment_id = $1 and target = $2
+	`, commentID, live, contracts.NoLiveSession); err != nil {
 		t.Fatalf("fail the mention of %s: %v", live, err)
 	}
 	if _, err := rig.database.Pool.Exec(ctx, `

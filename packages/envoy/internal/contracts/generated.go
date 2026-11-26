@@ -131,6 +131,12 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = "no live session"
+
 // DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
 // Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
 // and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.

@@ -1,0 +1,9 @@
+kind: Added
+custom:
+  Issue: pr2230
+body: |-
+  `NO_LIVE_SESSION` (`no live session`): the words the Envoy listener's 404 for a session it will
+  not answer for opens with (`no live session <id>`), and the failure Dispatch records for such a
+  session itself. It is generated into Go as `contracts.NoLiveSession`, which the listener and
+  Dispatch write and read; the comment-delivery report and the dashboard's tests read the
+  TypeScript constant. The text itself does not change.

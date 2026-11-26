@@ -96,6 +96,7 @@ type legionAnswer struct {
 	StartedAt     string  `json:"started_at"`
 	RecordedAt    string  `json:"recorded_at"`
 	Live          bool    `json:"live"`
+	Answering     bool    `json:"answering"`
 	ReplacedBy    *string `json:"replaced_by"`
 	ReplacedAt    *string `json:"replaced_at"`
 }
@@ -192,7 +193,8 @@ func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
 }
 
 // An absence is answered as one: an unknown session is a 404 naming it, and a listing with nothing
-// in it is an empty list.
+// in it is an empty list, a role's beside its project's answering flag, false here, since infra has
+// stated none.
 func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
 	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
@@ -200,9 +202,12 @@ func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
 	if got := l.want(t, http.StatusNotFound, http.MethodGet, "/v1/legion/agents/sessions/ses-unknown", ""); strings.TrimSpace(got) != `{"error":"unknown legion agent ses-unknown"}` {
 		t.Fatalf("404 body = %s", got)
 	}
-	for _, target := range []string{"/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "/v1/legion/agents?issue=INFRA-1"} {
-		if got := l.want(t, http.StatusOK, http.MethodGet, target, ""); strings.TrimSpace(got) != `{"entries":[]}` {
-			t.Fatalf("GET %s = %s, want an empty list", target, got)
+	for target, want := range map[string]string{
+		"/v1/legion/agents/roles/legion-infra-infra-448-reviewer": `{"entries":[],"answering":false}`,
+		"/v1/legion/agents?issue=INFRA-1":                         `{"entries":[]}`,
+	} {
+		if got := l.want(t, http.StatusOK, http.MethodGet, target, ""); strings.TrimSpace(got) != want {
+			t.Fatalf("GET %s = %s, want %s", target, got, want)
 		}
 	}
 	if got := l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents", `{"entries":[]}`); strings.TrimSpace(got) != `{"entries":[]}` {
@@ -281,7 +286,8 @@ func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
 	}
 }
 
-// The project.<legion_project> key is the daemon's own (INFRA-204), and no route reads it.
+// The project.<legion_project> key is the daemon's own (INFRA-204), and no read answers it as an
+// entry.
 func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
@@ -300,6 +306,96 @@ func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 		}
 	}
 	l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/sessions/ses-tester", "")
+}
+
+// Every read answers each entry's `answering` from its project's answering record as it stands at
+// the read, the condition the hand-off reads on the project (answeringAgent): false while the
+// project has stated none, then the flag it last stated. A listing whose entries are of two
+// projects answers each entry its own project's flag.
+func TestLegionAgentReadsAnswerTheirProjectsAnsweringFlag(t *testing.T) {
+	l := newLegionListener(t, setupPublishTestClient(t))
+	other := strings.NewReplacer(`"legion_project":"infra"`, `"legion_project":"other"`, "legion-infra-", "legion-other-").
+		Replace(legionEntry("ses-other", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents", `{"entries":[`+
+		legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")+`,`+other+`]}`)
+	reads := []string{
+		"/v1/legion/agents/sessions/ses-tester", "/v1/legion/agents/sessions/ses-other",
+		"/v1/legion/agents/roles/legion-infra-infra-448-tester", "/v1/legion/agents/roles/legion-other-infra-448-reviewer",
+		"/v1/legion/agents?issue=INFRA-448",
+	}
+	answers := func(t *testing.T, state string, want map[string]bool) {
+		t.Helper()
+		seen := map[string]int{}
+		for _, target := range reads {
+			body := l.want(t, http.StatusOK, http.MethodGet, target, "")
+			entries := decodeLegion[struct{ Entries []legionAnswer }](t, body).Entries
+			if strings.Contains(target, "/sessions/") {
+				entries = []legionAnswer{decodeLegion[legionAnswer](t, body)}
+			}
+			for _, entry := range entries {
+				seen[entry.SessionID]++
+				if entry.Answering != want[entry.SessionID] {
+					t.Fatalf("%s: GET %s answered %s answering %t, want %t", state, target, entry.SessionID, entry.Answering, want[entry.SessionID])
+				}
+			}
+		}
+		// Each session is answered by its own key, its role token's listing and its issue's.
+		if seen["ses-tester"] != 3 || seen["ses-other"] != 3 {
+			t.Fatalf("%s: the reads answered %v, want each session three times", state, seen)
+		}
+	}
+	project := func(answering bool) {
+		l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/infra",
+			fmt.Sprintf(`{"answering":%t,"updated_at":"2026-10-26T05:00:00Z"}`, answering))
+	}
+
+	answers(t, "no project record", map[string]bool{"ses-tester": false, "ses-other": false})
+	project(true)
+	answers(t, "infra answering: true", map[string]bool{"ses-tester": true, "ses-other": false})
+	project(false)
+	answers(t, "infra answering: false", map[string]bool{"ses-tester": false, "ses-other": false})
+}
+
+// The role read answers, beside its entries, the flag its role token's project last stated in its
+// answering record (`answering`), an empty list's included, so a reader learns whether a daemon
+// answers for a role the registry holds no entry for (Dispatch keeps a message for such a role only
+// while one does, unheldRoleTarget): false while the project has stated none, then the flag it last
+// stated, written out either way. Its control is a role token of another project, which reads that
+// project's flag rather than infra's: the flag is the token's own project's, whichever entries the
+// read holds.
+func TestTheRoleReadAnswersItsProjectsAnsweringFlagWithOrWithoutAnEntry(t *testing.T) {
+	l := newLegionListener(t, setupPublishTestClient(t))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	// Each role token read, and how many entries its read holds.
+	reads := map[string]int{
+		"legion-infra-infra-448-tester":   1,
+		"legion-infra-infra-448-reviewer": 0,
+		"legion-other-infra-448-reviewer": 0,
+	}
+	answers := func(t *testing.T, state string, want map[string]bool) {
+		t.Helper()
+		for role, entries := range reads {
+			body := l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/"+role, "")
+			read := decodeLegion[struct {
+				Entries   []legionAnswer `json:"entries"`
+				Answering *bool          `json:"answering"`
+			}](t, body)
+			if len(read.Entries) != entries || read.Answering == nil || *read.Answering != want[role] {
+				t.Fatalf("%s: GET the role read of %s = %s, want %d entries and answering %t written out", state, role, body, entries, want[role])
+			}
+		}
+	}
+	project := func(answering bool) {
+		l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/infra",
+			fmt.Sprintf(`{"answering":%t,"updated_at":"2026-10-26T05:00:00Z"}`, answering))
+	}
+
+	none := map[string]bool{"legion-infra-infra-448-tester": false, "legion-infra-infra-448-reviewer": false, "legion-other-infra-448-reviewer": false}
+	answers(t, "no project record", none)
+	project(true)
+	answers(t, "infra answering: true", map[string]bool{"legion-infra-infra-448-tester": true, "legion-infra-infra-448-reviewer": true, "legion-other-infra-448-reviewer": false})
+	project(false)
+	answers(t, "infra answering: false", none)
 }
 
 // The registry is the bucket's: a listener started again over a restarted NATS answers what the

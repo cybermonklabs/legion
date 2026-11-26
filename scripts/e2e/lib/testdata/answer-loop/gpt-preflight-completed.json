@@ -1,0 +1,24 @@
+{
+  "id": "resp_preflight",
+  "object": "response",
+  "created_at": 1795016329,
+  "status": "completed",
+  "model": "gpt-6.1-sol",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_preflight",
+      "status": "completed",
+      "role": "assistant",
+      "content": [{ "type": "output_text", "text": "ready" }]
+    }
+  ],
+  "store": false,
+  "usage": {
+    "input_tokens": 14,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens": 5,
+    "output_tokens_details": { "reasoning_tokens": 0 },
+    "total_tokens": 19
+  }
+}

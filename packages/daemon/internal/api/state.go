@@ -125,6 +125,13 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// QuestionsForController is every question to a stopped agent that the daemon's answer loop
+	// passed to the controller in the last QuestionsForControllerWindow, newest first and at most
+	// QuestionsForControllerLimit of them: the agent-question notice is a live wake only, so a
+	// controller that starts later reads here what it missed. The array is never null. The
+	// daemon omits it only for callers below the questions-for-controller entry's contract.
+	// See questionsForControllerHidden.
+	QuestionsForController []QuestionForController `json:"questionsForController"`
 	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
 	// locator names a pod and that record one — the claims that hold a process, which are the
 	// ones a plugin reads this daemon's answers from (api's lowestPluginContract). Absent where
@@ -159,6 +166,50 @@ type State struct {
 	// intakeGiveUpsHidden is the same for IntakeGiveUps, set on the copy the route serves a caller
 	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
 	intakeGiveUpsHidden bool
+	// questionsForControllerHidden is the same for QuestionsForController, set on the copy the
+	// route serves a caller below the questions-for-controller entry's contract
+	// (withoutQuestionsForController): the array is written on every other body, empty included,
+	// and a strict reader before that contract refuses the key however empty, so MarshalJSON leaves
+	// it off that one body. It composes with the other flags. A caller below wakesWaitingContract
+	// also stands below claimsToRefreshContract, intakeGiveUpsContract and this contract.
+	questionsForControllerHidden bool
+}
+
+// QuestionsForControllerWindow is how far back the state lists the questions passed to the
+// controller, and QuestionsForControllerLimit the most it lists.
+const (
+	QuestionsForControllerWindow = 7 * 24 * time.Hour
+	QuestionsForControllerLimit  = 100
+)
+
+// QuestionForController is one question the answer loop passed to the controller, as its
+// agent-question notice named it: the question's id, the agent's issue, role and session, who asked
+// (`user:<login>`, or `session:<id>` with the asking session's title when known), where (a
+// dispatch:// reference, or `envoy:<event id>`), why it was passed on (`not_answered`,
+// `needs_work`, a bound or fault the answer met, `over_limit`, `unknown_format`, `no_provider`,
+// `no_price`, `unmetered`, `no_conversation`, `post_refused`, `held_for_cyber_policy`), when, and
+// every gh call that writes which the loop ran for it (Writes, never null), each as the
+// controller's agent-question notice carries it (record.AgentQuestionWrite, ghtool.Writes).
+type QuestionForController struct {
+	ID       string                      `json:"id"`
+	Issue    string                      `json:"issue"`
+	Role     claim.Role                  `json:"role"`
+	Session  string                      `json:"session"`
+	Asker    string                      `json:"asker"`
+	Ref      string                      `json:"ref"`
+	Reason   string                      `json:"reason"`
+	PassedAt time.Time                   `json:"passedAt"`
+	Writes   []record.AgentQuestionWrite `json:"writes"`
+}
+
+// MarshalJSON writes a question's Writes as [] when it holds none, never null.
+func (q QuestionForController) MarshalJSON() ([]byte, error) {
+	type wire QuestionForController
+	out := wire(q)
+	if out.Writes == nil {
+		out.Writes = []record.AgentQuestionWrite{}
+	}
+	return json.Marshal(out)
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -552,25 +603,19 @@ type DispatchCredentialView struct {
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
-// `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the three keys a
-// contract band hides from a caller below it, `wakesWaiting`, `claimsToRefresh` and
-// `intakeGiveUps`: such a body carries no key of that name at all, and is marshaled through a
-// value whose own field of that name shadows the embedded one. Admission.MarshalJSON hides `trees`
-// and `held`, the two keys of its own block a downgrade hides, with `omitzero` on those fields
-// instead. The optional keys need none of this: `controllerLocator`, `agentSecretsLogin`, `paused`
-// and `lastPause` are pointers with `omitempty`, absent wherever the state holds none, which is
-// how a band hides them too (withoutPause).
+// `strandedClaims`, `wakesWaiting`, `capabilities`, `consumers` and `questionsForController`
+// arrays on the wire: a nil Go map or slice is `null`, which the plugin's reader refuses. The
+// exceptions are the keys a contract band hides from an older caller: `wakesWaiting`,
+// `claimsToRefresh`, `intakeGiveUps` and `questionsForController`. Such a body carries no key of
+// that name and is marshaled through a value whose own field shadows the embedded one.
+// Admission.MarshalJSON hides `trees` and `held` with `omitzero`. The optional keys
+// `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` use `omitempty`.
 //
-// One shadow type carries the three keys, and its fields are pointers. `omitempty` leaves out a
-// nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane, two
-// empty lists for the `intakeGiveUps` of an intake with none open. A `[]WakeWaiting` field could
-// not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
-// what lets one type serve every key — each field set when its key is not hidden and left nil
-// when it is — rather than a struct per set of flags. The bands compose, so a caller below
-// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (228)
-// as well and is served none of the three.
+// The shadow fields are pointers. `omitempty` leaves out a nil pointer and writes every
+// non-nil value, including empty lists for `wakesWaiting` and `questionsForController`, a zero
+// `claimsToRefresh` count, or an `intakeGiveUps` with no open records. A slice field by itself
+// could not write an empty array with `omitempty`. The bands compose: a caller below 53 is
+// below 73, 228 and the questions-for-controller entry too and receives none of the four keys.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
@@ -598,17 +643,21 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.Consumers == nil {
 		out.Consumers = []ConsumerLagView{}
 	}
+	if out.QuestionsForController == nil {
+		out.QuestionsForController = []QuestionForController{}
+	}
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.intakeGiveUpsHidden {
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.intakeGiveUpsHidden && !s.questionsForControllerHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting     `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int               `json:"claimsToRefresh,omitempty"`
-		IntakeGiveUps   *IntakeGiveUpsView `json:"intakeGiveUps,omitempty"`
+		WakesWaiting           *[]WakeWaiting           `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh        *int                     `json:"claimsToRefresh,omitempty"`
+		IntakeGiveUps          *IntakeGiveUpsView       `json:"intakeGiveUps,omitempty"`
+		QuestionsForController *[]QuestionForController `json:"questionsForController,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
@@ -618,6 +667,9 @@ func (s State) MarshalJSON() ([]byte, error) {
 	}
 	if !s.intakeGiveUpsHidden {
 		shadow.IntakeGiveUps = &shadow.wire.IntakeGiveUps
+	}
+	if !s.questionsForControllerHidden {
+		shadow.QuestionsForController = &shadow.wire.QuestionsForController
 	}
 	return json.Marshal(shadow)
 }

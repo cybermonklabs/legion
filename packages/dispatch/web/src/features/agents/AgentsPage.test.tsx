@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import { NO_LIVE_SESSION, RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
   onlineManager,
@@ -1640,7 +1640,7 @@ test("Agents retain targeted-message retries and attempt history", async () => {
         created_at: recentAttemptAt,
         delivery: "btw",
         envelope_id: null,
-        error: "no live session planner-session",
+        error: `${NO_LIVE_SESSION} planner-session`,
         message_id: "message-1",
         reply_id: null,
         session_id: "planner-session",
@@ -1691,7 +1691,7 @@ test("Use Send instead is disabled when the target does not advertise steer", as
         created_at: recentAttemptAt,
         delivery: "btw",
         envelope_id: null,
-        error: "no live session planner-session",
+        error: `${NO_LIVE_SESSION} planner-session`,
         message_id: "message-1",
         reply_id: null,
         session_id: "planner-session",
@@ -2532,7 +2532,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
         created_at: recentAttemptAt,
         delivery: "steer",
         envelope_id: null,
-        error: "no live session old-reviewer-session",
+        error: `${NO_LIVE_SESSION} old-reviewer-session`,
         message_id: "message-1",
         reply_id: null,
         session_id: "old-reviewer-session",
@@ -2611,7 +2611,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
         created_at: recentAttemptAt,
         delivery: "steer",
         envelope_id: null,
-        error: "no live session old-reviewer-session",
+        error: `${NO_LIVE_SESSION} old-reviewer-session`,
         message_id: "message-3",
         reply_id: null,
         session_id: "old-reviewer-session",
@@ -3378,7 +3378,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     expect(chips()[0]).toEndWith(
       ` · couldn't check whether it is running. ${AGENT_LIST_REFILLING} ✕`
     );
-    expect(chips()[0]).not.toContain("no live session");
+    expect(chips()[0]).not.toContain(NO_LIVE_SESSION);
     expect(chips()[1]).toBe("Reviewer ✕");
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
       "Broadcast to 2 of 2 selected"

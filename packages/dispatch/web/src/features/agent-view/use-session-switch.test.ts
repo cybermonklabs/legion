@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
+import { NO_LIVE_SESSION } from "@legion/contracts";
 import { act, type RenderHookResult, renderHook } from "@testing-library/react";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Message, MessageDelivery, MessageRead } from "../../api/types";
@@ -150,18 +151,18 @@ test("a refusal shows the session's own reason", async () => {
 test("a send Dispatch answers with a failed attempt ends at once, saying no answer came", async () => {
   const hook = renderSwitch();
   const failed = switchMessage("s1", "/model anthropic/model-b", [
-    attempt({ envelope_id: null, error: "no live session", state: "failed" }),
+    attempt({ envelope_id: null, error: NO_LIVE_SESSION, state: "failed" }),
   ]);
   await pick(hook, MODEL_B, failed);
   expect(hook.result.current.status).toEqual(
-    words("No answer came from the session: no live session")
+    words(`No answer came from the session: ${NO_LIVE_SESSION}`)
   );
   expect(hook.result.current.pending).toBe(false);
 
   // The stored thread then holds the same failed attempt, which is not the session answering.
   hook.rerender({ thread: [{ message: failed, replies: [] }] });
   expect(hook.result.current.status).toEqual(
-    words("No answer came from the session: no live session")
+    words(`No answer came from the session: ${NO_LIVE_SESSION}`)
   );
 });
 

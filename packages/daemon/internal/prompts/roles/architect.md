@@ -192,11 +192,15 @@ Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: 
 the implementer on it once the task's last step passes, your sign-off where your acceptance is that
 step (on a parent, once nothing holds it, `retro-held`). Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
-reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
-the child: where the project opens a production check, it follows the close in the tester's own
-session and on the pull request, and asks nothing of you. A tester completion that rejects the
-implementer's results goes back to the implementer, or to the earlier step its completion names;
-a worker that reports
+reaches that session, and wakes the role when the daemon released its idle pod. A role whose
+session stopped all the same (its relaunches ran out) has that publish kept for one hour, and
+Envoy tells you if no session takes it by then. Once the role's issue has left the workflow, a
+deployment's daemon that answers for stopped agents replies in the role's name from its own
+conversation, or says it cannot answer now and passes the question to the controller.
+The merge closes the child: where the project opens a production check, it follows the close in
+the tester's own session and on the pull request, and asks nothing of you. A tester completion
+that rejects the implementer's results goes back to the implementer, or to the earlier step its
+completion names; a worker that reports
 no surface reaches the changed path gets the surface built in this tree
 (`skill://legion-architect`, wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue

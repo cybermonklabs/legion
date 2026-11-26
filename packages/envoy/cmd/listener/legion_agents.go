@@ -192,6 +192,11 @@ func (r *legionAgentRegistry) serving(w http.ResponseWriter) (*legionagents.Stor
 	return state.store, true
 }
 
+// store is the store the routes read and write, nil while the bucket is not open. It is what a
+// caller that has no response to write asks: the Legion hand-off, which answers as it does
+// without a registry (handOffToLegion).
+func (r *legionAgentRegistry) store() *legionagents.Store { return r.state.Load().store }
+
 // legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
 const legionAgentBodyLimit = 1 << 20
 
@@ -206,18 +211,39 @@ type legionAgentBatchFailure struct {
 // answerLegionAgent is one registry entry as a read answers it (listenerwire.LegionAgentAnswer):
 // its live is the session's own registration state, as every reader of the session registry
 // judges it (session.StateOf through SessionRegistry.Lookup, sessionIsLive), never membership of
-// the session cache or of the registry.
-func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) listenerwire.LegionAgentAnswer {
+// the session cache or of the registry, and its answering is its project's flag
+// (legionProjectAnswers).
+func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent, answering bool) listenerwire.LegionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
-	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state)}
+	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state), Answering: answering}
 }
 
-func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) listenerwire.LegionAgentList {
+// answerLegionAgents is a listing as a read answers it, reading each project's answering record
+// once however many of the listing's entries it holds. projects holds the flags the read has
+// already read, by project, and gains each one this reads.
+func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent, projects map[string]bool) (listenerwire.LegionAgentList, error) {
 	entries := make([]listenerwire.LegionAgentAnswer, len(agents))
 	for i, agent := range agents {
-		entries[i] = answerLegionAgent(sessions, agent)
+		answering, read := projects[agent.LegionProject]
+		if !read {
+			var err error
+			if answering, err = legionProjectAnswers(ctx, registry, agent.LegionProject); err != nil {
+				return listenerwire.LegionAgentList{}, err
+			}
+			projects[agent.LegionProject] = answering
+		}
+		entries[i] = answerLegionAgent(sessions, agent, answering)
 	}
-	return listenerwire.LegionAgentList{Entries: entries}
+	return listenerwire.LegionAgentList{Entries: entries}, nil
+}
+
+// legionProjectAnswers reports whether project last stated that its daemon answers for its
+// stopped agents: its answering record's flag, false when it holds none. Its error is a record the
+// bucket did not answer, which the read answers as it answers any read the bucket did not answer
+// (writeLegionAgentError).
+func legionProjectAnswers(ctx context.Context, registry *legionagents.Store, project string) (bool, error) {
+	record, found, err := registry.Project(ctx, project)
+	return found && record.Answering, err
 }
 
 // legionAgentReadContext bounds a whole registry read, a session key and its role token's listing
@@ -285,11 +311,30 @@ func decodeLegionAgentBody(w http.ResponseWriter, r *http.Request, into any) boo
 	return true
 }
 
+// refuseRegistryWrite answers a write of the Legion agent registry with its refusal, if it has
+// one, and reports whether it answered. The edge refuses every such write 403
+// (edgeLegionWriteRefusal); elsewhere a caller whose credential names a session is refused 403
+// (registryWriteBySession), which logs that refusal to logger. The edge's rule is read first, so
+// a broker token at the edge gets the edge's answer. Each handler that writes the registry calls
+// it before it reads the body, so a refused write writes nothing.
+func refuseRegistryWrite(w http.ResponseWriter, r *http.Request, logger *logging.Logger) bool {
+	if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+		refusal.write(w)
+		return true
+	}
+	if refusal := registryWriteBySession(r, logger); refusal != "" {
+		writeJSONError(w, http.StatusForbidden, refusal)
+		return true
+	}
+	return false
+}
+
 // legionAgentSessionHandler serves /v1/legion/agents/sessions/<session_id>. GET answers the
-// session's entry, its replacement within its role token and whether it is live, or
-// `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry for it. PUT records the
-// one entry its body holds, whose session_id must be the path's, and answers it as stored.
-func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
+// session's entry, its replacement within its role token, whether it is live and whether its
+// project answers, or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry
+// for it. PUT records the one entry its body holds, whose session_id must be the path's, and
+// answers it as stored, unless it is refused as every registry write may be (refuseRegistryWrite).
+func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/legion/agents/sessions/")
 		if sessionID == "" {
@@ -319,17 +364,21 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 					err = legionagents.ErrNotFound
 				}
 			}
-			switch {
-			case errors.Is(err, legionagents.ErrNotFound):
+			if errors.Is(err, legionagents.ErrNotFound) {
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
-			case err != nil:
-				writeLegionAgentError(w, err)
-			default:
-				writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent))
+				return
 			}
+			var answering bool
+			if err == nil {
+				answering, err = legionProjectAnswers(ctx, registry, agent.LegionProject)
+			}
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent, answering))
 		case http.MethodPut:
-			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
-				refusal.write(w)
+			if refuseRegistryWrite(w, r, logger) {
 				return
 			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
@@ -361,7 +410,11 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 }
 
 // legionAgentRoleHandler serves GET /v1/legion/agents/roles/<role_token>: every session of the role
-// token, newest first, the first being its current holder, `[]` when none.
+// token, newest first, the first being its current holder, `[]` when none, and the flag the role
+// token's own project last stated in its answering record, entries or none
+// (listenerwire.LegionRoleAgentList). The edge answers that flag only for a role whose issue is of
+// one of its token's projects (edgeScope.showsIssue), the rule it shows the role's entries by, and
+// false for any other.
 func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -384,12 +437,27 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+		scope := edgeScopeOf(r, nil)
+		agents, err = scope.agentsConfirmed(ctx, d.sessions, agents)
 		if err != nil {
 			writeLegionAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
+		project, issue := legionagents.RoleTokenParts(token)
+		answering, projects := false, map[string]bool{}
+		if scope.showsIssue(issue) {
+			if answering, err = legionProjectAnswers(ctx, registry, project); err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
+			projects[project] = answering
+		}
+		list, err := answerLegionAgents(ctx, registry, d.sessions, agents, projects)
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, listenerwire.LegionRoleAgentList{LegionAgentList: list, Answering: answering})
 	}
 }
 
@@ -398,8 +466,9 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 // `{"entries":[…]}` of at most legionagents.MaxBatch entries in a body of at most
 // legionAgentBodyLimit bytes, all validated and checked before the first write, so one bad entry
 // refuses the batch with nothing written. A batch that fails after that answers how many entries
-// were written (writeLegionAgentError).
-func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
+// were written (writeLegionAgentError). A PUT is first refused as every registry write may be
+// (refuseRegistryWrite).
+func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -424,15 +493,17 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
-		case http.MethodPut:
-			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
-				refusal.write(w)
+			list, err := answerLegionAgents(ctx, registry, d.sessions, agents, map[string]bool{})
+			if err != nil {
+				writeLegionAgentError(w, err)
 				return
 			}
-			var body struct {
-				Entries []legionagents.Entry `json:"entries"`
+			writeJSON(w, http.StatusOK, list)
+		case http.MethodPut:
+			if refuseRegistryWrite(w, r, logger) {
+				return
 			}
+			var body listenerwire.LegionAgentBatch
 			if !decodeLegionAgentBody(w, r, &body) {
 				return
 			}
@@ -449,9 +520,54 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string][]legionagents.Entry{"entries": stored})
+			writeJSON(w, http.StatusOK, listenerwire.LegionAgentBatch{Entries: stored})
 		default:
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	}
+}
+
+// legionProjectHandler serves PUT /v1/legion/projects/<legion_project>: the project's answering
+// record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, which the Legion daemon writes at
+// boot and every minute while it answers for the project's stopped agents (legionagents.Project).
+// It answers the record as stored. It is refused as every registry write may be
+// (refuseRegistryWrite); a path that is not a Legion project token, a body without answering, or
+// an updated_at that is not an RFC 3339 UTC time is a 400; and none writes anything.
+func legionProjectHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if refuseRegistryWrite(w, r, logger) {
+			return
+		}
+		project := strings.TrimPrefix(r.URL.Path, "/v1/legion/projects/")
+		if project == "" {
+			writeJSONError(w, http.StatusBadRequest, "legion_project is required", "legion_project")
+			return
+		}
+		if err := legionagents.ValidateProject(project); err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		var body listenerwire.LegionProjectRequest
+		if !decodeLegionAgentBody(w, r, &body) {
+			return
+		}
+		if body.Answering == nil {
+			writeJSONError(w, http.StatusBadRequest, "answering is required", "answering")
+			return
+		}
+		registry, ok := d.legionAgents.serving(w)
+		if !ok {
+			return
+		}
+		stored, err := registry.PutProject(r.Context(), project, legionagents.Project{Answering: *body.Answering, UpdatedAt: body.UpdatedAt})
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stored)
 	}
 }

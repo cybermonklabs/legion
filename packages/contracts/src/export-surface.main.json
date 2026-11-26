@@ -523,6 +523,7 @@
     "MyReplyRow": "type",
     "MyReplySession": "type",
     "MyReplyThreadRow": "type",
+    "NO_LIVE_SESSION": "constant",
     "NewIssueSettings": "type",
     "NewIssueSettingsInput": "type",
     "OpenAsk": "type",

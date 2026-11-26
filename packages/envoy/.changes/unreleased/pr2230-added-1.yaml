@@ -1,0 +1,41 @@
+kind: Added
+body: |-
+  The listener hands a message for a stopped Legion agent to the agent's daemon instead of
+  refusing it. A send to a session with no live registration, a role publish with no
+  live holder, and an agent-subject message on the bus that no session
+  takes — whether the stopped agent left an interest row naming the delivering listener, which
+  every agent that ran on one leaves and which outlives its session record, or left none — are
+  published to
+  `notifications.legion.<legion_project>.agents.<session>` as
+  `{original_topic, target_session, role_token, project, envelope}` when the Legion agent
+  registry names the session (for a role, the role token's newest session), the project's
+  answering record last said it answers, the session registry reports that session gone, the
+  source is not `envoy`, and the body does not carry `"handoff": false`. The caller gets the 200
+  a delivered message gets, with `recipient` set to the session; the hand-off's JetStream MsgId
+  comes from the envelope's dedupe key, so the copies two listeners hand off for one bus message
+  are stored once, a send or role publish repeated under one key answers `duplicate: true` as a
+  live session's repeat does (the role publish answer gains the field for this), and a bus
+  message is acknowledged only once its hand-off is stored. A send or role publish whose
+  hand-off meets an earlier attempt under the same MsgId still in process on the stream is
+  answered `duplicate: true` once the stream names that attempt's copy, or `503` with
+  `code: maybe_stored` when its time runs out first, and a bus message's hand-off gets 10 s,
+  after which the message is NAKed and tried again. Otherwise
+  every path answers exactly as before. The answering record is the project's last stated flag
+  and never expires: a project whose daemon stated `answering: true` has its agents' messages
+  handed off whether that daemon runs now or not, and the daemon answers them when it returns; a
+  project that stated `answering: false`, or stated nothing, keeps today's 404 or failed
+  delivery. The daemon writes the record through the new
+  `PUT /v1/legion/projects/{legion_project}` `{answering, updated_at}`, stored as
+  `project.<legion_project>` in the `legion_agents` bucket.
+
+  A role is handed off to the registry's newest entry for its token whether that entry's issue
+  has left the workflow or not: a worker that failed, or that the workflow, an operator or the
+  daemon's idle release suspended, has stopped with the role unclaimed, and its daemon answers the
+  role's message from that worker's conversation, as it does for a finished role's last worker,
+  or wakes the worker for it. A role the registry holds no entry for keeps the 202 it had before
+  (`kept: true`, `kept_reason: unclaimed`), for the role's first holder. A send addressed to a
+  session id is unchanged: that session has stopped, whether or not the daemon released its idle
+  pod, and the message is for it, not for a role.
+time: 2026-11-08T10:00:00.000000000Z
+custom:
+    Issue: pr2230

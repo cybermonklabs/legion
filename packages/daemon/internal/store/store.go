@@ -166,8 +166,7 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 // opens reports its refusal this way, the daemon's own and Oh My Pi's session database's
 // (internal/ompsessions).
 func ConnectError(dsn string, err error) error {
-	address, password := target(dsn)
-	return &connectError{address: address, password: password, err: err}
+	return &connectError{address: target(dsn), err: err}
 }
 
 // OpenRetryable reports whether err, an error Open returned, is one the next attempt to open the
@@ -536,42 +535,124 @@ func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 
 // connectError says where the daemon could not reach Postgres without saying
 // how it would have got in: an operator reads this in a boot refusal, and a
-// DSN's password has no business in a log line.
+// DSN's password has no business in a log line. It holds no password to hide:
+// what it hides it finds by where a DSN keeps one (redactConnString).
 type connectError struct {
-	address  string
-	password string
-	err      error
+	address string
+	err     error
 }
 
 func (e *connectError) Error() string {
-	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
+	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactConnString(e.err.Error()))
 }
 
-// redactPassword hides a password where a driver would print one: after the
-// password= of a keyword DSN, and between the : and @ of a URL. Only in those
-// positions — a password equal to the user or the database name is the
-// ordinary devbox DSN (postgres://legion:legion@…), and blanking every
+// redactConnString hides a password where a driver would print one, by its
+// position alone and knowing nothing of the password itself: the value after
+// the password= of a keyword DSN, and the password of a URL's userinfo, between
+// the colon after its user and the @ before its host. Only in those positions:
+// a password equal to the user or the database name is the ordinary devbox DSN,
+// whose user, password and database are all legion, and blanking every
 // occurrence would hide the fields an operator reads to diagnose a refusal.
-func redactPassword(detail, password string) string {
-	if password == "" {
+func redactConnString(detail string) string {
+	return redactKeywordValues(redactURLs(detail))
+}
+
+// redactURLs is redactConnString's URL half: the password of each URL's
+// userinfo becomes xxxxx. The userinfo is read as pgx and libpq read a URL DSN's:
+// it runs from the :// to the first @ that comes before any /, and its password
+// is whatever follows its first :. Text with none is answered as it is.
+func redactURLs(detail string) string {
+	var out strings.Builder
+	written := 0 // detail[:written] is in out
+	for at := 0; ; {
+		i := strings.Index(detail[at:], "://")
+		if i < 0 {
+			break
+		}
+		at += i + len("://")
+		end := strings.IndexAny(detail[at:], "@/")
+		if end < 0 || detail[at+end] != '@' {
+			continue
+		}
+		colon := strings.IndexByte(detail[at:at+end], ':')
+		if colon < 0 {
+			continue
+		}
+		out.WriteString(detail[written : at+colon+1])
+		out.WriteString("xxxxx")
+		at += end
+		written = at
+	}
+	if written == 0 {
 		return detail
 	}
-	detail = strings.ReplaceAll(detail, "password="+password, "password=xxxxx")
-	return strings.ReplaceAll(detail, ":"+password+"@", ":xxxxx@")
+	out.WriteString(detail[written:])
+	return out.String()
+}
+
+// redactKeywordValues is redactConnString's keyword half: every value given
+// after password=, read as libpq reads a keyword DSN's value
+// (keywordValueLength), becomes xxxxx. Text with none is answered as it is.
+func redactKeywordValues(detail string) string {
+	const marker = "password="
+	var out strings.Builder
+	written := 0 // detail[:written] is in out
+	for at := 0; ; {
+		i := strings.Index(detail[at:], marker)
+		if i < 0 {
+			break
+		}
+		at += i + len(marker)
+		out.WriteString(detail[written:at])
+		out.WriteString("xxxxx")
+		at += keywordValueLength(detail[at:])
+		written = at
+	}
+	if written == 0 {
+		return detail
+	}
+	out.WriteString(detail[written:])
+	return out.String()
+}
+
+// keywordValueLength is the length of the keyword DSN value text begins with,
+// as libpq reads one: single-quoted, to its closing quote, and unquoted, to the
+// first whitespace or the end, a backslash taking the byte after it into the
+// value in both (libpq's \' and \\).
+func keywordValueLength(text string) int {
+	quoted := strings.HasPrefix(text, "'")
+	i := 0
+	if quoted {
+		i = 1
+	}
+	for ; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '\'':
+			if quoted {
+				return i + 1
+			}
+		case ' ', '\t', '\n', '\v', '\f', '\r':
+			if !quoted {
+				return i
+			}
+		}
+	}
+	return len(text)
 }
 
 func (e *connectError) Unwrap() error { return e.err }
 
-// target reads the address a DSN points at and the password it carries. pgx
+// target reads the address a DSN points at, and nothing else of it. pgx
 // understands both the URL and the keyword/value forms; url.Parse answers for a
 // DSN pgx itself rejects, so even then the operator learns the host.
-func target(dsn string) (string, string) {
+func target(dsn string) string {
 	if config, err := pgconn.ParseConfig(dsn); err == nil && config.Host != "" {
-		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), config.Password
+		return net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port)))
 	}
 	if parsed, err := url.Parse(dsn); err == nil && parsed.Host != "" {
-		password, _ := parsed.User.Password()
-		return parsed.Host, password
+		return parsed.Host
 	}
-	return "the configured Postgres", ""
+	return "the configured Postgres"
 }

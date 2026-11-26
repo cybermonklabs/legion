@@ -69,9 +69,10 @@ leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the p
 three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
 internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
 tests, the forced-order tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox,
-internal/workflow, internal/admit, internal/api and the rest, about 874 s of package time over
-four cores, and the stamped shape gate, which reuses the test build of internal/api that leg 3's
-plain step compiled.
+internal/workflow, internal/admit, internal/api and the rest, about 938 s of package time over
+four cores (874 s in those groups, and 64 s for the answer loop's three longest packages in
+pull-request run 45683245721), and the stamped shape gate, which reuses the test build of
+internal/api that leg 3's plain step compiled.
 
 The rules the legs keep:
 

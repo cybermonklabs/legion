@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  The answer loop has a third tool, `web_search`: one web search, which the daemon runs as one
+  Anthropic Messages call (`POST <answers.providers.anthropic base_url>/v1/messages`, with the key
+  and headers the loop's own Anthropic calls carry) on `answers.web_search.model` with Anthropic's
+  web search server tool allowed one search. The model reads the reply's text and the address of
+  each source it names, cut at `gh_output_chars`. A `max_uses_exceeded` error block, which the
+  Messages API answers for a second search the model attempted past that one, keeps the text and
+  sources of the search that completed beside it; any other error block, a `max_uses_exceeded`
+  block with no completed search, an error status or a body that does not decode is an error
+  result naming the cause. An answer makes at most 3 searches, an earlier run's counted, and the
+  fourth is refused before any request. Configure it with the new
+  `answers.web_search` block, whose `model` (an `anthropic/<model>` that `answers.prices` prices)
+  and `price_per_search` (USD per search, a plain number) are both required; without the block, or
+  without an `anthropic` provider, the tool is not offered and the boot's `answers: tools` line and
+  `legion config check` say why. Each call costs its tokens at the model's price plus its searches,
+  counted from the reply's search result blocks, times `price_per_search`; that cost is the
+  answer's, counted toward `daily_usd`, and the `answers: answered` line carries `webSearches` and
+  `webSearchUSD` beside `costUSD`, since a gateway's `x-litellm-response-cost` does not count the
+  search fee. Each call is recorded in `answer_tool_calls` with tool `web_search`; one the daemon
+  stopped during is told to the next run as of unknown outcome and never made again.
+time: 2026-11-24T09:00:00.000000000Z
+custom:
+    Issue: pr2230

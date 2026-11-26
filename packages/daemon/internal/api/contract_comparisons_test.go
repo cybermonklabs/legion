@@ -83,6 +83,8 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "Bands", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "stateFor", "strip < narrowing.contract"),
 		comparedIn("internal/api/shaping.go", "shapeIssue", "strip < narrowing.contract"),
+	}, declares: []declarationSite{
+		{"internal/api/contract_20261125161252_questions-for-controller.go", "questionsForControllerContract"},
 	}},
 	{row: "Stand-ins", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "stateFor", "restore < fixAttemptsContract", "restore < *.contract"),

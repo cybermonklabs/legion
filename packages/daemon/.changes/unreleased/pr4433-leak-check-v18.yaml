@@ -6,5 +6,5 @@ body: |-
   of a forward merge of 162 commits of `main` took 7.2 s with `leak-check-v18` and 265.3 s with
   `leak-check-v15`, and a push of one new commit took 2.9 s and 3.7 to 4.3 s. Both tags refused a
   commit holding a credential, and the guard refused one naming a Tailscale MagicDNS host on both.
-  `legion gh`'s list of reads is proven against `leak-check-v18` too (`ghReadsProvenCheck`), so a
+  `legion gh`'s list of reads is proven against `leak-check-v18` too (`ghroute.ReadsProvenCheckTag`), so a
   call that writes nothing still skips the visibility read in a pod on the new pin.

@@ -1,0 +1,60 @@
+kind: Added
+body: |-
+  The daemon can answer a question sent to a Legion agent that is not running (suspended by the
+  workflow, released with its idle issue pod or by a project's pause, retired or closed) from that
+  agent's own conversation, without starting its pod. An
+  operator turns it on with the `answers:` block of `legion.yaml`: the model providers, their
+  prices, the bounds and the conversation store. Without that block the daemon behaves as before
+  and tells the Envoy listener that it does not answer. Under `runtime: kubernetes`, a block that
+  names no connection to the conversation store (`conversation_store.dsn_file` under
+  `session_store: postgres`, `conversation_store.user` under `cloudsql-iam`) leaves the loop off
+  in the same way: the daemon boots, `legion start` logs one warning saying why and
+  `legion config check` prints it after `Config OK`, and a message to a stopped agent is refused
+  and dropped as it is without the block. A block that names no model provider (`providers`
+  absent, null or empty) leaves the loop off the same way under either runtime, with its own
+  warning in place of the conversation store's. With `dispatch_token_broker: true` the loop is off
+  whatever the block names, with a warning of its own: the daemon's Dispatch credential then acts
+  only as `legion-daemon:<PROJECT>`, Dispatch refuses with it a reply written in a stopped agent's
+  name, and the loop's `dispatch` tool has no Dispatch token for an agent's session.
+
+  The daemon reads and appends Oh My Pi and Claude Code conversations, answers on the model the
+  agent last ran on, and posts the answer in the agent's name where the question was asked. The
+  model gets a `gh` tool that acts as the agent's role App, and every call passes the shared leak
+  guard before gh starts. A review that tool submits names, in its Legion footer, the head the
+  agent's recorded round read, and the tool refuses the review when the pull request's head is
+  not that head.
+
+  A question the loop cannot answer, or a request for work, goes to the controller once
+  (`agent-question`, and `questionsForController` in `legion state`). So does a question to an
+  agent whose claim is held for OpenAI's cyber-policy refusal of its session's content
+  (`held_for_cyber_policy`), for which the loop calls no model. A person's decision on a
+  stopped agent's ask goes to the running architect, else to the controller (`agent-decision`).
+  The Envoy listener hands the message of a claim the daemon released (an idle release of its
+  issue pod, or a project's pause) to the daemon as it hands any stopped agent's, with no wake.
+  The loop answers such an agent's question from its conversation, and a question it answered
+  wakes nothing. The loop gives the agent everything else that reaches it through one outbox row
+  (`agent_message`) that wakes the claim and delivers the message once the woken session holds
+  its role, held during a pause and delivered after the resume: a person's decision on its ask;
+  every other Dispatch event that reached it, asks it nothing and is no act of its own session,
+  such as a message, comment or reply, an edit or resolution of one, the answer to, a reply on, or
+  the resolution or edit of an ask the agent follows but did not open, which the row names as an
+  ask it follows and not as its own, a hand-back, a claim, an issue event or a delivery receipt; a
+  message of a source no agent answers, such as a GitHub notification; a reply of kind `none`; and
+  every reply the controller would hear of, for which the loop posts nothing, appends nothing and
+  tells the controller nothing. A person's review of the agent's own approval request wakes
+  nothing, since the design gate relays it to the architect as the document's review, and neither
+  does the agent's own reply or its own hand-back of its approval request. Where the question's
+  calls already ran a `gh` or `dispatch` write, the row names each after the message, so the
+  agent does not repeat one. A decision that also asks is answered, appended and posted first, and
+  its row then says where the answer is. Once the claim is held for OpenAI's cyber-policy refusal,
+  such a decision wakes nothing and goes on as the `agent-decision` notice it would have been for
+  an agent that was not released.
+
+  The daemon reads the messages the listener hands it through the durable consumer
+  `legion-go-<project>-answers`, and a message whose handling keeps failing is retried, given up
+  and kept as an intake message is: under that consumer's name in its record, in the controller's
+  `intake-gave-up` notice and in `legion state`. A replay hands it to the answer loop again, and
+  fails while the loop is off.
+time: 2026-11-17T05:20:13.000000000Z
+custom:
+    Issue: pr2230

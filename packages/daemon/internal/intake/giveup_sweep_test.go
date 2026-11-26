@@ -110,7 +110,7 @@ func TestASweepGivesUpAFailingMessageItsConsumerWasMadeAgainPast(t *testing.T) {
 			}
 			waitAckFloor(t, stream, dispatch, applied.Sequence-1)
 
-			sweep := &failureSweep{consumers: consumers}
+			sweep := consumers.failureSweep()
 			clock.step()
 			sweep.pass(context.Background())
 			for _, seq := range []uint64{left.Sequence, touched.Sequence} {

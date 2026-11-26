@@ -645,9 +645,10 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 	if attempt.State != "failed" || attempt.Error == nil {
 		t.Fatalf("the mention's attempt = %#v, want it failed with a recorded cause", attempt)
 	}
-	// "no live session <id>" and anything starting with it alike: that prefix is the contract
-	// comment_delivery.go classifies a gone session on, and the dashboard prints verbatim.
-	if strings.HasPrefix(*attempt.Error, "no live session ") {
+	// "no live session <id>" (contracts.NoLiveSession, then the id) and anything starting with it
+	// alike: that prefix is the contract comment_delivery.go classifies a gone session on, and the
+	// dashboard prints verbatim.
+	if strings.HasPrefix(*attempt.Error, contracts.NoLiveSession+" ") {
 		t.Fatalf("the mention recorded %q, which Dispatch and the dashboard read as a session that has ended",
 			*attempt.Error)
 	}

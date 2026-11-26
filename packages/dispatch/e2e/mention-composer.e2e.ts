@@ -1,3 +1,5 @@
+import { NO_LIVE_SESSION } from "@legion/contracts";
+
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
@@ -610,14 +612,16 @@ test("a mention reaches a session the listener's list has dropped while its reco
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("sent");
-    await expect(deliveries).not.toContainText("no live session");
+    await expect(deliveries).not.toContainText(NO_LIVE_SESSION);
   } finally {
     await alice.close();
   }
 });
 
 // The other half of INFRA-249: a session the listener holds no record of has really ended, and
-// that is the one answer a reader may act on, so its wording must not have moved.
+// that is the one answer a reader may act on, so its wording must not have moved. The words are
+// spelt out here rather than read from NO_LIVE_SESSION for that reason: a change to the constant
+// changes the wording and fails this row.
 test("a mention of a session the listener holds no record of is still refused as no live session", async ({
   browser,
 }) => {
@@ -675,7 +679,7 @@ test("a mention of a session the listener could not read is refused with the lis
     await expect(deliveries).toContainText(
       "envoy listener: GET /v1/registry/planner returned 503: envoy: the message bus did not answer: nats: no responders available"
     );
-    await expect(deliveries).not.toContainText("no live session");
+    await expect(deliveries).not.toContainText(NO_LIVE_SESSION);
     expect(await getSentMessages()).toEqual([]);
   } finally {
     await alice.close();

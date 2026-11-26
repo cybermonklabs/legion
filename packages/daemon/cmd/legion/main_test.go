@@ -89,7 +89,7 @@ func TestMain(m *testing.M) {
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
-			ghReadsProvenCheck.sha256 = proven
+			ghProvenCheckSHA256 = proven
 		}
 		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
 		// test binary reads the variable; the legion binary has none, and its guards run the
@@ -136,10 +136,11 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
-	// LEGION_* variables out of the environment.
-	if deadline, ok := testBinaryDeadline(); ok {
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline
+	// (testwait.BinaryDeadline), here and in every run of it as `legion`, and in the `legion` it
+	// builds (boundByTheDeadline). After MustGuard, which takes LEGION_* variables out of the
+	// environment.
+	if deadline, ok := testwait.BinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
 			os.Exit(1)
@@ -1228,6 +1229,114 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// answersWithNoStore is an `answers` block, appended at a Kubernetes file's top level, that names
+// no connection to the conversation store: the loader leaves the loop off and warns
+// (config's answersOff), and a daemon on it runs as one without the block.
+const answersWithNoStore = "answers:\n  providers:\n" +
+	"    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key_file: ./anthropic-key}\n" +
+	"  prices:\n    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}\n"
+
+// answersWithNoProvider is an `answers` block, appended at a file's top level, that names no model
+// provider and no conversation store: the loader leaves the loop off with the provider line alone
+// (config's answersOffWithNoProvider), under either runtime.
+const answersWithNoProvider = "answers:\n  bounds: {concurrent: 2}\n"
+
+// answersOffUnderPostgres, answersOffUnderCloudSQL and answersOffWithNoProvider are the warning
+// each database store's file with answersWithNoStore gets, and the one any file with
+// answersWithNoProvider gets, word for word.
+const (
+	answersOffUnderPostgres  = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.dsn_file to the file holding the postgres:// URL of the database the conversations live in"
+	answersOffUnderCloudSQL  = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.user to the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as"
+	answersOffWithNoProvider = "answers is set, but the answer loop is off: answers.providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.providers to at least one provider (anthropic, openai) with its base_url and its key, and answers.prices to the price of each model the loop may answer on"
+	// answersOffNoStoreEither ends the provider line where a Kubernetes file names no connection
+	// to the conversation store either, as answersWithNoProvider does not.
+	answersOffNoStoreEither = ", and answers.conversation_store to the daemon's connection to the conversation store as well"
+)
+
+// A file that sets `answers` the loop cannot run on passes `legion config check` with exit 0, the
+// one warning saying the loop is off printed right after Config OK and before every other line:
+// a Kubernetes file whose block names no connection to the conversation store, under either
+// database store, and a file whose block names no model provider, under either runtime. What
+// follows is what the same file without `answers` prints. The check asks for no gh and no leak
+// check, as it does of a file without the block.
+func TestConfigCheckWarnsThatAnAnswersBlockItCannotRunLeavesTheLoopOff(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
+	legionState(t)
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	const cloudSQL = "    session_store: cloudsql-iam\n    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"
+	for _, tc := range []struct{ name, block, store, warning string }{
+		{"postgres, no conversation store", answersWithNoStore, "", answersOffUnderPostgres},
+		{"cloudsql-iam, no conversation store", answersWithNoStore, cloudSQL, answersOffUnderCloudSQL},
+		{"postgres, no provider", answersWithNoProvider, "", answersOffWithNoProvider + answersOffNoStoreEither},
+		{"cloudsql-iam, no provider", answersWithNoProvider, cloudSQL, answersOffWithNoProvider + answersOffNoStoreEither},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.block)
+			if tc.store != "" {
+				rewrite(t, config, "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n", tc.store)
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			want := "Config OK: project=DEMO design-gate-steps=spec\n" + tc.warning + "\n" + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap
+			if code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+	t.Run("tmux, no provider", func(t *testing.T) {
+		config := projectsConfig(t, "projects:\n  DEMO: {}\n"+answersWithNoProvider)
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		want := "Config OK: project=DEMO design-gate-steps=spec\n" + answersOffWithNoProvider + "\n" + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable
+		if code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+}
+
+// `legion start` on a Kubernetes file whose `answers` the loop cannot run on, for want of a
+// connection to the conversation store or of a model provider, logs the warning that the loop is
+// off once, before any other work it does with the file: the start below is refused for a team
+// another legion holds, which is read after the warnings are logged, so the line is in its log.
+// The App keys are written out, so the full load runs no command.
+func TestStartLogsTheAnswersOffWarningOnceAsItBoots(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
+	for _, tc := range []struct{ name, block, warning string }{
+		{"no conversation store", answersWithNoStore, answersOffUnderPostgres},
+		{"no provider", answersWithNoProvider, answersOffWithNoProvider + answersOffNoStoreEither},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			legions := legionState(t)
+			config := kubernetesCheckConfig(t, tc.block)
+			rewrite(t, config, `  implement: { app_id: "1", private_key_command: "exit 1" }
+  review: { app_id: "2", private_key_command: "exit 1" }
+`, `  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+`)
+			claim(t, legions, registry.Entry{
+				Team: "DEMO", ConfigPath: "/srv/legion.yaml", PID: runningLegion(t), Port: 13370,
+				Bind: "10.0.0.5", StartedAt: time.Now().UTC(),
+			})
+
+			var errb bytes.Buffer
+			if code := start(context.Background(), config, &errb); code != 1 {
+				t.Fatalf("exit code = %d, want 1 (the team is held); stderr %q", code, errb.String())
+			}
+			if count := strings.Count(errb.String(), tc.warning); count != 1 {
+				t.Errorf("the boot log carries the answers warning %d times, want once: %s", count, errb.String())
+			}
+			if !strings.Contains(errb.String(), "legion start: DEMO is already running") {
+				t.Errorf("the start stopped somewhere other than the held team: %s", errb.String())
+			}
+		})
 	}
 }
 
@@ -3193,6 +3302,60 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told the questions to stopped agents the daemon
+// passed to the controller in the last seven days, newest first, each with when, the agent's issue,
+// role and session, who asked, where and why; with none the line says so. The session and the
+// asker are quoted: an asking session's title is its agent's choice, and a newline in it is an
+// escape rather than a forged line of the listing, as a control character in a session is.
+func TestPlainStateListsTheQuestionsForTheController(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	for _, tc := range []struct {
+		name, questions, want string
+	}{
+		{
+			name: "two",
+			questions: `[{"id":"q-2","issue":"LEGION-9","role":"tester","session":"ses_tester","asker":"session:ses_asker (LEGION-9 implementer)",` +
+				`"ref":"envoy:evt-2","reason":"answer_seconds","passedAt":"2026-10-26T11:00:00Z"},` +
+				`{"id":"q-1","issue":"LEGION-8","role":"reviewer","session":"ses_reviewer","asker":"user:octocat",` +
+				`"ref":"dispatch://LEGION-8/message/m-1","reason":"not_answered","passedAt":"2026-10-20T09:30:00Z"}]`,
+			want: "questions for the controller: 2 in the last 7 days, newest first\n" +
+				"  2026-10-26T11:00:00Z LEGION-9 tester \"ses_tester\": from \"session:ses_asker (LEGION-9 implementer)\" at envoy:evt-2, answer_seconds (question q-2)\n" +
+				"  2026-10-20T09:30:00Z LEGION-8 reviewer \"ses_reviewer\": from \"user:octocat\" at dispatch://LEGION-8/message/m-1, not_answered (question q-1)\n",
+		},
+		{
+			name: "a control character in a title",
+			questions: `[{"id":"q-3","issue":"LEGION-9","role":"tester","session":"ses_tester\u001b[2J",` +
+				`"asker":"session:ses_asker (LEGION-9 implementer)\n  2026-10-26T11:00:00Z LEGION-9 tester ses_tester: from user:octocat",` +
+				`"ref":"envoy:evt-3","reason":"not_answered","passedAt":"2026-10-26T11:00:00Z"}]`,
+			want: "questions for the controller: 1 in the last 7 days, newest first\n" +
+				`  2026-10-26T11:00:00Z LEGION-9 tester "ses_tester\x1b[2J": from "session:ses_asker (LEGION-9 implementer)\n  2026-10-26T11:00:00Z LEGION-9 tester ses_tester: from user:octocat" at envoy:evt-3, not_answered (question q-3)` + "\n",
+		},
+		{name: "none", questions: `[]`, want: "questions for the controller: none in the last 7 days\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"questionsForController":` + tc.questions + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
 			}
 		})
 	}

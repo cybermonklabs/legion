@@ -1082,7 +1082,7 @@ func configurePackWindows(ctx context.Context, run Runner, cloneDir string) erro
 // ResolvedRemotes.BaseRepo), and, where none is and gh cannot prompt, to the first of its sorted
 // remotes, in which an `upstream` comes before origin. So with the marker, a worker who adds an
 // `upstream` remote leaves gh on origin, the issue's repository, and `legion gh` counts origin
-// alone there too (cmd/legion's markedOrigin).
+// alone there too (internal/ghroute's markedOrigin).
 //
 // A clone whose own configuration holds any gh-resolved line gets nothing written: a marker a
 // person set stays as they set it, and so does one that moved with a renamed remote (`gh repo

@@ -39,7 +39,7 @@ func fieldCheck(t *testing.T, req GhRequest) string {
 
 // stdinParse is the GhSent a caller's parse hands for a call whose one option of standard input
 // is option, named with use (field, the name of the field the input is the value of, "" for any
-// other option): what cmd/legion's ghSentFiles builds for it, by the rule of GhSent.Names.
+// other option): what internal/ghroute's sentFiles builds for it, by the rule of GhSent.Names.
 func stdinParse(option, field string, use StdinUse) *GhSent {
 	sent := &GhSent{}
 	sent.Names(option, "-", field, use)
@@ -216,8 +216,8 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 	fieldsAreTheBody := func(t *testing.T, args []string) {
 		t.Helper()
 		failed := setupFailure(t, ghFieldCall(t, GhRequest{Args: args}))
-		if failed.What != whatGhCall || !strings.Contains(failed.Why, upload) || !strings.Contains(failed.Why, "--input") {
-			t.Fatalf("the setup failure is %q, want one of %s whose why names %s and --input", failed.Error(), whatGhCall, upload)
+		if failed.What != WhatGhCall || !strings.Contains(failed.Why, upload) || !strings.Contains(failed.Why, "--input") {
+			t.Fatalf("the setup failure is %q, want one of %s whose why names %s and --input", failed.Error(), WhatGhCall, upload)
 		}
 	}
 	t.Run("--input <file> is refused", func(t *testing.T) {
@@ -471,7 +471,7 @@ func TestGhWorkflowRunJSONReadsItsInputsOneFieldAtATime(t *testing.T) {
 	apart := `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
 	together := `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
 	refusedWhole(t, apart)
-	// parsed is the GhSent `legion gh`'s parse hands for a run (cmd/legion's ghSentFiles):
+	// parsed is the GhSent `legion gh`'s parse hands for a run (internal/ghroute's sentFiles):
 	// standard input named by each field given `@-`, and as a request body where --json ends
 	// true (body).
 	parsed := func(body bool, fields ...string) *GhSent {

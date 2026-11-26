@@ -22,7 +22,10 @@
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
 # 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
 # daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
-# ran under a second or has no test.
+# ran under a second or has no test. The answer loop's packages (internal/conversation/omp,
+# internal/conversation/claude, internal/ghtool, internal/answerloop, internal/agenthistory,
+# internal/dispatchtool, internal/ghroute and internal/answer) had run in no merge group when they
+# were listed: their times are one pull-request run's, 45683245721 (daemon-go job 139449902589).
 # Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
@@ -36,11 +39,12 @@ packages/daemon:
   # took 407.4 s beside the other Postgres packages and a median 274 s beside three, with the small
   # packages and the steps that run no leg's packages (the race-impossible tests, the stamped shape
   # gate, the forced-order tests and the Stage 1 proof). Leg 3 is the rest, internal/workspace the
-  # longest, about 874 s of package time over four cores. Its times are not the four groups' above:
+  # longest, about 938 s of package time over four cores. Its times are not the four groups' above:
   # they are the medians of the last ten green merge groups that ran these legs (2026-11-25
   # 20:27Z-22:55Z: runs 45695186634, 45696132960, 45700055287, 45700222985, 45708557702,
   # 45711933885, 45712646870, 45713803817, 45715584525 and 45717072988), internal/runtime/sandbox's
-  # of the seven since its tests run in parallel (#5507).
+  # of the seven since its tests run in parallel (#5507), and the answer loop's three packages'
+  # the one pull-request run's above.
   daemon-go:
     1:
       - cmd/legion                              # 432 s
@@ -52,18 +56,27 @@ packages/daemon:
       - internal/cipher                         # 9 s
       - internal/procgroup                      # 9 s
       - internal/natsauth                       # 9 s
+      - internal/answerloop                     # 9 s
       - internal/claudebridge                   # 8 s
       - internal/pause                          # 8 s
       - internal/appauth                        # 8 s
       - internal/podsafety                      # 7 s
+      - internal/agenthistory                   # 4 s
       - internal/ompsessions                    # 3 s
       - internal/fixtureenv                     # 2 s
       - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
       - internal/testpg/testdb                  # 2 s
+      - internal/dispatchtool                   # 2 s
+      - internal/ghroute                        # 2 s
       - internal/testpg                         # 1 s
       - internal/projection                     # 1 s
+      - internal/answer                         # 1 s
       - internal/config
+      - internal/websearch
+      - internal/registrywrite
+      - internal/conversation
+      - internal/ghroute/ghroutetest
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -133,6 +146,9 @@ packages/daemon:
       - internal/runtime/tmux                   # 38 s
       - internal/classify                       # 38 s
       - internal/testnats                       # 28 s
+      - internal/conversation/omp               # 26 s
+      - internal/conversation/claude            # 24 s
+      - internal/ghtool                         # 14 s
       - internal/supervise                      # 13 s
       - internal/shim                           # 12 s
       - internal/memoryguard                    # 12 s

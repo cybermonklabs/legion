@@ -484,7 +484,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 		})
 		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
-		if failed.Why != whyNoCheck {
+		if failed.Why != WhyNoCheck {
 			t.Errorf("the setup failure is %q, want the missing check", failed.Error())
 		}
 	})
@@ -559,7 +559,7 @@ func TestASetupFailureShowsWhatTheCallerWroteOnOneBoundedLine(t *testing.T) {
 				guard := New(Options{Visibility: answers(Public, nil), Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir(), CheckerVar+"="+theChecker)})
 				return guard.Push(bound(t), PushRequest{Dir: t.TempDir(), Remote: "a\nremote", URL: "https://github.com/invented-org/invented-repo.git"})
 			},
-			says: `LEAK CHECK SETUP ERROR: the push to a\nremote: ` + whyNoCheck,
+			says: `LEAK CHECK SETUP ERROR: the push to a\nremote: ` + WhyNoCheck,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -768,7 +768,7 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 				t.Fatalf("Resolve = %v, want a broken setup at %s", resolveErr, at)
 			}
 			err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
-			if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), at) {
+			if failed := setupFailure(t, err); failed.Why != WhyNoCheck || !strings.Contains(failed.Error(), at) {
 				t.Fatalf("the text's setup failure is %q, want the broken setup at %s named", failed.Error(), at)
 			}
 			// A push runs the check through bash, which would run a file the other shapes cannot:
@@ -782,7 +782,7 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 				Dir: repo, Remote: "origin", URL: "https://github.com/invented-org/invented-repo.git",
 				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 			})
-			if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), at) {
+			if failed := setupFailure(t, err); failed.Why != WhyNoCheck || !strings.Contains(failed.Error(), at) {
 				t.Fatalf("the push's setup failure is %q, want the broken setup at %s named", failed.Error(), at)
 			}
 		})

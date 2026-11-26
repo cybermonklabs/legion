@@ -31,7 +31,7 @@ that the controller's next start walks the parked roots (INFRA-214, A3 and A4). 
 
 Inputs (environment):
   LEGION_E2E_MODEL_ROUTE         gateway or key-file (required)
-  LEGION_E2E_MODEL_GATEWAY_URL   the model gateway's Anthropic endpoint (gateway; needs hawk-token)
+  LEGION_E2E_MODEL_GATEWAY_URL   the model gateway's /v1/messages base URL (gateway; needs hawk-token)
   LEGION_E2E_ANTHROPIC_KEY_FILE  a 0600 file that holds an Anthropic key (key-file)
   LEGION_E2E_MODEL_BASE_URL      the Anthropic-compatible endpoint that key is for (key-file;
                                  default https://api.anthropic.com)

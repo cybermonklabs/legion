@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The listener reports a Legion wake only for a message it handed to no daemon. A send to a
+  session with no live registration, a role publish with no live holder, a send Dispatch marked
+  with a role whose claim does not name its target, and an agent-subject message given up raise
+  the session's or the role's wake report as before when nothing takes them. One the listener
+  hands to a stopped Legion agent's daemon raises none, an agent whose issue pod the daemon
+  released when it sat idle included: the daemon decides what wakes the agent. A message handed
+  off costs its sender, under the sender limit (`ENVOY_SENDER_MESSAGES_PER_MINUTE`), what the
+  hand-off's publish stored, as a send's own publish does: one for a new copy or one the stream
+  may hold, nothing for a repeat the stream already held under the hand-off's message id.
+time: 2026-11-14T04:40:00.000000000Z
+custom:
+    Issue: pr2230

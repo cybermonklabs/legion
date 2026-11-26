@@ -1144,6 +1144,13 @@ type Deps struct {
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
+	// Registered is told of every registration the claim persisted, a first one (register) and the
+	// recorded session registering again (reregister), with the claim as written: the daemon's record
+	// of the conversations its agents have had (agent_conversations), which no close, suspension or
+	// retirement takes back. It is called while the machine decides, so its context ends at the
+	// claim-write bound (Machine.bounded), as every store write of a decision does: it is called once,
+	// and what it could not write by then is the next boot's backfill to record. nil tells no one.
+	Registered func(ctx context.Context, c Claim)
 	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
 	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
 	// so the adoption a phase task makes of its working copy is not a private act: one run while
@@ -3947,7 +3954,8 @@ const (
 	// wayFile is a Resume of the session file the claim records.
 	wayFile resumeWay = "file"
 	// wayID is a Resume of the session the claim records, by its id alone, which the pod's
-	// launcher found in its session table or the tmux runtime in the pane's sessions directory.
+	// launcher found in its session table, and the tmux runtime in the pane's sessions directory
+	// or, under runtime.tmux.session_store postgres, in its session table.
 	wayID resumeWay = "id"
 	// wayAgentLookup is a Resume of that session through a pod launcher that cannot look a
 	// session up by its id, whose agent's own command resolves the id (runtime.SpawnSpec's
@@ -3972,8 +3980,10 @@ const (
 // A Resume the runtime answers with runtime.ErrSessionFileMissing found the recorded session
 // nowhere it could be resumed: no store holds it any more. Both runtimes answer that way for that
 // one fact, of a file and of an id — the tmux runtime when no folder it searched holds the
-// session, the Kubernetes launcher when the session table does not hold the row
-// (internal/shimwire's LauncherStartResult) — and neither has started anything when it does.
+// session, or, under its session database (runtime.tmux.session_store: postgres), when the table
+// holds no row of a session recorded by its id alone, and the Kubernetes launcher when the session
+// table does not hold the row (internal/shimwire's LauncherStartResult) — and neither has started
+// anything when it does.
 // Resuming would fail the same way on every try and wedge the claim until its launch budget ran
 // out, so the claim forgets the session and the same try spawns a fresh agent, which registers a
 // session of its own (startFresh, SessionLossGone). It is charged nothing: a store that lost a
@@ -5311,6 +5321,19 @@ func (m *Machine) persist(ctx context.Context) error {
 		method = "PauseStopped"
 	}
 	return m.owes(method, m.putClaim(ctx))
+}
+
+// registered tells Deps.Registered of the registration persist just wrote, under the claim-write
+// bound (bounded), so a database that has stopped answering does not hold the machine's lock for
+// the length of the outage. It is one call and no retry: Deps.Registered answers nothing, logs a
+// write it could not make, and the next boot's backfill records the conversation.
+func (m *Machine) registered(ctx context.Context) {
+	if m.deps.Registered == nil {
+		return
+	}
+	writing, cancel := m.bounded(ctx)
+	defer cancel()
+	m.deps.Registered(writing, StoredClaim(m.claim))
 }
 
 // putStep writes the claim's step columns and nothing else (Store.PutClaimStep): what the

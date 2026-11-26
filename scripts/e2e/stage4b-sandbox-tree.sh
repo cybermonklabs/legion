@@ -65,7 +65,7 @@
 #   ~/.kube/legion-daemon-production) name the restricted identity the daemon runs as.
 # - LEGION_E2E_OPERATOR_CONTEXT (default production) names the admin context.
 # - LEGION_E2E_IMAGE (required) is the worker image, by digest.
-# - LEGION_E2E_MODEL_GATEWAY_URL (required) is the model gateway's Anthropic endpoint, the route the
+# - LEGION_E2E_MODEL_GATEWAY_URL (required) is the model gateway's /v1/messages base URL, the route the
 #   operator fixture's models.yml and the controller's profile name (lib/model-gateway-url.sh).
 # - LEGION_E2E_MODEL_GATEWAY_AUDIENCE (required) is the audience the operator's model gateway accepts
 #   on a worker's projected ServiceAccount token, substituted into the run's copy of the operator

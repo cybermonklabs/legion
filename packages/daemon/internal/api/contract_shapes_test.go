@@ -183,8 +183,8 @@ func (f declaredField) String() string { return f.typ + "." + f.name }
 // prefix, a role's stall backstop, a project's memory block and an experiment of its own with
 // every field an experiment has, and the `runtime.tmux` block itself, which no file of the
 // kubernetes runtime carries. The maximal file sets no `runtime.kubernetes.sandbox` block
-// either, and sandboxSettingsBlock is one, so the two files and that block write every key the
-// settings block has.
+// either, and sandboxSettingsBlock is one, and no `answers` block, which settingsAnswersBlock is,
+// so the two files and those two blocks write every key the settings block has.
 const shapeSettingsFile = `project: SHAPES
 postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
@@ -368,17 +368,20 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // so one more issue carries the one value of an issue's own `phase` above the floor,
 // `awaiting_children`. The project's pause waits on the stop of one claim of each role, so
 // `paused.waitsOn.*.role` carries every role, where populatedState's pause waits on an implementer
-// alone. Its repositories block names five live repositories, both role Apps installed on each,
-// whose caches stand in the five states a cache can be in, so `repositories.live.*.cache.state`
-// carries every word of that field, which arrived with the block at repositoriesLiveContract
-// (answers.go's liveCacheStates). The intake's open give-ups list one record of each reason, so
-// `intakeGiveUps.newest.*.reason` carries every word, where populatedState's three records carry
-// three of the five.
+// alone, and the answer loop passed the controller a question of one claim of each role, so
+// `questionsForController.*.role` carries every role, where populatedState's questions are an
+// implementer's and a tester's. Its repositories block names five live repositories, both role
+// Apps installed on each, whose caches stand in the five states a cache can be in, so
+// `repositories.live.*.cache.state` carries every word of that field, which arrived with the block
+// at repositoriesLiveContract (answers.go's liveCacheStates). The intake's open give-ups list one
+// record of each reason, so `intakeGiveUps.newest.*.reason` carries every word, where
+// populatedState's three records carry three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
-// `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
-// that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
+// `type` (sandboxSettingsBlock) and an `answers` block that sets every member the settings show
+// (settingsAnswersBlock), which neither other body carries: populatedState's settings are that
+// file alone, and stay so because the state golden is written from them, and the second body's
+// are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
 // configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
 // setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
@@ -445,6 +448,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	keys := make([]string, 0, len(phaseWords))
 	wakes := make([]WakeWaiting, 0, len(roleWords))
 	stops := make([]store.PauseStop, 0, len(roleWords))
+	questions := make([]QuestionForController, 0, len(roleWords))
 	for i, heldFrom := range phaseWords {
 		key := fmt.Sprintf("VALUES-%d", i+1)
 		keys = append(keys, key)
@@ -497,6 +501,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Kind: supervise.WakeLaunch, DueAt: at})
 			stops = append(stops, store.PauseStop{ID: int64(40 + i), Pause: 7,
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
+			questions = append(questions, QuestionForController{ID: fmt.Sprintf("values-question-%d", i+1), Issue: key,
+				Role: roleWords[i], Session: "ses_" + string(roleWords[i]) + "_" + key, Asker: "user:octocat",
+				Ref: "dispatch://" + key + "/message/m-1", Reason: "not_answered", PassedAt: at})
 		}
 	}
 	// A root that holds its next phase start because an open Dispatch child of it stands under it
@@ -511,7 +518,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
-	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock+settingsAnswersBlock)
 	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
@@ -539,11 +546,12 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
-		Admission:    Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
-		Issues:       issues,
-		WakesWaiting: wakes,
-		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(settings),
+		Admission:              Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
+		Issues:                 issues,
+		WakesWaiting:           wakes,
+		QuestionsForController: questions,
+		Repositories:           RepositoriesView{Live: live},
+		Settings:               SettingsOf(settings),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:        pausedViewOf(goldenPause(false), stops, nil),

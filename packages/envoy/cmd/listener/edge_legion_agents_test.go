@@ -100,3 +100,41 @@ func TestAnEdgeShowsALegionAgentOnlyOfASessionOfItsIssuesProject(t *testing.T) {
 	}
 	requireOnlyOwn("/v1/legion/agents/sessions/"+outside, []listenerwire.LegionAgentAnswer{answer})
 }
+
+// The role read's `answering` says whether a project's daemon answers for its stopped agents, and
+// the edge says it only of a role of one of its token's projects, by the issue the role token
+// names, as it shows only such an issue's entries (edgeScope.showsIssue): a role of another
+// project reads false however that project's answering record reads. The control is a role of the
+// token's own project under a record that says it answers, which reads true.
+func TestAnEdgeAnswersTheRoleReadsAnsweringFlagOnlyOfItsOwnProjects(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const outside = "ses_role_answering_outside"
+	token := rig.personToken(outside, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, outside), http.StatusOK, "the outside session's registration")
+	for _, project := range []string{"priv", "pub"} {
+		if _, err := rig.agents.PutProject(t.Context(), project, legionagents.Project{Answering: true, UpdatedAt: "2026-11-20T00:00:00Z"}); err != nil {
+			t.Fatalf("state that %s answers: %v", project, err)
+		}
+	}
+	for _, tc := range []struct {
+		role string
+		want bool
+	}{
+		{"legion-priv-priv-7-tester", true},
+		{"legion-pub-pub-7-tester", false},
+	} {
+		path := "/v1/legion/agents/roles/" + tc.role
+		recorder := rig.call(t, http.MethodGet, token, path, "")
+		requireStatus(t, recorder, http.StatusOK, "GET "+path)
+		var answer struct {
+			Entries   []json.RawMessage `json:"entries"`
+			Answering *bool             `json:"answering"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+		}
+		if len(answer.Entries) != 0 || answer.Answering == nil || *answer.Answering != tc.want {
+			t.Errorf("GET %s through the edge = %s, want no entries and answering %t", path, recorder.Body.String(), tc.want)
+		}
+	}
+}

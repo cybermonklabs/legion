@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-api.ts";
+import {
+  NO_LIVE_SESSION,
+  RECEIPT_TIMEOUT_CAUSE,
+} from "../../../packages/contracts/src/dispatch-api.ts";
 import {
   type Judged,
   judge,
@@ -264,7 +267,7 @@ describe("the pairs and the comments", () => {
   });
 
   test("a mention's error names its class", () => {
-    expect(mentionErrorClass(`no live session ${SESSION_A}`)).toBe("session-not-live");
+    expect(mentionErrorClass(`${NO_LIVE_SESSION} ${SESSION_A}`)).toBe("session-not-live");
     expect(mentionErrorClass(RECEIPT_TIMEOUT_CAUSE)).toBe("receipt-timeout");
     expect(mentionErrorClass("session 01a1 (lead) does not advertise btw")).toBe("other");
   });

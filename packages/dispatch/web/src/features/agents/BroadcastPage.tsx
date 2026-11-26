@@ -96,7 +96,11 @@ function BroadcastRecipientRow({
   useMarkShownRepliesRead(recipient.session_id, replies);
   const answer = replies.find((reply) => reply.author.kind === "session");
   const answeredBy = answer?.author;
-  const attempts = deliveryAttempts(recipient.message.deliveries ?? [], recipientAgent);
+  const attempts = deliveryAttempts(
+    recipient.message.deliveries ?? [],
+    recipientAgent,
+    recipient.message.target
+  );
   const latest = attempts.at(-1);
   // A pending attempt nobody has come back to. The server frees a claim after a minute
   // (`model.DeliveryClaimFreeSQL`), and it judges the claim; this reads the attempt's own

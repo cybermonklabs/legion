@@ -8,10 +8,12 @@
 // its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
-// launcher's check) and to find the file of a session named by its id alone (FindByID, the same
-// launcher's lookup), seeds it once from the files sessions were kept in before (Import,
-// `legion sessions import`), and keeps a Claude Code session's files in it as Oh My Pi's own writes
-// would (Append and Replace, the role launcher's, which no Oh My Pi runs beside).
+// launcher's check and the tmux runtime's under runtime.tmux.session_store postgres), to find the
+// file of a session named by its id alone (FindByID, the same two's lookup), to hold a tmux
+// daemon's boot to a table it can read (HasTable), seeds it once from the files sessions were kept
+// in before (Import, `legion sessions import`), and keeps a Claude Code session's files in it as
+// Oh My Pi's own writes would (Append and Replace, the role launcher's, which no Oh My Pi runs
+// beside).
 package ompsessions
 
 import (
@@ -29,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -81,9 +84,10 @@ const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
 
 // refuseRowSecurity is the second statement of every read-only transaction (inTransaction). A
 // row-security policy's expression runs in each reader's session, as that reader, so the tables'
-// owner could make Written, FindByID and Read run its code. With row_security off, a query that
-// a policy would affect fails instead (`query would be affected by row-level security policy`),
-// and no policy runs. Oh My Pi's tables carry no policy, so a read of them is unchanged.
+// owner could make Written, HasTable, FindByID, Read and Titles run its code. With row_security
+// off, a query that a policy would affect fails instead (`query would be affected by row-level
+// security policy`), and no policy runs. Oh My Pi's tables carry no policy, so a read of them is
+// unchanged.
 const refuseRowSecurity = "SET LOCAL row_security = off"
 
 // restrictRelationKinds is a statement of every transaction (inTransaction), after the search_path
@@ -281,9 +285,31 @@ func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok boo
 	return time.UnixMilli(mtime), true, nil
 }
 
+// HasTable is whether the database holds the session table, read as the connection's login: false
+// for a database no Oh My Pi has opened yet, whose first Oh My Pi creates it. It is an error for a
+// table the login may not read, or a database that does not answer. Since the read runs in the
+// package's pinned transaction (inTransaction), it is an error too for a server older than the
+// minor releases that have restrict_nonsystem_relation_kind, for a view or a foreign table at
+// public.omp_session_files (restrictRelationKinds), and for a row-security policy on that table
+// that applies to the login (refuseRowSecurity).
+func HasTable(ctx context.Context, conn *Conn) (bool, error) {
+	err := inTransaction(ctx, conn, true, func(p pinned) error {
+		_, err := p.exec(ctx, "SELECT 1 FROM public.omp_session_files LIMIT 0")
+		return err
+	})
+	switch {
+	case isUndefinedTable(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read the session table: %w", err)
+	}
+	return true, nil
+}
+
 // FindByID is the path of the newest session the table holds under the session id id, for a start
-// of the role launcher that names a session by its id alone (shimwire.LauncherStart.ResumeSession):
-// the path of the row whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then
+// of the role launcher that names a session by its id alone (shimwire.LauncherStart.ResumeSession),
+// and for the tmux runtime's resume of one under runtime.tmux.session_store postgres: the path of
+// the row whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then
 // the least path. It compares the path's last characters with that suffix as text (right(path, n),
 // n the suffix's length in characters), never with LIKE, so a `_` or a `%` in the id matches only
 // itself. found is false when the table holds no such session; a database no Oh My Pi has opened
@@ -442,7 +468,8 @@ const partBytes = 1024 * 1024
 
 // MovedError is Append's and Replace's refusal of a session whose row is not the one its writer
 // last saved: another writer moved it since, and nothing was written. Saved is the byte_len the
-// writer last saved and Held the one the table holds, either Absent for no row.
+// writer last saved and Held the one the table holds, either Absent for no row. It Is
+// conversation.ErrMoved, the refusal every appender of a conversation shares.
 type MovedError struct {
 	Path        string
 	Saved, Held int64
@@ -452,6 +479,9 @@ func (e *MovedError) Error() string {
 	return fmt.Sprintf("session %s moved under its writer: the table holds %s where the writer last saved %s",
 		e.Path, describeLength(e.Held), describeLength(e.Saved))
 }
+
+// Is makes a MovedError match conversation.ErrMoved.
+func (e *MovedError) Is(target error) bool { return target == conversation.ErrMoved }
 
 func describeLength(n int64) string {
 	if n == Absent {

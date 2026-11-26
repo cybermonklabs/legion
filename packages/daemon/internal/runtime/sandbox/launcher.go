@@ -40,6 +40,13 @@ type LeakCheckReader interface {
 	Get(ctx context.Context, tag string) (leakguard.Served, error)
 }
 
+// LeakCheck is this runtime's reader of the shared public leak check (Options.LeakCheck), nil for a
+// deployment that names no check and for a daemon with no GitHub App to read it with. A daemon with
+// the answer loop on installs its own gh tool's copy through it (ghtool.LeakCheck.Install), held to
+// the same manifest digest (Options.LeakCheckSetting), so that copy and the one a pod's launcher is
+// pushed at the same tag are one read (leakguard.Source keeps one copy per tag).
+func (r *Runtime) LeakCheck() LeakCheckReader { return r.launchers.leakCheck }
+
 type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession

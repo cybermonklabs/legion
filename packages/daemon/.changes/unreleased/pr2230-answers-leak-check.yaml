@@ -1,0 +1,45 @@
+kind: Added
+body: |-
+  The answer loop's `gh` tool runs the shared public leak check before every call, and the daemon
+  hands it that check: the tool asks for the check at every call and hands it to the guard, which
+  never resolves one of its own. With the answer loop on, a Kubernetes daemon reads the check from the
+  repository the deployment's leak check setting names (`LEGION_LEAK_CHECK_REPOSITORY` and
+  `LEGION_LEAK_CHECK_MANIFEST_SHA256`, or the `leak_check` block), at its own environment's
+  `LEGION_LEAK_CHECK_TAG`, through the reader it pushes every pod's launcher the check from, and
+  installs it under `<state_dir>/leak-check/` with the launcher's own installer, held to the
+  setting's manifest digest: a served check of another digest is installed nowhere. Every boot
+  installs again, so a re-pin is installed at the next boot. A tmux daemon's tool resolves the
+  machine's own check in the daemon's environment at each call, as the daemon resolves a pane's at
+  each launch. Where the deployment names a leak check, the guard is told its manifest digest under
+  either runtime, as a pane's and a pod's guard are, and refuses a call under a check of another
+  digest; it runs a private copy of the check, made in the answer's own 0700 directory under
+  `<state_dir>/answers/`, since the daemon's container has no role's private directory to make it
+  in. The guard runs the deployment's private-name rule file, the bytes boot read and every launch
+  carries as `LEGION_PRIVATE_NAME_RULES`: each answer writes them to a 0600 file of its own and
+  names it to the guard as `LEGION_PRIVATE_NAME_RULES_FILE`, as a role's runtime does, so a write
+  the loop makes for a stopped agent is refused by the rules a running agent's write is refused
+  by. Where the deployment names no rule file the loop's guard runs none, and reads no visibility,
+  as a role's does.
+
+  Boot refuses to start with the answer loop on and no check, as it refuses one with no `gh`, and so do
+  `legion config check` and `legion probe-boot`: under tmux when none of `PUBLIC_LEAK_CHECK`,
+  `public-leak-check.sh` on `PATH` and the pointer file under the configuration home names one,
+  and under Kubernetes when the deployment names no leak check setting, naming its two variables
+  and its `leak_check` block, and when `LEGION_LEAK_CHECK_TAG` is unset or not of the shape
+  `leak-check-v<n>`. A Kubernetes daemon's install is told as its GitHub App mint is: a cause
+  GitHub does not report as its own trouble refuses the boot with the cause sentence a pod's start
+  is refused with (no GitHub App, an App with no installation on the check's owner, a tarball read
+  answered 404, or 403 for anything but the rate limit, a refused narrowing, a tarball with no
+  check, a served check whose manifest digest is not the setting's, a failed install of the
+  check), and GitHub's trouble (the transport failing, the read's bound passing, a 5xx answer,
+  GitHub's rate limit, a 401 to a token the daemon then forgets, a mint failing as GitHub's
+  trouble) boots the daemon and leaves the install to the background, tried again after 5 seconds
+  and then at waits doubling to 30 seconds until it lands, each failed try logged with its cause.
+  Until it lands every call of the tool is refused, gh never started, with the setup error naming
+  the pin and the last try's cause. A background try that meets a cause that is not GitHub's
+  trouble, a manifest digest that is not the setting's among them, ends the install with one Error
+  line, and every call from then on is refused saying the install is tried again only at the
+  daemon's next boot.
+time: 2026-11-19T14:27:57.000000000Z
+custom:
+    Issue: pr2230

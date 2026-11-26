@@ -251,8 +251,8 @@ that execs `legion gh` by its absolute path), and every command under a `GH_HOST
 and send nothing.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
-(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
-`ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
+(`selectors.dir` in `internal/ghroute`): a call `writesNothing` admits, or `gh api graphql` in the
+one form `graphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
 `-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
 string or a comment too, its other fields given with `-f` or with `-F` values that read no file
 and none of them with a key that holds `query`, no `-H` naming a method override or
@@ -723,6 +723,19 @@ passes the pre-push hook's visibility read, whose own real gh carries the variab
 read of the real gh runs in a process group of its own, which a read past its timeout stops whole,
 and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
 guard's children whole.
+
+With the answer loop on (`answers` set in `legion.yaml` with what the loop needs to run, and no
+`dispatch_token_broker: true`, which `docs/kubernetes.md`, "The answer loop", lists), the loop,
+which answers a question to a stopped agent in its name, runs this same real gh on the daemon's
+own host as its `gh` tool: boot resolves
+it as above under either runtime (`answersGH`) and refuses to start without one, naming `gh` and
+`LEGION_GH_PATH`. With the loop off, boot resolves no gh for it. The tool is not a pane: it runs
+only an allow list of commands, adds the agent's
+Legion footer to every comment and review itself, and runs gh with a scrubbed environment and a
+per-answer copy of the agent's gh bundle under `<state_dir>/answers/`
+(docs/kubernetes.md, "The answer loop"). The same section covers `runtime.tmux.session_store:
+postgres`, which keeps every pane's Oh My Pi sessions in a Postgres database instead of files on
+this host.
 
 The daemon runs tmux itself: the first `tmux` on its `PATH`, with the pane environment, whose XDG
 directories are under the state directory. A mise shim, or a wrapper script that hands the call to

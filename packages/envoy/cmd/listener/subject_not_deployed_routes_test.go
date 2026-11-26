@@ -197,7 +197,7 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 	}
 
 	requireNotDeployedAnswer(t, "a send to a stopped session while the stream lacks its agent subject", rig.sendFrom(t, sender, target, nil), agent)
-	rig.requireNoWake(t, wakeKindAgent, target)
+	requireNoWake(t, rig.wakes, wakeKindAgent, target)
 
 	rig.restore(t, original, agent)
 	rig.sendFrom(t, sender, target, nil).requireStatus(t, "the same send after the restore", http.StatusOK)

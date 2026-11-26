@@ -836,7 +836,14 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 		if err := sessions.WaitForCacheReady(ctx); err != nil {
 			t.Fatalf("warm the %s's session cache: %v", name, err)
 		}
-		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+		// Every listener serves the Legion agent registry's routes, empty until a daemon writes
+		// (main.go's openLegionAgentRegistry); a Dispatch in front of this one asks them for a
+		// session it delivers to, and a registry left nil would panic on that read.
+		agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("open the %s's legion agent registry: %v", name, err)
+		}
+		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, legionAgents: newLegionAgentRegistry(agents)})
 	}
 	claimant, observer = open("claimant"), open("observer")
 	observer.sessions.StopWatch()
@@ -4214,7 +4221,9 @@ func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
 	}
 	// A session no record was ever held for has no last registration to name, so the body carries
 	// the error and the state alone, and the error says that this listener cannot name the time
-	// (noLiveSession) — after the prefix, which stays exact.
+	// (noLiveSession) — after the prefix, which stays exact. The body is spelt out rather than
+	// built from contracts.NoLiveSession, so a change to the constant, which changes the wire,
+	// fails here.
 	const want = `{"error":"no live session ses_gone; this listener does not know when it last registered","state":"gone"}`
 	if body := strings.TrimSpace(gone.Body.String()); body != want {
 		t.Fatalf("body = %s, want exactly %s, whose error Dispatch classifies a delivery failure on", body, want)
@@ -4255,7 +4264,7 @@ func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer
 	if !strings.HasPrefix(body.Error, "envoy: the message bus did not answer") {
 		t.Fatalf("error = %q, want it to begin with the bus's own unavailable wording", body.Error)
 	}
-	if strings.HasPrefix(body.Error, "no live session ") {
+	if strings.HasPrefix(body.Error, contracts.NoLiveSession+" ") {
 		t.Fatalf("error = %q, which Dispatch classifies as a gone session; a read that did not answer is not one", body.Error)
 	}
 }
@@ -4567,7 +4576,7 @@ func TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHol
 	if err := json.Unmarshal(missing.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", missing.Body.String(), err)
 	}
-	if !strings.HasPrefix(refusal.Error, "no live session ses_never_registered") || refusal.State != session.Gone {
+	if !strings.HasPrefix(refusal.Error, contracts.NoLiveSession+" ses_never_registered") || refusal.State != session.Gone {
 		t.Fatalf("the refusal = %+v, want the full answer's own wording and state gone", refusal)
 	}
 }

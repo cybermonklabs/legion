@@ -27,15 +27,15 @@ type GhRequest struct {
 	// as content, the use it makes of standard input, whether it sends that input at all and the
 	// fields whose value it is, read by a caller that parses the argv as gh does. `legion gh` is
 	// that caller: it reads the command's own help for every option's arity before it reaches
-	// the guard (cmd/legion's ghTargetOf), so it knows a `-dF <file>` and a `-F=<file>` for what
-	// they are, which a reader of the argv alone cannot. Every one of those answers is the
+	// the guard (internal/ghroute's TargetOf), so it knows a `-dF <file>` and a `-F=<file>` for
+	// what they are, which a reader of the argv alone cannot. Every one of those answers is the
 	// caller's where Sent is not nil, and the argv's tables are consulted for none of them.
 	//
 	// Nil is a caller that parsed nothing, and the guard then reads all of it from the argv with
 	// tables of its own (readGhArgv). `legion gh` hands nil for no call it guards: a command its
 	// parse finds sends nothing beside its argv, gh's help of a command among them, gets the zero
 	// GhSent, which names nothing, so the guard opens no file such a call's options name
-	// (cmd/legion's ghPrintsOnly lists those commands). So in this binary the tables are the
+	// (internal/ghroute's printsOnly lists those commands). So in this binary the tables are the
 	// fail-closed answer for a future caller that hands the guard bare arguments, not a path any
 	// call takes today.
 	//
@@ -50,8 +50,8 @@ type GhRequest struct {
 	// ask for, and gh reads the caller's own.
 	Sent *GhSent
 	// WritesNothing is a call its caller found sends no text into any repository: a read, which
-	// `legion gh` admits only by a grammar in its code of the words the call is typed with, one
-	// the shared check reads as a read too (cmd/legion's ghWritesNothing holds the rule). Where
+	// `legion gh` admits only by a grammar of the words the call is typed with, one the shared
+	// check reads as a read too (internal/ghroute's Target.WritesNothing holds the rule). Where
 	// the resolved check is the one that rule was proven against (ProvenCheck), the guard runs
 	// the shared check, which refuses a credential in every call it reads as a read, and skips
 	// what only a write needs: the destination's visibility read and the private-name pass, which
@@ -60,11 +60,12 @@ type GhRequest struct {
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
 	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled
-	// into it (cmd/legion's ghReadsProvenCheck) for every call, whatever checker its role is told
-	// (CheckerVar). WritesNothing is honoured only where the program the check runs hashes to it
-	// (provenCheck) — under a deployment's digest the public_leak_check.py that digest covered,
-	// hashed from the bytes the guard read before the run — so a check of another version, or one
-	// edited under the same tag, gets the whole guard, and so does every call where it is empty.
+	// into it (cmd/legion's ghProvenCheckSHA256, ghroute.ReadsProvenCheckSHA256) for every call,
+	// whatever checker its role is told (CheckerVar). WritesNothing is honoured only where the
+	// program the check runs hashes to it (provenCheck) — under a deployment's digest the
+	// public_leak_check.py that digest covered, hashed from the bytes the guard read before the
+	// run — so a check of another version, or one edited under the same tag, gets the whole guard,
+	// and so does every call where it is empty.
 	ProvenCheck string
 }
 
@@ -148,9 +149,10 @@ func provenCheck(check sharedRun, proven string) bool {
 	return strings.EqualFold(hex.EncodeToString(sum[:]), proven)
 }
 
-// whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
-// the check — the first call and the one that follows it with the buffer — report the one call.
-const whatGhCall = "the gh call"
+// WhatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
+// the check — the first call and the one that follows it with the buffer — report the one call,
+// and the gh tool's own setup failure names the call by it too (ghtool), so the two read alike.
+const WhatGhCall = "the gh call"
 
 // GhCall checks a gh call before it is made, in the shared check's gh-guard shape, and answers
 // the standard input it read and how much of the guard the call had (GhRead): the shared check
@@ -173,7 +175,7 @@ const whatGhCall = "the gh call"
 // (ghArgv.fieldsAsBody).
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
-	check, err := g.sharedCheck(whatGhCall)
+	check, err := g.sharedCheck(WhatGhCall)
 	if err != nil {
 		return answer, err
 	}
@@ -194,7 +196,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 			return answer, nil
 		}
 	}
-	rules, err := g.rules(whatGhCall)
+	rules, err := g.rules(WhatGhCall)
 	if err != nil {
 		return answer, err
 	}
@@ -202,7 +204,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		answer.Read = GhReadNoRules
 		return answer, nil
 	}
-	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
+	public, err := g.scanThrough(ctx, WhatGhCall, req.Repo)
 	if err != nil {
 		return answer, err
 	}
@@ -219,7 +221,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		// gh would send the fields as one JSON document, which GitHub stores as sent, two
 		// fields on one line, and which the guard reads one field at a time (readLeaf).
 		return answer, &SetupFailure{
-			What: whatGhCall,
+			What: WhatGhCall,
 			Why:  "GitHub stores the body of a call to " + shownText(call.endpoint.text) + " as gh sends it, and gh sends this call's fields as that body, one JSON document, which this guard reads one field at a time; send the asset's bytes with --input <file> or --input -",
 		}
 	}
@@ -227,7 +229,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	if sent == nil {
 		if call.upload != "" {
 			return answer, &SetupFailure{
-				What: whatGhCall,
+				What: WhatGhCall,
 				Why:  call.upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
@@ -260,7 +262,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 			records = append(records, record)
 		}
 	}
-	return answer, rules.Check(ctx, whatGhCall, records...)
+	return answer, rules.Check(ctx, WhatGhCall, records...)
 }
 
 // ghGuard runs the shared check in its gh-guard shape over req, and answers the standard input it
@@ -270,7 +272,7 @@ func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]
 	argv := modeArgv(check.path, "gh-guard", req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, sharedNotRun(whatGhCall, err, printed)
+		return nil, sharedNotRun(WhatGhCall, err, printed)
 	}
 	var buffered []byte
 	if status == checkWantsStdin {
@@ -278,7 +280,7 @@ func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]
 			return buffered, err
 		}
 	}
-	return buffered, readStatus(whatGhCall, status, printed)
+	return buffered, readStatus(WhatGhCall, status, printed)
 }
 
 // stdinRecords is the records of record, the call's buffered standard input, by the use the call
@@ -355,7 +357,7 @@ func readGhFile(named GhFile) (string, error) {
 		why += maxGhFileSaid
 	}
 	return "", &SetupFailure{
-		What: whatGhCall,
+		What: WhatGhCall,
 		Why:  "the file " + shownText(named.Option) + " names, " + shownText(named.Path) + ", " + why,
 		Err:  failed.err,
 	}
@@ -377,11 +379,11 @@ func readStdin(req GhRequest) ([]byte, error) {
 	// be longer without reading it.
 	read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
 	if err != nil {
-		return nil, &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
+		return nil, &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be read", Err: err}
 	}
 	if len(read) > maxGhFile {
 		return nil, &SetupFailure{
-			What: whatGhCall,
+			What: WhatGhCall,
 			Why:  fmt.Sprintf("the call's standard input is longer than %d bytes%s", maxGhFile, maxGhFileSaid),
 		}
 	}
@@ -404,19 +406,19 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, dir string, req GhR
 	}
 	file, err := os.CreateTemp(dir, "leakguard-stdin-")
 	if err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	defer func() {
 		file.Close()
 		os.Remove(file.Name())
 	}()
 	if _, err := file.Write(buffered); err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	// The child's descriptor is a dup of this one and shares its offset, so the file is rewound
 	// here and not by whoever reads it.
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be buffered", Err: err}
+		return buffered, 0, "", &SetupFailure{What: WhatGhCall, Why: "the call's standard input could not be buffered", Err: err}
 	}
 	// ExtraFiles' first entry is the child's descriptor 3, which is the one named here.
 	const buffer = 3
@@ -431,11 +433,11 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, dir string, req GhR
 		},
 	})
 	if err != nil {
-		return buffered, 0, "", sharedNotRun(whatGhCall, err, printed)
+		return buffered, 0, "", sharedNotRun(WhatGhCall, err, printed)
 	}
 	if status == checkWantsStdin {
 		return buffered, 0, printed, &SetupFailure{
-			What: whatGhCall,
+			What: WhatGhCall,
 			Why:  "the shared public leak check asked for standard input again after it was given",
 			Err:  printedError(printed),
 		}

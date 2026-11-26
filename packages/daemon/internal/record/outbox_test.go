@@ -49,6 +49,24 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
+		ControllerNotice{Kind: AgentQuestionNotice, Role: claim.RoleTester, Reason: "not_answered", Question: &AgentQuestion{
+			ID: "q-1", Issue: "LEGION-208", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-208/message/m-1", Text: "Is PR 7 green?",
+		}},
+		// A question whose answer merged with gh before it passed model_calls names the merge, and
+		// a comment the daemon stopped during, whose exit gh never answered.
+		ControllerNotice{Kind: AgentQuestionNotice, Role: claim.RoleTester, Reason: "model_calls", Question: &AgentQuestion{
+			ID: "q-2", Issue: "LEGION-208", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-208/message/m-2", Text: "Merge PR 7?",
+			Writes: []AgentQuestionWrite{
+				{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: new(int)},
+				{Seq: 2, Command: "api POST repos/acme/widgets/issues/7/comments", Repository: "acme/widgets"},
+			},
+		}},
+		Notice{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
+			ID: "dispatch:34", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-209/ask/a-1", Text: "Selected: B",
+		}},
+		ControllerNotice{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
+			ID: "dispatch:c-9", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person", Ref: "dispatch://LEGION-209/comment/c-9", Text: "Use B.",
+		}},
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
@@ -131,6 +149,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer", Text: "user:person@example.com sent you, in a Dispatch message on LEGION-208:\nThanks, that settles it."},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -306,7 +325,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
-		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
+		OutboxKindAgentMessage}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -362,7 +382,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindMergeHoldsChanged: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:     "every row",
+		OutboxKindMergeForward: "every row",
+		// A message for a released agent wakes that agent, as a merge forward's message does, and
+		// the outbox delivers it after the resume (dispatch://INFRA-204).
+		OutboxKindAgentMessage:     "every row",
 		OutboxKindCheckWake:        "every row",
 		OutboxKindCheckLook:        "every row",
 		OutboxKindCheckBound:       "every row",
@@ -451,6 +474,17 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
 		{name: "a todo notice for an architect", payload: Notice{Kind: TodoNotice}, reason: "unknown notice kind"},
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
+		{name: "an agent-question notice for an architect", payload: Notice{Kind: AgentQuestionNotice, Question: &AgentQuestion{ID: "q-1"}}, reason: "unknown notice kind"},
+		{name: "an architect's notice carrying a question", payload: Notice{Kind: "held", Question: &AgentQuestion{ID: "q-1"}}, reason: "only a controller's agent-question notice does"},
+		{name: "an agent-question notice without its question", payload: ControllerNotice{Kind: AgentQuestionNotice, Reason: "not_answered"}, reason: "carries a question only when"},
+		{name: "another controller notice carrying a question", payload: ControllerNotice{Kind: TickNotice, Question: &AgentQuestion{ID: "q-1"}}, reason: "carries a question only when"},
+		{name: "an agent-question notice naming no question", payload: ControllerNotice{Kind: AgentQuestionNotice, Question: &AgentQuestion{Issue: "LEGION-208"}}, reason: "names its question's id"},
+		{name: "an agent-decision notice without its decision", payload: Notice{Kind: AgentDecisionNotice, Role: claim.RoleTester}, reason: "carries a decision only when"},
+		{name: "an agent-decision controller notice without its decision", payload: ControllerNotice{Kind: AgentDecisionNotice}, reason: "carries a decision only when"},
+		{name: "another notice carrying a decision", payload: Notice{Kind: "held", AgentDecision: &AgentDecision{ID: "dispatch:34"}}, reason: "carries a decision only when"},
+		{name: "another controller notice carrying a decision", payload: ControllerNotice{Kind: AgentQuestionNotice, Question: &AgentQuestion{ID: "q-1"},
+			AgentDecision: &AgentDecision{ID: "dispatch:34"}}, reason: "carries a decision only when"},
+		{name: "an agent-decision notice naming no decision", payload: ControllerNotice{Kind: AgentDecisionNotice, AgentDecision: &AgentDecision{Issue: "LEGION-209"}}, reason: "names its decision's id"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		// The two wakes the controller's skill said to do nothing on (#4065):
@@ -608,6 +642,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a message for a released agent of no role", payload: AgentMessage{Role: "pilot", Session: "ses_implementer", Text: "Thanks."}, reason: "names the agent's role on the issue"},
+		{name: "a message for a released agent of no session", payload: AgentMessage{Role: claim.RoleImplementer, Text: "Thanks."}, reason: "names the session it was handed off for"},
+		{name: "a message for a released agent with no text", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer"}, reason: "carries the text the agent is told"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1183,6 +1220,37 @@ func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
 	}
 }
 
+// An agent-question notice carries a question of up to AgentQuestionTextLimit characters whole,
+// and a longer one cut at that many characters, counted as characters rather than bytes, with a
+// note naming its length and where the whole question is.
+func TestAnAgentQuestionsTextIsCutAtItsLimitWithANote(t *testing.T) {
+	const ref = "dispatch://LEGION-208/message/m-1"
+	whole := strings.Repeat("é", AgentQuestionTextLimit)
+	if got := AgentQuestionText(whole, ref); got != whole {
+		t.Fatalf("a question of exactly the limit = %d characters, want it whole", len([]rune(got)))
+	}
+	long := whole + "?!"
+	got := AgentQuestionText(long, ref)
+	want := whole + "\n\n[cut: the question is 2002 characters; the first 2000 are shown, the whole question is at " + ref + "]"
+	if got != want {
+		t.Fatalf("a question over the limit = %q, want its first %d characters and the note", got[len(whole):], AgentQuestionTextLimit)
+	}
+}
+
+// An agent-decision notice cuts what a person decided as an agent-question notice cuts a question,
+// and its note names a decision.
+func TestAnAgentDecisionsTextIsCutAtTheSameLimitWithANote(t *testing.T) {
+	const ref = "dispatch://LEGION-208/ask/a-1"
+	whole := strings.Repeat("é", AgentQuestionTextLimit)
+	if got := AgentDecisionText(whole, ref); got != whole {
+		t.Fatalf("a decision of exactly the limit = %d characters, want it whole", len([]rune(got)))
+	}
+	want := whole + "\n\n[cut: the decision is 2001 characters; the first 2000 are shown, the whole decision is at " + ref + "]"
+	if got := AgentDecisionText(whole+"!", ref); got != want {
+		t.Fatalf("a decision over the limit = %q, want its first %d characters and the note", got[len(whole):], AgentQuestionTextLimit)
+	}
+}
+
 // A published notice of every kind the validation takes is still a payload NewOutboxRow accepts,
 // so every kind can be re-held. The daemon builds a re-held copy out of the payload the publish
 // carried — the listener's report decoded back into a notice (the daemon's exceptionNotice,
@@ -1204,8 +1272,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
 	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
-	// account of the tree, the three spec decisions and the three basis notices the person who
-	// acted and the reference, and no other kind carries either of those.
+	// account of the tree, an agent-decision the account of what the person decided, the three
+	// spec decisions and the three basis notices the person who acted and the reference, and no
+	// other kind carries any of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
 	//
@@ -1279,6 +1348,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
+			ID: "dispatch:34", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person",
+			Ref: "dispatch://LEGION-209/ask/a-1", Text: "Selected: B"}},
 		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
 		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},

@@ -1,5 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { DELETED_POST_DELIVERY_ERROR, type SettledDeliveryState } from "@legion/contracts";
+import {
+  DELETED_POST_DELIVERY_ERROR,
+  NO_LIVE_SESSION,
+  type SettledDeliveryState,
+} from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -126,6 +130,8 @@ test("a project's default assignee names the person it moved to; a retained clea
 function commentDelivery(receipt: {
   state: SettledDeliveryState;
   duplicate?: boolean;
+  session_id?: string | null;
+  target?: string;
   error?: string;
 }): DispatchEvent {
   return {
@@ -141,7 +147,7 @@ function commentDelivery(receipt: {
       reply_id: null,
       session_id: null,
       target: "session:planner",
-      ...(receipt.state === "failed" ? { error: "no live session planner" } : {}),
+      ...(receipt.state === "failed" ? { error: `${NO_LIVE_SESSION} planner` } : {}),
       ...receipt,
     },
     seq: 1,
@@ -173,6 +179,22 @@ test("a mention receipt says whether the mention reached its target", () => {
   ]);
 });
 
+// sjawhar/legion#2230: a mention of a role no live session holds, whose Legion pod its daemon
+// released, is kept by the listener for the role's next session, so the line says it was kept for
+// the role and who gets it within the keep window rather than calling the role a stopped session.
+// A role's holder whose session stopped is still a session the message was stored for.
+test("a mention receipt kept for a role says the role's next session gets it", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(activityDescription(commentDelivery({ state: "queued", target: role }))).toEqual([
+    `kept a comment mention for ${role}; the role's next session gets it if one takes the role within one hour`,
+  ]);
+  expect(
+    activityDescription(commentDelivery({ session_id: "planner", state: "queued", target: role }))
+  ).toEqual([
+    `queued a comment mention for ${role}, which is stopped; it gets the message if it runs again within 72 hours`,
+  ]);
+});
+
 // A delete appends one failed receipt per send of its post it ended, with its own words. That
 // receipt is no failure to deliver: the line says the post's delete ended the mention, while any
 // other failure still says the mention could not be delivered.
@@ -185,7 +207,10 @@ test("a mention receipt the post's delete appended says the delete ended the men
   ).toEqual(["could not deliver a comment mention to session:planner"]);
 });
 
-function messageDelivery(state: SettledDeliveryState, error?: string): DispatchEvent {
+function messageDelivery(
+  state: SettledDeliveryState,
+  receipt: { error?: string; session_id?: string; target?: string } = {}
+): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-10-25T00:00:00Z",
@@ -200,7 +225,7 @@ function messageDelivery(state: SettledDeliveryState, error?: string): DispatchE
       state,
       target: "session:planner",
       title: "planner",
-      ...(error === undefined ? {} : { error }),
+      ...receipt,
     },
     seq: 2,
     type: "message.delivery",
@@ -215,15 +240,23 @@ test("a message receipt says a queued message waits for the stopped session", ()
   ]);
 });
 
+// A role-routed message the listener keeps for a released role's next session names no session.
+test("a message receipt kept for a role says the role's next session gets it", () => {
+  const role = "role:legion-infra-infra-204-planner";
+  expect(activityDescription(messageDelivery("queued", { session_id: "", target: role }))).toEqual([
+    `kept a message for ${role}; the role's next session gets it if one takes the role within one hour`,
+  ]);
+});
+
 // A failed message receipt is no delivery: it reads as a mention's failure does, naming the
 // target, and the one a delete appended for a send it ended says the delete ended it.
 test("a failed message receipt says it was not delivered, or that the post's delete ended it", () => {
-  expect(activityDescription(messageDelivery("failed", "no live session planner"))).toEqual([
-    "could not deliver a message to session:planner",
-  ]);
-  expect(activityDescription(messageDelivery("failed", DELETED_POST_DELIVERY_ERROR))).toEqual([
-    "the post's delete ended a message to session:planner",
-  ]);
+  expect(
+    activityDescription(messageDelivery("failed", { error: "no live session planner" }))
+  ).toEqual(["could not deliver a message to session:planner"]);
+  expect(
+    activityDescription(messageDelivery("failed", { error: DELETED_POST_DELIVERY_ERROR }))
+  ).toEqual(["the post's delete ended a message to session:planner"]);
 });
 
 test("a recorded handoff names its phase and version", () => {
