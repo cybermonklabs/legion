@@ -1313,30 +1313,18 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	return nil
 }
 
-// SetPullRequestBaseMoved records that the base of issue's pull request on branch moved to after.
-// It names the issue among the writes of ctx only where a row matched (fact_writes.go): a branch
-// the record holds no pull request on writes nothing, and keeps no mark.
 func (s *Postgres) SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, issue, branch, after string) error {
-	tag, err := tx.Exec(ctx, `update pull_requests set base_moved = $3 where issue = $1 and branch = $2`, issue, branch, after)
-	if err != nil {
+	noteIssueWrite(ctx, issue)
+	if _, err := tx.Exec(ctx, `update pull_requests set base_moved = $3 where issue = $1 and branch = $2`, issue, branch, after); err != nil {
 		return fmt.Errorf("record that the base of %s's pull request on %s moved to %s: %w", issue, branch, after, err)
-	}
-	if tag.RowsAffected() > 0 {
-		noteIssueWrite(ctx, issue)
 	}
 	return nil
 }
 
-// DeletePullRequest deletes issue's pull request on branch. It names the issue among the writes
-// of ctx only where it deleted a row (fact_writes.go): a branch the record holds no pull request
-// on deletes nothing, and keeps no mark.
 func (s *Postgres) DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error {
-	tag, err := tx.Exec(ctx, `delete from pull_requests where issue = $1 and branch = $2`, issue, branch)
-	if err != nil {
+	noteIssueWrite(ctx, issue)
+	if _, err := tx.Exec(ctx, `delete from pull_requests where issue = $1 and branch = $2`, issue, branch); err != nil {
 		return fmt.Errorf("delete the pull request of %s on %s: %w", issue, branch, err)
-	}
-	if tag.RowsAffected() > 0 {
-		noteIssueWrite(ctx, issue)
 	}
 	return nil
 }
