@@ -39,7 +39,7 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 	pwDeliver(t, pool, spParent, token, retry)
 
 	pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
-		Role: claim.RoleImplementer, Claim: token, Summary: "implemented after the retry", Commit: "head-42",
+		Role: claim.RoleImplementer, Claim: token, Summary: "implemented after the retry", Commit: pwHead,
 		HandoffRecord: "implement-2", HandoffVersion: 1})
 	if got := issue(t, pool, spParent); got.Phase != phase.Testing {
 		t.Fatalf("the parent after the implementer's completion = phase %s, want testing", got.Phase)
@@ -48,7 +48,7 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 	putWorkerClaim(t, pool, spParent, spParent, claim.RoleTester, 1, supervise.StateIdle, "")
 	pwDeliver(t, pool, spParent, tester, pnWorkerStart(t, pool, spParent, claim.RoleTester))
 	pwApplied(t, pool, admission, "api", "failed", pwStatesFirst(t, pool, admission, intake.HandoffComplete{Generation: 1, Issue: spParent,
-		Role: claim.RoleTester, Claim: tester, Summary: "a check failed", Commit: "head-42",
+		Role: claim.RoleTester, Claim: tester, Summary: "a check failed", Commit: pwHead,
 		HandoffRecord: "test-1", HandoffVersion: 1}, "fail"))
 	if got := issue(t, pool, spParent); got.Phase != phase.Implementing {
 		t.Fatalf("the parent after the tester's failure = phase %s, want implementing", got.Phase)
