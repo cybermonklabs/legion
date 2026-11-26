@@ -23,7 +23,11 @@
 # PROBE_AT=<time> PROBE_STOPPED=<none or form:reads>`, and a line per form from the log: `<form>:
 # p90 N ms over M reads, at most 200 ms` (only with all 200 lines) or `..., over 200 ms`, `<form>:
 # not read`, or `<form>: stopped after M reads, K of them over 200 ms on the server`. A look that
-# waits ends on `read again at or after <time> with ...`, naming what the next look takes.
+# waits for the fleet's three hours or for the probe's lines ends on `read again at or after <time>
+# with ...`, naming what the next look takes. A look that waits for the fleet to carry the merge
+# ends on a line of its own that says which: the fleet serves no one commit, it does not (or, with
+# BEFORE_DEPLOY=1, it does) carry MERGE_SHA, GitHub did not answer, or GitHub's compare says neither
+# way. That line names no value: the next look takes the inputs this one took.
 #
 # Exit codes: 0 every form at most 200 ms; 1 a form over 200 ms, a line whose status is not 200,
 # or a first answer that holds no issue; 2 the look cannot measure (an input unset or malformed, a

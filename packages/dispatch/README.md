@@ -720,8 +720,12 @@ the form passes at 200 ms or under.
 Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
 `/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
 GitHub's compare (`identical` or `ahead`).
-A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
-values the next look takes, and exits 3.
+A look that has to wait for the fleet's three hours or for the probe's lines ends on the line
+`read again at or after <time> with ...`, which names the values the next look takes, and exits 3.
+A look that has to wait for the fleet to carry `MERGE_SHA` ends on a line of its own, and exits 3:
+the fleet serves no one commit, it does not carry the merge (or, with `BEFORE_DEPLOY=1`, it does),
+GitHub did not answer, or GitHub's compare says neither way.
+That line names no value: the next look takes the inputs this one took.
 
 Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
 `DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
@@ -772,8 +776,13 @@ For each form the three hours hold a read of, `the full read` or `the summary`, 
 `<form>: p90 N ms over M reads, at most 200 ms` or `..., over 200 ms`, and
 `<form>: smallest S bytes, largest L bytes`.
 A form the three hours hold fewer than 200 reads of adds `<form>: M reads, fewer than 200`.
-A look that has to wait ends on the line `read again at or after <time> with FLEET_SINCE=<time>`,
-which names the value the next look takes, and exits 3.
+A look that has to wait for the three hours to pass, or for a form's 200 reads, ends on the line
+`read again at or after <time> with FLEET_SINCE=<time>`, which names the value the next look takes,
+and exits 3.
+A look that has to wait for the fleet ends on a line of its own, and exits 3: the fleet serves no
+one commit, it does not carry `MERGE_SHA`, GitHub did not answer, or GitHub's compare says neither
+way.
+That line names no value: the next look takes the inputs this one took.
 
 Its inputs are `DISPATCH_URL`, the deployed Dispatch; `MERGE_SHA`, the merge commit's 40 hex
 digits; and `LOGGING_PROJECT`, the Google Cloud project that holds the deployment's container

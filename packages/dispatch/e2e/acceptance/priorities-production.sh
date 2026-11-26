@@ -22,8 +22,12 @@
 # Output: for each form, `the full read: p90 N ms over M reads, at most 200 ms` or `..., over 200
 # ms` and `the full read: smallest S bytes, largest L bytes`, the same two for `the summary`, and
 # `<form>: M reads, fewer than 200` for a form the three hours hold fewer than 200 reads of. A look
-# that waits ends on `read again at or after <time> with FLEET_SINCE=<time>` (WINDOW_START=<time>
-# under WINDOW_START), which names the value the next look takes.
+# that waits for the three hours to pass, or for a form's 200 reads, ends on `read again at or
+# after <time> with FLEET_SINCE=<time>` (WINDOW_START=<time> under WINDOW_START), which names the
+# value the next look takes. A look that waits for the fleet ends on a line of its own that says
+# which: the fleet serves no one commit, it does not carry MERGE_SHA, GitHub did not answer, or
+# GitHub's compare says neither way. That line names no value: the next look takes the inputs this
+# one took.
 #
 # Exit codes: 0 both forms at most 200 ms over at least 200 reads each; 1 a form over 200 ms; 2 the
 # look cannot measure (an input unset or malformed, no answer from /healthz, a log read that

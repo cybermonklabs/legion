@@ -57,9 +57,9 @@ var (
 //
 // `filtered` is the matched issues read back by their places in one array (generate_subscripts)
 // rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
-// generate_subscripts plans, as priorityMemberTerms sizes its seed, rather than at the one issue
-// the generic plan estimates through issueListFilters' arms: each join that attaches a value to
-// the matched issues then reads its grouped term once rather than once for each issue. The array
+// generate_subscripts plans, rather than at the one issue the generic plan estimates through
+// issueListFilters' arms: each join that attaches a value to the matched issues then reads its
+// grouped term once rather than once for each issue. The array
 // holds each matched row's address (ctid), which the read takes back in the same statement and so
 // under the same snapshot. It holds addresses rather than keys because Postgres finds an element
 // of fixed width at its place at once, and the n-th key of an array of text only by reading the
