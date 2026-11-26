@@ -68,8 +68,7 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
+- a required approving review, which no step gives: open a `dispatch ask` naming the base rule;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.

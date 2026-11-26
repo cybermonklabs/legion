@@ -1,7 +1,7 @@
 # The merge gate: review and the production check
 
 Read it when you review or approve, or work a look of a closed issue's production check.
-Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
+Your role prompt gives the verdict, the `COMMENT` review, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
 The merger's steps are all in its role prompt.
 
 ## The reviewer
