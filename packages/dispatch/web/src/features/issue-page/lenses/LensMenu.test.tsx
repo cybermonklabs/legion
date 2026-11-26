@@ -960,7 +960,7 @@ test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?
 // A refusal that comes after the row lost the focus, and its menu closed, is said on that row
 // alone (and on no other) without stealing focus, stays there once focused again, and the next
 // opening of the menu lets it go.
-test("a refusal after the row lost the focus is said when it is focused again", async () => {
+test("a refusal after the row lost the focus is said on that row at once and stays", async () => {
   const user = userEvent.setup();
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
   const out = Promise.withResolvers<void>();

@@ -44,7 +44,7 @@ import { outlineRowPath, type StoreKind } from "./store-link";
  * renderer, which names every other reference, draws a bare one as its author wrote it, and a
  * uuid is no word a reader reads. Where the tree read holds the node and a step drafted its row,
  * a row's words read it by the node's name, linked to that row (`?node=`), and by its kind's word
- * otherwise (`storeKindWord`); the row's one line, read from those words, reads it alike.
+ * otherwise (`lens-drafts.ts`' `storeAddressSpans`); the row's one line, read from those words, reads it alike.
  * `storeWords` is the mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that writes them so,
  * and `store-link.ts`'s `placeStoreLinks` makes each name's link one to that row as the row paints
  * its words, once `storeLinkPath` has checked it. Every other address stays as its author wrote
@@ -227,7 +227,7 @@ function nameStored(
     let named = false;
     const runs = constraintRuns(node, (raw) => {
       const line = lineRuns(raw, index);
-      if (line === undefined) return codeOnlyRuns(storedReading(raw));
+      if (line === undefined) return codeOnlyRuns(raw);
       named = true;
       return line;
     });

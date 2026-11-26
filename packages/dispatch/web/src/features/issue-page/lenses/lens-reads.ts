@@ -197,8 +197,9 @@ export interface LensInvocation {
  *
  * The node's invocations are kept in the query client under a key of the node's own, and one
  * that has its answer stays there until `forget` lets it go, so its refusal outlives the menu
- * that made it: the menu closes when the focus leaves its row, and its row can be drawn again, a
- * fold or a filter away, so a row whose pick was out says the refusal once it is focused again.
+ * that made it: the menu closes when the focus moves out of it and its act, and its row can be
+ * drawn again, a fold or a filter away, so a row whose pick was out says the refusal as soon as
+ * it is drawn.
  * For the same reason whether one is out is read from there too (`pending`), as `useSending`
  * reads a send: `mutate` counts the write as out from the pick's own task, before its first
  * await, and a menu drawn again while the write is out reads it.

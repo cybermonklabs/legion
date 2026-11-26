@@ -40,7 +40,7 @@ import { isLiveSocket } from "./live-socket-watch";
  *   the server.
  * - **The readers**: the rows `[data-node-row]` of the four types, each line `[data-lens-line]`
  *   under a row's words (its label `[data-page-chrome]`, its chips `[data-node-chip]` with their
- *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
+ *   words `[data-chip-name]`, and its stored words `[data-author-text]`), each row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
  *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
  *   `[data-lens-menu-line]`, a lens's chain (`[data-lens-show-chain]`, each entry
@@ -404,7 +404,7 @@ export function lensLines(row: Locator): Promise<LensLine[]> {
   }, SELECTORS);
 }
 
-/** The focused row's Lens act, which opens the menu of lens kinds. */
+/** A row's Lens act, which opens the menu of lens kinds. */
 export function lensAct(row: Locator): Locator {
   return row.locator("[data-row-lens]");
 }

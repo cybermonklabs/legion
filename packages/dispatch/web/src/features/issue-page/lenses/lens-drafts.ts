@@ -268,7 +268,7 @@ export function lensDrafts(
   if (address !== undefined) draft.reference = address;
   switch (type) {
     case "lens": {
-      setRowLine(draft, codeOnlyRuns(storedReading(storedRowWords(node, type))));
+      setRowLine(draft, codeOnlyRuns(storedRowWords(node, type)));
       const kind = kindOf(node, context);
       draft.lens = kind === "" ? { ...NO_CHIPS } : { ...NO_CHIPS, kind };
       break;
@@ -279,14 +279,11 @@ export function lensDrafts(
       draft.lens = { ...NO_CHIPS };
       break;
     case "risk":
-      setRowLine(draft, codeOnlyRuns(storedReading(storedRowWords(node, type))));
+      setRowLine(draft, codeOnlyRuns(storedRowWords(node, type)));
       draft.lens = { ...NO_CHIPS, ...storedFacts(node, type) };
       break;
     case "constraint":
-      setRowLine(
-        draft,
-        constraintRuns(node, (raw) => codeOnlyRuns(storedReading(raw)))
-      );
+      setRowLine(draft, constraintRuns(node, codeOnlyRuns));
       draft.lens = { ...NO_CHIPS, ...storedFacts(node, type) };
       break;
   }
@@ -758,13 +755,14 @@ export function codeOnly(run: DisplayTree, inCode: boolean): readonly DisplayTre
   return inCode || inCodeSpan(marksOf(run)) ? IN_CODE : NO_MARKS;
 }
 
-/** `reading`'s runs on one line (`oneLineRuns`) keeping code alone (`codeOnly`): what a lens's
- *  verdict, a risk's heading and a constraint's words are drawn from (`lensDrafts`), so their row
- *  draws code as code and every other mark the author typed as the words it covers, with nothing
- *  parsed again in the page. An author's link reads as its words, and a bare `dispatch://`
- *  address stays a plain run, which the row's renderer names (`RowText.tsx`'s `DrawnText`). */
-export function codeOnlyRuns(reading: DisplayTree): DisplayTree[] {
-  return oneLineRuns(reading, codeOnly);
+/** The stored string `markdown`'s runs on one line (`oneLineRuns` of its `storedReading`),
+ *  keeping code alone (`codeOnly`): what a lens's verdict, a risk's heading and a constraint's
+ *  words are drawn from (`lensDrafts`), so their row draws code as code and every other mark the
+ *  author typed as the words it covers, with nothing parsed again in the page. An author's link
+ *  reads as its words, and a bare `dispatch://` address stays a plain run, which the row's
+ *  renderer names (`RowText.tsx`'s `DrawnText`). */
+export function codeOnlyRuns(markdown: string): DisplayTree[] {
+  return oneLineRuns(storedReading(markdown), codeOnly);
 }
 
 /** `runs`, one paragraph's of `markedRuns`, as plain words (`PlainWords`): their text where no
