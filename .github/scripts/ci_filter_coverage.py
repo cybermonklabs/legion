@@ -597,6 +597,19 @@ def begun(command) -> tuple:
     return command(raised), raised
 
 
+def background_priority() -> None:
+    """Lower the calling thread's scheduling priority (nice 10), and so that of every command it
+    starts, which inherits it. The threads that run commands while the table loads call it first
+    (start_early's pool, ci_ts_listing.start's): the table's load is one interpreter thread, the
+    longest piece of the generation, and on a runner of 4 processors tsc and four go commands
+    beside it took processor time it needed, so it loaded in 7.3 s where it took 4.3 s alone (run
+    45880690027). Lowered, they take what it leaves. Where the system refuses, nothing changes."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+    except (AttributeError, OSError):
+        pass
+
+
 # The session whose pool begins each Run's go commands as run() declares it (start_early); None
 # until check-ci-filters.sh arms it, so a module that only imports the table starts nothing.
 EARLY: Session | None = None
@@ -611,7 +624,7 @@ def start_early() -> None:
     jobs = go_jobs()
     if jobs > 1 and EARLY is None:
         EARLY = Session()
-        EARLY.pool = ThreadPoolExecutor(max_workers=jobs)
+        EARLY.pool = ThreadPoolExecutor(max_workers=jobs, initializer=background_priority)
 
 
 def stop_early() -> None:

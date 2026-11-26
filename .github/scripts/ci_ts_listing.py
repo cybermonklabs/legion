@@ -23,7 +23,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ci_filter_coverage import REPO, error
+from ci_filter_coverage import REPO, background_priority, error
 
 # The files a program lists that no commit holds, each with the committed files it is rendered
 # from: git ignores the file and every `bun install` writes it (the root package.json's
@@ -258,7 +258,7 @@ def start() -> None:
                           if pair in sources and (kind, path) not in STARTED and (REPO / path).exists())
     if not asked:
         return
-    pool = ThreadPoolExecutor(max_workers=len(asked) + 1)
+    pool = ThreadPoolExecutor(max_workers=len(asked) + 1, initializer=background_priority)
     installed = None
     if os.environ.get("CI_TS_INSTALL") == "1":
         installed = pool.submit(subprocess.run, ["bun", "install", "--frozen-lockfile"], cwd=REPO,
