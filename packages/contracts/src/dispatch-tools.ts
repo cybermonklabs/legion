@@ -1449,7 +1449,9 @@ export const dispatchToolSpecs = [
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
-        .describe("Optional coarse priority, a number from 0 to 3: 0 is highest and 3 is lowest.")
+        .describe(
+          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope."
+        )
         .optional(),
       assignee: z
         .string()
@@ -1580,7 +1582,9 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0, max: 3 })
         .nullable()
         .optional()
-        .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+        .describe(
+          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already."
+        ),
       assignee: z
         .string()
         .nullable()
