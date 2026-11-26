@@ -824,13 +824,9 @@ func mainAt4975Statement(base string, set uint8) string {
 		mainAt4975KindsFilter+"not (kind in ("+strings.Join(left, ", ")+")) and ", 1)
 }
 
-// mainAt4975Shapes is one set's four search statements as main builds them: the keyword
-// statement and the three meaning statements, in the order searchStatements holds them.
-type mainAt4975Shapes struct{ keyword, meaningEvery, meaningScoped, meaningJoined string }
-
 // mainAt4975Statements is main's four statements for one set of kinds (mainAt4975Statement).
-func mainAt4975Statements(set uint8) mainAt4975Shapes {
-	return mainAt4975Shapes{
+func mainAt4975Statements(set uint8) *searchStatements {
+	return &searchStatements{
 		keyword:       mainAt4975Statement(mainAt4975SearchQuery, set),
 		meaningEvery:  mainAt4975Statement(mainAt4975SearchQueryMeaning, set),
 		meaningScoped: mainAt4975Statement(mainAt4975SearchQueryMeaningScoped, set),
@@ -2237,14 +2233,14 @@ const searchGenericPlanSetting = `set local plan_cache_mode = force_generic_plan
 // and 50, this build's text and main's over the same arguments and under the settings the route
 // runs it under (searchScanSettings over searchKeywordScan or searchMeaningScan), the 15-second
 // bound among them (D3). The kinds are no kind named, each of the five kinds alone, and two
-// pairs of kinds, one holding the word's kind and one not (searchKindFilters). A search naming
-// kinds runs the text of its set of kinds (searchKinds.statements) against main's text of the
-// same set (mainAt4975Statement), and one naming none runs the statements searchQuery and
-// searchQueryMeaning* themselves. The two answers must be the same rows in the same order. A
-// search narrowed by nothing, or by kinds that include the word's own, must count all 1,500 of
-// the kind's matches, or the 750 of one project; a search naming only other kinds must count none
-// and page none, and is read at offset 0 alone, since no later page holds anything; and the first
-// page of a search whose filters keep the oldest item must hold it.
+// pairs of kinds, one holding the word's kind and one not (searchKindFilters). Each search runs
+// its set's statement (searchKinds.statements) against main's statement for the same set
+// (mainAt4975Statements). Set 0 gives the unkinded texts on both sides. The two answers must be
+// the same rows in the same order. A search narrowed by nothing, or by kinds that include the
+// word's own, must count all 1,500 of the kind's matches, or the 750 of one project; a search
+// naming only other kinds must count none and page none, and is read at offset 0 alone, since
+// no later page holds anything. The first page of a search whose filters keep the oldest item
+// must hold it.
 func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 	t.Parallel()
 	fixture := newSearchResultsFixture(t)
@@ -2256,28 +2252,26 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 	}
 	every, one := "", fixture.projects[0]
 	statements := []struct {
-		name, live, main string
-		meaning          bool
-		projects         []string
+		name     string
+		meaning  bool
+		projects []string
 		// generic runs the form of the statement that names a project under the generic plan
 		// (searchGenericPlanSetting). The joined shape's custom plan for one project, the plan a
 		// text takes for its first five runs, runs for about 16 seconds on this corpus - main's
 		// text and this build's alike, with no kind named too - past the 15-second bound, and
 		// its generic plan for about a quarter of a second. An answer does not depend on the
 		// plan, and both sides run under the same one.
-		generic bool
-		// liveOf and mainOf pick this statement out of one set's four, this build's and main's.
-		liveOf func(*searchStatements) string
-		mainOf func(mainAt4975Shapes) string
+		generic    bool
+		selectText func(*searchStatements) string
 	}{
-		{"searchQuery", searchQuery, mainAt4975SearchQuery, false, []string{every, one}, false,
-			func(s *searchStatements) string { return s.keyword }, func(s mainAt4975Shapes) string { return s.keyword }},
-		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, true, []string{every}, false,
-			func(s *searchStatements) string { return s.meaningEvery }, func(s mainAt4975Shapes) string { return s.meaningEvery }},
-		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, true, []string{one}, false,
-			func(s *searchStatements) string { return s.meaningScoped }, func(s mainAt4975Shapes) string { return s.meaningScoped }},
-		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, true, []string{every, one}, true,
-			func(s *searchStatements) string { return s.meaningJoined }, func(s mainAt4975Shapes) string { return s.meaningJoined }},
+		{"searchQuery", false, []string{every, one}, false,
+			func(s *searchStatements) string { return s.keyword }},
+		{"searchQueryMeaning", true, []string{every}, false,
+			func(s *searchStatements) string { return s.meaningEvery }},
+		{"searchQueryMeaningScoped", true, []string{one}, false,
+			func(s *searchStatements) string { return s.meaningScoped }},
+		{"searchQueryMeaningJoined", true, []string{every, one}, true,
+			func(s *searchStatements) string { return s.meaningJoined }},
 	}
 	for index, kind := range searchResultsKinds {
 		t.Run(kind.word, func(t *testing.T) {
@@ -2317,11 +2311,8 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 								if statement.generic && project != every {
 									settings = append(settings, searchGenericPlanSetting)
 								}
-								live, main := statement.live, statement.main
-								if parameters.kinds != 0 {
-									live = statement.liveOf(parameters.kinds.statements())
-									main = statement.mainOf(mainAt4975Statements(uint8(parameters.kinds)))
-								}
+								live := statement.selectText(parameters.kinds.statements())
+								main := statement.selectText(mainAt4975Statements(uint8(parameters.kinds)))
 								want := readSearchAnswer(t, ctx, fixture.database, main, arguments, settings)
 								got := readSearchAnswer(t, ctx, fixture.database, live, arguments, settings)
 								if !slices.Equal(got.rows, want.rows) {

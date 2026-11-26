@@ -737,12 +737,19 @@ func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
 	}
 	var pairs []meaningStatementPair
 	for set := range searchKinds(len(searchStatementsByKinds)) {
-		live, main := set.statements(), mainAt4975Statements(uint8(set))
-		pairs = append(pairs,
-			meaningStatementPair{searchSetStatementName(set, "meaningEvery"), live.meaningEvery, main.meaningEvery, search("")},
-			meaningStatementPair{searchSetStatementName(set, "meaningScoped"), live.meaningScoped, main.meaningScoped, search(f.project)},
-			meaningStatementPair{searchSetStatementName(set, "meaningJoined"), live.meaningJoined, main.meaningJoined, search(f.project)},
-		)
+		main := mainAt4975Statements(uint8(set)).fields()
+		for i, field := range set.statements().fields() {
+			if field.name == searchKeywordField {
+				continue
+			}
+			project := f.project
+			if field.name == searchMeaningEveryField {
+				project = ""
+			}
+			pairs = append(pairs, meaningStatementPair{
+				searchSetStatementName(set, field.name), field.text, main[i].text, search(project),
+			})
+		}
 	}
 	return append(pairs, []meaningStatementPair{
 		{"relatedMeaningQuery", relatedMeaningQuery, mainAt4975RelatedMeaningQuery, related("", false)},
@@ -860,27 +867,16 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 		return searchMeaningQueryArguments(subject(project), queryVector(), fixture.embedder.Identity())
 	}
 	for set := range searchKinds(len(searchStatementsByKinds)) {
-		statements := set.statements()
 		var ranked []string
 		for _, kind := range searchKindsAsked(set) {
 			ranked = append(ranked, searchMeaningArmKinds[kind])
 		}
-		for number, statement := range []struct {
-			field, form string
-			text        string
-			arguments   []any
-			meaning     bool
-		}{
-			{"keyword", ", every project", statements.keyword, searchQueryArguments(subject("")), false},
-			{"keyword", ", one project", statements.keyword, searchQueryArguments(subject(fixture.project)), false},
-			{"meaningEvery", "", statements.meaningEvery, meaning(""), true},
-			{"meaningScoped", "", statements.meaningScoped, meaning(fixture.project), true},
-			{"meaningJoined", "", statements.meaningJoined, meaning(fixture.project), true},
-		} {
-			name := searchSetStatementName(set, statement.field) + statement.form
+		number := 0
+		run := func(field searchStatementField, form string, arguments []any, meaning bool) {
+			name := searchSetStatementName(set, field.name) + form
 			t.Run(name, func(t *testing.T) {
 				prepared := fmt.Sprintf("growing_reads_%d_%d", set, number)
-				for _, plan := range searchStatementPlans(t, connection, prepared, statement.text, statement.arguments) {
+				for _, plan := range searchStatementPlans(t, connection, prepared, field.text, arguments) {
 					tree := newSearchPlanTree(t, plan.plan)
 					unkeyed := 0
 					for at, node := range tree.nodes {
@@ -906,7 +902,7 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 						t.Fatalf("%s, %s plan: explaintest.ScansWithoutIndexCond names %d scans (%s) and this walk met %d",
 							name, plan.mode, len(listed), strings.Join(listed, ", "), unkeyed)
 					}
-					if !statement.meaning {
+					if !meaning {
 						continue
 					}
 					arms, _ := tree.meaningArms(t, catalog)
@@ -926,6 +922,18 @@ func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
 					}
 				}
 			})
+			number++
+		}
+		for _, field := range set.statements().fields() {
+			switch field.name {
+			case searchKeywordField:
+				run(field, ", every project", searchQueryArguments(subject("")), false)
+				run(field, ", one project", searchQueryArguments(subject(fixture.project)), false)
+			case searchMeaningEveryField:
+				run(field, "", meaning(""), true)
+			default:
+				run(field, "", meaning(fixture.project), true)
+			}
 		}
 	}
 }

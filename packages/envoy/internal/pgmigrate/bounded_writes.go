@@ -344,8 +344,8 @@ func (w *writeReading) referencedByItsPrimaryKey(code, table string) (bool, erro
 	}
 	references := 0
 	for _, form := range touchedTablePatterns {
-		for _, name := range namesMatching(code, form.pattern) {
-			if name != table {
+		for _, match := range matchedNames(code, form.pattern, form.skipFirst) {
+			if match.name != table {
 				continue
 			}
 			if form.pattern != referencesPattern {

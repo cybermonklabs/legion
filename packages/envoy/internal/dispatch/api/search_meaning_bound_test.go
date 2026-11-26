@@ -511,17 +511,14 @@ func (b *backendStatements) statements() []backendStatement {
 // bound on the statement, 15 s in the whole milliseconds store.StatementTimeoutSetting writes,
 // and the interval at which Postgres checks, while the statement runs, that its client is still
 // connected.
-const (
-	searchBoundSetting           = `statement_timeout = 15000`
-	searchConnectionCheckSetting = `client_connection_check_interval = '1s'`
-)
+var searchBoundSetting = store.StatementTimeoutSetting(15 * time.Second)
 
 // unboundedBecause says why the statement at position at of seen did not run inside a
 // transaction that, after its begin, ran a setting statement holding both searchBoundSetting and
-// searchConnectionCheckSetting, and is empty when it did. It reads the statements its own
+// searchClientConnectionCheck, and is empty when it did. It reads the statements its own
 // backend ran before it, newest first: a commit or a rollback met before any begin is a statement
-// run outside any transaction, and a begin met before any such setting statement is a
-// transaction that set neither. A rollback to a savepoint ends no transaction.
+// run outside any transaction, and a begin met before one Exec with both settings is a
+// transaction that did not apply both together. A rollback to a savepoint ends no transaction.
 func unboundedBecause(seen []backendStatement, at int) string {
 	pid := seen[at].pid
 	set := false
@@ -537,11 +534,21 @@ func unboundedBecause(seen []backendStatement, at int) string {
 		case text == "begin" || strings.HasPrefix(text, "begin ") || strings.HasPrefix(text, "start transaction"):
 			if !set {
 				return fmt.Sprintf("it ran on backend %d in a transaction that ran no statement holding both %q and %q after its begin",
-					pid, searchBoundSetting, searchConnectionCheckSetting)
+					pid, searchBoundSetting, searchClientConnectionCheck)
 			}
 			return ""
-		case strings.Contains(text, searchBoundSetting) && strings.Contains(text, searchConnectionCheckSetting):
-			set = true
+		case !set && strings.HasPrefix(text, "set local "):
+			// beginSearchScan sends all settings in one Exec, separated by "; ".
+			var bound, check bool
+			for setting := range strings.SplitSeq(text, "; ") {
+				switch setting {
+				case searchBoundSetting:
+					bound = true
+				case searchClientConnectionCheck:
+					check = true
+				}
+			}
+			set = bound && check
 		}
 	}
 	return fmt.Sprintf("it ran on backend %d, which began no transaction before it", pid)
@@ -562,15 +569,26 @@ func (e refusingQueryEmbedder) Embed(ctx context.Context, texts []string, inputT
 	return e.fakeEmbedder.Embed(ctx, texts, inputType)
 }
 
-// searchStatementFields names the four texts one set of kinds runs, by the field of
-// searchStatements that holds each, in the order it holds them (searchSetTexts).
-var searchStatementFields = [...]string{"keyword", "meaningEvery", "meaningScoped", "meaningJoined"}
+// The names of searchStatements' four fields, as a test names a set's statement
+// (searchSetStatementName).
+const (
+	searchKeywordField       = "keyword"
+	searchMeaningEveryField  = "meaningEvery"
+	searchMeaningScopedField = "meaningScoped"
+	searchMeaningJoinedField = "meaningJoined"
+)
 
-// searchSetTexts is the four texts set runs (searchKinds.statements), in the order
-// searchStatementFields names them.
-func searchSetTexts(set searchKinds) [len(searchStatementFields)]string {
-	statements := set.statements()
-	return [...]string{statements.keyword, statements.meaningEvery, statements.meaningScoped, statements.meaningJoined}
+// searchStatementField is one of a set's four texts with the name of the field that holds it.
+type searchStatementField struct{ name, text string }
+
+// fields lists the set's SQL texts in searchStatements' field order.
+func (s *searchStatements) fields() [4]searchStatementField {
+	return [...]searchStatementField{
+		{searchKeywordField, s.keyword},
+		{searchMeaningEveryField, s.meaningEvery},
+		{searchMeaningScopedField, s.meaningScoped},
+		{searchMeaningJoinedField, s.meaningJoined},
+	}
 }
 
 // searchSetStatementName is how a test names one of a set's four texts: `set 5 meaningScoped`.
@@ -647,12 +665,15 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 	// of them alone, so the count of distinct texts is held.
 	sets := len(searchStatementsByKinds)
 	texts := map[string]string{}
+	want := 0
 	for set := range searchKinds(sets) {
-		for field, text := range searchSetTexts(set) {
-			texts[text] = searchSetStatementName(set, searchStatementFields[field])
+		fields := set.statements().fields()
+		want += len(fields)
+		for _, field := range fields {
+			texts[field.text] = searchSetStatementName(set, field.name)
 		}
 	}
-	if want := sets * len(searchStatementFields); len(texts) != want {
+	if len(texts) != want {
 		t.Fatalf("the %d sets of kinds build %d distinct texts, want %d: a text two statements share is counted for one of them alone",
 			sets, len(texts), want)
 	}
@@ -700,17 +721,17 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 			url.Values{"q": {broadenedQuery}}), searchQueryMeaning, 2, false, true},
 	}
 	for set := range searchKinds(sets) {
-		own := searchSetTexts(set)
+		own := set.statements()
 		if set == searchNoKind {
 			every := searchParameters{text: "lighthouse", kinds: set, limit: searchDefaultLimit}
 			keywords, scoped, joined := every, every, every
 			keywords.keywordsOnly, scoped.project, joined.author = true, "BOUND", "alice"
 			name := fmt.Sprintf("set %d, every kind left out, which no request names", set)
 			shapes = append(shapes,
-				searchShape{name + ", keyword, keywords only", direct(keywords), own[0], 1, false, false},
-				searchShape{name + ", meaning, every project", direct(every), own[1], 1, false, false},
-				searchShape{name + ", meaning, one project with the fill done", direct(scoped), own[2], 1, false, false},
-				searchShape{name + ", meaning, joined for a filtered search", direct(joined), own[3], 1, false, false},
+				searchShape{name + ", keyword, keywords only", direct(keywords), own.keyword, 1, false, false},
+				searchShape{name + ", meaning, every project", direct(every), own.meaningEvery, 1, false, false},
+				searchShape{name + ", meaning, one project with the fill done", direct(scoped), own.meaningScoped, 1, false, false},
+				searchShape{name + ", meaning, joined for a filtered search", direct(joined), own.meaningJoined, 1, false, false},
 			)
 			continue
 		}
@@ -722,13 +743,13 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 		name := fmt.Sprintf("set %d, kind %s", set, strings.Join(kinds, " and "))
 		shapes = append(shapes,
 			searchShape{name + ", keyword, keywords only",
-				over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), own[0], 1, false, false},
+				over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), own.keyword, 1, false, false},
 			searchShape{name + ", meaning, every project",
-				over("/api/v1/search", query(url.Values{})), own[1], 1, false, false},
+				over("/api/v1/search", query(url.Values{})), own.meaningEvery, 1, false, false},
 			searchShape{name + ", meaning, one project with the fill done",
-				over("/api/v1/search", query(url.Values{"project": {"BOUND"}})), own[2], 1, false, false},
+				over("/api/v1/search", query(url.Values{"project": {"BOUND"}})), own.meaningScoped, 1, false, false},
 			searchShape{name + ", meaning, joined for a filtered search",
-				over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), own[3], 1, false, false},
+				over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), own.meaningJoined, 1, false, false},
 		)
 	}
 
@@ -762,8 +783,8 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 		})
 	}
 	for set := range searchKinds(sets) {
-		for _, field := range searchStatementFields {
-			if name := searchSetStatementName(set, field); !covered[name] {
+		for _, field := range set.statements().fields() {
+			if name := searchSetStatementName(set, field.name); !covered[name] {
 				t.Errorf("%s ran inside its bounded transaction in none of this test's searches, so nothing here holds it to its bound", name)
 			}
 		}
