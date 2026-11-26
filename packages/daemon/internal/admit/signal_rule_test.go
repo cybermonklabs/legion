@@ -2,12 +2,14 @@ package admit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -37,7 +39,7 @@ func killsSnapshot(kills, limit float64) signals.Snapshot {
 func signalAdmission(t *testing.T, cap int, rule record.SlotRule, priorities map[string]record.Priority, snapshot signals.Snapshot) *Admission {
 	t.Helper()
 	admission := prioritizedAdmission(t, cap, rule, priorities)
-	admission.UseSignals(func(time.Time) (signals.Snapshot, bool) { return snapshot, true })
+	admission.UseSignals(func(context.Context, pgx.Tx, time.Time) (signals.Snapshot, bool, error) { return snapshot, true, nil })
 	return admission
 }
 
@@ -314,7 +316,9 @@ func TestAPassWithNoSignalsOrSignalsOffAdmitsUnderTheCap(t *testing.T) {
 	}{
 		{"no signals registered", func(*Admission) {}},
 		{"signals registered and off", func(a *Admission) {
-			a.UseSignals(func(time.Time) (signals.Snapshot, bool) { return killsSnapshot(2, 2), false })
+			a.UseSignals(func(context.Context, pgx.Tx, time.Time) (signals.Snapshot, bool, error) {
+				return killsSnapshot(2, 2), false, nil
+			})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,6 +332,60 @@ func TestAPassWithNoSignalsOrSignalsOffAdmitsUnderTheCap(t *testing.T) {
 				t.Errorf("the waiting root's tree is not open after a tick: the cap lets it start, and no signal is on")
 			}
 		})
+	}
+}
+
+// A reader of the signals that fails ends the pass with its error, wrapped with what the pass was
+// reading, and the fact's transaction rolls back: the resume is not marked applied, so it applies
+// again on its next delivery, and the root waiting for a free slot of the cap does not start.
+func TestASignalReaderErrorEndsThePassAndChangesNothing(t *testing.T) {
+	pool := migratedPool(t)
+	const queued = "ACME-297"
+	acmeQueuedRoot(t, pool, queued, "a")
+	admission := ruledAdmission(t, 3, keptSlotRule("signals"), silent())
+	unread := errors.New("the signal facts are unreadable")
+	admission.UseSignals(func(context.Context, pgx.Tx, time.Time) (signals.Snapshot, bool, error) {
+		return signals.Snapshot{}, false, unread
+	})
+	_, err := intake.ApplyFact(context.Background(), pool, "pause", "project-resumed", intake.ProjectResumed{},
+		Handlers(record.NewStore(), acmeProject, admission.engine, admission)...)
+	if !errors.Is(err, unread) || !strings.Contains(err.Error(), "read the signals") {
+		t.Errorf("the resume's pass ended with %v, want the reader's error, wrapped with what the pass was reading", err)
+	}
+	var marked int
+	if err := pool.QueryRow(context.Background(), `select count(*) from processed_events where source = 'pause' and event_id = 'project-resumed'`).Scan(&marked); err != nil {
+		t.Fatalf("read the resume's mark: %v", err)
+	}
+	if marked != 0 {
+		t.Errorf("the resume is marked applied %d times, want its transaction rolled back", marked)
+	}
+	if treeOpenForProject(t, pool, acmeProject, queued) {
+		t.Errorf("the waiting root's tree is open after a pass whose signals could not be read, want nothing changed")
+	}
+}
+
+// A reader of the signals reads through the pass's own transaction, so it sees what the fact whose
+// pass it is wrote before the pass: the row intake.ApplyFact writes to mark the fact applied, which
+// no other transaction sees until the fact commits.
+func TestTheSignalReaderReadsThroughThePassTransaction(t *testing.T) {
+	pool := migratedPool(t)
+	admission := ruledAdmission(t, 3, keptSlotRule("signals"), silent())
+	var read []string
+	admission.UseSignals(func(ctx context.Context, tx pgx.Tx, _ time.Time) (signals.Snapshot, bool, error) {
+		if tx == nil {
+			read = append(read, "no transaction")
+			return signals.Snapshot{}, false, nil
+		}
+		var marked int
+		if err := tx.QueryRow(ctx, `select count(*) from processed_events where source = 'signals' and event_id = 'signal-deadline'`).Scan(&marked); err != nil {
+			return signals.Snapshot{}, false, err
+		}
+		read = append(read, fmt.Sprintf("%d mark of the deadline", marked))
+		return signals.Snapshot{}, false, nil
+	})
+	applyThrough(t, pool, admission, "signals", "signal-deadline", intake.SignalDeadline{At: fixedNow})
+	if want := []string{"1 mark of the deadline"}; !slices.Equal(read, want) {
+		t.Errorf("the reader read %q, want %q: the mark the deadline's fact wrote before its pass, through the pass's transaction", read, want)
 	}
 }
 
