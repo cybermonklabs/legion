@@ -31,9 +31,11 @@ var probeCandidates = []struct {
 	// Names: no shell or revset characters, since each names a temporary directory the shim's
 	// recording jj writes to unquoted.
 	{"P1 duplicate base", workspace.BesideTakeCommands},
-	{"P5 rebase b onto heads of what origin holds but own", func(dir, prefix, own, task string) []string {
-		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
-		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
+	{"P7 P6 with the task fetched and its head among the heads", func(dir, prefix, own, task string) []string {
+		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin") | remote_bookmarks(exact:"` + task + `", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
+		return []string{shellprefix.Command([]string{"jj", "-R", dir, "git", "fetch", "--remote", "origin", "--branch", task, "--branch", prefix + "*"}),
+			shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "track", "exact:" + own, "--remote", "exact:origin"}),
+			shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
 	}},
 	{"P6 P5 with own tracked first", func(dir, prefix, own, task string) []string {
 		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
@@ -52,6 +54,7 @@ type probeCase struct {
 	promptRebase bool // before each take, the fix runs its prompt's fetch and rebase onto the task's head
 	later        bool // after F's push, the tester commits red2.txt and pushes B again, before the second take
 	pushAgain    bool // after the second take, the fix that ran it pushes F
+	taskMoves    bool // after the first take, the task's branch on origin moves to a new commit over its head
 }
 
 var probeCases = []probeCase{
@@ -70,6 +73,8 @@ var probeCases = []probeCase{
 	{takeCase: takeCase{name: "N: I with the prompt's rebase before each take", tester: true}, mergeForward: true, promptRebase: true},
 	{takeCase: takeCase{name: "O: C with a later tester commit, then the fresh pod's take and its push of F", tester: true, push: true, fresh: true}, later: true, pushAgain: true},
 	{takeCase: takeCase{name: "Q: B with a later tester commit, then the take and a push of F", tester: true, push: true}, later: true, pushAgain: true},
+	{takeCase: takeCase{name: "R: the task's branch moves after the first take, then the take again", tester: true}, taskMoves: true},
+	{takeCase: takeCase{name: "S: R with the prompt's rebase before each take", tester: true}, taskMoves: true, promptRebase: true},
 }
 
 func TestProbeTakes(t *testing.T) {
@@ -187,6 +192,11 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 	if c.later {
 		standing = pod.commit(pod.workspace, "red2.txt", "test: the later red test")
 		run(pod, pod.workspace, workspace.BesidePushCommand(tester))
+	}
+	if c.taskMoves {
+		pod.jjIn(pod.clone, "new", head)
+		moved := pod.commit(pod.clone, "task2.txt", "feat: the task moves")
+		fixturegit.Isolated(t, t.TempDir()).Run(pod.clone, "git", "push", "--quiet", origin, moved+":refs/heads/"+taskBranch)
 	}
 	taker := pod
 	if c.fresh {
