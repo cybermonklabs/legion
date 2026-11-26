@@ -75,6 +75,16 @@ type PlatformIdentity struct {
 	Issued, Expiry time.Time
 }
 
+// TakenFrom reports whether an entry whose issuer names are issuers takes p's token: a Google
+// token always, since a Google entry names no issuer, and a Kubernetes token only from an issuer
+// the entry names, since the same account name in another cluster is another ServiceAccount, which
+// the entry does not list. It is the one issuer rule of every entry that lists an account: the
+// operator entry's (operatorCaller), a BROKER_API_ACCOUNTS entry's and an edge listener's
+// (issuerNamed), and every BROKER_NATS_SERVICES entry's at the auth service (natscallout).
+func (p PlatformIdentity) TakenFrom(issuers []string) bool {
+	return p.Google || slices.Contains(issuers, p.Issuer)
+}
+
 // longestOperatorToken is the longest life the operator's token may have from its issue, the bound
 // the auth service holds every service's platform token to (natscallout's longestServiceToken): a
 // token login's, beside the proof clock skew. The operator's commands mint ten minutes.
@@ -106,7 +116,7 @@ func (s *server) operatorCaller(w http.ResponseWriter, r *http.Request) (caller,
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token has expired", nil)
 		return caller{}, false
 	case identity.Account != hold.OperatorAccount || identity.Google != hold.OperatorGoogle ||
-		!identity.Google && !slices.Contains(hold.OperatorIssuers, identity.Issuer):
+		!identity.TakenFrom(hold.OperatorIssuers):
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token names an account other than the operator entry's", nil)
 		return caller{}, false
 	}

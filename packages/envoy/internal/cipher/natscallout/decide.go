@@ -21,7 +21,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -352,9 +351,8 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 		}
 	}
 	// A listed Kubernetes account's token, an edge listener's and the operator's included, is taken
-	// only from an issuer its entry names: the same account name in another cluster is another
-	// ServiceAccount, which the entry does not list.
-	if entry == nil || !entry.Google && !slices.Contains(entry.Issuers, identity.Issuer) {
+	// only from an issuer its entry names (api.PlatformIdentity.TakenFrom).
+	if entry == nil || !identity.TakenFrom(entry.Issuers) {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+identity.Account)
 	}
 	if entry.Kind == config.NATSOperator {

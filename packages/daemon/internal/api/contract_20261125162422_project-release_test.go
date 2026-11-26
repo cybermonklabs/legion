@@ -30,10 +30,10 @@ func init() {
 				AnswerRefusal: {bodies: []any{projectReleaseRefusalFixture()}},
 			}
 		},
+		exclusions: map[answerField]string{
+			{answer: AnswerState, field: declaredField{typ: "api.ProjectReleaseResponse", name: "dryRun"}}: "the state carries the project's newest recorded release, and a dry run is never recorded, so no state body carries `dryRun`",
+		},
 	})
-	// The state only carries recorded releases. A dry run is never recorded.
-	excludedDeclaredFields[answerField{answer: AnswerState, field: declaredField{typ: "api.ProjectReleaseResponse", name: "dryRun"}}] =
-		"the state carries the project's newest recorded release, and a dry run is never recorded, so no state body carries `dryRun`"
 }
 
 func withGoldenProjectRelease(state State) State {
@@ -256,16 +256,25 @@ func TestProjectReleaseWordsGolden(t *testing.T) {
 	golden(t, "project-release-words.json", words)
 }
 
-// As with the numbered claim-role lists, a new role needs an arrival in each list that can
-// carry it, or a strict reader will refuse the state.
+// As with the numbered claim-role lists (TestEveryRoleAClaimCanHoldHasARecordedArrival), each role
+// claim.Roles holds needs an arrival on both role fields of the release, or a reader whose role
+// enum is strict will refuse the state. The derived table is read rather than this entry's lists:
+// a role a later entry adds reaches each field through that entry's own enumeratedValues row,
+// which the registry adds to a copy of the field's values (withValuesAdded) and never to these
+// lists.
 func TestProjectReleaseRolesHaveRecordedArrivals(t *testing.T) {
-	for _, role := range claim.Roles {
-		for _, list := range []struct {
-			name   string
-			values []EnumeratedValue
-		}{{"releaseAskRoles", releaseAskRoles}, {"releasedClaimRoles", releasedClaimRoles}} {
-			if !slices.ContainsFunc(list.values, func(v EnumeratedValue) bool { return v.Value == string(role) }) {
-				t.Errorf("%s does not record the arrival of claim role %q", list.name, role)
+	fields := EnumeratedFields()
+	for _, keyPath := range []string{"projectRelease.result.sandboxes.*.asked.*.role", "projectRelease.result.claims.*.role"} {
+		at := slices.IndexFunc(fields, func(f EnumeratedField) bool { return f.Answer == AnswerState && f.KeyPath == keyPath })
+		if at < 0 {
+			t.Fatalf("EnumeratedFields holds no row of the state's `%s`", keyPath)
+		}
+		for _, role := range claim.Roles {
+			if !slices.ContainsFunc(fields[at].Values, func(v EnumeratedValue) bool { return v.Value == string(role) }) {
+				t.Errorf("claim.Roles holds the role %q, which the state's `%s` records at no contract: a reader of an "+
+					"older contract would be served it and refuse the whole state. A new role is added through the new "+
+					"entry's enumeratedValues: a row at this key path (valuesFrom(<that entry>, role)), held back below "+
+					"that entry by a row of its valueStrips, and not in floorRoles or this entry's role lists", role, keyPath)
 			}
 		}
 	}

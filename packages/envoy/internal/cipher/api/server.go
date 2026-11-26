@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -629,16 +628,13 @@ type tokenIdentity struct {
 }
 
 // issuerNamed reports whether the entry that lists identity's account, whose issuer names are
-// issuers, takes identity's token, or writes the refusal: a Kubernetes token is taken only from an
-// issuer the entry names, since the same account name in another cluster is another
-// ServiceAccount, and a Google token, whose entry names no issuer, always is. The refusal is the
-// 403 code of an account the entry's list does not name, its sentence naming entry. It is the
-// issuer check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an edge
-// listener's entry of BROKER_NATS_SERVICES. operatorCaller checks the operator entry's issuers
-// itself, in the same 403 not_operator as an account other than the operator's, so its refusal
-// does not say whether the account or the issuer was wrong.
+// issuers, takes identity's token (PlatformIdentity.TakenFrom: a Kubernetes token only from an
+// issuer the entry names, a Google token always), or writes the refusal. The refusal is the 403
+// code of an account the entry's list does not name, its sentence naming entry. It is the issuer
+// check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an edge
+// listener's entry of BROKER_NATS_SERVICES.
 func issuerNamed(w http.ResponseWriter, identity tokenIdentity, issuers []string, code, entry string) bool {
-	if identity.google || slices.Contains(issuers, identity.issuer) {
+	if (PlatformIdentity{Google: identity.google, Issuer: identity.issuer}).TakenFrom(issuers) {
 		return true
 	}
 	writeError(w, http.StatusForbidden, code, "this account's "+entry+" does not name the issuer that signed its token")

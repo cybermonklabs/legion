@@ -66,9 +66,6 @@ import (
 // answer 409 `PROJECT_RELEASING`, the Failure body alone, and pause nothing. This entry's fixture
 // records the key paths of `projectRelease` on the state and `heldPods` on the refusal, and the
 // domains and registrations of the six enumerated fields. The numbered records are unchanged.
-//
-// projectReleaseContract is this entry's id. The registry computes its number from its rank
-// in the build's order (entryNumber).
 const projectReleaseContract = 20261125162422
 
 func init() {
@@ -106,33 +103,35 @@ func init() {
 // api.ReleasedClaimEnds, as failureCauses names its causes, because a word added to one of those
 // later arrives at its own contract and not at this one; TestProjectReleaseWordsGolden holds the
 // rosters themselves to the plugin's enums.
-var releaseEnders = valuesFrom(projectReleaseContract, store.ProjectReleaseEndedByBoot)
+var (
+	releaseEnders = valuesFrom(projectReleaseContract, store.ProjectReleaseEndedByBoot)
 
-var releasedSandboxKinds = valuesFrom(projectReleaseContract,
-	runtime.ProjectSandboxIssue, runtime.ProjectSandboxController, runtime.ProjectSandboxCache,
-	runtime.ProjectSandboxProbe, runtime.ProjectSandboxUnknown)
+	releaseOutcomes = valuesFrom(projectReleaseContract,
+		ReleaseWaiting, ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused,
+		ReleaseDeleted, ReleaseLeft)
 
-var releaseOutcomes = valuesFrom(projectReleaseContract,
-	ReleaseWaiting, ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused,
-	ReleaseDeleted, ReleaseLeft)
+	releasedSandboxKinds = valuesFrom(projectReleaseContract,
+		runtime.ProjectSandboxIssue, runtime.ProjectSandboxController, runtime.ProjectSandboxCache,
+		runtime.ProjectSandboxProbe, runtime.ProjectSandboxUnknown)
 
-// releaseAskRoles is the same list of roles at the contract `projectRelease` arrived at, which
-// the role of each asked role of a release's Sandbox line takes (api.ReleasedAsk.Role): no
-// `projectRelease` is served below that contract at all (shaping.go's withoutProjectRelease).
+	releaseClaimEnds = valuesFrom(projectReleaseContract,
+		ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
+		ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
+		ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
+		ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
+		ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
+		ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
+		ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
+		ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+		ReleasedClaimUnrecorded)
+)
+
+// releaseAskRoles is floorRoles at the contract `projectRelease` arrived at, which the role of
+// each asked role of a release's Sandbox line takes (api.ReleasedAsk.Role): no `projectRelease`
+// is served below that contract at all (shaping.go's withoutProjectRelease).
 var releaseAskRoles = valuesFrom(projectReleaseContract, floorRoles...)
 
-// releasedClaimRoles is the role of each claim a release stopped (api.ReleasedClaim.Role): the
-// same list of roles with `controller` beside them, since the release stops the project's
-// controller too, recorded at the contract `projectRelease` arrived at, as releaseAskRoles is.
+// releasedClaimRoles is the role of each claim a release stopped (api.ReleasedClaim.Role):
+// floorRoles with `controller` beside them, since the release stops the project's controller
+// too, recorded at the contract `projectRelease` arrived at, as releaseAskRoles is.
 var releasedClaimRoles = valuesFrom(projectReleaseContract, append(slices.Clone(floorRoles), claim.RoleController)...)
-
-var releaseClaimEnds = valuesFrom(projectReleaseContract,
-	ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
-	ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
-	ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
-	ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
-	ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
-	ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
-	ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
-	ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
-	ReleasedClaimUnrecorded)
