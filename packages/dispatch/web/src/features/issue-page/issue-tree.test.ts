@@ -38,14 +38,11 @@ import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { decisionContent } from "./decision-review";
+import { chipName, drawnLine, FIRST_LINE_LIMIT, firstLineOf } from "./first-line";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
-  chipName,
   type DocumentBlocks,
-  drawnLine,
-  FIRST_LINE_LIMIT,
-  firstLineOf,
   type IssueTreeReads,
   lineWordsRaw,
   nodeWords,
@@ -3530,13 +3527,103 @@ test("a check whose citation names no requirement draws the gap, and keeps its p
   ]);
 });
 
+// A check that serves no statement of the issue stands under it and carries a gap that says so.
+// One whose `serves` names nothing carries a gap of its own. One naming a block of this issue's
+// spec that the tree read holds no node of, a requirement deleted from it, carries the gap a
+// retyped target does, but only where that read holds blocks of the spec: a spec it holds no
+// block of tells a deleted block from none. One naming another issue's block carries none, since
+// the page cannot tell it from a statement of an issue above, which a check serves.
+test("a check whose serves is empty, or names a block of this issue's spec that the spec no longer holds, carries its gap, and one that names another issue's block carries none", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const empty = blockNodeId(VERIFICATION, "c-empty");
+  const deleted = blockNodeId(VERIFICATION, "c-deleted");
+  const elsewhere = blockNodeId(VERIFICATION, "c-elsewhere");
+  const serving = blockNodeId(VERIFICATION, "c-serving");
+  const specHeld = { artifactId: spec.id, blocks: [block("r1", "requirement")] };
+  const verificationHeld = {
+    artifactId: checks.id,
+    blocks: [
+      block("c-empty", "check"),
+      block("c-deleted", "check", { serves: `dispatch://${KEY}/spec#b-r-deleted` }),
+      // Another issue's block, whose id is this issue's statement's id too.
+      block("c-elsewhere", "check", { serves: "dispatch://CORE-2/spec#b-r1" }),
+      block("c-serving", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+    ],
+  };
+  const treeOf = (
+    documents: readonly {
+      readonly artifactId: string;
+      readonly blocks: readonly ArtifactBlock[];
+    }[]
+  ): TreeNode =>
+    treeFrom({
+      coverage: coverage([requirement("r1", "The first.")]),
+      documents,
+      issue: { ...issueDetails([spec, checks]), verification_artifact_id: checks.id },
+    });
+
+  const held = treeOf([specHeld, verificationHeld]);
+  expect(nodeOf(held, empty)?.gaps).toEqual(["serves_nothing"]);
+  expect(nodeOf(held, deleted)?.gaps).toEqual(["serves_not_requirement"]);
+  expect(nodeOf(held, elsewhere)?.gaps).toEqual([]);
+  expect(nodeOf(held, serving)?.gaps).toEqual([]);
+  // Each check that serves no statement of the issue stands under the issue, and the one that
+  // names a statement sits under it.
+  for (const id of [empty, deleted, elsewhere]) {
+    expect(
+      placementsOf(held, id).map((one) => one.parent),
+      id
+    ).toEqual([KEY]);
+  }
+  expect(placementsOf(held, serving).map((one) => one.parent)).toEqual([statement]);
+
+  // Where the tree read holds no block of the spec, whether the reads hold no entry for it or one
+  // with no blocks, and no statement of the coverage read stands for one, the deleted target
+  // carries no gap. The rest read as before: the empty `serves` is the check's own block's.
+  for (const [out, documents] of [
+    ["no entry for the spec", [verificationHeld]],
+    ["the spec's entry with no blocks", [{ artifactId: spec.id, blocks: [] }, verificationHeld]],
+  ] as const) {
+    const root = treeFrom({
+      coverage: coverage([]),
+      documents,
+      issue: { ...issueDetails([spec, checks]), verification_artifact_id: checks.id },
+    });
+    expect(nodeOf(root, deleted)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, empty)?.gaps, out).toEqual(["serves_nothing"]);
+    expect(nodeOf(root, elsewhere)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, serving)?.gaps, out).toEqual([]);
+  }
+
+  // The tree read answers every document's blocks at once, each check with its block's
+  // attributes, so no check is drawn before its pointers are read: until that read answers, the
+  // tree is the issue alone (`buildIssueTree`), though the results read names the check, and no
+  // check carries a gap.
+  const unread = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    issue: { ...issueDetails([spec, checks]), verification_artifact_id: checks.id },
+    results: checkedResults([{ blockId: "c-empty", results: [] }]),
+  });
+  expect(nodeOf(unread, empty)).toBeUndefined();
+});
+
 // R10: a check is held to no gap about its results. A result that records no negative control
 // is one the server is to refuse, so the lack names nothing the page could hold.
 test("a check whose latest result records no negative control draws no gap", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const root = treeOf({
-    documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      // The check serves a statement, so the only gap it could draw is one for the control.
+      {
+        artifactId: checks.id,
+        blocks: [block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r1` })],
+      },
+    ],
     issue: issueDetails([spec, checks]),
     results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
   });

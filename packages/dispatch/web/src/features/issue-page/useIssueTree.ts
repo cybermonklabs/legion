@@ -69,18 +69,20 @@ export interface IssueTreeView
 
 /** The names line's state while the tree's names stand failed (`IssueTreeView.namesFailure`). */
 export interface NamesFailure {
-  /** How many times the names read has failed since it last held an answer under its set of
-   *  addresses (`useLineRefusals`): one for each of its failures while it holds no answer under
-   *  its set, as TanStack Query's `errorUpdateCount` rises under that set. The read moved to
-   *  another set adds the failures that set's query holds, new to the line, so the count changes
-   *  only with a new failure, and the line draws its alert again only then. It is not the read's
-   *  own `errorUpdateCount`. */
+  /** How many failures of the names read the line has counted while the tree's slot lives, each
+   *  once under its set of addresses (`useLineRefusals`): one for each of its failures while it
+   *  holds no answer under its set, as TanStack Query's `errorUpdateCount` rises under that set.
+   *  The read back on a set the line has counted adds only a failure new to that set, so the
+   *  count changes only with a new failure, and the line draws its alert again only then. It is
+   *  not the read's own `errorUpdateCount`. */
   readonly failure: number;
   /** Asks the names read again (its own `refetch`), and no other read. */
   readonly retry: () => void;
   /** Whether the names read runs, again or under a new set of addresses (TanStack Query's
    *  `isFetching`). */
   readonly retrying: boolean;
+  /** Whether the line speaks: not where it stands again for a failure it already said. */
+  readonly speaks: boolean;
 }
 
 /**
@@ -451,24 +453,25 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // The names stand failed, the names in hand standing through it (above), from a failure of the
   // names read while it holds no answer under its set until it holds one, by one count of its
   // failures (`useLineRefusals`), so the line says a failure again only for a new one: the read
-  // out under a set never read before does not change it. The Retry asks the read again, and the
-  // line is busy while it runs.
-  const [failure] = useLineRefusals([
+  // back on a set it has counted does not change it. The Retry asks the read again, and the line
+  // is busy while it runs.
+  const [{ refusals: failure, speaks, stands }] = useLineRefusals([
     [{ errorUpdateCount: targets.errorUpdateCount, failing: !targetsAnswered, hash: targetsHash }],
   ]);
   const { isFetching: retrying, refetch: refetchTargets } = targets;
   const namesFailure = useMemo(
     (): NamesFailure | undefined =>
-      failure > 0
+      stands
         ? {
             failure,
             retry: () => {
               void refetchTargets();
             },
             retrying,
+            speaks,
           }
         : undefined,
-    [failure, refetchTargets, retrying]
+    [failure, refetchTargets, retrying, speaks, stands]
   );
   // The same answer every surface of this page would otherwise read one pointer at a time, which
   // a link in a document, in a decision's card or in a comment's preview shows, a row's in-place

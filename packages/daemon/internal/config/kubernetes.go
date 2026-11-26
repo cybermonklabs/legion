@@ -159,12 +159,13 @@ var defaultRepositoryCache = RepositoryCacheConfig{
 func DefaultRepositoryCache() RepositoryCacheConfig { return defaultRepositoryCache }
 
 // IdleReleaseConfig is `runtime.kubernetes.idle_release`: the idle period an issue pod must pass
-// with no turn in progress and no turn due before the daemon saves its workspace's unpushed work,
-// suspends each live claim with the source `released` and deletes the pod, its disk and its
-// Sandbox (IdleMinutes), and how long after that release the backstop wakes each phase worker of
-// the pod whose phase is open (BackstopMinutes), standing in for a wait that raises no event of
-// its own. IdleMinutes zero turns release off, and the deployment's pods then live from an
-// issue's first role start to its close.
+// with no turn in progress and no turn due before the daemon suspends each live claim with the
+// source `released` and deletes the pod, its disk and its Sandbox (IdleMinutes), and how long
+// after that release the backstop wakes each phase worker of the pod whose phase is open
+// (BackstopMinutes), standing in for a wait that raises no event of its own. A release saves
+// nothing of the workspace: the workspace check holds a pod whose workspace holds work that no
+// branch or tag on origin holds. IdleMinutes zero turns release off, and the deployment's pods then
+// live from an issue's first role start to its close.
 type IdleReleaseConfig struct {
 	IdleMinutes     int
 	BackstopMinutes int
@@ -396,21 +397,24 @@ func below(request, limit string) bool {
 	return requested.Cmp(limited) < 0
 }
 
-// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 3 CPU
-// and 19Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request. Under gVisor
-// every process of a pod uses whatever the pod has free, so the pod's peak must fit its one
-// number: an INFRA issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
-// its reviewer ran a review (2026-10-21). The disk limit bounds what the pod writes to the node's
-// disk; the request, which the scheduler fits to the node's allocatable ephemeral storage — its
-// root volume, which nobody has sized for these pods — binds scheduling to little. An operator who
-// knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
-// main container requesting more than 10Gi of it and clamps each container's limit to its request,
-// so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
+// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 2 CPU
+// and 8Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request: the size
+// INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with the
+// route and the guidance that take builds and whole test suites out of the pod in place
+// (dispatch://INFRA-1115, R1 to R4). Under gVisor every process of a pod uses whatever the pod has
+// free, so the pod's peak must fit its one number: an INFRA issue pod that still ran its own
+// builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran
+// a review (2026-10-21). The disk limit bounds what the pod writes to the node's disk; the
+// request, which the scheduler fits to the node's allocatable ephemeral storage — its root volume,
+// which nobody has sized for these pods — binds scheduling to little. An operator who knows the
+// root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no main
+// container requesting more than 10Gi of it and clamps each container's limit to its request, so a
+// deployment there sets both to at most 10Gi. The controller, which runs alone in its pod, gets a
+// pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{
-	Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+	Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 	Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 }
 

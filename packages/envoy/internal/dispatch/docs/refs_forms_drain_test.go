@@ -12,27 +12,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// formsOwedRows is every row of the forms queue as "kind id", with the enqueued_at each holds.
+// formsOwedRows is every row of the forms queue as "kind id", with the enqueued_at each holds
+// (owedRowsOf).
 func formsOwedRows(t *testing.T, database *store.Store) map[string]time.Time {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select kind || ' ' || id::text, enqueued_at from refs_forms_owed`)
-	if err != nil {
-		t.Fatalf("read refs_forms_owed: %v", err)
-	}
-	defer rows.Close()
-	owed := map[string]time.Time{}
-	for rows.Next() {
-		var row string
-		var at time.Time
-		if err := rows.Scan(&row, &at); err != nil {
-			t.Fatalf("scan refs_forms_owed: %v", err)
-		}
-		owed[row] = at
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate refs_forms_owed: %v", err)
-	}
-	return owed
+	return owedRowsOf(t, database, "refs_forms_owed")
 }
 
 // reconcileRefsForms runs one pass of a forms drain from the start of the queue, as a loop that

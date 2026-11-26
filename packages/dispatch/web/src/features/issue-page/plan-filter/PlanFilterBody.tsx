@@ -14,8 +14,6 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import type { ArtifactBlock } from "../../../api/types";
-
 import {
   focusVisibleRing,
   pageHairBorder,
@@ -38,10 +36,11 @@ import {
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { ChildIssueTag } from "../IssueChildren";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
-import { chipName, heldBy, type NodeChip, type NodeFact, type TreeNode } from "../issue-tree";
+import { heldBy, type NodeChip, type NodeFact, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { lineOrKindWord, useNodeLine } from "../node-line";
 import type { FailedRead, OutlineReads } from "../outline-reads";
@@ -60,8 +59,6 @@ import {
   planChart,
   planOrder,
   sizeWords,
-  taskDocumentIds,
-  writtenOrder,
 } from "./plan-order";
 
 /** The two reads the Plan view is drawn from (`slots/view-plan.tsx`): the plan document's
@@ -101,10 +98,11 @@ export type PlanReads =
  * names the tree gives them (`buildIssueTree`), and the line naming the statement it serves,
  * which is the parent the filter draws as no row.
  *
- * Tasks that need each other can be given no place of their own, so the order gives the cycle
- * one place (`plan-order.ts`): the chart draws it there as one line that lists its tasks, and
- * the steps draw that line over the tree and the cycle's tasks as rows at its place, so a step
- * that waits on one of them stands after it and an address naming one lands on a row.
+ * Tasks that need each other can be given no place of their own, so the read gives them none and
+ * the page gives the cycle one place (`plan-order.ts`): the chart draws it there as one line that
+ * lists its tasks, and the steps draw that line over the tree and the cycle's tasks as rows at
+ * its place, so a step that waits on one of them stands after it and an address naming one lands
+ * on a row.
  *
  * The order and the chart's places are the whole plan's (`plan`, the Plan view with no words
  * filter on), and the view's own tasks (`root`) choose which places are drawn: a step where its
@@ -124,15 +122,13 @@ export type PlanReads =
  *
  * ## What the reads give, and what they do not
  *
- * - **The order** is the page's own walk over the `needs` (`plan-order.ts`), from the order the
- *   tasks are written in (`writtenOrder`), read from the blocks of the plan document the page
- *   already holds (`useIssueTree`'s `blocksOf("plan")`, so this costs no request): the filter's
- *   view hands the tasks over grouped by the statement each serves, which is the spec's order
- *   and not the plan's. On an issue with issues under it the Plan read answers the tasks of
- *   every issue under it beside the issue's own, and the same walk places them all, after the
- *   issue's own tasks in the order each issue's document writes them (`plan-order.ts`). A task of
- *   another issue carries that issue's key, a link to it (`ChildIssueTag`): on its bar's row in
- *   the chart, and as a fact of its row under Steps. A task of the issue itself carries none.
+ * - **The order** is the one the Plan read answers, each task's place in it (`TreeNode.position`,
+ *   `plan-order.ts`): the filter's view hands the tasks over in the order the read gives it, and
+ *   the page draws them by the place the read gives each. On an issue with issues under it the
+ *   Plan read answers the tasks of every issue under it beside the issue's own, each at its place
+ *   in the same one order. A task of another issue carries that issue's key, a link to it
+ *   (`ChildIssueTag`): on its bar's row in the chart, and as a fact of its row under Steps. A task
+ *   of the issue itself carries none.
  * - **A bar's place** is worked out here from the `needs` its task's chips name: it starts where
  *   every task it needs has ended.
  * - **A bar's length** is the task's size, the whole number of minutes the Plan read answers
@@ -151,7 +147,6 @@ export function PlanFilterBody({
   emptyLine,
   namesLine,
   plan,
-  planBlocks,
   published,
   reads,
   root,
@@ -166,13 +161,9 @@ export function PlanFilterBody({
    *  from. */
   namesLine: OutlineReads["names"];
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
-   *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
-   *  `root`, the view, chooses which of those places are drawn. */
+   *  (`slots/view-plan.tsx`): the order and the chart's places are drawn from them, and `root`,
+   *  the view, chooses which of those places are drawn. */
   plan: readonly TreeNode[];
-  /** The plan document's typed blocks in the order it writes them, or undefined while the tree
-   *  read is out (`slots/view-plan.tsx`, from `useIssueTree`'s `blocksOf("plan")`): the plan's
-   *  own order (`writtenOrder`). */
-  planBlocks: readonly Pick<ArtifactBlock, "id">[] | undefined;
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws, the chart's and the steps', in the render that
    *  draws it (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a
@@ -185,26 +176,9 @@ export function PlanFilterBody({
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
   const [steps, setSteps] = useState(false);
-  const { artifacts } = tree;
-  // The documents the plan's tasks are blocks of, and each one's block ids in the order it is
-  // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place.
-  // A document whose read has not answered is left out, so its tasks keep the places the view
-  // gives them.
-  const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
-  // The tree read answers the order of the plan document alone (`planBlocks`), so each document
-  // is read against the plan's block ids.
-  const written = useMemo(
-    () => blockIdsOf(documentIds.map(() => ({ data: planBlocks }))),
-    [documentIds, planBlocks]
-  );
-  const entries = useMemo(() => {
-    const held = new Map<string, readonly string[]>();
-    for (const [rank, id] of documentIds.entries()) {
-      const blocks = written[rank];
-      if (blocks !== undefined) held.set(id, blocks);
-    }
-    return planOrder(writtenOrder(plan, artifacts, held));
-  }, [artifacts, documentIds, plan, written]);
+  // The order and the chart's places, from every task of the plan, so a words filter changes no
+  // task's place.
+  const entries = useMemo(() => planOrder(plan), [plan]);
   // The view's tasks by id, each as the view gives it and once, as the order holds it: the
   // places drawn are those holding one of them, and none until the reads have answered
   // (`slots/view-plan.tsx`).
@@ -411,14 +385,6 @@ const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
   plan: STATE_LINES.plan_unreadable,
   statements: STATE_LINES.spec_unreadable,
 };
-
-/** Each document's block ids in the order they are written, or undefined while its read is
- *  out. */
-function blockIdsOf(
-  answers: readonly { readonly data?: readonly { readonly id: string }[] | undefined }[]
-): readonly (readonly string[] | undefined)[] {
-  return answers.map((answer) => answer.data?.map((block) => block.id));
-}
 
 /** The key of a cycle's place: its tasks' ids, one space between two. */
 function cycleIds(tasks: readonly TreeNode[]): string {

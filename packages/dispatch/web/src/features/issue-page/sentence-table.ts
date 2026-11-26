@@ -13,18 +13,16 @@ export interface SentenceRow {
    *  answer, a comment's Contents entry and the first of the issue's three sentences. It differs
    *  from `first` only where the text opens with a list marker, which markdown reads as no word,
    *  or is stored as more blocks than one, since a quote and a Contents entry read the words the
-   *  stored text opens with (`issue-tree.ts`'s `firstWords`). */
+   *  stored text opens with (`issue-tree.ts`'s `firstBlockWordsRaw`). */
   readonly stored: string;
   /** Whether the issue's three sentences are tested over the row: the table's column for them,
-   *  where a row the table marks "n/a" is `false`. The flag follows that column and no rule of
-   *  its own, so k5 and k6, which open with no list marker, are `false` because the column marks
-   *  them n/a. */
+   *  where a row the table marks "n/a" is `false`. */
   readonly summary: boolean;
 }
 
 /**
  * Where the page ends a first sentence, as one table: each row one text and the first sentence
- * every reader of `issue-tree.ts`'s `firstSentenceLength` must find in it. A text the rule reads
+ * every reader of `first-line.ts`'s `firstSentenceLength` must find in it. A text the rule reads
  * wrong, or a text that uses an abbreviation the rule does not list, becomes a new row here, not
  * a new rule. Each reader runs every row: the function itself (`firstSentenceOf`, `firstLineOf`)
  * where the row gives its answer, a person's quote, a comment's Contents entry, and the issue's
@@ -353,8 +351,8 @@ export const SENTENCE_TABLE: readonly SentenceRow[] = [
     text: "1. Keep the old page. Then drop it.",
   },
   // A text stored as blocks, whose first sentence a quote and a Contents entry read from the words
-  // the stored text opens with (`issue-tree.ts`'s `firstWords`). A paragraph, then a list: the
-  // function's answer is the paragraph's sentence too.
+  // the stored text opens with (`issue-tree.ts`'s `firstBlockWordsRaw`). A paragraph, then a list:
+  // the function's answer is the paragraph's sentence too.
   {
     first: "Read this first.",
     id: "k1",

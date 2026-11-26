@@ -31,8 +31,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
  * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
  * Change of a decision the read holds no node for is a comment of the issue's (`comments`) whose
- * quote its words hold, so the count reads no block of a document. A person's decision is the
- * answered ask, which waits for no review and is never counted here.
+ * quote its words hold, so the count reads no block of a document. A person's decision - the
+ * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
+ * (the server's `waiting_review` is false for it) and is never counted here.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -79,7 +80,7 @@ export function waitingOnReader(
       .filter(([comment]) => !deleted.has(comment))
       .map(([, decision]) => decision)
   );
-  // An ask's entry never waits for review (`waiting_review`), so only an agent's decision counts.
+  // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
   const reviewing =
     viewer === undefined
       ? 0

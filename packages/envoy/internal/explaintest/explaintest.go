@@ -10,13 +10,14 @@
 // it, which is what tells a read served by an index from one that reads the whole index and
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
-// or run and measured (AnalyzedGenericPlan). For a statement over a batch of rows (batch.go) it
-// runs the statement a writer sent, after the statements it sent first, under each plan-cache
-// mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each named table
-// by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a control that must
-// fail it (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the
-// planner's own settings and explains it with the shared buffers each node hit and read
-// (ExplainBuffered).
+// or run and measured (AnalyzedGenericPlan), and runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan). For a statement over a batch of rows
+// (batch.go) it runs the statement a writer sent, after the statements it sent first, under each
+// plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each
+// named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
+// control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
+// mode with the planner's own settings and explains it with the shared buffers each node hit and
+// read (ExplainBuffered).
 // dispatch/api, dispatch/refs, dispatch/graphstore and cipher/requests each pin a plan with these
 // checks, so they live here once rather than as a second (or third) hand copy of the same
 // recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
@@ -583,4 +584,29 @@ func explainGenericPlan(
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return OnePlan(t, raw), string(raw)
 }
