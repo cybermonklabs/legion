@@ -6,10 +6,10 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                f"daemon-pane.test.ts and daemon-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
-               'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
+               'go test -c -tags e2e -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
                "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh); "
                f"in {at('pi-legion', 'Test pi-legion')}, label-texts.test.ts runs this line with a planted go, and no row compiles the three packages",
-               DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test"),
+               DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test", tags="e2e"),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),

@@ -614,6 +614,9 @@ export const RigDaemonRequest = z.strictObject({
   dispatchUrl: z.string(),
   dispatchTokenFile: z.string(),
   envoyUrl: z.string(),
+  // The run's Envoy bearer file. The run's listener takes no request without it: the label daemon
+  // publishes its notices with it, and the real pane's Envoy plugin reads it as ENVOY_TOKEN_FILE.
+  envoyTokenFile: z.string(),
   natsUrl: z.string(),
   postgresUrl: z.string(),
   ghLog: z.string(),
@@ -622,6 +625,10 @@ export const RigDaemonRequest = z.strictObject({
   profile: z.string(),
   paneLogs: z.string(),
   paneDaemon: z.enum(["label", "intercept-report"]),
+  // The run's directory, which holds the gh stand-in (bin/gh, fixtures.json, calls.jsonl). The real
+  // pane gets <runDir>/bin first on its PATH and SKILL_SCENARIO_RUN=<runDir>, so its gh calls reach
+  // the stand-in.
+  runDir: z.string(),
 });
 export type RigDaemonRequest = z.infer<typeof RigDaemonRequest>;
 

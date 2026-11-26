@@ -637,6 +637,7 @@ const RIG_DAEMON_REQUEST = {
   dispatchUrl: "http://127.0.0.1:4100",
   dispatchTokenFile: "/work/run/dispatch-token",
   envoyUrl: "http://127.0.0.1:4200",
+  envoyTokenFile: "/work/services/envoy-token",
   natsUrl: "nats://127.0.0.1:4222",
   postgresUrl: "postgres://ci@127.0.0.1:5432/rig",
   ghLog: "/work/run/gh.jsonl",
@@ -645,6 +646,7 @@ const RIG_DAEMON_REQUEST = {
   profile: "/work/run/profile",
   paneLogs: "/work/run/panes",
   paneDaemon: "label",
+  runDir: "/work/run",
 };
 const RIG_DAEMON_READY = {
   daemonUrl: "http://127.0.0.1:4300",
@@ -725,6 +727,8 @@ test("each file of the label's daemon in the rig parses, and one with an extra k
       request: [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, model: "claude-opus-5-5" }],
       "request, another daemon": [RigDaemonRequest, { ...RIG_DAEMON_REQUEST, paneDaemon: "standin" }],
       "request without its moment": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "moment")],
+      "request without its Envoy bearer": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "envoyTokenFile")],
+      "request without its run directory": [RigDaemonRequest, without(RIG_DAEMON_REQUEST, "runDir")],
       ready: [RigDaemonReady, { ...RIG_DAEMON_READY, pid: 7 }],
       "ready, a short head": [RigDaemonReady, { ...RIG_DAEMON_READY, head: COMMIT.slice(1) }],
       status: [RigDaemonStatus, { ...RIG_DAEMON_STATUS, phase: "retro" }],
