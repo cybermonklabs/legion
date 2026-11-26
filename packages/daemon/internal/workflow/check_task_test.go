@@ -9,6 +9,7 @@ import (
 )
 
 func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
 	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
 	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)

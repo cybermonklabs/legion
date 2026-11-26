@@ -1288,24 +1288,28 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. A sub-owner's version is no architect's request (Request):
-// the workflow reads the task the sub-owner gives for from the plan in force, and refuses one of
-// no task of it (NoSubOwnedTask), and one of a task that is done or left the workflow
-// (FinishedTask), whose parts could never start. It holds each version to the tasks its giver writes
-// (plan.OwnershipRefusals): the owner of the issue the tasks of the top level, and the sub-owner
-// of a task its parts. It stores the plan (workflow's planGiven) where its task has not started,
-// and applies the rules of a later version. It answers PLAN_REFUSED (NoSubOwnedTask; the reasons of
-// plan.OwnershipRefusals; RunningTaskChanged; MergeOfStartedActChanged; DoneTaskWouldMerge;
-// StartedBeforePlans for an issue that ran before Legion took plans; or AgentUnnamed for a version
-// in which a fresh agent would need the name of its role that another agent of the plan holds from
-// an earlier version, refused before anything is written),
-// PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
-// PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
-// takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
-// (Result.Unspent). The route names one registration by the issue, the generation, the document
-// and the version, so a version refused while its task ran is the same fact when the owner gives
-// it again after stop_task, and must apply then. Whether a give is one already applied is the
-// record's to say, not its id's (ApplyFact): a give is a duplicate where the store holds its
-// version, and applies where a first step passed that version over since.
+// the workflow reads the task the sub-owner gives for from the plan in force, and refuses one of no
+// task of it (NoSubOwnedTask), and one of a task that is done or left the workflow
+// (FinishedTask), whose parts could never start. It holds each version to the tasks its giver
+// writes (plan.OwnershipRefusals): the owner of the issue the tasks of the top level, and the
+// sub-owner of a task its parts. It answers a give of the version that runs, or that the issue's
+// first step will run, as taken and writes nothing, but where that version names another giver, it
+// adds that giver (record.Store.AddPlanGiver). Otherwise it stores the plan (workflow's
+// planGiven) where its task has not started, and applies the rules of a later version. It answers
+// PLAN_REFUSED (NoSubOwnedTask; the reasons of plan.OwnershipRefusals; RunningTaskChanged;
+// MergeOfOwnersTask; MergeOfStartedActChanged; DoneTaskWouldMerge; StartedBeforePlans for an issue
+// that ran before Legion took plans; or AgentUnnamed for a version in which a fresh agent would
+// need the name of its role that another agent of the plan holds from an earlier version, refused
+// before anything is written), PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE
+// (FinishedTask, ChangeOfTask), PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an
+// issue whose experiment's group takes no plan from its owner) and TREE_LINGERING, and it leaves
+// each of those refusals unspent (Result.Unspent) and writes nothing. The route names one
+// registration by the issue, the generation, the document and the version, and no id decides
+// whether a give is one already taken (ApplyFact runs the handlers for every PlanGiven,
+// factApplies): the workflow decides it against the store, so a version refused while its task ran
+// is judged again when the owner gives it after stop_task, and so is a version a first step passed
+// over since it was taken. The id is still marked, and a refusal still left unspent, for a release
+// before, which decides by the id alone.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1919,19 +1923,21 @@ type Handler interface {
 }
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
-// reports that the fact was already applied, so no handler ran and nothing changed: an event id
-// already processed, and for a PlanGiven a version the record holds (ApplyFact), whatever its id.
+// reports that the fact's id was already marked, so no handler ran and nothing changed but the
+// fact's stream position; a PlanGiven is never one (factApplies). A give of the version that runs
+// is answered by the workflow with no refusal, and its two writes, each where it has one, are a
+// giver the version does not name yet (record.Store.AddPlanGiver) and the mark of an id never seen.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
-// sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
-// id stays the same, and writes nothing where it sets it.
+// sent (ApplyFact), where this transaction marked it. A handler sets it only for a refusal whose
+// cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
+// PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
+// before reads, which decides by the mark alone.
 //
-// Added is set for a PlanGiven alone, the one fact whose route answers what the apply wrote (api's
-// registerPlan): the ids of the tasks the version adds over the version in force, in the plan's
-// order, every task of a generation's first version, and [] where it adds none. The workflow's
-// apply answers them over the version in force it read in its own transaction; for a duplicate,
-// ApplyFact answers what that apply recorded on the version (record.Postgres.PlanVersionHeld). It
-// is nil for every other fact and for a refusal.
+// Added is set for PlanGiven alone, the one fact whose route answers the version's tasks added
+// over the version in force, in the plan's order, every task of a generation's first version, and
+// [] where it adds none. A give of the version already in force returns what that version recorded
+// when it was first taken. It is nil for every other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
@@ -2087,8 +2093,10 @@ func GroupClause(issue string, group record.Assignment) string {
 // of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
 // decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
 // did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
-// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
-// each refusal of a plan, so the same registration sent again gets this same answer.
+// carries no reasons and its code is not PLAN_REFUSED. The same registration sent again gets this
+// same answer: the workflow judges every PlanGiven whatever its id's mark (factApplies), and the
+// group never changes. The refusal is left unspent (Result.Unspent), which only a release before
+// reads.
 func PlanNotTaken(issue string, group record.Assignment) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
@@ -2640,7 +2648,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		if err := SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 		}
-		fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
+		firstSeen, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
 		if err != nil {
 			return err
 		}
@@ -2649,23 +2657,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		if err := recordStreamPosition(ctx, tx); err != nil {
 			return err
 		}
-		// A plan's give is a duplicate where the record holds its version, and only there: a give
-		// of a version that a first step passed over since (workflow's passOverEarlierOwners) has
-		// the id of the give that was passed over, and applies; a give of a version the record holds
-		// under an id never marked (a version carried to the generation the give names) is the
-		// version already taken. The id is marked either way, as a release before reads it.
-		if given, ok := fact.(PlanGiven); ok {
-			added, held, err := record.NewStore().PlanVersionHeld(ctx, tx, given.Issue, given.Generation, given.Plan.ArtifactID, given.Plan.Version)
-			if err != nil {
-				return err
-			}
-			if held {
-				result = Result{Duplicate: true, Added: added}
-				return nil
-			}
-			fresh = true
-		}
-		if !fresh {
+		if !factApplies(fact, firstSeen) {
 			result = Result{Duplicate: true}
 			return closeReplayed(ctx, tx, record.IntakeAlreadyApplied)
 		}
@@ -2699,9 +2691,12 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// checkReport) — applies instead of being answered as one already received. Beside it, a
 		// handler leaves a fact unmarked only where the refusal's cause can clear without changing
 		// the fact's id (Result.Unspent). An unmarked refusal of any other fact would make a
-		// refused handoff apply on its next delivery, which those refusals exist to stop.
+		// refused handoff apply on its next delivery, which those refusals exist to stop. Only an
+		// id this transaction marked is unmarked again: a PlanGiven applies whatever its mark
+		// (factApplies), and its mark from a give taken stays, for a release before, which reads
+		// the give as one applied.
 		_, report := fact.(CheckReport)
-		if (report && result.Refusal != nil) || result.Unspent {
+		if firstSeen && ((report && result.Refusal != nil) || result.Unspent) {
 			if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
 				return err
 			}
@@ -2711,6 +2706,21 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// factApplies says whether fact's handlers run: a fact whose id this transaction marked
+// (firstSeen) applies, and one whose id was marked already is a duplicate, but a PlanGiven, which
+// applies whatever its mark. Whether a give of a plan is one already taken is the workflow's to
+// say against the store as the fact's transaction reads it (workflow's planGiven): the version
+// that runs, or that the issue's first step will run, is answered taken and written nothing but a
+// new giver, and a version a first step passed over since is judged again, under the mark of the
+// give that was passed over. The mark is still written, for a release before, which reads the id
+// alone.
+func factApplies(fact Fact, firstSeen bool) bool {
+	if _, plan := fact.(PlanGiven); plan {
+		return true
+	}
+	return firstSeen
 }
 
 // factTurns is a pool that gives one fact at a time its turn to apply (store.Pool.FactTurn): a
@@ -2723,10 +2733,11 @@ type factTurns interface {
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only
 // transaction and outside the fact lock. A fact's processed_events row commits with the fact, and
 // only a refused production check report or a fact a handler left unspent removes its own
-// (ApplyFact), so an id read here as applied is one ApplyFact would only take the lock to skip. A
-// caller that replays many facts it has most likely applied before (the boot's terminal replay)
-// applies only the rest: the duplicates cost one read-only transaction between them, not a
-// transaction each queued on the lock behind every live fact.
+// (ApplyFact), so an id read here as applied is one ApplyFact would only take the lock to skip,
+// but for a PlanGiven, which ApplyFact applies whatever its mark (factApplies); no caller reads
+// the ids of plans here. A caller that replays many facts it has most likely applied before (the
+// boot's terminal replay) applies only the rest: the duplicates cost one read-only transaction
+// between them, not a transaction each queued on the lock behind every live fact.
 //
 // ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
 // the store keeps them, and each one found is answered under the id the caller gave: a caller that

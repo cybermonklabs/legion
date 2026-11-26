@@ -43,7 +43,7 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	taken, release := make(chan struct{}), make(chan struct{})
 	ran := make(chan bool, 1)
 	go func() {
-		ran <- duty.Exclusive(ctx, leases, consumerLease(bus.DispatchDeliveryDurable), time.Time{}, 0, func(context.Context) {
+		ran <- duty.Exclusive(ctx, nil, leases, consumerLease(bus.DispatchDeliveryDurable), time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

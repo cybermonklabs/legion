@@ -97,7 +97,7 @@ func Accounts(n int) MainOption { return func() { startAccounts = n } }
 // operator's NATS_NKEY_SEED or NATS_NKEY_SEED_FILE never reaches the tests' clients. A test that
 // means to pass a seed sets it itself.
 func init() {
-	os.Unsetenv("NATS_NKEY_SEED")
+	os.Unsetenv(seedVariable)
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 

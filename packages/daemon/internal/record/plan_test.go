@@ -327,7 +327,7 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 		var got *StoredPlan
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			got, err = NewStore().OwnersNewestPlan(ctx, tx, issue)
+			got, err = OwnersNewestPlan(ctx, NewStore(), tx, issue)
 			must(t, err)
 		})
 		return got
@@ -407,14 +407,14 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in the tree %s = %#v, want the other tree's alone: %#v", key, planIssue, got, want)
 		}
 		alone := issue
 		alone.Tree = key
-		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, alone)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, alone)
 		must(t, err)
 		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)
@@ -473,7 +473,7 @@ func TestASubOwnersVersionIsItsOwnersPlan(t *testing.T) {
 	st := migratedStore(t)
 	issue, _, earlier := subOwnersPlans(t, st)
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfEarlierOwners(context.Background(), tx, issue)
+		got, err := PlansOfEarlierOwners(context.Background(), NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s = %#v, want generation 2's alone, the version over another tree's architect's: %#v", issue.Key, got, want)
@@ -493,7 +493,7 @@ func TestOwnersNewestPlanTakesASubOwnersVersion(t *testing.T) {
 	st := migratedStore(t)
 	issue, owners, _ := subOwnersPlans(t, st)
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().OwnersNewestPlan(context.Background(), tx, issue)
+		got, err := OwnersNewestPlan(context.Background(), NewStore(), tx, issue)
 		must(t, err)
 		if got == nil || !reflect.DeepEqual(got.Version, owners) {
 			t.Fatalf("the newest plan an owner of %s gave = %+v, want generation 1's, in force at version 3: %+v", issue.Key, got, owners)

@@ -393,20 +393,22 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 }
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
-// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
-// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
+// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
 // first, it takes the way back of each later migration that builds on the plan's tables
 // (buildsOnPlanTables), as a rollback past those releases does: the plan's way back drops the
 // tables they altered or read and leaves their version rows standing, so a roll forward would
-// apply none of them again and the plan's tables would come back without their columns. The name
-// of each step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps,
-// and left recorded, its version would keep the roll forward from adding the column to the
-// plan_steps it creates again, and every later write of a plan would fail. The pull requests by
-// task (20261122122826) is another: it alters no plan table, but its way back reads plan_tasks to
-// keep each issue's merge row, so it runs while that table stands.
+// apply none of them again and the plan's tables would come back without their columns. The givers
+// of a plan version is one: it adds issue_plans.earlier_givers, which this sweep drops before it
+// drops issue_plans, so the roll forward adds it to the table it creates. The name of each step's
+// agent (planStepAgentMigration) is another: it adds a column to plan_steps, and left recorded,
+// its version would keep the roll forward from adding the column to the plan_steps it creates, and
+// every later write of a plan would fail. The pull requests by task (20261122122826) alters no plan
+// table, but its way back reads plan_tasks to keep each issue's merge row, so it runs while that
+// table stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
@@ -446,11 +448,15 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 	return ""
 }
 
-// headerWayBack is the way back migration's header gives from `begin;` to `commit;`, with
-// <PROJECT> the run's project.
+// headerWayBack is the migration's parsed way back (migrations.WayBack), with <PROJECT> the
+// run's project.
 func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
 	r.t.Helper()
-	return strings.ReplaceAll(r.headerBlock(migration), "<PROJECT>", r.cfg.Project)
+	block, err := migrations.WayBack(migration.Version)
+	if err != nil {
+		r.t.Fatalf("read the way back of %s: %v", migration.Name, err)
+	}
+	return strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project)
 }
 
 // headerBlock is the way back migration's header gives, from its `begin;` to its `commit;`, each
