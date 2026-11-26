@@ -32,6 +32,11 @@ import (
 // A test that needs another size sets MaxConns itself.
 const PoolConns = 4
 
+// SetMaxConns gives config the test-owned pool size. A caller that gets its configuration from a
+// package-specific factory first (the daemon store's PoolConfig) keeps that factory's hooks and
+// adds only this size.
+func SetMaxConns(config *pgxpool.Config) { config.MaxConns = PoolConns }
+
 // ParseConfig is pgxpool.ParseConfig for a test-owned DSN that names no pool size, with MaxConns
 // set to PoolConns. A DSN testdb.PoolBounded returned already names the test server's size, which
 // callers must keep with pgxpool.ParseConfig instead.
@@ -40,7 +45,7 @@ func ParseConfig(dsn string) (*pgxpool.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	config.MaxConns = PoolConns
+	SetMaxConns(config)
 	return config, nil
 }
 

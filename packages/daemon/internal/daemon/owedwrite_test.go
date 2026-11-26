@@ -263,16 +263,18 @@ func refusing(behind supervise.Store, token claim.Token, err error) *claimWriteF
 //
 // pgxpool dials nothing when it is built, so the pool is built at once and the write's
 // transaction is where the wait begins. The proxy dials no server, so the address it proxies is
-// one nothing serves. Outage returns an unsized DSN, so testpool.ParseConfig gives this test-owned
-// pool its machine-independent size.
+// one nothing serves. Outage returns an unsized DSN; PoolConfig keeps the daemon's BeforeConnect
+// hook that lowers a bounded write's dial, and testpool.SetMaxConns gives that test-owned pool its
+// machine-independent size.
 func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWriteFault {
 	t.Helper()
 	outage := testdb.Outage(t, "postgres://legion@127.0.0.1:1/legion?sslmode=disable")
 	outage.Silence()
-	config, err := testpool.ParseConfig(outage.DSN)
+	config, err := store.PoolConfig(outage.DSN)
 	if err != nil {
 		t.Fatalf("configure a pool on the database that never answers: %v", err)
 	}
+	testpool.SetMaxConns(config)
 	raw, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the database that never answers: %v", err)
