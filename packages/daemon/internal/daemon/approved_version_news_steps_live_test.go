@@ -46,18 +46,18 @@ func architectTask(document, issue, find, with, tree string) string {
 // and the root's architect is live above the child. The child's architect is asked to write
 // version 2 of its own issue's Verification document. A child's documents are its architect's to
 // change and no person approves them, so the daemon sends no news of the version: the reviewer
-// hears of it only from the architect that wrote it. Both arms' prompts tell that architect to
-// tell the architect above it of each version it writes, and tell that parent to review each
-// version, post its verdict as a `Spec review of` comment on the child and tell the child's
-// architect with envoy_publish; the head's tell the child's architect to tell the holder of each
-// issue the version changes once the version has that approving review.
+// hears of it only from the architect that wrote it. The architect skill tells that architect to
+// tell the architect above it of each version it writes, that parent to review each version, post
+// its verdict as a `Spec review of` comment on the child and tell the child's architect with
+// envoy_publish, and the child's architect to tell its workers of the version once the version has
+// that approving review (skills/legion-architect/references/decomposition.md).
 //
 // The parent's review is the proof's (reviewAsParent), in the parent's form and through the
 // parent's own channels, once the child's architect has told the parent of the version. A live
 // parent that reviewed the fixture's version in a run of this step asked for changes to what the
 // version had not changed, the child's empty spec and its check's run and negative control, so a
 // live review measures the fixture rather than the telling R4 is about; and the version must have
-// its approving review before the head's prompt puts that telling to the child's architect at
+// its approving review before the skill puts that telling to the child's architect at
 // all. The root's architect is live all the same, as every running tree's is, and its start task
 // tells it that the operator reviews the child's versions in its place (parentStart), so the
 // version gets one review. A run whose version the child's architect did not write, or did not
@@ -73,8 +73,6 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	root.tasks[claim.RoleArchitect] = parentStart(root.key, child.key)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
-	r.checkArm(child, claim.RoleArchitect, sessionsArchitectMark)
-	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
 	for _, held := range []struct {
 		member *sessionsMember
 		role   claim.Role
@@ -226,9 +224,9 @@ func (r *sessionsRun) reviewAsParent(child, root *sessionsMember) string {
 }
 
 // publishedBy reads the transcript of the architect named who for its envoy_publish of the change
-// to the role topic of role on member, which the architect's prompt asks for
-// (prompts/go/architect-common.md). It prints the call it found as evidence and answers "", or
-// answers why the step failed.
+// to the role topic of role on member, which the architect skill asks for
+// (skills/legion-architect/references/design-gate.md and decomposition.md). It prints the call it
+// found as evidence and answers "", or answers why the step failed.
 func (r *sessionsRun) publishedBy(architect sessionsTranscript, who string, member *sessionsMember, role claim.Role, change []string) string {
 	r.t.Helper()
 	topic := notify.RoleTopicPrefix + string(r.token(member, role))
@@ -256,7 +254,6 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Retro)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
-	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
 	if !r.settled(root, claim.RoleImplementer) || !r.settled(child, claim.RoleReviewer) {
 		return sessionsSetup, "a holder did not end its start turn within the run's bound"
 	}
@@ -350,8 +347,6 @@ func (r *sessionsRun) answers() (sessionsOutcome, string) {
 	}
 	r.boot()
 	for _, member := range []*sessionsMember{stale, current} {
-		r.checkArm(member, claim.RoleArchitect, sessionsArchitectMark)
-		r.checkArm(member, claim.RoleReviewer, sessionsWorkerMark)
 		for _, role := range member.roles {
 			if !r.settled(member, role) {
 				return sessionsSetup, fmt.Sprintf("the %s of %s did not end its start turn within the run's bound", role, member.key)

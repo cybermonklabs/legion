@@ -4,7 +4,7 @@
 # the gate, and an approved new version reaches the worker holding each affected issue's phase,
 # naming what changed, without the daemon moving an issue or stopping a turn. It is one script in
 # two parts: a driver with no agent proves what the daemon sends, and real sessions prove what the
-# prompts make an agent do, which no driver can stand in for.
+# prompts, the skills and the daemon's tasks make an agent do, which no driver can stand in for.
 #
 # Part one is a driver with no agent (packages/daemon/internal/daemon/approved_version_news_live_test.go,
 # which this script builds with `-tags e2e`): it builds and starts the real Dispatch server from
@@ -53,42 +53,30 @@
 # build): real `omp --mode rpc` panes under the real `legion worker-shim`, this checkout's two
 # plugins in a profile of the run's own, a real Envoy listener on natsd, both built from the
 # checkout, the real Dispatch, and the real model behind the gateway ANTHROPIC_BASE_URL names. It
-# runs the steps of the driver's step table, each as many times as the table says in each arm the
-# table runs it in, the head's prompts and the base's (the base below): today
-# a4-the-architect-tells-the-child-reviewer and
-# answers-a-stale-reviewer-moves-back-a-current-one-comments three times in the head arm alone, and
-# off-the-architect-tells-the-holders three times in each, which the driver's file describes. The
-# plan check builds the driver first, the one build both parts then run, and runs it with
-# -part-two-plan, which prints that plan (each step, its arms and the count of runs) and makes no
-# run, and this script counts each step's arms and the driver's deadline from it, keeping no copy
-# of the steps, their arms or the count. It prints each run's evidence and
-# `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
-# reached the step's assertion. SETUP is a run that stopped before it, such as a holder that did
-# not end its start turn in the run's bound, or an architect that did not write the version its
-# task asks for. The a4 and off steps assert the telling of that version. HARNESS is a run the
-# harness failed, before or after the step's own outcome, or one in which a session's `legion`
-# tool could not read the daemon: the plugin refused the daemon's answer as a body the daemon API
-# contract does not describe. The driver prints a run's line after it stops the run's daemon, so a
-# fault in that stop makes the run HARNESS too. The driver ends the proof at a
-# HARNESS run in either arm. This script counts PASS and FAIL alone for an arm, prints `<step>
-# <arm>: <p> of <n> runs that reached the assertion passed` for each step and arm it runs, and
-# names each run it did not count. Part two passes when every head run reached its assertion and
-# passed: a head run that stopped before its assertion fails the run, and its FAIL line names it.
-# The base arm is the control of each step it runs: it bites when a base run failed at its
-# assertion. A base arm that passed every run that reached its assertion is printed as no control
-# for that step, which fails nothing, and a setup failure is never counted as the control biting.
-# The base arms of a4 and answers are retired, each by the measurement its entry of head_only
-# below holds: each passed every one of its ten runs at the base, so the arms cannot be separated
-# there, for a reason of its own. a4 runs through the child's own architect, which main's #4203
-# gives every started child, and main's own text meets R4 since #4203 (a child's own architect
-# tells its workers of a version once its parent approves it). The rule answers tests is written
-# in the daemon's own news task (holderRule), which both arms run, since the daemon is the head's
-# in both. The last line says so in each one's place: `a4 head 3/3 (head only: <why>)`, and
-# answers' the same. Those measurements are the one fact of part two's steps the driver does not
-# know, and the plan check fails the run, naming the step, where the driver's plan makes a step in
-# the head arm alone that head_only holds no measurement for, or makes a step head_only holds one
-# for in both arms or not at all. off is the one step whose control can bite at its base. The driver
-# stops at the first head run that does not pass, since the proof then fails whatever the rest
+# runs each step of the driver's step table as many times as the table says, in the head arm, on
+# this checkout's role prompts and skills: today a4-the-architect-tells-the-child-reviewer,
+# off-the-architect-tells-the-holders and
+# answers-a-stale-reviewer-moves-back-a-current-one-comments, three times each, which the driver's
+# file describes. Its base arm, which ran the base commit's role prompts, is retired with the rules
+# it measured: the rewrite of the role prompts (5d78a420) took out of them the architect's own
+# Envoy message for a version the daemon tells nobody of and the worker's rule for a news task,
+# whose procedure the architect skill and the daemon's own news task (holderRule) carry now, so the
+# head's prompts against the base's measured nothing the head's prompts carry. The plan check
+# builds the driver first, the one build both parts then run, and runs it with -part-two-plan,
+# which prints that plan (each step, its arm and the count of runs) and makes no run, and this
+# script counts each step's runs and the driver's deadline from it, keeping no copy of the steps,
+# their arm or the count. It prints each run's evidence and `run <step> <arm> <n>: <outcome> …`.
+# PASS and FAIL are runs that reached the step's assertion. SETUP is a run that stopped before it,
+# such as a holder that did not end its start turn in the run's bound, or an architect that did not
+# write the version its task asks for. The a4 and off steps assert the telling of that version.
+# HARNESS is a run the harness failed, before or after the step's own outcome, or one in which a
+# session's `legion` tool could not read the daemon: the plugin refused the daemon's answer as a
+# body the daemon API contract does not describe. The driver prints a run's line after it stops the
+# run's daemon, so a fault in that stop makes the run HARNESS too. This script counts PASS and FAIL
+# alone, prints `<step> <arm>: <p> of <n> runs that reached the assertion passed` for each step,
+# and names each run it did not count. Part two passes when every run reached its assertion and
+# passed: a run that stopped before its assertion fails the run, and its FAIL line names it. The
+# driver stops at the first run that does not pass, since the proof then fails whatever the rest
 # show.
 #
 # Part two's model key is a file: APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default
@@ -113,25 +101,21 @@
 #
 # Three variables narrow part two to the runs one measurement needs, and the script passes them to
 # its driver unchanged: APPROVED_VERSION_NEWS_STEP names one step by the word the last line names
-# it by (a4, off or answers), APPROVED_VERSION_NEWS_ARM one arm (head or base), and
-# APPROVED_VERSION_NEWS_RUNS how many runs each arm makes of each step, a whole number of 1 or more.
-# Each left unset keeps every step, each step's own arms (the head arm alone for a4 and answers,
-# both for off), or three runs; an arm the pick names is the one arm of every step it keeps, a
-# retired base arm among them. The driver's plan says which runs a pick makes: the plan check
-# refuses with exit 2, in the driver's own words, a value the driver refuses because it names none
-# of these, and the arguments check refuses with exit 2 any of the three beside --part one,
-# --control or --base-commit, which run no part two. The script then counts each arm against the
-# pick's count of runs, prints no line for a step the pick leaves out, and prints a step whose base
-# arm the pick leaves out as no control. A run with any of the three set is a measurement, a
-# partial run, and never c-live's pass: its last line reads MEASURED in place of PASS, and names
-# the pick, each step and arm of a full run's plan that the pick leaves out, and the count of runs
-# of each arm where it is not a full run's. A head run that the pick makes and that does not reach
-# its assertion and pass still makes the last line FAIL. A measurement that reaches its end exits
-# 0, as a control that bites does: what it is run for is the counts its last line prints, a base
-# arm that failed at its assertion among them, which no exit status says. So the measurement that
-# retired a base arm is repeated by one command, a4's here and answers' with
-# APPROVED_VERSION_NEWS_STEP=answers:
-#   APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base APPROVED_VERSION_NEWS_RUNS=10 \
+# it by (a4, off or answers), APPROVED_VERSION_NEWS_ARM the arm (head, the one arm: the driver
+# refuses the retired base arm), and APPROVED_VERSION_NEWS_RUNS how many runs the arm makes of each
+# step, a whole number of 1 or more. Each left unset keeps every step, the head arm, or three runs.
+# The driver's plan says which runs a pick makes: the plan check refuses with exit 2, in the
+# driver's own words, a value the driver refuses because it names none of these, and the arguments
+# check refuses with exit 2 any of the three beside --part one, --control or --base-commit, which
+# run no part two. The script then counts each step against the pick's count of runs, and prints no
+# line for a step the pick leaves out. A run with any of the three set is a measurement, a partial
+# run, and never c-live's pass: its last line reads MEASURED in place of PASS, and names the pick,
+# each step and arm of a full run's plan that the pick leaves out, and the count of runs of each
+# arm where it is not a full run's. A run that the pick makes and that does not reach its assertion
+# and pass still makes the last line FAIL. A measurement that reaches its end exits 0, as a control
+# that bites does: what it is run for is the counts its last line prints, which no exit status
+# says. So one command measures one step ten times, a4 here:
+#   APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_RUNS=10 \
 #     bash scripts/e2e/approved-version-news.sh
 # with the variables of the usage below beside them.
 #
@@ -141,7 +125,7 @@
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [APPROVED_VERSION_NEWS_MODEL_KEY_FILE=<file>] \
 #     [APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE=model-gateway-gce] \
-#     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] \
+#     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head] \
 #     [APPROVED_VERSION_NEWS_RUNS=<n>] \
 #     bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL with the pgvector extension: the
@@ -164,23 +148,21 @@
 #
 # The base is the newest commit that carries none of the head's news marks: the first parent of
 # the first commit, in HEAD's history, that adds a news mark to packages/daemon/internal/prompts
-# (news_base). The news marks are the sentences part two's driver reads a pane's prompt for to
-# tell the arms apart, every sessions…Mark constant of its file, and this script reads them from
-# there and keeps no copy of them. The base was `git merge-base HEAD origin/main` until #3995
-# merged: that change brought the news marks to main, so the merge base of a branch merged forward
-# past it carries #3995's own sentences, part two's driver refuses a base arm whose prompts carry
-# the head's mark, and part one's control passes there, so the merge base is no control. The base
-# no longer moves with main, so it differs from the head by main's later changes as well. The
-# driver compiles there, and its registeredStep refuses nothing A2 needs, since A2 registers its
-# spec alone. The base's Dispatch serves no PUT /api/v1/projects/{key}/default-repository, which
-# #4457 added after #3995, so the driver sets the project's default repository through the route
-# that Dispatch serves where it answers 404 (setDefaultRepository in its file). The plan's own
-# control runs used 2a6ff6c03269dc9377bf60f8f06e6682df55419e, the base before the forward merges.
-# Part two's base arm takes that commit's role prompt files (`git archive <base>
-# packages/daemon/internal/prompts/{roles,go}`), which its driver writes over the snapshot the
-# daemon takes at boot. So part two and the control need the checkout's history down to the base,
-# which a shallow clone lacks: the arguments check refuses with exit 2 a history in which no commit
-# adds a news mark, or whose first such commit has no parent in the clone.
+# (news_base). The news marks are a sentence each that the role prompts carried from #3995 until
+# the rewrite of the role prompts (5d78a420) took them out, every sessions…Mark constant of part
+# two's driver file, and this script reads them from there and keeps no copy of them. The base was
+# `git merge-base HEAD origin/main` until #3995 merged: that change brought the news marks to main,
+# so the merge base of a branch merged forward past it carries #3995's own sentences, and part
+# one's control passes there, so the merge base is no control. The base no longer moves with main,
+# so it differs from the head by main's later changes as well. The driver compiles there, and its
+# registeredStep refuses nothing A2 needs, since A2 registers its spec alone. The base's Dispatch
+# serves no PUT /api/v1/projects/{key}/default-repository, which #4457 added after #3995, so the
+# driver sets the project's default repository through the route that Dispatch serves where it
+# answers 404 (setDefaultRepository in its file). The plan's own control runs used
+# 2a6ff6c03269dc9377bf60f8f06e6682df55419e, the base before the forward merges. So the control
+# needs the checkout's history down to the base, which a shallow clone lacks: the arguments check
+# of a run of the control refuses with exit 2 a history in which no commit adds a news mark, or
+# whose first such commit has no parent in the clone. Part two reads no base.
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
 # <rev> in its place, with no search for the base (news_base): `git archive <rev> | tar -x` into a
@@ -213,7 +195,7 @@ driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
 steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
 # Part two's driver, whose sessions…Mark constants are the news marks news_base finds the base by,
-# and the prompts those marks are written in.
+# and the prompts those marks were written in.
 sessions_file=packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go
 prompts_dir=packages/daemon/internal/prompts
 driver_test=TestAnApprovedVersionReachesItsHolderLive
@@ -245,8 +227,8 @@ control_setup_checks=5
 # daemon dies, and says nothing about the change.
 control_failure='waited [^ ]+ for a task queued for the reviewer of [^ ]+ behind its open turn; last seen: '
 
-# Part two's steps, the arms each runs in and how many runs each arm makes are the driver's step
-# table's alone (sessionsSteps and pickSessions in
+# Part two's steps, the arm each runs in and how many runs it makes are the driver's step table's
+# alone (sessionsSteps and pickSessions in
 # packages/daemon/internal/daemon/approved_version_news_transcript_test.go), and this script keeps
 # no copy of them: the plan check builds the driver and reads its plan (driver_plan), once with no
 # pick, a full run's plan (full_plan), and, for a run that picks, once more with the run's pick
@@ -257,33 +239,6 @@ control_failure='waited [^ ]+ for a task queued for the reviewer of [^ ]+ behind
 # took 44 minutes in a measured run.
 part_two_minutes=9
 part_two_setup_minutes=20
-# The measurement that retired a step's base arm, as `<word>:<why>`, which the last line prints in
-# the step's place (head_only_why): the one fact of part two's steps the driver does not know. The
-# driver's plan of a full run makes each such step in the head arm alone, and the plan check fails
-# the run, naming the step, where that plan makes a step in the head arm alone that has no entry
-# here, or makes the step of an entry here in both arms or not at all (check_plan). Each was
-# measured by APPROVED_VERSION_NEWS_STEP=<word> APPROVED_VERSION_NEWS_ARM=base
-# APPROVED_VERSION_NEWS_RUNS=10, then ARM=head RUNS=3, alone; that command repeats it, and a base
-# arm that passed 3 or more of the 10 cannot be told from the head arm at that base.
-#   - a4 drives R4 through the child's own architect, which main's #4203 gives every started
-#     child, and the base commit's own prompts tell that architect to tell its workers of a
-#     version once its parent approves it. At 26392323 against its merge base, main 578c6abb, the
-#     base arm passed 10 of 10 runs (dispatch://INFRA-175/artifact/a4-base10-2639232-txt) and the
-#     head arm 3 of 3 (dispatch://INFRA-175/artifact/a4-head3-2639232-txt).
-#   - answers tests the rule that a holder whose work a new version makes stale moves back with a
-#     reason naming the version and the change, and one whose work it leaves current writes a
-#     comment naming the version and why. The daemon's own news task states that rule
-#     (holderRule, packages/daemon/internal/workflow/design_news.go), and both arms run the head's
-#     daemon, so the base's role prompts need not carry it. At e5081eb2 against its merge base,
-#     main 578c6abb, the base arm passed 10 of 10 runs
-#     (dispatch://INFRA-175/artifact/answers-base10-e5081eb-txt) and the head arm 3 of 3
-#     (dispatch://INFRA-175/artifact/answers-head3-e5081eb-txt).
-# off is the one step left whose base arm the full run makes: its base arm passed 0 of 3 runs.
-head_only=(
-  "a4:the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203"
-  "answers:the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms"
-)
-
 # Part two's identity token, where the run mints one (the header says when). A token the metadata
 # server mints lasts an hour, and the refresher mints the next once the one in the key file has
 # gateway_keep_seconds left, 20 minutes after an hour's token was minted. A run of part two reads
@@ -301,7 +256,6 @@ gateway_mint_seconds=30
 # The run's own state, which finish reads from the EXIT trap.
 version_news_evidence=${APPROVED_VERSION_NEWS_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-evidence.XXXXXXXX")}
 base_tree=''
-prompts_tree=''
 plan_tree=''
 full_plan=''
 part_two_plan=''
@@ -337,7 +291,7 @@ finish() {
     kill "$gateway_refresher" 2>/dev/null || :
     wait "$gateway_refresher" 2>/dev/null || :
   fi
-  for tree in "$base_tree" "$prompts_tree" "$plan_tree" "$gateway_tree"; do
+  for tree in "$base_tree" "$plan_tree" "$gateway_tree"; do
     [ -z "$tree" ] || rm -rf "$tree"
   done
   said="assertions: $counted/$expected"
@@ -437,12 +391,12 @@ news_base() {
     done <<<"$found"
   done
   [ "${#adders[@]}" -gt 0 ] ||
-    refuse "no commit in HEAD's history adds a news mark to $prompts_dir, so this run finds no base for part one's control or part two's base arm: $remedy"
+    refuse "no commit in HEAD's history adds a news mark to $prompts_dir, so this run finds no base for part one's control: $remedy"
   order=$(git -C "$root" rev-list --topo-order --reverse HEAD) || fail "git rev-list could not read the history of $root"
   first=$(grep -m1 -Fx -f <(printf '%s\n' "${adders[@]}") <<<"$order") ||
     fail "git rev-list HEAD lists none of the commits git log names as adding a news mark: ${adders[*]}"
   base_sha=$(git -C "$root" rev-parse --verify --quiet "$first^1^{commit}") ||
-    refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: $remedy"
+    refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control: $remedy"
   note "the base: $base_sha, the parent of $first, the first commit that adds a news mark"
 }
 
@@ -601,19 +555,6 @@ key_leaks() {
   { grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l
 }
 
-# head_only_why WORD prints the why of WORD's entry of head_only, and answers 1 for a step that
-# has none, whose base arm the driver's plan of a full run makes (check_plan).
-head_only_why() {
-  local entry
-  for entry in "${head_only[@]}"; do
-    if [ "${entry%%:*}" = "$1" ]; then
-      echo "${entry#*:}"
-      return 0
-    fi
-  done
-  return 1
-}
-
 # A plan is part two's driver's lines `plan step <word> <name> <arm>…`, one for each step it makes,
 # in the order it makes them, and `plan runs <n>`, how many runs each arm makes of each step
 # (sessionsPick.plan in the driver's step table). plan_words PLAN prints the word of each step of
@@ -645,8 +586,8 @@ plan_runs() {
 # -part-two-plan, which makes no run. The test runs with no LEGION_TEST_PG_DSN, so the binary makes
 # no database. A pick the driver refuses (its line `plan refused: <why>`) is the caller's input,
 # refused with exit 2 in the driver's words. A driver that fails otherwise, or prints a plan of no
-# step, a step of no arm or of an arm other than head and base, or no count of runs, fails the run.
-# Its caller reads the plan through a command substitution, whose failure ends the run under
+# step, a step of no arm or of an arm other than head, the one arm, or no count of runs, fails the
+# run. Its caller reads the plan through a command substitution, whose failure ends the run under
 # set -e with the status of the refusal or the failure here.
 driver_plan() {
   local out status=0 refused plan tag kind word name arms arm steps=0 runs=''
@@ -665,8 +606,8 @@ driver_plan() {
         steps=$((steps + 1))
         [ -n "$arms" ] || fail "part two's driver planned $word in no arm: $tag $kind $word $name"
         for arm in $arms; do
-          [ "$arm" = head ] || [ "$arm" = base ] ||
-            fail "part two's driver planned $word in the arm '$arm', which is neither head nor base"
+          [ "$arm" = head ] ||
+            fail "part two's driver planned $word in the arm '$arm', which is not head, the one arm"
         done
         ;;
       'plan runs')
@@ -680,29 +621,6 @@ driver_plan() {
   [ "$steps" -gt 0 ] && [ -n "$runs" ] ||
     fail "part two's driver printed no plan of steps and runs: $(tail -n 5 <<<"$out" | tr '\n' ' ')"
   echo "$plan"
-}
-
-# check_plan fails the run, naming the step, where the driver's plan of a full run (full_plan) and
-# head_only disagree: a step the plan makes in the head arm alone that head_only holds no
-# measurement for, whose control would be gone with nothing to say why; a step the plan makes in
-# both arms that head_only holds a measurement for, whose control the last line would print as
-# retired where it can bite; and an entry of head_only for a step the plan does not make.
-check_plan() {
-  local word name arms entry
-  for word in $(plan_words "$full_plan"); do
-    read -r name arms <<<"$(plan_step "$full_plan" "$word")"
-    if [[ " $arms " == *" base "* ]]; then
-      ! head_only_why "$word" >/dev/null ||
-        fail "the driver's plan of a full run makes $word in both arms ($arms), and head_only holds a measurement that retired its base arm"
-    else
-      head_only_why "$word" >/dev/null ||
-        fail "the driver's plan of a full run makes $word in the head arm alone ($arms), and head_only holds no measurement that retired its base arm"
-    fi
-  done
-  for entry in "${head_only[@]}"; do
-    [ -n "$(plan_step "$full_plan" "${entry%%:*}")" ] ||
-      fail "head_only holds a measurement that retired the base arm of ${entry%%:*}, which the driver's plan of a full run does not make"
-  done
 }
 
 # part_two_deadline prints the driver's deadline for part two, a Go duration: part_two_minutes for
@@ -743,18 +661,15 @@ pick_said() {
 
 # part_two_step PROOF WORD reads the `run <step> <arm> <n>: <outcome> …` lines of WORD's step in
 # part two's driver output PROOF, for each arm this run's plan (part_two_plan) makes the step in,
-# each of which the driver ran as many times as the plan says. A PASS or FAIL run reached the
-# step's assertion, and it counts for its arm. A SETUP run stopped before the assertion, and a
-# HARNESS run is a fault of the harness before or after it. Neither counts, and each is noted by
-# its line. A line of an arm the plan does not make the step in is not read. It sets step_said,
-# the step's part of the last line: WORD, each arm's passed runs of those that reached the
-# assertion, the runs not counted, and the control's verdict. The control bites only when a base
-# run failed at its assertion. A step that runs in the head arm alone has none: a step of
-# head_only in a run that picks no arm says why (head_only_why), and a step whose base arm the
-# pick left out says so. It also sets head_missed: each head run that did not reach its assertion
-# and pass, by its line, each after `; `.
+# the head arm, which the driver ran as many times as the plan says. A PASS or FAIL run reached the
+# step's assertion, and it counts. A SETUP run stopped before the assertion, and a HARNESS run is a
+# fault of the harness before or after it. Neither counts, and each is noted by its line. A line of
+# an arm the plan does not make the step in is not read. It sets step_said, the step's part of the
+# last line: WORD, and each arm's passed runs of those that reached the assertion, with the runs
+# not counted. It also sets head_missed: each run that did not reach its assertion and pass, by its
+# line, each after `; `.
 part_two_step() {
-  local proof=$1 word=$2 step arms runs arm lines ran passed failed line count counts='' base_ran=0 base_passed=0 base_failed=0 why
+  local proof=$1 word=$2 step arms runs arm lines ran passed failed line count counts=''
   head_missed=''
   read -r step arms <<<"$(plan_step "$part_two_plan" "$word")"
   runs=$(plan_runs "$part_two_plan")
@@ -775,31 +690,12 @@ part_two_step() {
     while IFS= read -r line; do
       [ -z "$line" ] || note "not counted: $line"
     done < <(grep -vE "^run $step $arm [0-9]+: (PASS |FAIL: )" <<<"$lines" || true)
-    if [ "$arm" = head ]; then
-      [ "$ran" -eq "$runs" ] || head_missed="$head_missed; $word: $ran of $runs head runs ran"
-      while IFS= read -r line; do
-        [ -z "$line" ] || head_missed="$head_missed; $line"
-      done < <(grep -vE "^run $step head [0-9]+: PASS " <<<"$lines" || true)
-    else
-      base_ran=$ran base_passed=$passed base_failed=$failed
-    fi
+    [ "$ran" -eq "$runs" ] || head_missed="$head_missed; $word: $ran of $runs $arm runs ran"
+    while IFS= read -r line; do
+      [ -z "$line" ] || head_missed="$head_missed; $line"
+    done < <(grep -vE "^run $step $arm [0-9]+: PASS " <<<"$lines" || true)
   done
   step_said="$word $counts"
-  if [[ " $arms " != *" base "* ]]; then
-    if [ -z "$pick_arm" ] && why=$(head_only_why "$word"); then
-      step_said="$step_said (head only: $why)"
-    else
-      step_said="$step_said (no control: the pick leaves the base arm out)"
-    fi
-  elif [ "$base_ran" -eq 0 ]; then
-    step_said="$step_said (base did not run)"
-  elif [ "$base_failed" -gt 0 ]; then
-    step_said="$step_said (control bites)"
-  elif [ "$base_passed" -eq 0 ]; then
-    step_said="$step_said (no control: no base run reached its assertion)"
-  else
-    step_said="$step_said (no control: the base arm passed every run that reached its assertion)"
-  fi
 }
 
 parts=both
@@ -872,10 +768,10 @@ unset ANTHROPIC_API_KEY
 require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops databases there" ||
   refuse "$db_host"
 note "store LEGION_TEST_PG_DSN on $db_host (not printed)"
-# The base is read only by a run that uses it: the control, and part two's base arm. It is the
-# commit --base-commit names, or else the one news_base finds.
+# The base is read only by the control, which runs against it: the commit --base-commit names, or
+# else the one news_base finds.
 base_sha=''
-if [ -n "$control" ] || [ "$parts" = both ]; then
+if [ -n "$control" ]; then
   if [ -n "$base_commit" ]; then
     base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
       refuse "the base '$base_commit' names no commit of $root"
@@ -923,9 +819,7 @@ if [ "$parts" = both ]; then
     key_said="the pod's identity token for the audience $gateway_audience in place of a key, since the model key file $key_file holds none (minted below, read by the driver, never printed)"
   fi
   command -v bun >/dev/null || fail "bun is not on PATH: part two packs the two plugins with it"
-  [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" "$prompts_dir/roles")" ] ||
-    refuse "the base $base_sha holds no $prompts_dir/roles, so part two has no base prompts"
-  note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, $key_said"
+  note "part two on this checkout's prompts, Oh My Pi $LEGION_OMP_PATH, $key_said"
 fi
 note "parts: $parts; evidence: $version_news_evidence"
 pass
@@ -948,9 +842,9 @@ fi
 # Part two's plan is its driver's: the plan check builds the driver from this checkout
 # (build_daemon_driver), the one build both parts run (plan_driver), and reads the driver's plan
 # of a full run and, for a run that picks, of its pick (driver_plan) before part one runs, so that
-# a pick the driver refuses costs no part one. It holds head_only to the plan of a full run
-# (check_plan), and counts the driver's deadline from this run's plan. A run of part one alone has
-# no plan check: the lib builds part one's driver from the build tree (plan_driver empty).
+# a pick the driver refuses costs no part one. It counts the driver's deadline from this run's
+# plan. A run of part one alone has no plan check: the lib builds part one's driver from the build
+# tree (plan_driver empty).
 plan_driver=''
 picked=''
 if [ "$parts" = both ]; then
@@ -970,7 +864,6 @@ if [ "$parts" = both ]; then
     note "the driver's plan of this run, $picked:"
     while IFS= read -r line; do note "  $line"; done <<<"$part_two_plan"
   fi
-  check_plan
   part_two_timeout=$(part_two_deadline)
   note "part two runs under a deadline of $part_two_timeout"
   pass
@@ -1047,18 +940,13 @@ if [ "$parts" = one ]; then
   exit 0
 fi
 
-# Part two is the lib's run too, over this checkout and of the driver the plan check built, with
-# the base commit's prompt files extracted for its base arm into a scratch directory of their own.
-prompts_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-prompts.XXXXXXXX")
-git -C "$root" archive "$base_sha" "$prompts_dir/roles" "$prompts_dir/go" |
-  tar -x -C "$prompts_tree" || fail "git archive of $base_sha's prompts into $prompts_tree failed"
+# Part two is the lib's run too, over this checkout and of the driver the plan check built.
 part_two=$(mktemp -d "$version_news_evidence/part-two.XXXXXX")
 check=part-two
 set +e
 (
   set -e
-  export LEGION_E2E_REPO_ROOT=$root APPROVED_VERSION_NEWS_MODEL_KEY_FILE=$key_file \
-    APPROVED_VERSION_NEWS_BASE_PROMPTS=$prompts_tree APPROVED_VERSION_NEWS_BASE_COMMIT=$base_sha
+  export LEGION_E2E_REPO_ROOT=$root APPROVED_VERSION_NEWS_MODEL_KEY_FILE=$key_file
   live_daemon_proof 'approved version news part two' approved-version-news-sessions "$sessions_test" "$part_two" "$part_two_timeout" "$plan_driver"
 )
 part_two_status=$?

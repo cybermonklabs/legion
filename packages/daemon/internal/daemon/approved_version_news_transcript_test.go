@@ -1,15 +1,15 @@
 // The reads part two of dispatch://INFRA-175's c-live (approved_version_news_sessions_live_test.go,
 // built with -tags e2e) makes of a session's transcript and of the comments on an issue, the word
 // each of its runs ends with, the steps it makes and the picks of them, and the tests that hold
-// them against fixture transcripts written as Oh My Pi writes a session file: which steps and arms
-// a pick makes and the plan of them the script reads, which Envoy card counts as a holder told of
-// a new version, which call of the architect's counts as its own envoy_publish to that holder's
-// role topic, which comment counts as a parent's approving review of a child's new version, which
-// tool result is the plugin refusing a daemon answer, and which word a run's line prints, which
-// the script counts. A run of real sessions costs forty-five minutes of model calls, so these
-// reads are proved here, where each wrong message is one line. The file is untagged so `go test`
-// runs these tests on every run: a change that breaks a read fails this package's tests, not the
-// live proof the next time its sessions run.
+// them against fixture transcripts written as Oh My Pi writes a session file: which steps a pick
+// makes, in which arm, and the plan of them the script reads, which Envoy card counts as a holder
+// told of a new version, which call of the architect's counts as its own envoy_publish to that
+// holder's role topic, which comment counts as a parent's approving review of a child's new
+// version, which tool result is the plugin refusing a daemon answer, and which word a run's line
+// prints, which the script counts. A run of real sessions costs forty-five minutes of model calls,
+// so these reads are proved here, where each wrong message is one line. The file is untagged so
+// `go test` runs these tests on every run: a change that breaks a read fails this package's tests,
+// not the live proof the next time its sessions run.
 package daemon
 
 import (
@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
-// The three variables that narrow a run of part two to one step, one arm or another count of
+// The three variables that narrow a run of part two to one step, the head arm or another count of
 // runs (pickSessions), each unset for every step, each step's own arms and sessionsRuns.
 const (
 	sessionsStepEnv = "APPROVED_VERSION_NEWS_STEP"
@@ -45,13 +45,12 @@ const (
 	sessionsAnswers = "answers-a-stale-reviewer-moves-back-a-current-one-comments"
 )
 
-// The two arms: the prompts this checkout composes, and the base commit's.
-const (
-	sessionsHead = "head"
-	sessionsBase = "base"
-)
+// The one arm: the prompts this checkout composes. The base arm, the base commit's prompts, was
+// retired with the rules it measured, which the role prompts no longer carry (the file comment of
+// approved_version_news_sessions_live_test.go).
+const sessionsHead = "head"
 
-// sessionsRuns is how many runs each arm makes of each step, unless APPROVED_VERSION_NEWS_RUNS
+// sessionsRuns is how many runs the head arm makes of each step, unless APPROVED_VERSION_NEWS_RUNS
 // names another count.
 const sessionsRuns = 3
 
@@ -65,15 +64,12 @@ type sessionsStep struct {
 	arms       []string
 }
 
-// sessionsSteps is every step of part two, in the order a run makes them. a4 and answers run in the
-// head arm alone, since the base arm of each passed every run of the measurement the driver's
-// file comment names. The table and sessionsRuns are the one copy of part two's steps, their arms
-// and the count of runs: the script reads them from the plan the driver prints (sessionsPick.plan),
-// and keeps only the measurement that retired each base arm (head_only), which the driver does not
-// know.
+// sessionsSteps is every step of part two, in the order a run makes them, each in the head arm.
+// The table and sessionsRuns are the one copy of part two's steps, their arm and the count of runs:
+// the script reads them from the plan the driver prints (sessionsPick.plan).
 var sessionsSteps = []sessionsStep{
 	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
-	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},
+	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead}},
 	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead}},
 }
 
@@ -109,10 +105,10 @@ func (pick sessionsPick) plan() string {
 }
 
 // pickSessions is the pick that APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and
-// APPROVED_VERSION_NEWS_RUNS name, given here as step, arm and runs: one step by its word, one
-// arm for every step, and a count of runs of 1 or more. Each left empty picks every step, each
-// step's own arms, or sessionsRuns runs. A value that names none of these is refused, naming what
-// it may be.
+// APPROVED_VERSION_NEWS_RUNS name, given here as step, arm and runs: one step by its word, the
+// head arm for every step, and a count of runs of 1 or more. Each left empty picks every step, each
+// step's own arms, or sessionsRuns runs. A value that names none of these, the retired base arm
+// among them, is refused, naming what it may be.
 func pickSessions(step, arm, runs string) (sessionsPick, error) {
 	pick := sessionsPick{steps: sessionsSteps, runs: sessionsRuns}
 	if step != "" {
@@ -128,10 +124,10 @@ func pickSessions(step, arm, runs string) (sessionsPick, error) {
 	}
 	switch arm {
 	case "":
-	case sessionsHead, sessionsBase:
+	case sessionsHead:
 		pick.arm = arm
 	default:
-		return sessionsPick{}, fmt.Errorf("%s=%q names no arm: it is %s or %s", sessionsArmEnv, arm, sessionsHead, sessionsBase)
+		return sessionsPick{}, fmt.Errorf("%s=%q names no arm: it is %s, the one arm", sessionsArmEnv, arm, sessionsHead)
 	}
 	if runs != "" {
 		count, err := strconv.Atoi(runs)
@@ -143,24 +139,21 @@ func pickSessions(step, arm, runs string) (sessionsPick, error) {
 	return pick, nil
 }
 
-// A run that picks no arm makes a4 and answers in the head arm alone, their base arms retired, and
-// off in both; a pick of a retired base arm still makes it, so the measurement that retired it can
-// be repeated, and an arm the pick names is every step's one arm. Each pick is read as the runs it
-// makes, `<word> <arm>` in order, with the count of runs of each.
-func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPickStillMakesTheirBase(t *testing.T) {
+// A pick makes each step it keeps in the head arm, with the count of runs it names. Each pick is
+// read as the runs it makes, `<word> <arm>` in order, with the count of runs of each.
+func TestApprovedVersionNewsAPickMakesItsStepsInTheHeadArm(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, step, arm, runs string
 		want                  []string
 		count                 int
 	}{
-		{"a full run", "", "", "", []string{"a4 head", "off head", "off base", "answers head"}, sessionsRuns},
+		{"a full run", "", "", "", []string{"a4 head", "off head", "answers head"}, sessionsRuns},
 		{"a4 alone", "a4", "", "", []string{"a4 head"}, sessionsRuns},
+		{"off alone", "off", "", "", []string{"off head"}, sessionsRuns},
 		{"answers alone", "answers", "", "", []string{"answers head"}, sessionsRuns},
-		{"off alone", "off", "", "", []string{"off head", "off base"}, sessionsRuns},
-		{"the measurement of a4's base arm", "a4", "base", "10", []string{"a4 base"}, 10},
-		{"the measurement of answers' base arm", "answers", "base", "10", []string{"answers base"}, 10},
-		{"the base arm of every step", "", "base", "", []string{"a4 base", "off base", "answers base"}, sessionsRuns},
+		{"the head arm of every step", "", "head", "", []string{"a4 head", "off head", "answers head"}, sessionsRuns},
+		{"ten runs of a4", "a4", "", "10", []string{"a4 head"}, 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pick, err := pickSessions(tc.step, tc.arm, tc.runs)
@@ -181,17 +174,28 @@ func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPic
 	}
 }
 
+// The base arm is retired, so a pick that names it is refused, naming the one arm, and makes no
+// run of it.
+func TestApprovedVersionNewsAPickOfTheRetiredBaseArmIsRefused(t *testing.T) {
+	t.Parallel()
+	pick, err := pickSessions("a4", "base", "10")
+	want := `APPROVED_VERSION_NEWS_ARM="base" names no arm: it is head, the one arm`
+	if err == nil || err.Error() != want {
+		t.Fatalf("pickSessions(%q, %q, %q) = %+v, %v; want the refusal %q", "a4", "base", "10", pick, err, want)
+	}
+}
+
 // The plan names each step the pick makes by its word and its name, with each arm the pick makes it
 // in, and then the count of runs, in the lines the script reads: a full run's plan, and the plan of
-// the measurement of a4's base arm.
+// ten runs of a4.
 func TestApprovedVersionNewsThePlanNamesEachStepItsArmsAndTheCountOfRuns(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, step, arm, runs, want string }{
 		{"a full run", "", "", "", "plan step a4 " + sessionsA4 + " head\n" +
-			"plan step off " + sessionsOff + " head base\n" +
+			"plan step off " + sessionsOff + " head\n" +
 			"plan step answers " + sessionsAnswers + " head\n" +
 			"plan runs 3\n"},
-		{"the measurement of a4's base arm", "a4", "base", "10", "plan step a4 " + sessionsA4 + " base\nplan runs 10\n"},
+		{"ten runs of a4", "a4", "", "10", "plan step a4 " + sessionsA4 + " head\nplan runs 10\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pick, err := pickSessions(tc.step, tc.arm, tc.runs)
@@ -242,27 +246,27 @@ func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testin
 }
 
 // sessionsOutcome is how one run of a step ended: the word its `run` line prints, which the script
-// counts. Only a run that reached the step's assertion counts for its arm. A run that stopped
-// before its assertion, or that the harness failed, says nothing about the prompts the arms differ
-// in, so a base arm that lost a run that way has not failed.
+// counts. Only a run that reached the step's assertion counts. A run that stopped before its
+// assertion, or that the harness failed, says nothing about what the sessions do with a new
+// version, and the script names it and does not count it.
 type sessionsOutcome string
 
 const (
 	// sessionsPassed is a run whose assertion held.
 	sessionsPassed sessionsOutcome = "PASS"
 	// sessionsFailed is a run whose assertion did not hold: the sessions did not do what the step
-	// asks of the arm's prompts.
+	// asks of them.
 	sessionsFailed sessionsOutcome = "FAIL"
 	// sessionsSetup is a run that stopped before its assertion, on what the step needs first: a
 	// holder that did not end its start turn in the run's bound, a reviewer the daemon never gave
 	// its news, an architect that did not write the version the operator's task asks for, or, in
 	// the a4 step, a child's architect that did not tell its parent of that version, so that no
 	// parent reviewed it. The assertion of the a4 and off steps is the telling of that version,
-	// which the head's prompt puts to a child's architect only once its parent's review approved
-	// it, so a run in which it was never written, or never reviewed, never tried the telling, in
-	// either arm.
+	// which the architect skill puts to a child's architect only once its parent's review approved
+	// it (skill://legion-architect/references/decomposition.md), so a run in which it was never
+	// written, or never reviewed, never tried the telling.
 	sessionsSetup sessionsOutcome = "SETUP"
-	// sessionsHarness is a run the harness failed, which ends the proof in either arm: a fault of
+	// sessionsHarness is a run the harness failed, which ends the proof: a fault of
 	// the harness before or after the step's own outcome, up to the daemon's stop and the closes
 	// of the run's cleanups (sessionsRunLine.printAtEnd), or a session whose `legion` tool could
 	// not read the daemon (sessionsEnding).
@@ -284,7 +288,7 @@ func sessionsUnwritten(document string, held bool, text, words string) string {
 // operator's task asks the architect to write. A run that stopped before that assertion (stopped,
 // the reason, is not ""), on a version the architect did not write (sessionsUnwritten) or, in the
 // a4 step, one its parent never reviewed because the child's architect never told it of the
-// version, is SETUP whatever else it shows, and counts for neither arm. Otherwise the run reached
+// version, is SETUP whatever else it shows, and is not counted. Otherwise the run reached
 // its assertion: it is FAIL, naming each part of it that did not hold (missed), or PASS.
 func sessionsJudged(stopped string, missed []string) (sessionsOutcome, string) {
 	switch {
@@ -662,11 +666,12 @@ func TestApprovedVersionNewsCardNamesTheChangedSectionNotTheWordDesign(t *testin
 
 // The a4 step reads back the review it posts as the child's parent, and only an approval of
 // version 2 of the child's Verification document in the form a parent posts its review counts,
-// since the head's prompt has the child's architect tell its workers of a version only after that
-// approval. A review that requests changes, one that read another version, one by another issue's
-// architect, one of another child, and a sentence that quotes the form are no such approval: read
-// back as one, a review the child's architect rightly took for no approval would make a run whose
-// architect rightly waited read as a FAIL of its prompt.
+// since the architect skill has the child's architect tell its workers of a version only after that
+// approval (skill://legion-architect/references/decomposition.md). A review that requests changes,
+// one that read another version, one by another issue's architect, one of another child, and a
+// sentence that quotes the form are no such approval: read back as one, a review the child's
+// architect rightly took for no approval would make a run whose architect rightly waited read as
+// a FAIL.
 func TestApprovedVersionNewsCountsOnlyTheParentsApprovalOfVersion2(t *testing.T) {
 	t.Parallel()
 	const child, parent = "AS0001-2", "AS0001-1"
@@ -724,9 +729,8 @@ func TestApprovedVersionNewsReadsThePluginsRefusalOfADaemonAnswer(t *testing.T) 
 
 // The a4 and off steps assert the telling of a version 2 that the operator's task asks the
 // architect to write. A run whose version is not on Dispatch with the task's new words stopped
-// before that assertion: it is SETUP whatever else it shows, so it fails a head run by name and
-// never counts for the base arm. Only a run whose version holds the words is judged on its
-// assertion.
+// before that assertion: it is SETUP whatever else it shows, so it fails the run by name and is
+// not counted. Only a run whose version holds the words is judged on its assertion.
 func TestApprovedVersionNewsAVersionTheArchitectDidNotWriteStopsTheRunBeforeItsAssertion(t *testing.T) {
 	t.Parallel()
 	// The check's words before and after the edit, as the a4 step writes them.
@@ -760,7 +764,7 @@ func TestApprovedVersionNewsAVersionTheArchitectDidNotWriteStopsTheRunBeforeItsA
 
 // A run's line prints the word the script counts. The step's own word stands when its test did
 // not fail. A failure after the step answered, or a session whose `legion` tool could not read the
-// daemon, makes the run HARNESS, named so: the script counts it for neither arm, and the proof ends
+// daemon, makes the run HARNESS, named so: the script does not count it, and the proof ends
 // at it. A harness that stopped the step first keeps its own reason.
 func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultAfterItsStep(t *testing.T) {
 	t.Parallel()
@@ -803,7 +807,7 @@ func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultAfterItsStep(t *testin
 const sessionsCleanupChildEnv = "LEGION_TEST_SESSIONS_CLEANUP_CHILD"
 
 // sessionsCleanupChildRun is the name of the child's run, as its line prints it.
-const sessionsCleanupChildRun = "a4-the-architect-tells-the-child-reviewer base 1"
+const sessionsCleanupChildRun = "a4-the-architect-tells-the-child-reviewer head 1"
 
 // TestApprovedVersionNewsRunWhoseCleanupFails is the child of the test below: a run whose step
 // ends FAIL at its assertion, and whose later cleanup, which stands for the daemon's stop, then
@@ -822,9 +826,9 @@ func TestApprovedVersionNewsRunWhoseCleanupFails(t *testing.T) {
 // A fault in a cleanup of a run makes its line HARNESS, whatever its step answered. The line is
 // the run's first cleanup, so it prints after the cleanups the run registers later: the daemon's
 // stop, which fails the test when the daemon does not stop cleanly, and the closes. A line
-// printed before them would print the step's word, and the script would count a base FAIL as the
-// control biting. The line says the test log above names the failure, so the fault prints above
-// it. The child runs with no database, since it reads none.
+// printed before them would print the step's word, and the script would count a run the harness
+// failed as one that reached its assertion. The line says the test log above names the failure,
+// so the fault prints above it. The child runs with no database, since it reads none.
 func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultInItsCleanup(t *testing.T) {
 	t.Parallel()
 	child := exec.Command(os.Args[0], "-test.run", "^TestApprovedVersionNewsRunWhoseCleanupFails$", "-test.v")

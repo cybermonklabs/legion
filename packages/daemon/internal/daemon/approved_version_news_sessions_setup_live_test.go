@@ -8,12 +8,10 @@ package daemon
 // run's seed, its setup check and its boot.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -33,15 +31,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -589,9 +584,8 @@ func plainStartRefusal(name string, entry, given int64) string {
 		"which its first phase start queues, raises no entry and gives none", name, entry, given)
 }
 
-// boot boots the whole daemon over the local runtime, in the base arm after writing the base
-// commit's prompt files over the snapshot the boot wrote, and waits for every seeded claim's pane
-// to report ready. The seed is checked before the daemon starts (standAtTheirEntries).
+// boot boots the whole daemon over the local runtime and waits for every seeded claim's pane to
+// report ready. The seed is checked before the daemon starts (standAtTheirEntries).
 func (r *sessionsRun) boot() {
 	t := r.t
 	t.Helper()
@@ -599,18 +593,6 @@ func (r *sessionsRun) boot() {
 	r.standAtTheirEntries()
 	r.daemon = newRecordingLog(r.log())
 	o := r.rt.daemonOverrides(&sessionsRuntime{localRuntime: r.rt, launchable: r.launchable})
-	wired := o.runtime
-	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
-		// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
-		// plan), and no pane starts before the runtime exists.
-		if r.arm == sessionsBase {
-			if err := r.s.writeBasePrompts(r.cfg.StateDir); err != nil {
-				return nil, err
-			}
-		}
-		return wired(ctx, listener, address, apps, repository, st, cached)
-	}
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.daemon), 2*time.Minute)
 	r.deadline = time.Now().Add(sessionsRunBound)
@@ -640,57 +622,4 @@ func (g *sessionsRuntime) Resume(ctx context.Context, prev *runtime.Locator, spe
 		return runtime.Locator{}, fmt.Errorf("resume %s: this proof starts only the sessions its run seeded", spec.Claim)
 	}
 	return g.localRuntime.Resume(ctx, prev, spec)
-}
-
-// writeBasePrompts writes the base commit's role prompt files over the snapshot below stateDir:
-// its roles/ over prompts/shared/ and its go/ over prompts/go/. A snapshot file the base holds no
-// copy of fails the arm, since a pane reading it would run a prompt of neither commit.
-func (s *sessionsLive) writeBasePrompts(stateDir string) error {
-	written, differ := 0, 0
-	for _, pair := range [][2]string{{"roles", "shared"}, {"go", "go"}} {
-		from := filepath.Join(s.base, "packages", "daemon", "internal", "prompts", pair[0])
-		to := filepath.Join(stateDir, "prompts", pair[1])
-		if err := filepath.WalkDir(to, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			rel, err := filepath.Rel(to, path)
-			if err != nil {
-				return err
-			}
-			if _, err := os.Stat(filepath.Join(from, rel)); err != nil {
-				return fmt.Errorf("the snapshot holds %s, which the base commit's prompts hold no copy of: %w", path, err)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-		if err := filepath.WalkDir(from, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			rel, err := filepath.Rel(from, path)
-			if err != nil {
-				return err
-			}
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			target := filepath.Join(to, rel)
-			if head, err := os.ReadFile(target); err != nil || !bytes.Equal(head, body) {
-				differ++
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-			written++
-			return os.WriteFile(target, body, 0o600)
-		}); err != nil {
-			return err
-		}
-	}
-	fmt.Printf("   the base arm: %d prompt files of %s written over the snapshot below %s, %d of them unlike the head's\n",
-		written, s.baseCommit, stateDir, differ)
-	return nil
 }

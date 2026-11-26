@@ -2,8 +2,8 @@ import { join } from "node:path";
 
 // What approved-version-news-verdicts.test.ts and approved-version-news-runs.test.ts both read
 // and write of approved-version-news.sh: the script, part one's driver test, the failure its
-// negative control bites on, part two's steps, the plan part two's driver prints of them, its run
-// lines, and the measurements that retired a base arm.
+// negative control bites on, part two's steps, the plan part two's driver prints of them and its
+// run lines.
 
 export const script = join(import.meta.dir, "..", "approved-version-news.sh");
 
@@ -26,12 +26,12 @@ export const plan = (steps: [word: string, step: string, arms: string][], runs: 
     ...steps.map(([word, step, arms]) => `plan step ${word} ${step} ${arms}`),
     `plan runs ${runs}`,
   ].join("\n");
-// The driver's plan of a full run at this change: a4 and answers in the head arm alone, their base
-// arms retired, and off in both, three runs of each arm.
+// The driver's plan of a full run at this change: each step in the head arm, the one arm, three
+// runs each.
 export const fullPlan = plan(
   [
     ["a4", a4, "head"],
-    ["off", off, "head base"],
+    ["off", off, "head"],
     ["answers", answers, "head"],
   ],
   3
@@ -45,18 +45,3 @@ export const runsOf = (step: string, arm: string, ...outcomes: string[]) =>
 export const passed = "PASS";
 export const failed =
   "FAIL: the reviewer of AS1-2 was sent no Envoy message naming version 2 and the change";
-// Each step whose base arm is retired, its word, and what the last line says in its place, the
-// measurement that retired it.
-export const retired = [
-  {
-    step: a4,
-    word: "a4",
-    headOnly: "(head only: the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203)",
-  },
-  {
-    step: answers,
-    word: "answers",
-    headOnly:
-      "(head only: the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms)",
-  },
-];

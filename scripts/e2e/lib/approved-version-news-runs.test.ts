@@ -4,9 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -22,7 +20,6 @@ import {
   off,
   passed,
   plan,
-  retired,
   runsOf,
   script,
 } from "./approved-version-news-fixture";
@@ -37,10 +34,10 @@ import { scriptAssignments, sourcedLibraries } from "./script-functions";
 
 // approved-version-news.sh's runs of part one and of both parts, driven whole over
 // lib/live-daemon-proof-fixture.ts's stand-ins, so the script's own end mark is the one under
-// test: its run_end, its finish and the real lib/run-verdict.sh print the last line. The same runs
-// show the base the script finds for part two's base arm and for part one's negative control, in
-// scratch histories of their own. approved-version-news-verdicts.test.ts runs the script's
-// controls, its plan check and its last line by name.
+// test: its run_end, its finish and the real lib/run-verdict.sh print the last line. Runs of part
+// one's negative control show the base the script finds, in scratch histories of their own, and a
+// run of both parts shows that part two reads none. approved-version-news-verdicts.test.ts runs
+// the script's controls, its plan of part two and its last line by name.
 
 const assignment = scriptAssignments(script);
 const scratch = temporaryDirectories("approved-version-news-run-test");
@@ -176,8 +173,8 @@ const newsMarks = sessionsLines.flatMap((line) => {
   const mark = /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/.exec(line);
   return mark === null ? [] : [mark[1]];
 });
-// The two prompt files part two's base arm takes in the scratch checkout, a prompt with no news
-// mark, and the same prompt with every news mark after it.
+// Two prompt files of the scratch checkout under prompts_dir, a prompt with no news mark, and the
+// same prompt with every news mark after it.
 const reviewerPrompt = join(promptsDir, "roles", "reviewer.md");
 const workerPrompt = join(promptsDir, "go", "worker-common.md");
 const unmarked = "a base prompt\n";
@@ -309,8 +306,8 @@ const mergedForward: History = ({ git, commit }, c0) => {
  * Lays out a scratch checkout in DIR/checkout and builds its history. Its first commit holds the
  * script and the libraries it sources, this checkout's part two driver (sessions_file), part one's
  * three driver files and the Go of the control's two seams, each at the path it has here, a
- * placeholder of packages/envoy, which the control's base must hold, and the two prompt files part
- * two's base arm takes, with no news mark. HISTORY builds the rest on that commit.
+ * placeholder of packages/envoy, which the control's base must hold, and two prompt files under
+ * prompts_dir, with no news mark. HISTORY builds the rest on that commit.
  */
 function scratchCheckout(dir: string, history: History) {
   const checkout = join(dir, "checkout");
@@ -376,9 +373,8 @@ type KeyRun = {
  * run's status. Part two's test also keeps in `seen/` of the run's directory what it was given as
  * its key file: the file's path, its mode and its text as the test starts, and, for a run that
  * mints the pod's identity token, its text once the script's refresher has written another token
- * into it; and what it was given as the base: the commit (`base-commit`) and a copy of the base's
- * prompt files (`base-prompts`). The stand-in `curl` answers the metadata server's identity route
- * with a token whose `exp` claim is `keepSeconds` and 4 seconds on, lists each call's arguments in
+ * into it. The stand-in `curl` answers the metadata server's identity route with a token whose
+ * `exp` claim is `keepSeconds` and 4 seconds on, lists each call's arguments in
  * `curl-calls` and each token it answered in `tokens`, one a line. KEY says where the run takes
  * its model key from (KeyRun). Every line, its stderr's included, is in `out`, the script's own
  * last line is `last`, `dir` is the run's directory, `dsn` is the LEGION_TEST_PG_DSN the run was
@@ -425,8 +421,6 @@ case " $* " in
     printf '%s\\n' "$key" >"$seen/path"
     stat -c %a "$key" >"$seen/mode"
     cp "$key" "$seen/first"
-    printf '%s\\n' "$APPROVED_VERSION_NEWS_BASE_COMMIT" >"$seen/base-commit"
-    cp -R "$APPROVED_VERSION_NEWS_BASE_PROMPTS" "$seen/base-prompts"
     if [ -n "\${STAND_IN_AWAIT_REFRESH:-}" ]; then
       for _ in $(seq 1 300); do
         [ "$(<"$key")" = "$(<"$seen/first")" ] || break
@@ -492,22 +486,17 @@ printf '%s' "$token"
   };
 }
 
-const a4Head = retired[0].headOnly;
-const answersHead = retired[1].headOnly;
-const noControl = "(no control: the base arm passed every run that reached its assertion)";
-// The driver's plan of each pick below, as pickSessions makes it from the plan of a full run.
-const basePlan = plan(
-  [
-    ["a4", a4, "base"],
-    ["off", off, "base"],
-    ["answers", answers, "base"],
-  ],
-  3
-);
+// A full run's part two: every run passes.
+const fullRun = [
+  ...runsOf(a4, "head", passed, passed, passed),
+  ...runsOf(off, "head", passed, passed, passed),
+  ...runsOf(answers, "head", passed, passed, passed),
+];
+// The driver's plan of a pick of one run of each step, as pickSessions makes it.
 const onePlan = plan(
   [
     ["a4", a4, "head"],
-    ["off", off, "head base"],
+    ["off", off, "head"],
     ["answers", answers, "head"],
   ],
   1
@@ -519,45 +508,37 @@ const onePlan = plan(
 // full run reads PASS. A run that sets any of
 // APPROVED_VERSION_NEWS_ARM, APPROVED_VERSION_NEWS_STEP and APPROVED_VERSION_NEWS_RUNS is a
 // measurement: its last line reads MEASURED, never PASS, names the pick, each step and arm of the
-// full run's plan it left out and its count of runs where it is not three, and exits 0; a head run
-// of the pick that did not pass still reads FAIL. The counts and the checks follow the driver's
-// plan, and a pick the driver refuses is refused in its words.
+// full run's plan it left out and its count of runs where it is not three, and exits 0; a run of
+// the pick that did not pass still reads FAIL. The counts and the checks follow the driver's
+// plan, a plan of an arm other than head fails the plan check, and a pick the driver refuses is
+// refused in its words.
 gitHost.describe("the script's run of both parts", () => {
   test("reads PASS for a full run, which picks nothing", () => {
-    const run = bothPartsRun({}, { full: fullPlan }, [
-      ...runsOf(a4, "head", passed, passed, passed),
-      ...runsOf(off, "head", passed, passed, passed),
-      ...runsOf(off, "base", failed, failed, failed),
-      ...runsOf(answers, "head", passed, passed, passed),
-    ]);
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun);
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
     expect(run.last).toEndWith(
-      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a4 head 3/3 ${a4Head}; off head 3/3, base 0/3 (control bites); answers head 3/3 ${answersHead}; model calls: 12)`
+      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a4 head 3/3; off head 3/3; answers head 3/3; model calls: 9)`
     );
     // The plan check's build is the run's one: each part's driver check takes it and builds none.
     expect(run.out.match(/^ {3}built .+\.test from /gm)).toHaveLength(1);
     expect(run.out.match(/^ {3}the caller built .+; this check builds nothing$/gm)).toHaveLength(2);
   }, 60_000);
 
-  test("reads MEASURED, not PASS, for APPROVED_VERSION_NEWS_ARM=base, naming each head arm it left out", () => {
+  test("reads MEASURED, not PASS, for APPROVED_VERSION_NEWS_ARM=head, which leaves nothing out", () => {
     const run = bothPartsRun(
-      { APPROVED_VERSION_NEWS_ARM: "base" },
-      { full: fullPlan, pick: basePlan },
-      [
-        ...runsOf(a4, "base", passed, passed, passed),
-        ...runsOf(off, "base", failed, failed, failed),
-        ...runsOf(answers, "base", passed, passed, passed),
-      ]
+      { APPROVED_VERSION_NEWS_ARM: "head" },
+      { full: fullPlan, pick: fullPlan },
+      fullRun
     );
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: MEASURED in \d+s \(/);
     expect(run.last).toContain(
-      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_ARM=base, leaving out a4 head, off head, answers head: a4 base 3/3 ${noControl}; off base 0/3 (control bites); answers base 3/3 ${noControl}; model calls: 9, evidence: `
+      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_ARM=head: a4 head 3/3; off head 3/3; answers head 3/3; model calls: 9, evidence: `
     );
   }, 60_000);
 
-  test("reads MEASURED, not PASS, for APPROVED_VERSION_NEWS_STEP=a4, naming each step and arm it left out", () => {
+  test("reads MEASURED, not PASS, for APPROVED_VERSION_NEWS_STEP=a4, naming each step it left out", () => {
     const run = bothPartsRun(
       { APPROVED_VERSION_NEWS_STEP: "a4" },
       { full: fullPlan, pick: plan([["a4", a4, "head"]], 3) },
@@ -566,7 +547,7 @@ gitHost.describe("the script's run of both parts", () => {
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: MEASURED in \d+s \(/);
     expect(run.last).toContain(
-      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_STEP=a4, leaving out off head, off base, answers head: a4 head 3/3 ${a4Head}; model calls: 3, evidence: `
+      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_STEP=a4, leaving out off head, answers head: a4 head 3/3; model calls: 3, evidence: `
     );
   }, 60_000);
 
@@ -577,21 +558,20 @@ gitHost.describe("the script's run of both parts", () => {
       [
         ...runsOf(a4, "head", passed),
         ...runsOf(off, "head", passed),
-        ...runsOf(off, "base", failed),
         ...runsOf(answers, "head", passed),
       ]
     );
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: MEASURED in \d+s \(/);
     expect(run.last).toContain(
-      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_RUNS=1, with 1 run of each arm in place of 3: a4 head 1/1 ${a4Head}; off head 1/1, base 0/1 (control bites); answers head 1/1 ${answersHead}; model calls: 4, evidence: `
+      `(assertions: ${expectedChecks}/${expectedChecks}; part two: a partial run picked by APPROVED_VERSION_NEWS_RUNS=1, with 1 run of each arm in place of 3: a4 head 1/1; off head 1/1; answers head 1/1; model calls: 3, evidence: `
     );
   }, 60_000);
 
-  test("reads FAIL for a pick whose head run did not pass", () => {
+  test("reads FAIL for a pick whose run did not pass", () => {
     const run = bothPartsRun(
       { APPROVED_VERSION_NEWS_STEP: "off" },
-      { full: fullPlan, pick: plan([["off", off, "head base"]], 3) },
+      { full: fullPlan, pick: plan([["off", off, "head"]], 3) },
       runsOf(off, "head", passed, failed),
       "FAIL"
     );
@@ -599,44 +579,37 @@ gitHost.describe("the script's run of both parts", () => {
     expect(run.out).not.toContain("approved version news e2e: MEASURED");
     expect(run.last).toMatch(/^approved version news e2e: FAIL at part-two after \d+s \(/);
     expect(run.last).toContain(
-      "part two: a partial run picked by APPROVED_VERSION_NEWS_STEP=off, leaving out a4 head, answers head: off head 1/2, base 0/0 (base did not run); model calls: 2, evidence: "
+      "part two: a partial run picked by APPROVED_VERSION_NEWS_STEP=off, leaving out a4 head, answers head: off head 1/2; model calls: 2, evidence: "
     );
   }, 60_000);
 
-  // The script keeps no table of part two's steps: a step the driver's plan adds is counted in
-  // each arm the plan makes it in, and a plan that gives a4 its base arm back, while head_only
-  // still holds the measurement that retired it, fails the run at the plan check, naming a4.
-  test("counts each arm of a step the driver's plan adds", () => {
+  // The script keeps no table of part two's steps: a step the driver's plan adds is counted, and
+  // a plan that makes a4 in the retired base arm fails the run at the plan check, naming a4.
+  test("counts each step the driver's plan adds", () => {
     const extra = "extra-a-step-the-driver-added";
     const withExtra = plan(
       [
         ["a4", a4, "head"],
-        ["off", off, "head base"],
+        ["off", off, "head"],
         ["answers", answers, "head"],
-        ["extra", extra, "head base"],
+        ["extra", extra, "head"],
       ],
       3
     );
     const run = bothPartsRun({}, { full: withExtra }, [
-      ...runsOf(a4, "head", passed, passed, passed),
-      ...runsOf(off, "head", passed, passed, passed),
-      ...runsOf(off, "base", failed, failed, failed),
-      ...runsOf(answers, "head", passed, passed, passed),
+      ...fullRun,
       ...runsOf(extra, "head", passed, passed, passed),
-      ...runsOf(extra, "base", passed, failed, passed),
     ]);
     expect(run.code).toBe(0);
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
-    expect(run.last).toContain(
-      `; answers head 3/3 ${answersHead}; extra head 3/3, base 2/3 (control bites); model calls: 18)`
-    );
+    expect(run.last).toContain("; answers head 3/3; extra head 3/3; model calls: 12)");
   }, 60_000);
 
-  test("fails at the plan check, naming a4, where the driver's plan gives a4 its base arm back", () => {
+  test("fails at the plan check, naming a4, where the driver's plan makes a4 in the base arm", () => {
     const back = plan(
       [
         ["a4", a4, "head base"],
-        ["off", off, "head base"],
+        ["off", off, "head"],
         ["answers", answers, "head"],
       ],
       3
@@ -647,7 +620,7 @@ gitHost.describe("the script's run of both parts", () => {
     ]);
     expect(run.code).toBe(1);
     expect(run.out).toContain(
-      "FAIL plan: the driver's plan of a full run makes a4 in both arms (head base), and head_only holds a measurement that retired its base arm\n"
+      "FAIL plan: part two's driver planned a4 in the arm 'base', which is not head, the one arm\n"
     );
     expect(run.last).toMatch(/^approved version news e2e: FAIL at plan after \d+s \(/);
   }, 60_000);
@@ -668,13 +641,6 @@ gitHost.describe("the script's run of both parts", () => {
   }, 60_000);
 });
 
-// A full run's part two: every head run passes, and off's base runs fail at their assertion.
-const fullRun = [
-  ...runsOf(a4, "head", passed, passed, passed),
-  ...runsOf(off, "head", passed, passed, passed),
-  ...runsOf(off, "base", failed, failed, failed),
-  ...runsOf(answers, "head", passed, passed, passed),
-];
 /** What part two's stand-in driver kept as NAME in `seen/` of the run's directory DIR. */
 const seen = (dir: string, name: string) => readFileSync(join(dir, "seen", name), "utf8");
 
@@ -852,7 +818,8 @@ const controlDriver = [
 
 /** Runs the script with --control and no --base-commit over lib/live-daemon-proof-fixture.ts's
  * stand-ins, whose driver prints controlDriver, from a scratch checkout whose history HISTORY
- * builds (scratchCheckout). It answers `code`, `out`, `last` and `commits` as bothPartsRun does. */
+ * builds (scratchCheckout). It answers `code`, `out`, `last`, `checkout` and `commits` as
+ * bothPartsRun does. */
 function controlRun(history: History) {
   const dir = scratch();
   const env = liveDaemonStandIns(dir, { driverOutput: controlDriver });
@@ -864,33 +831,29 @@ function controlRun(history: History) {
     { env }
   );
   const out = result.stdout.toString() + result.stderr.toString();
-  return { code: result.exitCode, out, last: out.trimEnd().split("\n").at(-1) ?? "", commits };
+  return {
+    code: result.exitCode,
+    out,
+    last: out.trimEnd().split("\n").at(-1) ?? "",
+    checkout,
+    commits,
+  };
 }
 
-// The base part two's base arm and part one's negative control run against where no
-// --base-commit names one: the first parent of the first commit in HEAD's history that adds a news
-// mark. In a branch merged forward past main's commit that adds the marks, the base is that
-// commit's parent, which carries none, while the merge base of HEAD and origin/main, the base
-// before this rule, carries them: the first test shows both, so it fails on the old rule. Where
-// the first commit that adds a mark adds the second mark sessions_file names, and a later one the
-// first, the base is the first one's parent, and not the parent of the first mark's adder. A
-// history in which no commit adds a mark, and one cut where a shallow clone cuts it, are refused
-// with exit 2, naming the remedies. A driver line that assigns a news mark in a form the script
-// does not read fails the run with exit 1, naming the line, where a read that skipped it passed.
+// The base part one's negative control runs against where no --base-commit names one: the first
+// parent of the first commit in HEAD's history that adds a news mark. In a branch merged forward
+// past main's commit that adds the marks, the base is that commit's parent, which carries none,
+// while the merge base of HEAD and origin/main, the base before this rule, carries them: the
+// first test shows both, so it fails on the old rule. Where the first commit that adds a mark adds
+// the second mark sessions_file names, and a later one the first, the base is the first one's
+// parent, and not the parent of the first mark's adder. A history in which no commit adds a mark,
+// and one cut where a shallow clone cuts it, are refused with exit 2, naming the remedies. A
+// driver line that assigns a news mark in a form the script does not read fails the run with exit
+// 1, naming the line, where a read that skipped it passed. A run of both parts reads no base, since
+// part two runs on this checkout's prompts alone, so it passes where no commit adds a mark.
 gitHost.describe("the base", () => {
-  /** Each prompt file part two's stand-in driver was given as the base's, by its path in the copy
-   * it kept, with its text. */
-  const basePrompts = (dir: string) => {
-    const copy = join(dir, "seen", "base-prompts");
-    return Object.fromEntries(
-      readdirSync(copy, { recursive: true, encoding: "utf8" })
-        .filter((path) => statSync(join(copy, path)).isFile())
-        .map((path) => [path, readFileSync(join(copy, path), "utf8")])
-    );
-  };
-
   test("is the parent of the first commit that adds a news mark, in a branch merged forward past it", () => {
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, mergedForward);
+    const run = controlRun(mergedForward);
     const { c0, c1, c2 } = run.commits;
     // The test's own control: the old rule's base, the merge base of HEAD and origin/main, is c2,
     // whose prompts carry the news marks, so a run on that rule fails every check below.
@@ -902,18 +865,14 @@ gitHost.describe("the base", () => {
     expect(run.out).toContain(
       `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
     );
-    expect(seen(run.dir, "base-commit")).toBe(`${c0}\n`);
-    const prompts = basePrompts(run.dir);
-    expect(Object.keys(prompts).sort()).toEqual([reviewerPrompt, workerPrompt].sort());
-    for (const text of Object.values(prompts)) {
-      for (const mark of newsMarks) expect(text).not.toContain(mark);
-    }
-    expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
+    expect(run.last).toMatch(
+      new RegExp(`^approved version news e2e: control bites at ${controlStep} against ${c0} in `)
+    );
   }, 60_000);
 
   test("is the parent of the first commit that adds any news mark, where that commit adds the second mark", () => {
     expect(newsMarks.length).toBeGreaterThanOrEqual(2);
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, secondMarkFirst);
+    const run = controlRun(secondMarkFirst);
     const { c0, c1, c2 } = run.commits;
     // The test's own control: the first mark's own adder is c2, whose parent, c1, carries the
     // second mark, so a base read from the first mark alone fails every check below.
@@ -925,45 +884,50 @@ gitHost.describe("the base", () => {
     expect(run.out).toContain(
       `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
     );
-    expect(seen(run.dir, "base-commit")).toBe(`${c0}\n`);
-    for (const text of Object.values(basePrompts(run.dir))) {
-      for (const mark of newsMarks) expect(text).not.toContain(mark);
-    }
-    expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
+    expect(run.last).toMatch(
+      new RegExp(`^approved version news e2e: control bites at ${controlStep} against ${c0} in `)
+    );
   }, 60_000);
 
   test("fails the run with exit 1, naming the line, where the driver assigns a news mark in a form the script does not read", () => {
     expect(unreadLine.name).not.toBe("");
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, unreadMark);
+    const run = controlRun(unreadMark);
     const line = `${sessionsLines[firstMarkIndex]?.trimStart()} // a comment`;
     expect(run.code).toBe(1);
     expect(run.out).toContain(
       `FAIL arguments: ${sessionsFile} line ${unreadLine.number} assigns the news mark ${unreadLine.name} in a form this script does not read, so the run would find the base without that mark: write it as ${unreadLine.name} = "<text>", alone on its line; the line reads: ${line}\n`
     );
     expect(run.out).not.toContain("the base: ");
-    expect(run.out).not.toContain("== plan");
+    expect(run.out).not.toContain("== base-tree");
     expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
   }, 60_000);
 
   test("is refused with exit 2 where no commit in HEAD's history adds a news mark, naming the remedies", () => {
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, noMark);
+    const run = controlRun(noMark);
     expect(run.code).toBe(2);
     expect(run.out).toContain(
-      `FAIL arguments: no commit in HEAD's history adds a news mark to ${promptsDir}, so this run finds no base for part one's control or part two's base arm: ${remedy}\n`
+      `FAIL arguments: no commit in HEAD's history adds a news mark to ${promptsDir}, so this run finds no base for part one's control: ${remedy}\n`
     );
-    expect(run.out).not.toContain("== plan");
+    expect(run.out).not.toContain("== base-tree");
     expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
   }, 60_000);
 
   test("is refused with exit 2 where the clone lacks the parent of the first commit that adds a news mark", () => {
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, shallowAtMark);
+    const run = controlRun(shallowAtMark);
     expect(git(run.checkout, "rev-parse", "--is-shallow-repository")).toBe("true");
     expect(run.code).toBe(2);
     expect(run.out).toContain(
-      `FAIL arguments: ${run.commits.mark}, the first commit in HEAD's history that adds a news mark to ${promptsDir}, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: ${remedy}\n`
+      `FAIL arguments: ${run.commits.mark}, the first commit in HEAD's history that adds a news mark to ${promptsDir}, has no parent in this clone, so this run finds no base for part one's control: ${remedy}\n`
     );
-    expect(run.out).not.toContain("== plan");
+    expect(run.out).not.toContain("== base-tree");
     expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
+  }, 60_000);
+
+  test("is not read by a run of both parts, which passes where no commit adds a news mark", () => {
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, noMark);
+    expect(run.code).toBe(0);
+    expect(run.out).not.toContain("the base: ");
+    expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
   }, 60_000);
 
   test("is the same for part one's negative control, --control with no --base-commit", () => {

@@ -1,13 +1,13 @@
 //go:build e2e
 
 // The driver of part two of dispatch://INFRA-175's c-live: real Oh My Pi sessions, on the role
-// prompts this checkout composes and on the base commit's, answering a new version of a design.
-// Part one (approved_version_news_live_test.go) proves what the daemon sends; this part proves what
-// the prompts make an agent do with a new version: an architect that writes a new version of a
-// child's checks, or of a root's spec under `gates.design: off`, tells the workers holding the
-// phases the version changes with its own Envoy message and requests no approval, and a worker
-// told of an approved version moves its issue back when its work is stale and writes a comment
-// when it is current. scripts/e2e/approved-version-news.sh builds this driver with `-tags e2e`.
+// prompts and the skills this checkout composes, answering a new version of a design. Part one
+// (approved_version_news_live_test.go) proves what the daemon sends; this part proves what the
+// sessions do with a new version: an architect that writes a new version of a child's checks, or
+// of a root's spec under `gates.design: off`, tells the workers holding the phases the version
+// changes with its own Envoy message and requests no approval, and a worker told of an approved
+// version moves its issue back when its work is stale and writes a comment when it is current.
+// scripts/e2e/approved-version-news.sh builds this driver with `-tags e2e`.
 //
 // Every part a session touches is the real one, built from this checkout or the pod's own. Each
 // pane is a real `omp --mode rpc` (LEGION_OMP_PATH) under the real `legion worker-shim`, started by
@@ -65,17 +65,16 @@
 // its plain start leaves it. A seed that differs fails the run's harness before any pane starts,
 // and the failure names the claim or the row, the field and both values.
 //
-// Two arms. The head arm launches each pane on the prompts the daemon snapshots below its state
-// directory at boot (prompts.New). The base arm writes the base commit's prompt files,
-// APPROVED_VERSION_NEWS_BASE_PROMPTS, over that snapshot before the first pane starts: a pane
-// reads its role prompt from those files at launch (specs.rolePromptPaths,
-// runtime.ComposePrompt), so the arm needs no second daemon. The addressing the daemon appends
-// after the files is this checkout's in both arms. Each run reads the prompt back from the file
-// its pane's own command line names and ends the proof when the arm it ran is not the one it
-// meant.
+// One arm, the head. Each pane launches on the prompts the daemon snapshots below its state
+// directory at boot (prompts.New), beside the skills the plugins carry. Its base arm, which wrote
+// the base commit's prompt files over that snapshot, is retired with the rules it measured: the
+// rewrite of the role prompts (5d78a420) took out of them the architect's own Envoy message for a
+// version the daemon tells nobody of and the worker's rule for a news task. That procedure is the
+// architect skill's now (skills/legion-architect/references/design-gate.md and decomposition.md)
+// and the daemon's own news task's (holderRule, internal/workflow/design_news.go), so the head's
+// prompts against the base's measured nothing the head's prompts carry.
 //
-// Three steps, each run three times in each arm it runs in, each run on trees of its own; a4 and
-// answers run in the head arm alone, and off in both:
+// Three steps, each run three times in the head arm, each run on trees of its own:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
 //     its child in reviewing, whose reviewer and own architect are live, with the root's architect
 //     live above them; the child's architect is asked to write version 2 of its issue's
@@ -99,53 +98,30 @@
 //     reviewer's request_backward_move names version 2 and moves its issue back, and the second
 //     writes a comment of its own on its issue naming version 2 and stays.
 //
-// The base arms of a4 and answers are retired: each passed 10 of its 10 runs at the merge base,
-// main 578c6abb, and its head arm 3 of 3, so no control can separate the arms there. Each has a
-// reason of its own.
-//   - a4 (at 26392323; dispatch://INFRA-175/artifact/a4-base10-2639232-txt and a4-head3-2639232-txt):
-//     main's #4203 gives every started child its own architect, and a4 drives R4 through it; the
-//     base commit's own prompts tell that architect to tell its workers of a version once its
-//     parent approves it, which is R4.
-//   - answers (at e5081eb2; dispatch://INFRA-175/artifact/answers-base10-e5081eb-txt and
-//     answers-head3-e5081eb-txt): the rule it tests, that a holder whose work a new version makes
-//     stale moves back with a reason naming the version and the change and one whose work it leaves
-//     current writes a comment naming the version and why, is written in the daemon's own news task
-//     (holderRule, internal/workflow/design_news.go), and both arms run the head's daemon, so the
-//     base's role prompts need not carry it.
-//
-// A run with no arm picked makes both in the head arm alone (sessionsStep.arms), and the script's
-// last line names each one's measurement in its place, from the list that holds it (head_only
-// in scripts/e2e/approved-version-news.sh). off is the one step whose control can bite at its base,
-// where its base arm passed 0 of 3 runs. The command that repeats a measurement is
-// APPROVED_VERSION_NEWS_STEP=<a4 or answers> APPROVED_VERSION_NEWS_ARM=base
-// APPROVED_VERSION_NEWS_RUNS=10 bash scripts/e2e/approved-version-news.sh.
-//
 // Three variables the script passes through narrow a run of part two (pickSessions):
 // APPROVED_VERSION_NEWS_STEP names one step by its word (a4, off or answers),
-// APPROVED_VERSION_NEWS_ARM the one arm (head or base) every step it keeps runs in, a retired base
-// arm among them, and APPROVED_VERSION_NEWS_RUNS the count of runs each arm makes of each step, so
-// one command measures one arm of one step as often as it asks.
+// APPROVED_VERSION_NEWS_ARM the arm every step it keeps runs in (head, the one arm), and
+// APPROVED_VERSION_NEWS_RUNS the count of runs the arm makes of each step, so one command measures
+// one step as often as it asks.
 //
 // Before its first run the driver prints the plan of the runs the pick makes (sessionsPick.plan):
-// each step, the arms it runs in and the count of runs. A pick it refuses prints `plan refused:
+// each step, the arm it runs in and the count of runs. A pick it refuses prints `plan refused:
 // <why>` and fails the test. With -part-two-plan (sessionsPlanOnly) the driver prints the plan and
-// makes no run, so the script reads the steps, their arms and the count of runs from the driver's
+// makes no run, so the script reads the steps, their arm and the count of runs from the driver's
 // own table before the real run, for its counts and the deadline it gives this driver.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
 // calls it made, which the script counts. The outcome is a word of sessionsOutcome. PASS and FAIL
-// are runs that reached the step's assertion, and the script counts them for the arm. SETUP is a
-// run that stopped before its assertion, an architect that did not write the version its task asks
-// for among them. HARNESS is a run the harness failed: a fault of the harness before or after the
+// are runs that reached the step's assertion, and the script counts them. SETUP is a run that
+// stopped before its assertion, an architect that did not write the version its task asks for
+// among them. HARNESS is a run the harness failed: a fault of the harness before or after the
 // step's own outcome, or a session whose transcript holds the plugin's refusal of a daemon answer,
 // which ran with a `legion` tool that could not read the daemon. The line prints after the run's
 // daemon stops, so a daemon that does not stop cleanly makes the run HARNESS too. Neither SETUP
-// nor HARNESS says anything about the prompts the arms differ in, so the script does not count
-// them. A HARNESS run ends the proof in either arm, since no count of runs means anything past it.
-// A head run that does not pass ends the proof there, whatever its outcome: the head must reach
-// its assertion and pass in every run, and every model call after a run that did not would be
-// spent for nothing. A base run that ends PASS, FAIL or SETUP is the control's to read, and fails
+// nor HARNESS says anything about what the sessions do with a new version, so the script does not
+// count them. A run that does not pass ends the proof there, whatever its outcome: every run must
+// reach its assertion and pass, and every model call after a run that did not would be spent for
 // nothing.
 package daemon
 
@@ -182,10 +158,8 @@ import (
 // pick a run's steps, arms and count of runs are beside the step table
 // (approved_version_news_transcript_test.go).
 const (
-	sessionsKeyFileEnv     = "APPROVED_VERSION_NEWS_MODEL_KEY_FILE"
-	sessionsBasePromptsEnv = "APPROVED_VERSION_NEWS_BASE_PROMPTS"
-	sessionsBaseCommitEnv  = "APPROVED_VERSION_NEWS_BASE_COMMIT"
-	sessionsModelEnv       = "APPROVED_VERSION_NEWS_MODEL"
+	sessionsKeyFileEnv = "APPROVED_VERSION_NEWS_MODEL_KEY_FILE"
+	sessionsModelEnv   = "APPROVED_VERSION_NEWS_MODEL"
 )
 
 // sessionsPlanOnly is -part-two-plan: the driver prints the plan of the runs the pick makes, and
@@ -225,17 +199,19 @@ const (
 	sessionsCheckAgain  = "The read answers 200 with the page it read."
 )
 
-// The sentence of each arm's prompt the run reads back from the file a pane's command line names:
-// the head's carries it and the base commit's does not. The architect's is its answer to a version
-// the daemon sends no news of (prompts/go/architect-common.md); a phase worker's is its answer to a
-// news task (prompts/go/worker-common.md).
+// The news marks: a sentence each that the role prompts carried from #3995 until the rewrite of
+// the role prompts (5d78a420) took them out, the architect's of its answer to a version the daemon
+// sends no news of (prompts/go/architect-common.md) and a phase worker's of its answer to a news
+// task (prompts/go/worker-common.md). No run reads them: scripts/e2e/approved-version-news.sh
+// reads them from this file (news_base) and takes the parent of the first commit that adds one to
+// the prompts as the base part one's negative control runs against.
 const (
 	sessionsArchitectMark = "Send that news yourself: for a version of a child's documents"
 	sessionsWorkerMark    = "A news task tells you of an approved new version of your tree's design."
 )
 
 // sessionsLive is what every run of part two shares: the broker, the listener and Dispatch, the
-// `legion` and the Oh My Pi profile every pane runs, the model's way in, and the base prompts.
+// `legion` and the Oh My Pi profile every pane runs, and the model's way in.
 type sessionsLive struct {
 	t        *testing.T
 	natsURL  string
@@ -252,19 +228,15 @@ type sessionsLive struct {
 	keyFile string
 	model   string
 	calls   *sessionsModelProxy
-	// base is the directory the base commit's prompt files were extracted into, and baseCommit
-	// the commit, as a note names it.
-	base, baseCommit string
 	// evidence is the directory each run's transcripts are copied into.
 	evidence string
 }
 
-// TestRealSessionsTellAndAnswerANewVersionLive prints the plan of the steps, arms and count of runs
+// TestRealSessionsTellAndAnswerANewVersionLive prints the plan of the steps, arm and count of runs
 // the pick names (pickSessions, sessionsPick.plan), by default each step three times in the head
-// arm and then, for off, three times in the base arm, and then runs them, unless -part-two-plan
-// asks for the plan alone. It stops at the first head run that does not pass: one
-// that failed its assertion, or one that stopped before it. It stops at a run of either arm that
-// the harness failed too (run). A run that -test.run leaves out is none of these.
+// arm, and then runs them, unless -part-two-plan asks for the plan alone. It stops at the first
+// run that does not pass: one that failed its assertion, one that stopped before it, or one the
+// harness failed (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
@@ -291,7 +263,7 @@ func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 					continue
 				}
 				runs++
-				if outcome != sessionsPassed && arm == sessionsHead {
+				if outcome != sessionsPassed {
 					fmt.Printf("model calls: %d in all, over %d runs\n", s.calls.count(), runs)
 					t.Fatalf("%s %s run %d ended %s, so the head arm did not reach its assertion and pass in every run; its evidence is above",
 						step.name, arm, n, outcome)
@@ -313,12 +285,8 @@ func newSessionsLive(t *testing.T) *sessionsLive {
 		t.Skipf("%s is unset, so there is no model key for a session; scripts/e2e/approved-version-news.sh names it", sessionsKeyFileEnv)
 	}
 	s := &sessionsLive{t: t, client: &http.Client{Timeout: 30 * time.Second}}
-	for name, into := range map[string]*string{
-		liveOmpPathEnv: &s.omp, sessionsBasePromptsEnv: &s.base, sessionsBaseCommitEnv: &s.baseCommit,
-	} {
-		if *into = os.Getenv(name); *into == "" {
-			t.Fatalf("%s is unset; scripts/e2e/approved-version-news.sh sets it beside %s", name, sessionsKeyFileEnv)
-		}
+	if s.omp = os.Getenv(liveOmpPathEnv); s.omp == "" {
+		t.Fatalf("%s is unset; scripts/e2e/approved-version-news.sh sets it beside %s", liveOmpPathEnv, sessionsKeyFileEnv)
 	}
 	gateway := os.Getenv("ANTHROPIC_BASE_URL")
 	if gateway == "" {
@@ -369,8 +337,8 @@ func newSessionsLive(t *testing.T) *sessionsLive {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	s.writeProfile(work)
 	fmt.Printf("   Oh My Pi %s at %s, model anthropic/%s through a counting proxy in front of the gateway, "+
-		"Envoy listener %s and Dispatch %s on natsd %s, `dispatch` from %s; the base arm's prompts from %s\n",
-		strings.TrimSpace(string(version)), s.omp, s.model, s.listener, s.dispatch.base, s.natsURL, bin, s.baseCommit)
+		"Envoy listener %s and Dispatch %s on natsd %s, `dispatch` from %s\n",
+		strings.TrimSpace(string(version)), s.omp, s.model, s.listener, s.dispatch.base, s.natsURL, bin)
 	return s
 }
 
@@ -421,12 +389,12 @@ func (s *sessionsLive) writeProfile(work string) {
 	s.overlays = []string{operator, role}
 }
 
-// sessionsRun is one run of one step in one arm: its booted daemon, the trees it seeded, and the
-// claims whose panes it launched.
+// sessionsRun is one run of one step: its booted daemon, the trees it seeded, and the claims whose
+// panes it launched.
 type sessionsRun struct {
 	liveAgentProof
-	s         *sessionsLive
-	name, arm string
+	s    *sessionsLive
+	name string
 	// repo is the default repository of the run's project; launchable is every claim the run
 	// seeded, the only ones its runtime starts.
 	repo       string
@@ -496,7 +464,7 @@ func (s *sessionsLive) run(step sessionsStep, arm string, n int) (ran bool, outc
 				t.Errorf("the legion plugin refused a daemon answer as a body the daemon API contract does not describe, in the transcript of %s", session)
 			}
 		}()
-		r = s.newRun(t, name, arm, step.gates)
+		r = s.newRun(t, name, step.gates)
 		line.outcome, line.why = sessionsBodies[step.name](r)
 	})
 	if !succeeded {
@@ -507,7 +475,7 @@ func (s *sessionsLive) run(step sessionsStep, arm string, n int) (ran bool, outc
 
 // newRun readies a run's configuration, database, Dispatch project and runtime. The step seeds its
 // trees and boots the daemon itself (boot).
-func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.DesignGate) *sessionsRun {
+func (s *sessionsLive) newRun(t *testing.T, name string, gates config.DesignGate) *sessionsRun {
 	t.Helper()
 	cfg := workflowConfig(t, s.natsURL)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
@@ -542,7 +510,7 @@ func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.Desig
 			liveProof: liveProof{t: t, cfg: cfg, notices: notices, st: st, records: record.NewStore(), project: project},
 			legion:    s.legion, omp: s.omp,
 		},
-		s: s, name: name, arm: arm, repo: "acme/" + strings.ToLower(cfg.Project), launchable: map[claim.Token]bool{},
+		s: s, name: name, repo: "acme/" + strings.ToLower(cfg.Project), launchable: map[claim.Token]bool{},
 	}
 	r.dispatchAs(http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news sessions"}, nil)
 	r.dispatchAs(http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": r.repo}, nil)
@@ -623,76 +591,6 @@ func (r *sessionsRun) token(member *sessionsMember, role claim.Role) claim.Token
 		r.t.Fatal(err)
 	}
 	return token
-}
-
-// checkArm reads the prompt the pane of role on member was launched with from the file its own
-// command line names and fails the run's harness when it is not the arm's: the head arm's carries
-// mark and the base arm's does not. A file that holds no prompt at all, empty or whitespace alone,
-// is neither arm's, so it fails the harness in either arm rather than pass as the base commit's
-// prompt, which would make the control bite for a reason the prompts under test do not give.
-func (r *sessionsRun) checkArm(member *sessionsMember, role claim.Role, mark string) {
-	r.t.Helper()
-	token := r.token(member, role)
-	prompt := r.launchedPrompt(token)
-	if strings.TrimSpace(prompt) == "" {
-		r.t.Fatalf("the %s arm's %s was launched with a prompt file of %d bytes that holds no prompt", r.arm, token, len(prompt))
-	}
-	carries := strings.Contains(prompt, mark)
-	if carries != (r.arm == sessionsHead) {
-		r.t.Fatalf("the %s arm's %s was launched with a prompt of %d bytes that carries the head's sentence %q: %t", r.arm, token, len(prompt), mark, carries)
-	}
-	said := "lacks"
-	if carries {
-		said = "carries"
-	}
-	r.note("%s runs the %s arm's prompt: the file its own command line names %s the head's sentence %q", token, r.arm, said, mark)
-}
-
-// launchedPrompt is the prompt token's Oh My Pi was started with: the contents of the file its one
-// `--append-system-prompt` word names, read from /proc as role_prompt_rule_live_test.go reads it.
-// The pid the locator carries is the shim's, whose child is Oh My Pi, and the launch writes that
-// file before the process starts and never while it runs (runtime.WriteSystemPrompt). A file that
-// cannot be read stops the run, since Oh My Pi would then have taken the path as the prompt's text.
-func (r *sessionsRun) launchedPrompt(token claim.Token) string {
-	t := r.t
-	t.Helper()
-	held := r.claim(token)
-	if held.Locator == nil {
-		t.Fatalf("%s is %s with no locator", token, held.State)
-	}
-	shim, _, err := parseLocalIncarnation(held.Locator.Incarnation)
-	if err != nil {
-		t.Fatalf("the locator of %s names no pid: %v", token, err)
-	}
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
-		if err != nil || parentOf(string(status)) != shim {
-			continue
-		}
-		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		if err != nil {
-			continue
-		}
-		argv := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
-		if argv[0] != r.omp {
-			continue
-		}
-		for i := len(argv) - 2; i >= 0; i-- {
-			if argv[i] == promptWord {
-				text, err := os.ReadFile(argv[i+1])
-				if err != nil {
-					t.Fatalf("%s's Oh My Pi was launched with %s %s, which could not be read: %v", token, promptWord, argv[i+1], err)
-				}
-				return string(text)
-			}
-		}
-	}
-	t.Fatalf("the shim of %s (pid %d) has no Oh My Pi child launched with %s", token, shim, promptWord)
-	return ""
 }
 
 // deliver gives role on member task through the operator's route, as `legion claims deliver`
