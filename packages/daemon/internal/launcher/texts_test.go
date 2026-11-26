@@ -60,24 +60,42 @@ exec sleep 600`
 // textsCase is one role launcher of the start rig (newRig) that is handed folders of texts: the two
 // plugins its starts load, the role's state home its roots are built under, the operator's settings
 // overlay its PI_CONFIG_FILES names first (which ignores the skill operator-skill, so a root's
-// settings layer has a base it must keep), and the config root its profile resolves to.
+// settings layer has a base it must keep), the config root its profile resolves to, which is under
+// the home, and the launcher's view of the container's home and of the directory that holds what
+// is mounted under it (useHomeView), which are directories of the case's own.
 type textsCase struct {
 	t                     *testing.T
 	g                     *rig
 	envoy, legion         string
 	stateHome, overlay    string
 	configRoot, workspace string
+	home, homeMounts      string
+}
+
+// useHomeView points the launcher's view of the container at a home and a home mounts directory of
+// the test's own (roleHome, roleHomeMounts), since a machine running the tests has neither the
+// image's /home/legion nor its /var/run/legion/home, and puts the image's back when the test ends.
+// It is called before the rig starts, which reads both, and a test that calls it is not parallel:
+// parallel tests read them.
+func useHomeView(t *testing.T, home, mounts string) {
+	t.Helper()
+	previousHome, previousMounts := roleHome, roleHomeMounts
+	roleHome, roleHomeMounts = home, mounts
+	t.Cleanup(func() { roleHome, roleHomeMounts = previousHome, previousMounts })
 }
 
 func newTextsCase(t *testing.T) *textsCase {
 	t.Helper()
 	base := t.TempDir()
 	c := &textsCase{
-		t: t, g: newRig(t),
+		t:     t,
 		envoy: filepath.Join(base, "pi-envoy"), legion: filepath.Join(base, "pi-legion"),
 		stateHome: filepath.Join(base, "scratch", "state", "tester"), overlay: filepath.Join(base, "operator", "overlay.yml"),
 		configRoot: filepath.Join(base, "home", ".omp"), workspace: filepath.Join(base, "workspace"),
+		home: filepath.Join(base, "home"), homeMounts: filepath.Join(base, "home-mounts"),
 	}
+	useHomeView(t, c.home, c.homeMounts)
+	c.g = newRig(t)
 	for p, body := range legionPluginTexts {
 		writeTextsFile(t, c.pluginFile(p), body)
 	}
@@ -584,4 +602,114 @@ func TestALinkAtTheTextsRootsIsNeverBuiltThrough(t *testing.T) {
 		}
 		untouched(t, target, before)
 	})
+}
+
+// A path at or under the home is where the launcher's view of the container holds it: under the
+// home mounts directory where an entry exists there, a link that dangles included, else the
+// image's own path under the home. A path outside the home, one that only shares the home's
+// prefix, and one that climbs out of the home are the same in both views.
+func TestTheHomeViewHoldsAMountedPathUnderTheHomeMountsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	home, mounts := filepath.Join(dir, "home"), filepath.Join(dir, "mounts")
+	writeTextsFile(t, filepath.Join(home, ".omp", "image.yml"), "image\n")
+	writeTextsFile(t, filepath.Join(home, ".omp", "both.yml"), "image\n")
+	writeTextsFile(t, filepath.Join(mounts, ".omp", "both.yml"), "mounted\n")
+	writeTextsFile(t, filepath.Join(mounts, ".omp", "overlay.yml"), "mounted\n")
+	// What a path that only shares the home's prefix would map to, if the prefix were the test.
+	writeTextsFile(t, filepath.Join(mounts, "-other", "overlay.yml"), "mounted\n")
+	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(mounts, "dangling.yml")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(dir, "elsewhere", "overlay.yml")
+	for _, tc := range []struct{ name, path, want string }{
+		{"a file only the mounts hold", filepath.Join(home, ".omp", "overlay.yml"), filepath.Join(mounts, ".omp", "overlay.yml")},
+		{"a file the mounts and the image both hold", filepath.Join(home, ".omp", "both.yml"), filepath.Join(mounts, ".omp", "both.yml")},
+		{"a file only the image holds", filepath.Join(home, ".omp", "image.yml"), filepath.Join(home, ".omp", "image.yml")},
+		{"a file nothing holds", filepath.Join(home, ".omp", "absent.yml"), filepath.Join(home, ".omp", "absent.yml")},
+		{"a link that dangles under the mounts", filepath.Join(home, "dangling.yml"), filepath.Join(mounts, "dangling.yml")},
+		{"a path outside the home", outside, outside},
+		{"a path that shares the home's prefix", home + "-other/overlay.yml", home + "-other/overlay.yml"},
+		{"a path that climbs out of the home", filepath.Join(home, "..", "elsewhere", "overlay.yml"), filepath.Join(home, "..", "elsewhere", "overlay.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := homeViewPath(home, mounts, tc.path); got != tc.want {
+				t.Errorf("homeViewPath(%s) = %s, want %s", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// The base of the settings layer is read where the launcher sees the container, which is not where
+// a role sees it: an operator's mount at or under the image's home is held under the home mounts
+// directory, and bound back at its own path only in each role's namespace. So a settings overlay
+// named at a path under the home that only the mounts directory holds is read there, where it would
+// otherwise fail every start of the role on a file the role finds; a profile config.yml mounted
+// under the home is read over the image's own at that path; and where nothing is mounted the
+// image's file is read. The settings layer keeps the ignored skills of the file that wins, and a
+// file no view holds refuses the start naming the path the role is told.
+func TestATextsStartReadsTheSettingsBaseWhereTheLauncherSeesTheOperatorsMounts(t *testing.T) {
+	list := func(patterns ...string) string {
+		return "skills:\n  ignoredSkills: [" + strings.Join(patterns, ", ") + "]\n"
+	}
+	const overlay, profile = ".omp/overlay.yml", ".omp/profiles/legion/agent/config.yml"
+	hidden := []string{"*/legion-worker", "*/legion-worker~*"}
+	for _, tc := range []struct {
+		name string
+		// image and mounted are the files of the case by their path under the home: the image's own,
+		// and the operator's, held under the home mounts directory. overlays are the entries of
+		// PI_CONFIG_FILES before the settings layer, paths under the home.
+		image, mounted map[string]string
+		overlays       []string
+		want           []string
+		refused        bool
+	}{
+		{name: "an overlay only the mounts hold",
+			mounted: map[string]string{overlay: list("mounted-overlay")}, overlays: []string{overlay}, want: []string{"mounted-overlay"}},
+		{name: "an overlay the mounts and the image both hold",
+			image:   map[string]string{overlay: list("image-overlay")},
+			mounted: map[string]string{overlay: list("mounted-overlay")}, overlays: []string{overlay}, want: []string{"mounted-overlay"}},
+		{name: "a profile config.yml the mounts hold over the image's",
+			image:   map[string]string{profile: list("image-profile")},
+			mounted: map[string]string{profile: list("mounted-profile")}, want: []string{"mounted-profile"}},
+		{name: "a profile config.yml nothing mounts",
+			image: map[string]string{profile: list("image-profile")}, want: []string{"image-profile"}},
+		{name: "an overlay no view holds", overlays: []string{overlay}, refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTextsCase(t)
+			for p, body := range tc.image {
+				writeTextsFile(t, filepath.Join(c.home, filepath.FromSlash(p)), body)
+			}
+			for p, body := range tc.mounted {
+				writeTextsFile(t, filepath.Join(c.homeMounts, filepath.FromSlash(p)), body)
+			}
+			folder, fingerprint := c.folder()
+			told := t.TempDir()
+			start := c.start(7, folder, fingerprint, told)
+			layer := filepath.Join(c.root(7), texts.SettingsLayerName)
+			var entries []string
+			for _, p := range tc.overlays {
+				entries = append(entries, filepath.Join(c.home, filepath.FromSlash(p)))
+			}
+			start.Env = mergeEnv(start.Env, []string{
+				"PI_CONFIG_FILES=" + strings.Join(append(entries, layer), ":"), "OMP_PROFILE=legion",
+			})
+			got := c.g.start(start)
+			if tc.refused {
+				if got.OK || got.Texts != nil || !strings.Contains(got.Error, entries[0]) {
+					t.Fatalf("the start naming %s, which no view holds, answered %#v (texts %+v), want an ordinary refusal naming it", entries[0], got, got.Texts)
+				}
+				c.nothingWritten(7)
+				return
+			}
+			if !got.OK || got.RunningGeneration != 7 {
+				t.Fatalf("the texts start answered %#v, want generation 7 running", got)
+			}
+			toldChild(t, told)
+			if ignored, want := ignoredSkills(t, layer), append(slices.Clone(tc.want), hidden...); !slices.Equal(ignored, want) {
+				t.Errorf("the settings layer ignores %q, want %q: the base of the file the role reads, then the replaced skill's collision names", ignored, want)
+			}
+			c.g.stop(7)
+		})
+	}
 }

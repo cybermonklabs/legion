@@ -1,6 +1,8 @@
 package texts_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,6 +37,8 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 		overlays []string
 		want     []string
 		err      string
+		// missing is a case whose error is the one for an absent file (fs.ErrNotExist).
+		missing bool
 	}{
 		{name: "no layer sets it", want: nil},
 		{name: "the profile's config.yml", files: map[string]string{"agent/config.yml": list("global")}, want: []string{"global"}},
@@ -76,7 +80,7 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 			overlays: []string{"overlay-1.yml"}, want: nil},
 		{name: "an empty overlay", files: map[string]string{"agent/config.yml": list("global"), "overlay-1.yml": ""},
 			overlays: []string{"overlay-1.yml"}, want: []string{"global"}},
-		{name: "a missing overlay", overlays: []string{"overlay-1.yml"}, err: "overlay-1.yml"},
+		{name: "a missing overlay", overlays: []string{"overlay-1.yml"}, err: "overlay-1.yml", missing: true},
 		{name: "a malformed overlay", files: map[string]string{"overlay-1.yml": "skills: [\n"}, overlays: []string{"overlay-1.yml"}, err: "overlay-1.yml"},
 		{name: "an overlay that is no mapping", files: map[string]string{"overlay-1.yml": "- a\n"}, overlays: []string{"overlay-1.yml"}, err: "overlay-1.yml"},
 		{name: "a list holding no pattern", files: map[string]string{"overlay-1.yml": "skills:\n  ignoredSkills: [{a: 1}]\n"}, overlays: []string{"overlay-1.yml"}, err: "overlay-1.yml"},
@@ -84,15 +88,20 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 		{name: "a malformed profile config.yml", files: map[string]string{"agent/config.yml": "skills: [\n"}, err: "config.yml"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The case's files are served from a map under a directory that holds none of them, so a
+			// read that does not go through the reader finds nothing.
 			base := t.TempDir()
 			project, agent := filepath.Join(base, "project"), filepath.Join(base, "agent")
-			for _, dir := range []string{project, agent} {
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
+			served := map[string]string{}
 			for name, body := range tc.files {
-				writeFile(t, filepath.Join(base, filepath.FromSlash(name)), body)
+				served[filepath.Join(base, filepath.FromSlash(name))] = body
+			}
+			read := func(path string) ([]byte, error) {
+				body, ok := served[path]
+				if !ok {
+					return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+				}
+				return []byte(body), nil
 			}
 			var layers []string
 			for _, overlay := range tc.overlays {
@@ -102,10 +111,13 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 					layers = append(layers, filepath.Join(base, overlay))
 				}
 			}
-			got, err := texts.BaseIgnoredSkills(layers, project, agent)
+			got, err := texts.BaseIgnoredSkills(layers, project, agent, read)
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Fatalf("BaseIgnoredSkills = %q, %v; want an error naming %s", got, err, tc.err)
+				}
+				if tc.missing && !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("BaseIgnoredSkills = %v; want an error that is fs.ErrNotExist", err)
 				}
 				return
 			}
@@ -140,7 +152,7 @@ func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 	writeFile(t, arm, "modelRoles:\n  default: standin/model\n")
 	layers := []string{operator, arm}
 
-	below, err := texts.BaseIgnoredSkills(layers, project, agent)
+	below, err := texts.BaseIgnoredSkills(layers, project, agent, os.ReadFile)
 	if err != nil || !slices.Equal(below, []string{"operator-*"}) {
 		t.Fatalf("BaseIgnoredSkills = %q, %v; want the operator's [operator-*]", below, err)
 	}
@@ -152,7 +164,7 @@ func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 		t.Errorf("WriteSettingsLayer wrote %s, want %s", layer, filepath.Join(root, texts.SettingsLayerName))
 	}
 	want := []string{"operator-*", "*/dispatch-first", "*/dispatch-first~*", "*/legion-worker", "*/legion-worker~*"}
-	if got, err := texts.BaseIgnoredSkills(append(slices.Clone(layers), layer), project, agent); err != nil || !slices.Equal(got, want) {
+	if got, err := texts.BaseIgnoredSkills(append(slices.Clone(layers), layer), project, agent, os.ReadFile); err != nil || !slices.Equal(got, want) {
 		t.Errorf("with the texts layer last, Oh My Pi reads skills.ignoredSkills as %q, %v; want %q", got, err, want)
 	}
 	body, err := os.ReadFile(layer)
@@ -178,7 +190,7 @@ func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := texts.BaseIgnoredSkills([]string{empty}, project, agent); err != nil || len(got) != 0 {
+	if got, err := texts.BaseIgnoredSkills([]string{empty}, project, agent, os.ReadFile); err != nil || len(got) != 0 {
 		t.Errorf("an empty texts layer over the profile's [global] reads as %q, %v; want an empty list", got, err)
 	}
 }

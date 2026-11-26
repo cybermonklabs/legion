@@ -159,7 +159,7 @@ func checkTexts(spec runtime.SpawnSpec, env map[string]string, workDir string, l
 	if faults := texts.CheckPlugins(folder, envoyRoot, legionRoot); len(faults) > 0 {
 		return fellBack(faults[0])
 	}
-	base, err := texts.BaseIgnoredSkills(layers, workDir, agentDir)
+	base, err := texts.BaseIgnoredSkills(layers, workDir, agentDir, os.ReadFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}

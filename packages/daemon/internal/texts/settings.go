@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -64,16 +63,19 @@ func WriteSettingsLayer(root Root, base, skills []string) (string, error) {
 
 // BaseIgnoredSkills is skills.ignoredSkills as Oh My Pi would read it for a launch without the
 // texts settings layer: layers are the launch's PI_CONFIG_FILES in order, projectDir the directory
-// it starts in, and agentDir its profile's agent directory. Oh My Pi merges its settings layer over
-// layer and replaces an array whole (config/settings.ts, #deepMerge), so the value is the highest
-// layer's that sets it: the last of layers that does, each a path relative to projectDir unless
-// absolute; else the project's, .omp/config.yml over .omp/settings.json; else the profile's
-// config.yml, or config.yaml where config.yml is absent; else none. A layer that sets it to a value
-// Oh My Pi does not read as a list (null, or a skills that is no mapping in a layer that replaces
-// the whole group) leaves Oh My Pi with its default, none. An overlay that is missing or malformed,
-// and a project config.yml or profile file that is malformed, are errors, since Oh My Pi refuses to
-// start on them; a malformed project settings.json Oh My Pi skips, and so does this.
-func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, error) {
+// it starts in, agentDir its profile's agent directory, and read reads each file (os.ReadFile for
+// the plain filesystem, or a view reader where the caller sees mounted files at another path,
+// answering an error matching fs.ErrNotExist where a file is absent). Oh My Pi merges its settings
+// layer over layer and replaces an array whole (config/settings.ts, #deepMerge), so the value is
+// the highest layer's that sets it: the last of layers that does, each a path relative to
+// projectDir unless absolute; else the project's, .omp/config.yml over .omp/settings.json; else
+// the profile's config.yml, or config.yaml where config.yml is absent; else none. A layer that
+// sets it to a value Oh My Pi does not read as a list (null, or a skills that is no mapping in a
+// layer that replaces the whole group) leaves Oh My Pi with its default, none. An overlay that is
+// missing or malformed, and a project config.yml or profile file that is malformed, are errors
+// naming the path as the launch sees it, since Oh My Pi refuses to start on them; a malformed
+// project settings.json Oh My Pi skips, and so does this.
+func BaseIgnoredSkills(layers []string, projectDir, agentDir string, read func(string) ([]byte, error)) ([]string, error) {
 	for i := len(layers) - 1; i >= 0; i-- {
 		file := layers[i]
 		if strings.HasPrefix(file, "~") {
@@ -82,7 +84,7 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 		if !filepath.IsAbs(file) {
 			file = filepath.Join(projectDir, file)
 		}
-		raw, err := os.ReadFile(file)
+		raw, err := read(file)
 		if err != nil {
 			return nil, fmt.Errorf("read the settings overlay %s: %w", file, err)
 		}
@@ -96,7 +98,7 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 	}
 
 	project := filepath.Join(projectDir, ".omp")
-	if raw, found, err := readIfPresent(filepath.Join(project, "config.yml")); err != nil {
+	if raw, found, err := readIfPresent(read, filepath.Join(project, "config.yml")); err != nil {
 		return nil, err
 	} else if found {
 		layer, err := yamlLayer(filepath.Join(project, "config.yml"), raw)
@@ -107,7 +109,7 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 			return value, err
 		}
 	}
-	if raw, found, err := readIfPresent(filepath.Join(project, "settings.json")); err != nil {
+	if raw, found, err := readIfPresent(read, filepath.Join(project, "settings.json")); err != nil {
 		return nil, err
 	} else if found {
 		var layer map[string]any
@@ -120,7 +122,7 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 
 	for _, name := range []string{"config.yml", "config.yaml"} {
 		file := filepath.Join(agentDir, name)
-		raw, found, err := readIfPresent(file)
+		raw, found, err := readIfPresent(read, file)
 		if err != nil {
 			return nil, err
 		}
@@ -137,9 +139,9 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 	return nil, nil
 }
 
-// readIfPresent is file's bytes and true, or false where there is no such file.
-func readIfPresent(file string) (raw []byte, found bool, err error) {
-	raw, err = os.ReadFile(file)
+// readIfPresent is file's bytes read through read and true, or false where there is no such file.
+func readIfPresent(read func(string) ([]byte, error), file string) (raw []byte, found bool, err error) {
+	raw, err = read(file)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}

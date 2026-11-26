@@ -462,7 +462,7 @@ func aTextsRootOnTheRealOhMyPi(t *testing.T, omp, envoy, legion string) {
 
 			// What Oh My Pi reads below the layer, and what texts.BaseIgnoredSkills read of it.
 			lower := ohMyPiIgnoredSkills(t, omp, work, environ, layers)
-			base, err := texts.BaseIgnoredSkills(layers, work, agentDir)
+			base, err := texts.BaseIgnoredSkills(layers, work, agentDir, os.ReadFile)
 			if err != nil {
 				t.Fatalf("texts.BaseIgnoredSkills = %v", err)
 			}

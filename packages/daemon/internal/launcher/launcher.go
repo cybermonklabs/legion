@@ -1295,8 +1295,13 @@ func buildTextsRoot(folder texts.Folder, given shimwire.LauncherTexts, base []st
 // and an issue pod's roles container works in the issue's workspace; and the agent directory of
 // the profile env resolves, the config root's `agent`, where its config.yml sits
 // (ompdirs.ConfigAgentDir), as the tmux runtime resolves it (internal/runtime/tmux's textsHost).
-// Each file is read where the launcher's own view of the container holds it, which for a file
-// under a role's home is the image's, without what the role wrote into its own home overlay.
+// The launcher runs outside every role's namespace, so each PI_CONFIG_FILES entry and the
+// profile's config.yml and config.yaml are read where it sees them (readHomeView over roleHome and
+// roleHomeMounts, which are Home and HomeMountsDir in a pod): a path at or under Home is read from
+// HomeMountsDir where an entry exists there, an operator's mount that only role-init binds back at
+// that path inside each role, else from the image's own file under Home, which lacks what a role
+// wrote into its home overlay. The project settings are read at the working directory, the issue's
+// workspace, which is not under Home. An error names a file by the path the role is told.
 func textsBase(root string, env []string) ([]string, error) {
 	layer := filepath.Join(root, texts.SettingsLayerName)
 	var layers []string
@@ -1322,7 +1327,7 @@ func textsBase(root string, env []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	base, err := texts.BaseIgnoredSkills(layers[:len(layers)-1], workDir, agentDir)
+	base, err := texts.BaseIgnoredSkills(layers[:len(layers)-1], workDir, agentDir, readHomeView(roleHome, roleHomeMounts))
 	if err != nil {
 		return nil, fmt.Errorf("the skills the settings layer of %s keeps ignoring: %w", root, err)
 	}
