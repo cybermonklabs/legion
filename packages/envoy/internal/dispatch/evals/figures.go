@@ -1170,7 +1170,8 @@ func rangeChunks(ranges []rangeTarget, least, limit int) []int {
 // upserted the gone ranges, the days and the gone days follow (writeAfterRanges). So the range
 // upserts take the rows writeFigures would take, in its order, cut at other boundaries. The first
 // error of a statement ends the folds, and is answered. It adds the time its statements took to
-// the figureTimes ctx carries, where it carries one (writes).
+// the figureTimes ctx carries, where it carries one (writes), and the ranges and days it sent to be
+// upserted (rangesSent, daysSent).
 func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureScope, workers int) error {
 	ends := rangeChunks(p.ranges, rangeChunkLeast, statementRows)
 	writes := figureWrites{goneRanges: p.goneRanges, goneDays: p.goneDays}
@@ -1190,6 +1191,7 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 			}
 		}
 		from = ends[chunk]
+		times.rangesSent += len(held)
 		began := time.Now()
 		err := upsertRangeFigures(ctx, tx, scope, held)
 		times.writes += time.Since(began)
@@ -1204,6 +1206,7 @@ func (p *figurePlan) foldAndWrite(ctx context.Context, tx pgx.Tx, scope figureSc
 			writes.goneDays = append(writes.goneDays, target.dayFigureKey)
 		}
 	}
+	times.daysSent += len(writes.days)
 	writes.sortByKey()
 	began := time.Now()
 	err := writeAfterRanges(ctx, tx, scope, writes)
@@ -1351,11 +1354,14 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 // of the moved days (movedFigureDays), the reads of the rows the folds fold (readFigurePlan), with
 // how many statements those sent (readFoldGroups, one for each chunk of the moved evals)
 // and how many rows they answered, and the folds and their writes (figurePlan.foldAndWrite), with
-// the time its statements took of it (writes). A writer that logs them carries one on the context
-// it folds under (withFigureTimes), and a fold on a context that carries none times nothing.
+// the time its statements took of it (writes) and how many ranges and days they sent to be
+// upserted, each written only where it moved (upsertRangeFigures, writeAfterRanges). A writer
+// that logs them carries one on the context it folds under (withFigureTimes), and a fold on a
+// context that carries none times nothing.
 type figureTimes struct {
 	moved, plan, fold, writes time.Duration
 	reads, rows               int
+	rangesSent, daysSent      int
 }
 
 type figureTimesKey struct{}

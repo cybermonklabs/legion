@@ -2516,6 +2516,7 @@ func TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast(t *testing.T)
 // included. Once a send fails it sends no other chunk, leaves indexes unfolded, and answers that
 // error once no fold runs.
 func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *testing.T) {
+	// Not parallel: it counts the folds that run at once in a 200 ms window (testwait.Holds), which other tests' load would move.
 	bound := testwait.Bounded(t, time.Minute, time.Second)
 	var folding, most, begun atomic.Int64
 	enter := func() {
@@ -3315,6 +3316,7 @@ func foldTimedCut(t *testing.T, groups []*figureGroup, keys []figureGroupKey, da
 // in-memory part of what the farm measured in a production rule's rewrite. It is skipped unless
 // figureFoldTimingEnv is 1.
 func TestTheFoldOfOneCutOfSixEvalsIsTimed(t *testing.T) {
+	// Not parallel: it times a fold, which other tests' load would move; it runs only when figureFoldTimingEnv asks for it.
 	if os.Getenv(figureFoldTimingEnv) != "1" {
 		t.Skipf("set %s=1 to time the fold of one cut of six evals over 200 days", figureFoldTimingEnv)
 	}
