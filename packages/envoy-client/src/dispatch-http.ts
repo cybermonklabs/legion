@@ -1144,12 +1144,14 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
  * whether the request is a write: any method but `GET`, less a `POST` whose route stores nothing
  * (`writes: false`, `WriteCall.writes`). A status that cannot clear answers the same request the
  * same way. One that can (`gatewayClears`) may clear for a read, and for a 2xx, which reaches here
- * only for a read, a PUT or a DELETE, none of which writes twice: a keyed write's 2xx is the write
- * table's (`#endWrite` reads it, never `#payloadOf`), and `#route` gives every 2xx's body that is
- * not Dispatch's JSON back as it came, or refuses one that holds a credential it presented
- * (`DispatchCredentialEchoError`). A write answered so may already have taken effect only when the
- * request reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise
- * it did not, and a retry may succeed as for a read.
+ * only for a read, a PUT, a DELETE or `sendRoute`'s write (a POST or a PATCH among them): a keyed
+ * write's 2xx is the write table's (`#endWrite` reads it, never `#payloadOf`), and `#route` gives
+ * every 2xx's body that is not Dispatch's JSON back as it came, or refuses one that holds a
+ * credential it presented (`DispatchCredentialEchoError`). A 2xx page here is the gateway's own
+ * page, which it answers in Dispatch's place, so the request did not reach Dispatch and a repeat
+ * cannot write twice. A write answered with another status may already have taken effect only
+ * when the request reached Dispatch (`reachesDispatch`), where a blind retry could apply it
+ * twice; otherwise it did not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(writes: boolean, status: number): string {
   if (!gatewayClears(status)) {
