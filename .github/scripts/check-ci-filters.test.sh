@@ -22,14 +22,15 @@
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
 # on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
-# it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
-# cache family must carry
+# it on a re-run attempt of a merge-group run and theirs must not, a fill workflow's
+# (ci-caches.yaml's or ci-caches-changes.yaml's) save of a cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry, every restore of any workflow must
+# saves under the commit, which download the newest entry, no family may be saved both under the
+# commit and without it, in one fill workflow or across two, every restore of any workflow must
 # name a family some workflow saves,
-# ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
-# DAEMON_RACE_PACKAGES names,
+# each race build of a ci-caches.yaml job ci_job_reads.py's RACE_FILLS names must compile
+# exactly the packages of that entry's lane (DAEMON_RACE_PACKAGES, ENVOY_RACE_LANE),
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads, every dorny/paths-filter
@@ -129,7 +130,35 @@ def legs_held(text):
     return "held"
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
+def envoy_legs_held(text, root=""):
+    import yaml
+    try:
+        if root:
+            reads.hold_envoy_legs(yaml.safe_load(text), root)
+        else:
+            reads.hold_envoy_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+def plain_run(module, job, text):
+    import yaml
+    entry = yaml.safe_load(text)
+    return " ".join(reads.leg_run_packages(entry, job, reads.go_legs.go_packages(module)))
+
+
+def alone_held(root, alone, packages):
+    import json
+    try:
+        reads.hold_unit_alone_tests(json.loads(alone), packages.split(), root)
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held,
+             "envoy_legs_held": envoy_legs_held, "plain_run": plain_run, "alone_held": alone_held}
 
 
 def field():
@@ -238,6 +267,9 @@ WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
 DAEMON_RACE_FILL_JOB = "fill"
 RACE_FILL_SCRIPTS = []
+RACE_FILLS = [(DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES],
+               "DAEMON_RACE_PACKAGES", ".github/workflows/ci.yaml's race step", ".github/workflows/ci.yaml",
+               ".github/workflows/ci.yaml's two race steps follow it already")]
 TAG_RUNS = []
 READ_SETS = {}
 GATES, EXCLUDED = load_gate_files(globals())
@@ -630,6 +662,60 @@ check "says the base tree's filters could not be computed" \
 check "every filter is every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
+
+# The base's filters as a push of that commit to main generated them
+# (.github/workflows/ci-caches-changes.yaml), which the changes job restores into the directory
+# CI_FILTERS_BASE_COMPUTED names: the script reads them only when the directory's commit file names
+# the base. The base tree's own generation fails in both cases below, so a run that generated it
+# would make every filter every path.
+# base_cache <root> <commit>: such a directory for <commit> beside the fixture, holding the filters
+# this head computes with the read of docs/** the base's shared helper gave app.
+base_cache() {
+  mkdir -p "$1.base-cache"
+  run_generate "$1"
+  awk '{ print } $0 == "app:" { print "  - '"'"'docs/**'"'"'" }' "$1.generated.computed.yaml" > "$1.base-cache/ci-filters.yaml"
+  printf '%s\n' "$2" > "$1.base-cache/commit"
+}
+# cached_fixture <name>: a fixture whose base commit cannot generate its filters and whose head
+# drops the shared read; echoes the root, and the base commit in $base_commit.
+cached_fixture() {
+  local root
+  root=$(fixture "$1")
+  shared_read "$root"
+  printf 'raise RuntimeError("broken on purpose")\n' >> "$root/.github/scripts/ci_job_reads.py"
+  commit_all "$root" base > "$root.base-commit"
+  replace "$root/.github/scripts/ci_job_reads.py" 'raise RuntimeError("broken on purpose")' ''
+  replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
+  commit_all "$root" head >/dev/null
+  echo "$root"
+}
+
+echo "case: the base's filters a push to main computed stand in for generating the base tree"
+root=$(cached_fixture base-cached)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes no every_filter output" "$(is "$(cat "$root.github-output")" "")"
+check "says it read the filters the push of the base computed" \
+  "$(contains "$out" "^the base tree's filters are the ones the push of $base_commit to main computed")"
+check "and generated no base tree" "$(is "$(grep -c "the base tree's filter generation took" <<<"$out" || true)" 0)"
+check "prints the filter and the pattern only the base has" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "and the filters no difference touches as computed" "$(is "$(filter_of site | tr '\n' ' ')" 'go.work mod/go.mod docs/** ')"
+
+echo "case: an entry whose commit file names another commit is not read (control)"
+root=$(cached_fixture base-cached-other)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$(git -C "$root" rev-parse HEAD)"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "generates the base tree" "$(contains "$out" "^the base tree's filter generation took [0-9]* s and exited 1$")"
+check "whose failure makes every filter every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
@@ -4248,6 +4334,55 @@ check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
+# changes_cache_workflow <root>: cache_workflow's shape with the second fill workflow,
+# ci-caches-changes.yaml, which alone saves the family go-changes, under the key ci.yaml's second
+# restore names followed by the commit, as that workflow saves changes-git. Rule 11 reads every
+# fill workflow's saves (CACHE_WORKFLOWS), so a drift of this one is refused naming its file.
+changes_cache_workflow() {
+  cache_workflow "$1"
+  cat > "$1/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .git
+          key: go-changes-${{ runner.os }}-${{ github.sha }}
+YAML
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: .git\n          key: go-changes-${{ runner.os }}\n      - name: Test the app'
+}
+
+echo "case: a family only ci-caches-changes.yaml saves, under the key and path ci.yaml restores"
+root=$(fixture cache-changes-round-trip)
+changes_cache_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a save of ci-caches-changes.yaml whose key drifted from the key ci.yaml restores"
+root=$(fixture cache-changes-key-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" 'key: go-changes-${{ runner.os }}-${{ github.sha }}' \
+  'key: go-changes-${{ runner.arch }}-${{ github.sha }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both keys" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes under key .*runner.arch.*, but job app of .github/workflows/ci.yaml restores it under ')"
+
+echo "case: a save of ci-caches-changes.yaml whose path drifted from the path ci.yaml restores"
+root=$(fixture cache-changes-path-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" '          path: .git' '          path: .git2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both paths" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes from .git2, but job app of .github/workflows/ci.yaml restores it into .git:')"
+
 # A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
 # family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above
 # read it as a family of its own, and they hold it to nothing.
@@ -4508,8 +4643,34 @@ cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
 YAML
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the family and what the bare entry does" \
-  "$(contains "$out" "this workflow saves family go-app both under \`-\\\${{ github.sha }}\` and without it: the entry under the restores' own key wins every restore")"
+check "names the family, the file of each save and what the bare entry does" \
+  "$(contains "$out" "family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches.yaml) and without it (in .github/workflows/ci-caches.yaml): the entry under the restores' own key wins every restore")"
+
+# The same hazard with the two saves in two fill workflows: rule 11 reads the saves of every one
+# (CACHE_WORKFLOWS), and the bare entry wins every restore whichever file saved it.
+echo "case: a family ci-caches.yaml saves without the commit and ci-caches-changes.yaml saves under it"
+root=$(fixture cache-both-across-files)
+cache_workflow "$root"
+cat > "$root/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app-${{ runner.os }}-${{ github.sha }}
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and both files" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches-changes.yaml) and without it (in .github/workflows/ci-caches.yaml)")"
 
 echo "case: a save of ci-caches.yaml under the key ci.yaml restores and another suffix"
 root=$(fixture cache-refill-other-suffix)
@@ -4679,6 +4840,35 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job, the table and what the race step then builds" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# A second fill, of another lane, is held to its own list: here a lane named as a tree
+# (./lib/...), as the envoy race lane names some of its packages. The control is the tree as
+# written, where the fill names ./lib/... and passes.
+second_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  second-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -count=1 -race -run '^$' ./lib/...
+        working-directory: mod
+YAML
+  cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
+RACE_FILLS.append(("second-fill", "SECOND_FILL_JOB", ["./lib/..."], "SECOND_LANE", "the second lane's step",
+                   "the second lane", "the second lane's steps follow it already"))
+PY
+}
+echo "case: a second lane's fill, held to its own list"
+root=$(fixture race-fill-second)
+cache_workflow "$root"
+second_fill "$root"
+run_check "$root"
+check "exits 0 as written" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci-caches.yaml" "-run '^\$' ./lib/..." "-run '^\$' ./lib/... ./other/"
+run_check "$root"
+check "fails once the fill names a package its lane does not" "$(is "$status" 1)"
+check "names that lane's list and the jobs that restore its cache" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's SECOND_LANE does not (./lib/..., ./other/ against ./lib/...)")"
+check "and not the daemon's" "$(is "$(contains "$out" "job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES")" false)"
 
 # script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
 # scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds
@@ -5946,7 +6136,7 @@ typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-t
 out=$(legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
-  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere: a package under daemon-go-typo runs in no job")"
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, unlisted, and the jobs whose legs run are daemon-go and daemon-go-race (.github/workflows/ci-job-daemon-go.yaml), beside elsewhere and unlisted: a package under daemon-go-typo runs in no job")"
 
 echo "case: a go-legs.yaml entry with no race legs"
 norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
@@ -5954,6 +6144,137 @@ out=$(legs_held "$norace")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the missing key and the race set it lost" \
   "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
+
+echo "case: a daemon go-legs.yaml entry whose unlisted names the race job"
+racehome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["unlisted"] = "daemon-go-race"; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$racehome")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the plain job it must be" "$(contains "$out" "its unlisted is 'daemon-go-race', and the job whose last leg runs a package no place names is daemon-go")"
+
+# The same hold on the entry for packages/envoy, which also holds the race legs to the race lane's
+# envoy-go-race packages, `twice` to the race packages whose skips the unit legs count, and
+# `elsewhere` to the packages other jobs' steps are built to run.
+envoy_legs_held() { ask envoy_legs_held "$@"; } # envoy_legs_held <entry JSON> [<root the race trees are walked under>]
+real_envoy=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/envoy"]))')
+echo "case: the repository's go-legs.yaml entry for envoy is held"
+check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
+
+echo "case: an envoy go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-typo"] = {"1": [e["envoy-go"]["5"].pop()]}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
+
+echo "case: an envoy go-legs.yaml entry without unlisted"
+nohome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["unlisted"]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$nohome")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the missing key" "$(contains "$out" "a package under a missing key runs in no job")"
+check "and the plain job it must name" "$(contains "$out" "its unlisted is None, and the job whose last leg runs a package no place names is envoy-go")"
+
+echo "case: a race lane package moved into a plain leg"
+moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"]["5"].append("natscred"); print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$moved")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the lane package no race leg runs" "$(contains "$out" "ENVOY_RACE_LANE's envoy-go-race names natscred, which no envoy-go-race leg runs")"
+check "and the plain leg that runs it without the detector" "$(contains "$out" "its envoy-go legs run natscred, which the race lane runs under the detector")"
+
+echo "case: twice no longer names the NATS auth service"
+untwice=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["twice"] = {}; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$untwice")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the counted race package twice must name" \
+  "$(contains "$out" "its twice names nothing, and the race legs' packages whose skips the unit legs count (packages/envoy/scripts/database-skips.sh's table) are internal/cipher/natscallout")"
+
+echo "case: a package other jobs run dropped from elsewhere"
+dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/dispatch/api"]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$dropped")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/dispatch/api': 'envoy-go-race-api'")"
+
+# The race lane's trees, on a fixture holding the directory of each package envoy-go-race names:
+# on main the race step ran each tree as ./<tree>/..., so a package added under one ran raced with
+# no edit. Here `unlisted` would run such a package plain in envoy-go's last leg, so the hold walks
+# each tree and refuses a package under it that no race leg lists. Each case adds one package
+# under one tree and hands the hold the repository's own entry.
+race_trees="internal/dispatch/delivery internal/dispatch/store internal/kvwatch"
+trees_root() {
+  local root="$work/race-trees-$1" package
+  for package in $race_trees internal/bus cmd/listener internal/store internal/session natscred \
+    internal/cipher/natscallout internal/oidc; do
+    mkdir -p "$root/$package"
+  done
+  echo "$root"
+}
+echo "case: the race lane's trees hold no package the race legs leave out"
+root=$(trees_root none)
+mkdir -p "$root/internal/kvwatch/testdata/fixture"
+printf 'package fixture\n' > "$root/internal/kvwatch/testdata/fixture/f.go"
+check "passes, a testdata directory under a tree no package" "$(is "$(envoy_legs_held "$real_envoy" "$root")" held)"
+for tree in $race_trees; do
+  echo "case: a package added under the race tree $tree with no race leg line"
+  root=$(trees_root "${tree//\//-}")
+  mkdir -p "$root/$tree/brandnew"
+  printf 'package brandnew\n' > "$root/$tree/brandnew/brandnew.go"
+  out=$(envoy_legs_held "$real_envoy" "$root")
+  check "is refused" "$(contains "$out" '^RAISED: ')"
+  check "naming the package and the race leg it needs" \
+    "$(contains "$out" "the race lane's trees hold $tree/brandnew, which no envoy-go-race leg lists: unlisted would run each plain in envoy-go's last leg, with no race detector")"
+done
+
+# The plain gates' Run is built from leg_run_packages: the packages the plain job's legs list and
+# each package `go list ./...` prints that no place names, which that job's last leg runs. So a
+# change to only an unlisted package's _test.go files starts the job that runs them, in a merge
+# group too. Each case takes one package out of the repository's own entry.
+echo "case: a package no line names is in the plain gate's Run (envoy-go)"
+unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go"]["5"].remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
+check "the Run names it" "$(contains " $(ask plain_run packages/envoy envoy-go "$unclock") " ' internal/clock ')"
+check "and the race job's does not" "$(is "$(contains " $(ask plain_run packages/envoy envoy-go-race "$unclock") " ' internal/clock ')" false)"
+echo "case: a package no line names is in the plain gate's Run (daemon-go)"
+read -r dropped_daemon undaemon < <(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); legs = e["daemon-go"]; last = max(legs, key=lambda n: (len(str(n)), str(n))); p = next(x for x in legs[last] if isinstance(x, str)); legs[last].remove(p); print(p, json.dumps(e, separators=(",", ":")))' "$real_legs")
+check "the Run names it" "$(contains " $(ask plain_run packages/daemon daemon-go "$undaemon") " " $dropped_daemon ")"
+
+# UNIT_ALONE_TESTS' hold, on a fixture module: package a declares TestOwn, TestShared, behind a
+# tag no step passes TestTagged, behind a constraint the linux/arm64 runner meets TestOnLinux,
+# behind one it does not TestOffLinux, in a file named for darwin with no constraint line
+# TestNamedDarwin, in one named for linux TestNamedLinux, and in a comment TestInComment; package b
+# declares TestShared too. Each case hands the hold one list and reads what it answered. (The
+# repository's own list is held by the import every question here starts from.)
+alone_held() { ask alone_held "$work/alone" "$1" "a b"; }
+mkdir -p "$work/alone/a" "$work/alone/b"
+# A module of its own, since the hold asks `go list -find` which test files the runner's build
+# compiles.
+printf 'module example.com/alone\n\ngo 1.21\n' > "$work/alone/go.mod"
+printf 'package a\n\nimport "testing"\n\nfunc TestOwn(t *testing.T) {}\n\nfunc TestShared(t *testing.T) {}\n\n// func TestInComment(t *testing.T) {}\n' > "$work/alone/a/a_test.go"
+printf '//go:build natslive\n\npackage a\n\nimport "testing"\n\nfunc TestTagged(t *testing.T) {}\n' > "$work/alone/a/live_test.go"
+printf '//go:build linux && (arm64 || amd64) && !race\n\npackage a\n\nimport "testing"\n\nfunc TestOnLinux(t *testing.T) {}\n' > "$work/alone/a/on_linux_test.go"
+printf '//go:build darwin || windows\n\npackage a\n\nimport "testing"\n\nfunc TestOffLinux(t *testing.T) {}\n' > "$work/alone/a/off_linux_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedDarwin(t *testing.T) {}\n' > "$work/alone/a/clock_darwin_test.go"
+printf 'package a\n\nimport "testing"\n\nfunc TestNamedLinux(t *testing.T) {}\n' > "$work/alone/a/clock_linux_arm64_test.go"
+printf '// +build darwin\n\npackage a\n\nimport "testing"\n\nfunc TestPlusBuildDarwin(t *testing.T) {}\n' > "$work/alone/a/plus_build_test.go"
+printf 'package b\n\nimport "testing"\n\nfunc TestShared(t *testing.T) {}\n' > "$work/alone/b/b_test.go"
+echo "case: the alone list holds a test its package declares and no other does"
+check "passes" "$(is "$(alone_held '{"a": ["TestOwn"]}')" held)"
+check "and a test behind a constraint the runner's build meets passes too" "$(is "$(alone_held '{"a": ["TestOnLinux"]}')" held)"
+check "and one in a file named for linux/arm64" "$(is "$(alone_held '{"a": ["TestNamedLinux"]}')" held)"
+echo "case: the alone list names a test declared only in a file named for another platform"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestNamedDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestNamedDarwin, which no _test.go file')"
+echo "case: the alone list names a test declared only behind an old-style // +build line"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestPlusBuildDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestPlusBuildDarwin, which no _test.go file')"
+echo "case: the alone list names a test no file declares (a rename, a deletion)"
+out=$(alone_held '{"a": ["TestGone"]}')
+check "is refused" "$(contains "$out" "^RAISED: UNIT_ALONE_TESTS names TestGone, which no _test.go file of .*/alone/a that the runner's linux/arm64 build compiles declares")"
+echo "case: the alone list names a test declared only in a comment"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestInComment"]}')" '^RAISED: UNIT_ALONE_TESTS names TestInComment, which no _test.go file')"
+echo "case: the alone list names a test declared only behind a tag"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestTagged"]}')" '^RAISED: UNIT_ALONE_TESTS names TestTagged, which no _test.go file .*behind a tag or for another platform, is none')"
+echo "case: the alone list names a test declared only for another platform"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestOffLinux"]}')" '^RAISED: UNIT_ALONE_TESTS names TestOffLinux, which no _test.go file')"
+echo "case: the alone list names a test another unit package declares too"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestShared"]}')" "^RAISED: UNIT_ALONE_TESTS names TestShared, which b declare(s) too, where the legs' -skip would leave it out")"
+echo "case: the alone list names a package no unit leg runs"
+check "is refused" "$(contains "$(alone_held '{"c": ["TestOwn"]}')" '^RAISED: UNIT_ALONE_TESTS names c, which no envoy-go leg of .github/go-legs.yaml runs')"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
