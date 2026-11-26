@@ -453,27 +453,30 @@ func steady(percent float64) func(int) volumeUsage {
 	return func(int) volumeUsage { return usageAt(percent) }
 }
 
-// useVolume installs the case's reader in place of the package's own and counts its calls, which
+// useVolume makes reading the case's volume in place of the 50% newTrimFixture starts with: every
+// trimmer the fixture aims (aim) reads it through readUsage, which counts its calls, and that count
 // is what the cases on the sweep's hundred-deletion cadence are asserted on.
 func (f *trimFixture) useVolume(reading func(call int) volumeUsage) {
 	f.mu.Lock()
 	f.reading = reading
 	f.mu.Unlock()
-	previous := readVolumeUsage
-	readVolumeUsage = func(path string) (volumeUsage, error) {
-		if path != f.root {
-			f.t.Errorf("the trimmer read the volume at %s, want the case's own tree %s", path, f.root)
-		}
-		f.mu.Lock()
-		f.reads++
-		call, answer, hook := f.reads, f.reading, f.onRead
-		f.mu.Unlock()
-		if hook != nil {
-			hook(call)
-		}
-		return answer(call), nil
+}
+
+// readUsage is the reading of the volume each trimmer of the fixture is given (trimmer.readUsage):
+// the case's reading, counted, which is 50% until useVolume names another. No trimmer of the
+// fixture reads the machine's own statfs.
+func (f *trimFixture) readUsage(path string) (volumeUsage, error) {
+	if path != f.root {
+		f.t.Errorf("the trimmer read the volume at %s, want the case's own tree %s", path, f.root)
 	}
-	f.t.Cleanup(func() { readVolumeUsage = previous })
+	f.mu.Lock()
+	f.reads++
+	call, answer, hook := f.reads, f.reading, f.onRead
+	f.mu.Unlock()
+	if hook != nil {
+		hook(call)
+	}
+	return answer(call), nil
 }
 
 func (f *trimFixture) readCount() int {
@@ -623,11 +626,20 @@ func (f *trimFixture) assertPrefixed() {
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
 	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover, &pidGuard{})
-	tr.volumeRoot, tr.procRoot, tr.self = f.root, f.proc, f.self
+	f.aim(tr)
 	tr.roots = rebasedOnto(f.root, tr.roots)
+	return tr
+}
+
+// aim points a trimmer at the case's machine: its volume, its reading of it, its /proc, its pid,
+// its clock and its ticker, and removals made in this process (trimmer says why). Both trimmers a
+// case drives are aimed here, the one trimmer builds and the one the launcher builds
+// (useLauncherTrimmer), so a seam added here reaches both; each sets only its roots, and the
+// launcher's its cover and log, apart.
+func (f *trimFixture) aim(tr *trimmer) {
+	tr.volumeRoot, tr.procRoot, tr.self, tr.readUsage = f.root, f.proc, f.self, f.readUsage
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
-	return tr
 }
 
 // start runs the interval loop and stops it with the case.
@@ -642,7 +654,7 @@ func (f *trimFixture) start(tr *trimmer) (context.CancelFunc, <-chan struct{}) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(f.t, 10*time.Second, time.Second)):
+		case <-time.After(cleanupBeforeDeadline(f.t)):
 			f.t.Error("the trimmer's loop did not return after the case cancelled it")
 		}
 	})
@@ -667,7 +679,7 @@ func (f *trimFixture) tick(ends string) {
 	f.t.Helper()
 	at, reads := f.tickUntil(ends)
 	if f.clock.readings() > reads {
-		testwait.Eventually(f.t, "the interval that swept to end, after its pause's line and its report: its clock stopped", func() bool {
+		testwait.WithinPolling(f.t, beforeDeadline(f.t), testwait.Poll, "the interval that swept to end, after its pause's line and its report: its clock stopped", func() bool {
 			return f.ticks.stoppedAt(at)
 		})
 	}
@@ -686,7 +698,7 @@ func (f *trimFixture) tick(ends string) {
 func (f *trimFixture) tickUntil(ends string) (int, int) {
 	f.t.Helper()
 	before := f.logged(ends)
-	deadline := time.Now().Add(testwait.Bounded(f.t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(f.t))
 	at, reads, taken := -1, 0, false
 	for !taken && time.Now().Before(deadline) {
 		var running bool
@@ -700,7 +712,7 @@ func (f *trimFixture) tickUntil(ends string) (int, int) {
 	if !taken {
 		f.t.Fatal("the trimmer took no tick: it is not waiting on an interval clock")
 	}
-	testwait.Eventually(f.t, "the interval to write a line holding "+strconv.Quote(ends), func() bool {
+	testwait.WithinPolling(f.t, beforeDeadline(f.t), testwait.Poll, "the interval to write a line holding "+strconv.Quote(ends), func() bool {
 		return f.logged(ends) > before
 	})
 	return at, reads
@@ -871,6 +883,7 @@ func trimSettings() *shimwire.LauncherVolumeTrim {
 // panics on a non-positive period, a fault on each start of the interval loop, and three in a row
 // would switch off the pod's one guard of the volume six live roles share (run).
 func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		set  shimwire.LauncherVolumeTrim
@@ -922,7 +935,7 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 				defer close(done)
 				tr.run(ctx)
 			}()
-			testwait.Eventually(t, "the trimmer to refuse the settings and stay off", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to refuse the settings and stay off", func() bool {
 				return f.logged("stays off") > 0
 			})
 
@@ -947,7 +960,7 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-time.After(beforeDeadline(t)):
 				t.Fatal("run did not return when the container's own context ended")
 			}
 			f.assertPrefixed()
@@ -979,6 +992,7 @@ func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 // (shimwire.VolumeMinAgeMax, refusedTrimSettings), and this is that bound read as the pod sees
 // it rather than as a refusal's text.
 func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *testing.T) {
+	t.Parallel()
 	// The value the reviewer of this work measured in a pod: the cutoff read 2035-09-05, after
 	// the sweep's start (INFRA-2009, review round 5).
 	const overflowingAge = 2147483647
@@ -1017,7 +1031,7 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
 	// — only the one it asks for settings on again — so nothing is offered and the wait ends
 	// at the refusal instead.
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
 		if at, running := f.ticks.live(settingsInterval(*set)); running {
 			f.ticks.offer(t, at, 200*time.Millisecond)
@@ -1062,6 +1076,7 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 // trimmer, which then sweeps nothing until a daemon sends settings inside its ranges
 // (shimwire.VolumeMinAgeMax).
 func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T) {
+	t.Parallel()
 	// Seven days in minutes, which is shimwire.VolumeMinAgeMax written out, with a minute
 	// either side of it.
 	const (
@@ -1125,6 +1140,7 @@ func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T
 // alone guards, with no allowance of Go's on top of it (goCacheMtimeSlack), and the age is
 // written out rather than read off trimSettings, as the greatest age's case writes its own.
 func TestAnEntryExactlyTheMinimumAgeOldIsDeletedAndOneASecondInsideItIsKept(t *testing.T) {
+	t.Parallel()
 	const minAge = 30 * time.Minute
 	f := newTrimFixture(t, 0)
 	root := f.roots[3]
@@ -1194,6 +1210,7 @@ func TestAnEntryExactlyTheMinimumAgeOldIsDeletedAndOneASecondInsideItIsKept(t *t
 // wire: a maximum widened on one side alone would load cleanly and then be refused by every
 // pod's trimmer, which then sweeps nothing until a daemon sends settings inside its ranges.
 func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
+	t.Parallel()
 	// Seven days and a minute: shimwire.VolumeMinAgeMax + 1 written out.
 	const pastGreatest = 10081
 	f := newTrimFixture(t, 2)
@@ -1239,7 +1256,7 @@ func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
 	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
 	// — only the one it asks for settings on again — so nothing is offered and the wait ends
 	// at the refusal instead.
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
 		if at, running := f.ticks.live(settingsInterval(*set)); running {
 			f.ticks.offer(t, at, 200*time.Millisecond)
@@ -1276,6 +1293,7 @@ func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
 // the same text after a spell of settings the trimmer could run: the pod was not in that state a
 // moment ago.
 func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	f.useVolume(steady(50)) // below the high mark: every interval reads the volume and sweeps nothing
 	f.setSettings(trimSettings())
@@ -1306,7 +1324,7 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 	wider.MinAgeMinutes = 0
 	f.setSettings(&wider)
 	offerSettingsTick(t, f)
-	testwait.Eventually(t, "the trimmer to say the refusal whose text changed", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to say the refusal whose text changed", func() bool {
 		return f.logged("min_age_minutes is 0") == 1
 	})
 	if said := f.logged(refusedHigh); said != 2 {
@@ -1343,6 +1361,7 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 // absent discards one and the daemon that sent these settings has a case for a report
 // (awaitSettings); an answer with no settings after that discards it.
 func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
+	t.Parallel()
 	wide := *trimSettings()
 	wide.HighPercent = shimwire.VolumeMarkMax + 1
 	refusedHigh := fmt.Sprintf("high_percent is %d", wide.HighPercent)
@@ -1358,7 +1377,7 @@ func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 		f.useVolume(steady(90))
 		f.setSettings(&wide)
 		f.tick("it starts no ticker on refused settings")
-		testwait.Eventually(t, "the interval clock to be stopped", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval clock to be stopped", func() bool {
 			_, running := f.ticks.live(f.interval())
 			return !running
 		})
@@ -1386,14 +1405,14 @@ func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 		f.refuseSends(errors.New("no daemon connection is up to carry it"))
 		f.start(f.trimmer())
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 
 		f.refuseSends(nil)
 		f.setSettings(&wide)
 		f.tick("it starts no ticker on refused settings")
-		testwait.Eventually(t, "the held report to reach the daemon", func() bool { return len(f.reports()) == 1 })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the held report to reach the daemon", func() bool { return len(f.reports()) == 1 })
 		if report := f.reports()[0]; report.UsedBytes != int64(percentBytes(80)) {
 			t.Errorf("the report sent carries %d used bytes, want the %d of the sweep that was held", report.UsedBytes, percentBytes(80))
 		}
@@ -1406,20 +1425,20 @@ func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 		f.refuseSends(errors.New("no daemon connection is up to carry it"))
 		f.start(f.trimmer())
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 
 		// The send fails again at the refusal, so the report is still held while the trimmer is off.
 		f.setSettings(&wide)
 		f.tick("it starts no ticker on refused settings")
-		testwait.Eventually(t, "the trimmer to try the held report at the refusal", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to try the held report at the refusal", func() bool {
 			return f.logged("the held report could not be sent either") == 1
 		})
 
 		f.setSettings(nil)
 		offerSettingsTick(t, f)
-		testwait.Eventually(t, "the trimmer to wait on an answer that carries no settings", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait on an answer that carries no settings", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off") == 1
 		})
 
@@ -1451,16 +1470,18 @@ func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 // interval that writes no line is exactly what this case asserts and the fixture's tick waits
 // for one.
 func TestAVolumeTheTrimmerCannotReadIsSaidOnce(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	f.useVolume(steady(50)) // below the high mark: an interval that reads sweeps nothing
 	f.setSettings(trimSettings())
+	tr := f.trimmer()
 
 	// The reader the case drives, over the fixture's own: it answers the same statfs error
 	// while failing is set, and the fixture's reading when it is not.
-	working := readVolumeUsage
+	working := tr.readUsage
 	var mu sync.Mutex
 	failing := true
-	readVolumeUsage = func(path string) (volumeUsage, error) {
+	tr.readUsage = func(path string) (volumeUsage, error) {
 		mu.Lock()
 		bad := failing
 		mu.Unlock()
@@ -1469,14 +1490,12 @@ func TestAVolumeTheTrimmerCannotReadIsSaidOnce(t *testing.T) {
 		}
 		return working(path)
 	}
-	t.Cleanup(func() { readVolumeUsage = working })
 	fails := func(bad bool) {
 		mu.Lock()
 		failing = bad
 		mu.Unlock()
 	}
 
-	tr := f.trimmer()
 	set := *trimSettings()
 	const unreadable = "could not be read"
 	for at := 1; at <= 3; at++ {
@@ -1506,6 +1525,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidOnce(t *testing.T) {
 // reach over six roles' caches, so the case that must hold hardest is the one where it does
 // nothing at all.
 func TestAReadingBelowTheHighMarkSweepsNothing(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 6)
 	f.useVolume(steady(84.9))
 	f.setSettings(trimSettings())
@@ -1633,6 +1653,7 @@ func (f *trimFixture) assertProtected() {
 // sweep reads them: a constructor that read TMPDIR or GOCACHE would build a different list under
 // the empty environment, and the sweep below would run on it.
 func TestTheSweepDeletesOldestFirstAcrossEveryRootUntilTheLowMark(t *testing.T) {
+	// Not parallel: it clears the whole process's environment (withEmptyEnvironment).
 	const perRoot = 80
 	f := newTrimFixture(t, perRoot)
 	f.useVolume(f.modelled(90))
@@ -1734,6 +1755,7 @@ func withEmptyEnvironment(t *testing.T) {
 // `go-build` tree's own time changes only when its entries are added or removed, so a trimmer
 // reading that time would delete the cache a live build is writing into.
 func TestAnEntryIsAsFreshAsTheNewestFileAnywhereInIt(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	ancient := f.clock.at.Add(-30 * 24 * time.Hour)
 	tree := filepath.Join(f.roots[0].Path, "go-build999999999")
@@ -1775,6 +1797,7 @@ func TestAnEntryIsAsFreshAsTheNewestFileAnywhereInIt(t *testing.T) {
 // is the rule as it stood at b7085e21, `strings.HasPrefix(name, "go-build")`, which deleted the
 // three directories and passed the file over with a line naming it as an entry of the wrong kind.
 func TestOnlyANameGoGivesABuildTreeIsAnEntryOfTMPDIR(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	tmp := f.roots[0]
 	if tmp.Entry != GoBuildTrees {
@@ -1824,6 +1847,7 @@ func TestOnlyANameGoGivesABuildTreeIsAnEntryOfTMPDIR(t *testing.T) {
 // appearing, where that entry goes. The negative control is the sweep as it stood at b7085e21,
 // which asked the set at the boundary alone and deleted the entry.
 func TestTheUsedPathSetIsAskedAgainAfterAPreDeleteReReadThatTookItPastASecond(t *testing.T) {
+	t.Parallel()
 	sweep := func(t *testing.T, appears bool) (survived bool, deletions, entries int) {
 		f := newTrimFixture(t, 4)
 		order := f.oldestFirst()
@@ -1885,6 +1909,7 @@ func TestTheUsedPathSetIsAskedAgainAfterAPreDeleteReReadThatTookItPastASecond(t 
 // shard, and a name with neither suffix is not an entry whatever its age. A `-d` that is a
 // directory is removed whole, as Go's own trim removes it (trimSubdir, cmd/go/internal/cache).
 func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
+	t.Parallel()
 	const perRoot = 40
 	f := newTrimFixture(t, perRoot)
 	root := f.roots[1]
@@ -1965,6 +1990,7 @@ func TestTheGoCacheRuleReachesOnlyTheSuffixedNamesInsideAShard(t *testing.T) {
 // rule, the earlier form of this case and the whole of this package passed, since every entry
 // any fixture stages is at least two hours old (ageOf; INFRA-2009, review round 5).
 func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testing.T) {
+	t.Parallel()
 	const (
 		minAge = 15 * time.Minute
 		// Past the minimum age and well inside Go's hour: the Go cache entry at this age is
@@ -2080,6 +2106,7 @@ func TestAGoCacheEntryInsideGosMtimeHourSurvivesAndAnOlderOneIsDeleted(t *testin
 // file where a cache directory belongs is what an interrupted `flock` leaves (installBlock,
 // internal/runtime/sandbox/plugins.go).
 func TestARootThatIsAbsentOrIsNotADirectoryIsSkippedAndReported(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 4)
 	absent := f.roots[0]
 	notADirectory := f.roots[3]
@@ -2129,6 +2156,7 @@ func TestARootThatIsAbsentOrIsNotADirectoryIsSkippedAndReported(t *testing.T) {
 // for ever — which on this pod is the one case that matters, since the bytes are in a handful of
 // huge caches.
 func TestAnEntryLargerThanWhatIsLeftToFreeIsStillDeleted(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 3)
 	oldest := f.oldestFirst()[0]
 	// Ten points of the volume in one entry, against the two points the sweep needs.
@@ -2153,6 +2181,7 @@ func TestAnEntryLargerThanWhatIsLeftToFreeIsStillDeleted(t *testing.T) {
 // decrease and stops, leaving the cache almost whole, where a trimmer counting the bytes it
 // unlinked would empty the tree and report a volume it had not moved.
 func TestTheSweepReadsItsProgressFromTheVolumeAndNotFromTheBytesItUnlinked(t *testing.T) {
+	t.Parallel()
 	const entries = 1200
 	f := newTrimFixture(t, 0)
 	root := f.roots[1] // GOCACHE, whose entries are single files, as bun's cached files are
@@ -2227,6 +2256,7 @@ func TestTheSweepReadsItsProgressFromTheVolumeAndNotFromTheBytesItUnlinked(t *te
 // low mark, so it deletes all four hundred and ends with no entry eligible, where a count of
 // three readings showing no decrease would end it at three hundred.
 func TestAReadingAByteUnderTheOneBeforeItIsADecrease(t *testing.T) {
+	t.Parallel()
 	const entries = 400
 	f := newTrimFixture(t, 0)
 	root := f.roots[1] // GOCACHE, whose entries are single files, the cheapest entry to make
@@ -2261,6 +2291,7 @@ func TestAReadingAByteUnderTheOneBeforeItIsADecrease(t *testing.T) {
 // file in it. The control in every case is the other entries of the same tree, which are
 // deleted: a trimmer that skipped everything would pass nothing here.
 func TestTheSweepSkipsAnEntryALiveProcessIsUsing(t *testing.T) {
+	t.Parallel()
 	sources := []struct {
 		name  string
 		place func(process *fixtureProcess, path string)
@@ -2347,6 +2378,7 @@ func placeRefusedProcess(t *testing.T, proc string, pid int, cwd string) int {
 // is deleting from, and a shorter one spends another pass over /proc per sweep than the design
 // measured, which is six entries read per process of the pod (INFRA-2009, review round 6).
 func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T) {
+	t.Parallel()
 	// Of the trimmer's own clock, moved at the entry boundary after the first deletion.
 	const (
 		pastASecond   = time.Second + time.Millisecond
@@ -2441,6 +2473,7 @@ func TestAProcessThatStartsAfterTheSweepBeganStillProtectsItsEntry(t *testing.T)
 // lstat the delete needs anyway, so the case drives both. Its control is the same tree with
 // nothing written, where the entry goes.
 func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"a directory entry", "a single file entry"} {
 		for _, written := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, written again %t", kind, written), func(t *testing.T) {
@@ -2511,6 +2544,7 @@ func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) 
 // reads. Each is written a second past the time read off it before the sweep, the time the
 // listing reads too, and read back to show it stands there.
 func TestAnEntryWrittenASecondAfterTheTimeItsListingReadIsSkipped(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []struct {
 		name    string
 		dir     bool   // whether the entry is a directory, or a single file
@@ -2597,6 +2631,7 @@ func TestAnEntryWrittenASecondAfterTheTimeItsListingReadIsSkipped(t *testing.T) 
 // directory while listing it, so the entries it read are the entries that go and the bait is
 // untouched.
 func TestTheSweepDeletesThroughTheDirectoriesItListedAndNotThroughLinksPutInTheirPlace(t *testing.T) {
+	t.Parallel()
 	const perRoot = 12
 	f := newTrimFixture(t, perRoot)
 	bait := t.TempDir() // a sibling of the volume root, outside every reclaimable root
@@ -2716,6 +2751,7 @@ func TestTheSweepDeletesThroughTheDirectoriesItListedAndNotThroughLinksPutInThei
 // process and is carried into the report, because a refused process is one whose open files are
 // unknown and the operator is the one who can go and look.
 func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
+	t.Parallel()
 	t.Run("on the first read of the sweep", func(t *testing.T) {
 		f := newTrimFixture(t, 3)
 		refused := strconv.Itoa(placeRefusedProcess(t, f.proc, 5101, filepath.Join(f.root, "scratch")))
@@ -2781,6 +2817,7 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 // mark sends no report of its own, so the refusal is kept and the next report the trimmer sends
 // names the process, though the sweep behind that report read /proc in full.
 func TestARefusedProcReadOfASweepThatSendsNoReportIsCarriedIntoTheNext(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 6)
 	first := f.oldestFirst()[0]
 	placed := false
@@ -2815,7 +2852,7 @@ func TestARefusedProcReadOfASweepThatSendsNoReportIsCarriedIntoTheNext(t *testin
 		t.Fatal(err)
 	}
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the report of the second sweep", func() bool { return len(f.reports()) == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the report of the second sweep", func() bool { return len(f.reports()) == 1 })
 	report := f.reports()[0]
 	if len(report.RefusedReads) != 1 || !strings.Contains(report.RefusedReads[0], refused) {
 		t.Errorf("the report names the refused reads %v, want the process %s the earlier sweep could not read", report.RefusedReads, refused)
@@ -2837,6 +2874,7 @@ func TestARefusedProcReadOfASweepThatSendsNoReportIsCarriedIntoTheNext(t *testin
 // out rather than read off shimwire.VolumeReportRefusedReads, which a case staged from would move
 // with.
 func TestTheTrimmerCarriesTwentyFiveRefusedReadsAndCountsTheTwentySixth(t *testing.T) {
+	t.Parallel()
 	const most = 25
 	tr := newTrimFixture(t, 0).trimmer()
 	refusals := make([]string, most+1)
@@ -2873,7 +2911,7 @@ func startHandleHelper(t *testing.T, path string) int {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "holding")
-	child := exec.Command(self, "-test.run=^TestVolumeTrimHandleHelper$")
+	child := exec.Command(self, reentry(t, "TestVolumeTrimHandleHelper")...)
 	child.Env = append(os.Environ(), volumeTrimHandleEnv+"="+path+"\n"+marker)
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
@@ -2883,7 +2921,7 @@ func startHandleHelper(t *testing.T, path string) int {
 		_ = child.Process.Kill()
 		_, _ = child.Process.Wait()
 	})
-	testwait.Eventually(t, "the helper to hold "+path+" open", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the helper to hold "+path+" open", func() bool {
 		_, err := os.Lstat(marker)
 		return err == nil
 	})
@@ -2923,6 +2961,7 @@ func linkProcEntry(t *testing.T, root string, pid int) {
 // opens the directory its case names, takes the `flock` a role's tool takes on it, says so and
 // waits to be killed, holding the handle and the lock until then.
 func TestVolumeTrimHandleHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	plan := os.Getenv(volumeTrimHandleEnv)
 	if plan == "" {
 		return
@@ -2948,7 +2987,7 @@ func TestVolumeTrimHandleHelper(t *testing.T) {
 	// then reads no hold on the root and deletes the entries under it (guardHeldFile,
 	// volumeguard_test.go, holds its opener's file for the same reason).
 	runtime.KeepAlive(handle)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // A root another process holds open is left alone whole: the rendered install scripts take a
@@ -2957,6 +2996,7 @@ func TestVolumeTrimHandleHelper(t *testing.T) {
 // real process and reads the container's own /proc, which is the pod this was written for, and
 // its control is the other three roots, which are swept.
 func TestTheSweepSkipsEveryEntryOfARootAProcessHoldsOpen(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 3)
 	locked := f.roots[3] // bun's install cache, the flock target of every rendered install
 	holder := startHandleHelper(t, locked.Path)
@@ -3005,6 +3045,7 @@ func TestTheSweepSkipsEveryEntryOfARootAProcessHoldsOpen(t *testing.T) {
 // after the listing by construction, and the entries that stood under the root at that moment
 // are the ones the sweep must now leave. Its control is the other three roots, swept whole.
 func TestTheSweepSkipsARootAProcessTakesOpenWhileItRuns(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 6)
 	locked := f.roots[3] // bun's install cache, the flock target of every rendered install
 	f.proc = linkProcFixture(t, os.Getpid())
@@ -3073,6 +3114,7 @@ func TestTheSweepSkipsARootAProcessTakesOpenWhileItRuns(t *testing.T) {
 // would skip everything it was about to delete. The case holds the same handle the case above
 // gives another process, in this process, and the sweep still deletes.
 func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 3)
 	root := f.roots[3]
 	handle, err := os.Open(root.Path)
@@ -3109,6 +3151,7 @@ func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
 // volume holds a file written ten minutes before the sweep, one two hours before it and one two
 // days before it, and its size in that report is held to each split.
 func TestTheSweepsBudgetRunsFromItsStartWithTheListingIncluded(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 20)
 	// A minute of the trimmer's clock per reading of it, which the listing asks at every entry.
 	f.clock.step = time.Minute
@@ -3205,6 +3248,7 @@ func (f *trimFixture) assertNothingHalfRemoved() {
 // its removal begins: what was deleted stands, nothing is left half removed, and the container's
 // stop lets run return at once rather than after the budget.
 func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
+	t.Parallel()
 	const before = 3 // deletions before the ending arrives
 
 	// The budget is five minutes, and it is driven here from both sides rather than written
@@ -3321,7 +3365,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		f.tickUntil("sweeping") // the wait for run to return below is this case's own claim
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 20*time.Second, time.Second)):
+		case <-time.After(beforeDeadline(t)):
 			t.Fatal("run did not return on the container's stop: it is waiting out the sweep's budget")
 		}
 		if !stopped {
@@ -3360,6 +3404,7 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 // control is newerThan asking nothing, as it did at b7085e21: the fourth entry was deleted and
 // the stop was taken at the boundary after it.
 func TestAStopInAnEntrysPreDeleteReReadEndsTheSweepWithTheEntryWhole(t *testing.T) {
+	t.Parallel()
 	const before = 3 // deletions before the stop arrives
 	f := newTrimFixture(t, 0)
 	root := f.roots[3]
@@ -3400,6 +3445,7 @@ func TestAStopInAnEntrysPreDeleteReReadEndsTheSweepWithTheEntryWhole(t *testing.
 // sweep meets is an ordinary entry of its root: the removal moved its modification time, so it
 // is kept until one minimum age has passed and is deleted then.
 func TestARemovalThatFailsPartWayIsReportedAndLeavesAnOrdinaryEntry(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which removes a directory it has no write permission on: a removal that fails part way cannot be staged for it")
 	}
@@ -3467,6 +3513,7 @@ func TestARemovalThatFailsPartWayIsReportedAndLeavesAnOrdinaryEntry(t *testing.T
 // negative control is the line and removalFailure writing the names as they are, which put the
 // role's line of text in the log as a line of its own.
 func TestARemovalThatFailsPartWayIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which removes a directory it has no write permission on: a removal that fails part way cannot be staged for it")
 	}
@@ -3514,6 +3561,7 @@ func TestARemovalThatFailsPartWayIsLoggedWithTheRoleChosenNameQuoted(t *testing.
 // raised, which put the role's line of text in the log as a line of its own, "forged: a line the
 // role wrote/b1: permission denied", for the child of that mode.
 func TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which opens and lists a directory whatever its mode: an age read that fails cannot be staged for it")
 	}
@@ -3569,6 +3617,7 @@ func TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) 
 // ends rather than one interval after it began: the trimmer makes a new interval clock when the
 // sweep returns, so a sweep that ran for ten intervals is not followed by ten readings at once.
 func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 30)
 	reached, release := make(chan struct{}), make(chan struct{})
 	f.setOnRead(func(call int) {
@@ -3583,8 +3632,8 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 	tr := f.trimmer()
 	f.start(tr)
 
-	testwait.Eventually(t, "the trimmer to start its interval clock", func() bool { return f.ticks.count() > 0 })
-	if !f.ticks.offer(t, 0, testwait.Bounded(t, 10*time.Second, time.Second)) {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start its interval clock", func() bool { return f.ticks.count() > 0 })
+	if !f.ticks.offer(t, 0, beforeDeadline(t)) {
 		f.t.Fatal("the trimmer took no tick on the clock it started with")
 	}
 	<-reached
@@ -3597,7 +3646,7 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 	// The interval goes on after "the sweep ended" with its report, and the loop stops the clock
 	// it swept on only once the interval has returned, so the case waits for that and not for the
 	// line. A loop that kept that clock never stops it, and fails here.
-	testwait.Eventually(t, "the sweep's interval to end: the loop stops the clock the sweep began on", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the sweep's interval to end: the loop stops the clock the sweep began on", func() bool {
 		return f.ticks.stoppedAt(0)
 	})
 
@@ -3606,7 +3655,7 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 	if f.ticks.offer(t, 0, 300*time.Millisecond) {
 		t.Error("the trimmer is still waiting on the interval clock it had before the sweep, want the next reading one interval after the sweep ended")
 	}
-	testwait.Eventually(t, "the trimmer to wait on a new clock of the interval after its sweep", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait on a new clock of the interval after its sweep", func() bool {
 		_, running := f.ticks.live(f.interval())
 		return running
 	})
@@ -3621,6 +3670,7 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 // pause: the reading is what ends an episode, and a trimmer that stopped reading would never
 // tell the daemon the volume had recovered.
 func TestASweepThatFreesLessThanAPointStartsNoSweepForTenIntervals(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1) // four entries, four tenths of a point
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -3670,6 +3720,7 @@ func TestASweepThatFreesLessThanAPointStartsNoSweepForTenIntervals(t *testing.T)
 // So this case writes the ten out: the line the trimmer logs must name ten intervals, ten
 // intervals must pass with no second sweep, and the eleventh must sweep.
 func TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1) // four entries, four tenths of a point
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -3707,6 +3758,7 @@ func TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals(t *testing.T) {
 // carry none — so the figure the trimmer computed for itself is what decides, as the ten
 // intervals are counted out in the case above (INFRA-2009, review round 6).
 func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		points float64
@@ -3762,6 +3814,7 @@ func TestThePauseIsEngagedByASweepUnderAPointAndNotByOneOverIt(t *testing.T) {
 // what each sweep frees is swept every interval. The case drives the first three sweeps of that
 // run, on a tree whose entries are all eligible from the start and to which nothing is added.
 func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 10) // forty entries, four points, which leaves the volume at 86%
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -3795,13 +3848,14 @@ func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing
 // A panic in the trimmer's own work is recovered and logged with its stack, the interval is
 // passed over, and three in a row stop the trimmer for the life of the launcher process with
 // one last report saying so. The recovery is a departure from this daemon's practice, whose
-// production code recovers no other panic of its own work but in two cases: leakguard's compile
-// recovers one only to turn regexp.MustCompile's into an error, and the memory guard recovers its
-// loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers its loop
-// (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code runs in
-// PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles container, so
-// its crash costs six live roles their round over a cache sweep.
+// production code recovers no other panic of its own work but in two cases: leakguard's
+// compileRules recovers one only to turn regexp.MustCompile's into an error, and the memory guard
+// recovers its loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers
+// its loop (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code
+// runs in PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles
+// container, so its crash costs six live roles their round over a cache sweep.
 func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	f.setOnRead(func(call int) {
 		if call >= 2 && call <= 4 {
@@ -3835,7 +3889,7 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	// Waited for rather than read at once: the tick above returns when the third fault line is
 	// written, and the trimmer's own goroutine writes this one after it, so a bare read here is
 	// a race the case loses about once in thirty runs (measured 2026-11-12).
-	testwait.Eventually(t, "the trimmer to log that it is off for good", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to log that it is off for good", func() bool {
 		return f.logged("off for the life of this launcher process") == 1
 	})
 	for _, line := range f.linesWritten() {
@@ -3884,7 +3938,7 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 
 		f.tick("recovered a panic")
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the report of the sweep after the fault", func() bool { return len(f.reports()) == 1 })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the report of the sweep after the fault", func() bool { return len(f.reports()) == 1 })
 		report := f.reports()[0]
 		if len(report.Faults) != 1 {
 			t.Errorf("the report carries %d faults, want the one the trimmer recovered before it", len(report.Faults))
@@ -3906,6 +3960,7 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 // is a switchOff that asks for sizes as a sweep's report does: it walks the volume a second time,
 // which this case counts whether or not the report then carries what the walk measured.
 func TestTheSwitchedOffReportTriggersNoSizeWalk(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: the first sweep frees nothing, reports and pauses
 	f.setOnRead(func(call int) {
 		if call >= 2 && call <= 4 {
@@ -3933,7 +3988,7 @@ func TestTheSwitchedOffReportTriggersNoSizeWalk(t *testing.T) {
 	_, done := f.start(tr)
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the first sweep's report", func() bool { return len(f.reports()) == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the first sweep's report", func() bool { return len(f.reports()) == 1 })
 	first := f.reports()[0]
 	if walked, targets := walks(), measuredTargets.Load(); walked != 1 || targets == 0 || len(first.Sizes) == 0 {
 		t.Fatalf("the first sweep's report made %d walks measuring %d targets and carries %d sizes, want one walk with sizes: the case would count no walk at all",
@@ -3973,6 +4028,7 @@ func TestTheSwitchedOffReportTriggersNoSizeWalk(t *testing.T) {
 // sent once a connection takes it; the trimmer's loop returns then, or on the container's stop,
 // or on an answer with no settings, which discards it as it discards any report the trimmer holds.
 func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
+	t.Parallel()
 	switchOffDisconnected := func(t *testing.T) (*trimFixture, *trimmer, <-chan struct{}) {
 		t.Helper()
 		f := newTrimFixture(t, 1)
@@ -3985,7 +4041,7 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 		for range volumeFaultLimit {
 			f.tick("recovered a panic")
 		}
-		testwait.Eventually(t, "the trimmer to hold its last report", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold its last report", func() bool {
 			return f.logged("the report could not be sent (no daemon connection is up to carry it); holding it for the next attempt") == 1
 		})
 		return f, tr, done
@@ -4067,6 +4123,7 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 // once the last report was sent, and deliverLast tried it as the last report every
 // volumeSettingsWait, so the trimmer never ended.
 func TestAReportHeldAtTheSwitchOffGoesIntoTheLastReportAndIsSentNoOtherWay(t *testing.T) {
+	t.Parallel()
 	const (
 		refused = "process 7: /proc/7/fd: permission denied"
 		fell    = "the volume reader fell over"
@@ -4092,7 +4149,7 @@ func TestAReportHeldAtTheSwitchOffGoesIntoTheLastReportAndIsSentNoOtherWay(t *te
 		tr.carryRefused([]string{refused})
 		_, done := f.start(tr)
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report its send refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 
@@ -4174,6 +4231,7 @@ func TestAReportHeldAtTheSwitchOffGoesIntoTheLastReportAndIsSentNoOtherWay(t *te
 //     stands. With either of those two contains taken out the panic leaves the trimmer's goroutine
 //     and ends this test process (INFRA-2009, review round 36).
 func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
+	t.Parallel()
 	// written is the one line the trimmer wrote holding want.
 	written := func(t *testing.T, f *trimFixture, want string) string {
 		t.Helper()
@@ -4205,7 +4263,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		}
 		_, done := f.start(tr)
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report its send refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 
@@ -4216,7 +4274,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		wide.HighPercent = shimwire.VolumeMarkMax + 1
 		f.setSettings(&wide)
 		f.tick("refusing the settings")
-		testwait.Eventually(t, "the panic of the resend to be recovered", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the panic of the resend to be recovered", func() bool {
 			return f.logged("recovered a panic") == 1
 		})
 		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(1 in a row of sweeps and reports)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).flush") {
@@ -4235,7 +4293,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		f.setSettings(trimSettings())
 		offerSettingsTicksUntil(t, f, "the interval loop to start again", func() bool { return f.logged("started:") == 2 })
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the held report and the next sweep's to be sent", func() bool { return len(f.reports()) == 2 })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the held report and the next sweep's to be sent", func() bool { return len(f.reports()) == 2 })
 		reports := f.reports()
 		if len(reports[0].Faults) != 0 {
 			t.Errorf("the held report carries the faults %q, want none: it was made before the fault", reports[0].Faults)
@@ -4353,7 +4411,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		for range volumeFaultLimit {
 			f.tick("recovered a panic")
 		}
-		testwait.Eventually(t, "the trimmer to hold its last report", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold its last report", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 		offerSettingsTick(t, f)
@@ -4396,7 +4454,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 			panic("the connection fell over writing the last report")
 		}
 		_, done := f.start(tr)
-		testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
 
 		// The first reading falls over, and so do the line tick's handler writes of it and the
 		// line run writes of that line's panic, which run drops: the loop starts again from the
@@ -4436,6 +4494,7 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 // started from, so a trimmer anchored on the report would raise the episode there and this case
 // would fail.
 func TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	root := f.roots[0]
 	added := 0
@@ -4514,6 +4573,7 @@ func script(percents ...float64) func(int) volumeUsage {
 // case's own figures and not volumeRisePoints, because a case staged from the constant it tests
 // moves with it (INFRA-2009, review round 6).
 func TestAFloorFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *testing.T) {
+	t.Parallel()
 	const (
 		anchored = 90.0
 		under    = anchored + 4.9
@@ -4573,6 +4633,7 @@ func TestAFloorFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *t
 // after the one from 99.2%. The points are this case's own figures and not volumeRisePoints
 // (INFRA-2009, review round 6).
 func TestASlowFillIsReportedAgainAtEachFivePointsItsSweepStartsClimb(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	// The reading of interval n, counted in tenths of a point so that each start is exact:
 	// interval 1 reads 86%, and each interval after it two tenths more, up to full.
@@ -4618,6 +4679,7 @@ func TestASlowFillIsReportedAgainAtEachFivePointsItsSweepStartsClimb(t *testing.
 // five points above the 85.5. The case runs through the loop, so each of those readings starts a
 // sweep that reports, as it would in the pod.
 func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	root := f.roots[0]
 	added := 0
@@ -4674,6 +4736,7 @@ func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *
 // floor of two starts can raise no rise at the second reported sweep of an episode no rise
 // raised, which the first episode is.
 func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
 		if interval <= 1+volumeQuietIntervals {
@@ -4707,6 +4770,7 @@ func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 // a rise, and the next reported sweep anchored the new episode at its own start, 86% again, so
 // the next 91% was a rise once more.
 func TestAVolumeThatOnlyOscillatesRaisesNoNewEpisodeOnEveryCycle(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
 		if (interval-1)%(1+volumeQuietIntervals) == 5 {
@@ -4745,6 +4809,7 @@ func TestAVolumeThatOnlyOscillatesRaisesNoNewEpisodeOnEveryCycle(t *testing.T) {
 // spike episode's three notices, spent within the first half hour because a rise-raised report
 // skips the pod's hour, the architect hears nothing while the volume climbs from 88% to full.
 func TestOneTransientReadingDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	cycle := 1 + volumeQuietIntervals
 	f.useVolume(func(call int) volumeUsage {
@@ -4797,6 +4862,7 @@ func TestOneTransientReadingDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing
 // be passed, since a reading is at most 100%, so no rise follows episode 3, and none follows an
 // episode anchored at 95.5% however long the volume stays full.
 func TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt(t *testing.T) {
+	t.Parallel()
 	t.Run("from an anchor of 95%", func(t *testing.T) {
 		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 		starts := []float64{90, 95, 96, 90, 100, 99.9, 100, 100, 100}
@@ -4850,6 +4916,7 @@ func TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt(t *testing.T) {
 // architect of three of those reports and no more (internal/workflow's
 // TestAFourthSweepOfOneTrimmerAndEpisodeTellsNobodyHoweverLongItWaits).
 func TestAVolumeThatSitsStillAboveTheHighMarkKeepsOneEpisode(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
@@ -4888,6 +4955,7 @@ func TestAVolumeThatSitsStillAboveTheHighMarkKeepsOneEpisode(t *testing.T) {
 // a fill from lower down passes only with two starts five points above that level, and never where
 // the level is above 95%.
 func TestATransientSweepStartDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing.T) {
+	t.Parallel()
 	for _, staged := range []struct {
 		name   string
 		starts []float64
@@ -4930,6 +4998,7 @@ func TestATransientSweepStartDoesNotSilenceAVolumeThatThenKeepsFilling(t *testin
 // down, so the next 91% floor is no rise, where a trimmer that lowered it to the next 86% raised a
 // rise every third sweep.
 func TestARecurringPeakAtSweepStartsRaisesNoEpisodeOnEveryCycle(t *testing.T) {
+	t.Parallel()
 	t.Run("starts alternating 86% and 91%", func(t *testing.T) {
 		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 		starts := slices.Repeat([]float64{86, 91}, 6)
@@ -4970,6 +5039,7 @@ func TestARecurringPeakAtSweepStartsRaisesNoEpisodeOnEveryCycle(t *testing.T) {
 // two starts in a row at 55%, at 60% and so on to 100%, and three more sweeps from 100% raise
 // nothing.
 func TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark(t *testing.T) {
+	t.Parallel()
 	const high = 50
 	starts := []float64{high}
 	for floor := high + 5; floor <= 100; floor += 5 {
@@ -5004,6 +5074,7 @@ func TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark(t *testing.T
 // So each cycle after the first raises a recovery episode and one rise, whose reports skip the
 // pod's hour.
 func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	cycle := []float64{86, 91, 91}
 	f.useVolume(func(interval int) volumeUsage {
@@ -5039,6 +5110,7 @@ func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
 // copy that reads a rise from the one start, which raises it at the 91%, and a copy that wants the
 // floor more than five points above the anchor, which raises none.
 func TestStartsOf86And91RaiseNothingAndAThirdOf92RaisesARise(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(sweepStarts(86, 91, 92))
 	f.setSettings(trimSettings())
@@ -5061,6 +5133,7 @@ func TestStartsOf86And91RaiseNothingAndAThirdOf92RaisesARise(t *testing.T) {
 // The negative control is a copy that never lowers an anchor, under which episode 1 stays anchored
 // at 97% and the 92% raises nothing.
 func TestALowerStartLowersTheAnchorSoStartsOf97Then86And91And92RaiseARise(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(sweepStarts(97, 86, 91, 92))
 	f.setSettings(trimSettings())
@@ -5086,6 +5159,7 @@ func TestALowerStartLowersTheAnchorSoStartsOf97Then86And91And92RaiseARise(t *tes
 // negative control is a copy that anchors a rise five points above the anchor before it, at 91%
 // here, rather than at the floor that raised it: the fill then raises a second rise at 98%.
 func TestARiseTwoStartsOf97RaiseHoldsAFillFromLowerDownUntilARecovery(t *testing.T) {
+	t.Parallel()
 	starts := []float64{86, 97, 97, 86, 88, 90, 92, 94, 96, 98, 100, 100, 86, 91, 92}
 	const recovered = 11 // the sweep from the second 100%, counted from 0, whose pause falls to 65%
 	steps := sweepStarts(starts...)
@@ -5135,6 +5209,7 @@ func TestARiseTwoStartsOf97RaiseHoldsAFillFromLowerDownUntilARecovery(t *testing
 // above it. The negative control is a copy that reads the stopped sweep's start too: the 85%
 // anchors the episode, so the second 90% raises a rise, and the 97% pairs with the first 95%.
 func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
+	t.Parallel()
 	pause := func(percent float64) []float64 { return slices.Repeat([]float64{percent}, volumeQuietIntervals) }
 	f := newTrimFixture(t, 0) // no entry it may delete: every sweep frees nothing and takes no reading of its own
 	for _, root := range f.roots {
@@ -5166,14 +5241,14 @@ func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
 		}
 	})
 	f.start(f.trimmer())
-	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
 
 	stopped := func() {
 		t.Helper()
 		waited, started := f.logged("no settings are in force, so the trimmer stays off"), f.logged("started:")
 		stopping.Store(true)
 		f.tick("the settings stopped the trimmer")
-		testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off") == waited+1
 		})
 		f.setSettings(trimSettings())
@@ -5195,7 +5270,7 @@ func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
 	if t.Failed() {
 		t.FailNow()
 	}
-	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == 4 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the last sweep's report", func() bool { return len(f.reports()) == 4 })
 
 	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst}, // from 90%, after the stopped 85%: anchors episode 1 at 90%
@@ -5221,6 +5296,7 @@ func TestASweepTheSettingsStoppedNeitherAnchorsNorPairs(t *testing.T) {
 // the settings' branch of tick: the 86% anchors the new chain and is the start the first 91% pairs
 // with, and the second 91%, a floor five points above it, raises a rise.
 func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *testing.T) {
+	t.Parallel()
 	pause := func(percent float64) []float64 { return slices.Repeat([]float64{percent}, volumeQuietIntervals) }
 	f := newTrimFixture(t, 0) // no entry it may delete: every sweep frees nothing and takes no reading of its own
 	for _, root := range f.roots {
@@ -5250,7 +5326,7 @@ func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *te
 		}
 	})
 	f.start(f.trimmer())
-	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
 
 	f.tick("the sweep ended:")
 	for range volumeQuietIntervals {
@@ -5264,7 +5340,7 @@ func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *te
 	waited, started := f.logged("no settings are in force, so the trimmer stays off"), f.logged("started:")
 	stopping.Store(true)
 	f.tick("the settings stopped the trimmer")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off") == waited+1
 	})
 	f.setSettings(trimSettings())
@@ -5278,7 +5354,7 @@ func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *te
 	if t.Failed() {
 		t.FailNow()
 	}
-	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == 3 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the last sweep's report", func() bool { return len(f.reports()) == 3 })
 
 	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst},    // from 86%: anchors episode 1 at 86%
@@ -5305,6 +5381,7 @@ func TestASweepTheSettingsStoppedRightAfterARecoveryNeitherAnchorsNorPairs(t *te
 // rather than higher, because a start above every start after it anchors nothing those starts do
 // not lower at once (riseAt), and then the second control is green.
 func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	var mu sync.Mutex
 	level := 86.0
@@ -5363,7 +5440,7 @@ func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
 
 	reported(96, volumeQuietIntervals)
 	reported(96, 0)
-	testwait.Eventually(t, "the last sweep's report", func() bool { return len(f.reports()) == before+2 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the last sweep's report", func() bool { return len(f.reports()) == before+2 })
 
 	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst},    // from 86%: anchors episode 1 at 86%
@@ -5377,26 +5454,27 @@ func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
 // A sweep whose report panics while it is being made has been read for a rise all the same: tick
 // reads its start before it makes its report (riseAt), so its start anchors or pairs as a sent
 // report's does, and the panic is a fault the next report carries. The sweeps start at 86%, 91%
-// and 92%, and the bound of the first two reports panics (boundReport): the 86% anchors episode
-// 1, the 91% pairs with the 92%, and the third sweep's report, the one sent, carries the rise and
-// the two faults. The negative control is a copy that reads a sweep's start only once its report
-// is made: the first two are never read, the 92% anchors the episode, and its report carries
-// episode 1.
+// and 92%, and the bound of the first two reports panics (trimmer.boundReport): the 86% anchors
+// episode 1, the 91% pairs with the 92%, and the third sweep's report, the one sent, carries the
+// rise and the two faults. The negative control is a copy that reads a sweep's start only once its
+// report is made: the first two are never read, the 92% anchors the episode, and its report
+// carries episode 1.
 func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
+	t.Parallel()
 	const fell = "the report's bound fell over"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(sweepStarts(86, 91, 92))
 	f.setSettings(trimSettings())
+	tr := f.trimmer()
 	var bounds atomic.Int32
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if bounds.Add(1) <= 2 {
 			panic(fell)
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
-	t.Cleanup(func() { boundReport = previous })
-	f.start(f.trimmer())
+	f.start(tr)
 
 	sweepsAndPauses(f, 3)
 
@@ -5416,6 +5494,7 @@ func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
 // make one sweep's report. The negative control is a copy that mints one identifier for the whole
 // process and gives it to every trimmer, under which the two reports name the same trimmer.
 func TestATrimmerStartedAfreshCarriesAnIdentifierOfItsOwn(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and reports
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
@@ -5450,6 +5529,7 @@ func TestATrimmerStartedAfreshCarriesAnIdentifierOfItsOwn(t *testing.T) {
 // a full volume whatever the room above the anchor, the bound rounded up, under which the second
 // 100% raises a fourth.
 func TestTheRisesAboveAHighMarkOf84AreThreeTheRoomRoundedDown(t *testing.T) {
+	t.Parallel()
 	const high = 84
 	starts := []float64{high, 89, 89, 94, 94, 99, 99, 100, 100, 100}
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
@@ -5486,6 +5566,7 @@ func TestTheRisesAboveAHighMarkOf84AreThreeTheRoomRoundedDown(t *testing.T) {
 // below 96%, and nothing at all where the rise's anchor stood above 95%. Whether the tick after a
 // clearing sweep reads 69.9% or 70.2% is three tenths of a point the roles write in a minute.
 func TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	var mu sync.Mutex
 	level := 86.0
@@ -5563,6 +5644,7 @@ func TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode(t *testing.T) {
 // f01689f0, where the recovery asked for a reading under the mark, the second fill's first report
 // carried episode 2 (rise).
 func TestASweepThatEndsExactlyAtTheLowMarkEndsTheEpisode(t *testing.T) {
+	t.Parallel()
 	if mark := usageAt(70).Percent(); mark != 70 {
 		t.Fatalf("the fixture reads 70%% as %v, want exactly the low mark 70: the case would not stand on the boundary", mark)
 	}
@@ -5641,6 +5723,7 @@ func TestASweepThatEndsExactlyAtTheLowMarkEndsTheEpisode(t *testing.T) {
 // the mark, the first one still a tenth above it. At f01689f0, where the recovery asked for a
 // reading under the mark, the side on the mark failed.
 func TestAnIntervalReadingAtTheLowMarkIsARecoveryAndOneATenthAboveItIsNot(t *testing.T) {
+	t.Parallel()
 	for _, side := range []struct {
 		name    string
 		reading float64
@@ -5712,6 +5795,7 @@ func TestAnIntervalReadingAtTheLowMarkIsARecoveryAndOneATenthAboveItIsNot(t *tes
 // last subtest puts readings through episodeOf there, in the order tick reads them: a byte under
 // the mark leaves the low mark no recovery, and the mark itself makes it one.
 func TestAnIntervalReadingAtTheHighMarkSweepsAndRaisesTheFirstEpisodeAndOneAByteUnderItDoesNot(t *testing.T) {
+	t.Parallel()
 	under := percentBytes(85) - 1
 	aByteUnder := volumeUsage{UsedBytes: under, AvailableBytes: fixtureVolumeBytes - under}
 	if at, below := usageAt(85).Percent(), aByteUnder.Percent(); at != 85 || below >= 85 {
@@ -5814,6 +5898,7 @@ func TestAnIntervalReadingAtTheHighMarkSweepsAndRaisesTheFirstEpisodeAndOneAByte
 // entries and reads the volume a byte above 70% after its hundredth deletion and again at its end:
 // it deletes every entry, ends with none eligible, and asks for a report.
 func TestASweepReadingAByteAboveTheLowMarkGoesOnAndReportsWhereItEnds(t *testing.T) {
+	t.Parallel()
 	const entries = 150
 	above := percentBytes(70) + 1
 	aByteAbove := volumeUsage{UsedBytes: above, AvailableBytes: fixtureVolumeBytes - above}
@@ -5852,6 +5937,7 @@ func TestASweepReadingAByteAboveTheLowMarkGoesOnAndReportsWhereItEnds(t *testing
 // readings through it, as TestAFloorFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot
 // puts its starts.
 func TestAReadingAByteAboveTheLowMarkIsNoRecoveryAndOneAtItIs(t *testing.T) {
+	t.Parallel()
 	above := percentBytes(70) + 1
 	aByteAbove := volumeUsage{UsedBytes: above, AvailableBytes: fixtureVolumeBytes - above}
 	if at, over := usageAt(70).Percent(), aByteAbove.Percent(); at != 70 || over <= 70 {
@@ -6013,6 +6099,7 @@ func reportPercent(report shimwire.LauncherVolumeReport) float64 {
 // a sweep that reached it: the daemon hears about the volume the trimmer could not bring down,
 // and nothing about the one it could.
 func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 10) // forty entries, four points: the sweep ends at 86%
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -6020,7 +6107,7 @@ func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testi
 	f.start(tr)
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the report of the sweep", func() bool { return len(f.reports()) == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the report of the sweep", func() bool { return len(f.reports()) == 1 })
 	report := f.reports()[0]
 	switch {
 	case report.Trimmer != tr.id || report.Trimmer == "":
@@ -6077,6 +6164,7 @@ func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testi
 // lines as they stood at a3f5d0965f3f, which read `40 entries deleted, -250000000 B freed` and
 // `the sweep freed -0.50 points of the volume, under 1`.
 func TestTheLineOfASweepTheRolesOutwroteSaysTheVolumeGrew(t *testing.T) {
+	t.Parallel()
 	const grown = fixtureVolumeBytes / 200
 	f := newTrimFixture(t, 10)
 	f.useVolume(func(call int) volumeUsage {
@@ -6114,6 +6202,7 @@ func TestTheLineOfASweepTheRolesOutwroteSaysTheVolumeGrew(t *testing.T) {
 // four entries from a volume whose readings the case writes out, and is one interval driven
 // through tick.
 func TestASweepThatFreedNothingSaysSoAndOneTheVolumeGrewAByteUnderSaysThat(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		grown uint64 // what the sweep's last reading holds over its first
@@ -6152,12 +6241,12 @@ func TestASweepThatFreedNothingSaysSoAndOneTheVolumeGrewAByteUnderSaysThat(t *te
 	}
 }
 
-// A report the connection refuses is held and sent on the next attempt, as the launcher's
-// bundleRestore holds its own confirmation: a report the daemon never got is a volume nobody
-// was told about. An answer with no settings discards it, because the daemon that sent that
-// answer has no case for a report; settings the trimmer refuses keep it held and try it
-// (awaitSettings).
+// A report the connection refuses is held and sent on the next attempt: a report the daemon never
+// got is a volume nobody was told about. An answer with no settings discards it, because the
+// daemon that sent that answer has no case for a report; settings the trimmer refuses keep it held
+// and try it (awaitSettings).
 func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the volume ends below the high mark
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -6166,7 +6255,7 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 	f.start(tr)
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report its send refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 	if reports := f.reports(); len(reports) != 0 {
@@ -6175,7 +6264,7 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 
 	f.refuseSends(nil)
 	f.tick("nothing to sweep")
-	testwait.Eventually(t, "the held report to be sent on the next attempt", func() bool { return len(f.reports()) == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the held report to be sent on the next attempt", func() bool { return len(f.reports()) == 1 })
 	if report := f.reports()[0]; report.FreedBytes != int64(percentBytes(90)-percentBytes(80)) {
 		t.Errorf("the report that got across carries %d freed bytes, want the %d of the sweep that was held", report.FreedBytes, percentBytes(90)-percentBytes(80))
 	}
@@ -6189,13 +6278,13 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 		_, done := f.start(tr)
 
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report its send refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 		f.refuseSends(nil)
 		f.setSettings(nil)
 		f.tick("discarded")
-		testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 		})
 		select {
@@ -6222,6 +6311,7 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 // A's failed flush is read too: it said A was held for the next attempt with no condition, two
 // lines before B took its place.
 func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T) {
+	t.Parallel()
 	const (
 		refusedA = "process 7: /proc/7/fd: permission denied"
 		refusedB = "process 8: /proc/8/fd: permission denied"
@@ -6278,6 +6368,7 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 // negative control is report as it stood at e6725f56, which took them from the trimmer before the
 // bound ran: the report sent carried the bound's own fault alone and no refused read.
 func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
+	t.Parallel()
 	const refused = "process 7: /proc/7/fd: permission denied"
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
 	f.useVolume(f.modelled(90))
@@ -6287,11 +6378,10 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 	tr.fault("a panic of an earlier interval", []byte("goroutine 1 [running]:\nan earlier stack"))
 	tr.carryRefused([]string{refused})
 
-	previous := boundReport
-	boundReport = func(*trimmer, shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		panic("the bound fell over")
 	}
-	t.Cleanup(func() { boundReport = previous })
 	if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
 		t.Fatalf("the interval whose bound panicked ended the trimmer (%v), want it passed over", ending)
 	}
@@ -6302,7 +6392,7 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 		t.Fatalf("the trimmer sent %d reports from an interval whose bound panicked, want none", sent)
 	}
 
-	boundReport = previous
+	tr.boundReport = previous
 	tr.tick(context.Background(), &set)
 	sent := f.reports()
 	if len(sent) != 1 {
@@ -6330,6 +6420,7 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 // the one that merges A into B. The negative control is deliver with no give-back, as it stood at
 // e6725f56: the report sent after it carried the merge's fault alone and no refused read.
 func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T) {
+	t.Parallel()
 	const refused = "process 8: /proc/8/fd: permission denied"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -6348,14 +6439,13 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 	tr.carryRefused([]string{refused})
 
 	calls := 0
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if calls++; calls == 2 {
 			panic("the merge fell over")
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
-	t.Cleanup(func() { boundReport = previous })
 	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
 		t.Fatalf("the interval whose merge panicked ended the trimmer (%v), want it passed over", ending)
 	}
@@ -6367,7 +6457,7 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 		t.Fatalf("the trimmer holds %+v after the merge panicked, want report A as it was held", tr.held)
 	}
 
-	boundReport = previous
+	tr.boundReport = previous
 	f.refuseSends(nil)
 	tr.pause = 0
 	tr.tick(ctx, &set) // A goes, and then report C
@@ -6400,6 +6490,7 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 // must carry the earlier fault, the send's own fault and the refused read. At c3874f11 it
 // carried the send's fault alone and no refused read.
 func TestAReportWhoseSendPanicsLeavesWhatItCarriedForTheNext(t *testing.T) {
+	t.Parallel()
 	const refused = "process 9: /proc/9/fd: permission denied"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing and reports
 	f.useVolume(steady(90))
@@ -6447,6 +6538,7 @@ func TestAReportWhoseSendPanicsLeavesWhatItCarriedForTheNext(t *testing.T) {
 // refused nothing in, and its report must name the first sweep's refusal. At c3874f11 report
 // walked before it carried the sweep's refusals, so the next report named none.
 func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
@@ -6496,6 +6588,7 @@ func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T
 // every interval of a pause ended the row, so each fault was the first in a row and the trimmer
 // faulted after every sweep for the life of the pod, with nothing beyond its log to show for it.
 func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testing.T) {
+	t.Parallel()
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -6563,6 +6656,7 @@ func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testi
 // thirty-second one and take its next interval on the ten-second one. At c3874f11 tick's recovery
 // cleared restart, so the loop went on ticking every thirty seconds under settings that said ten.
 func TestAPanicInTheIntervalThatChangedThePeriodLeavesTheClockAtTheNewOne(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	f.setOnRead(func(call int) {
 		if call == 2 {
@@ -6579,13 +6673,13 @@ func TestAPanicInTheIntervalThatChangedThePeriodLeavesTheClockAtTheNewOne(t *tes
 	shorter.IntervalSeconds = 10
 	f.setSettings(&shorter)
 	offerTickOf(t, f, started, "the clock of the period it started with")
-	testwait.Eventually(t, "the panic of the interval that changed the period to be recovered", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the panic of the interval that changed the period to be recovered", func() bool {
 		return f.logged("recovered a panic") == 1
 	})
 	if f.logged("new settings:") != 1 {
 		t.Fatalf("the trimmer wrote %q, want the interval that panicked to have put the new settings in force first", f.linesWritten())
 	}
-	testwait.Eventually(t, "the trimmer to wait on a clock of the new period", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait on a clock of the new period", func() bool {
 		_, running := f.ticks.live(settingsInterval(shorter))
 		return running
 	})
@@ -6614,6 +6708,7 @@ func TestAPanicInTheIntervalThatChangedThePeriodLeavesTheClockAtTheNewOne(t *tes
 // closed by the sweep only once the listing had returned them, and the handle on a target's child
 // only once its measurement had returned.
 func TestAPanicInTheListingOrAWalkMeasurementLeavesNoHandleOpen(t *testing.T) {
+	// Not parallel: it turns the whole process's garbage collector off.
 	// realRoot is the volume root of f as a descriptor's link names it.
 	realRoot := func(t *testing.T, f *trimFixture) string {
 		t.Helper()
@@ -6708,6 +6803,7 @@ func descriptorsUnder(t *testing.T, root string) []string {
 // the log must hold one line of what each leaves out. The negative control is the line written
 // by the bound itself, as at 8a30be78, which wrote B's twice: three lines for two reports.
 func TestAReportThatReplacesAHeldOneSaysOnceWhatItLeavesOut(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	tr := f.trimmer()
 	f.refuseSends(errors.New("the bound connection is gone"))
@@ -6737,6 +6833,7 @@ func TestAReportThatReplacesAHeldOneSaysOnceWhatItLeavesOut(t *testing.T) {
 // carryHeld's report with no bound after it: the report sent named 75 refused reads and carried
 // nine faults, counting none, and the daemon refused it for the refused reads past their cap.
 func TestAReportSentAfterHeldOnesItReplacedIsWithinTheCaps(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	tr := f.trimmer()
 	f.refuseSends(errors.New("the bound connection is gone"))
@@ -6800,6 +6897,7 @@ func plantWalkTargets(t *testing.T, scratch string, count int) {
 // exists to describe. The bound says how many entries it left out rather than dropping them
 // quietly.
 func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 1)
 	const planted = 4000
 	plantWalkTargets(t, filepath.Join(f.root, "scratch"), planted)
@@ -6846,7 +6944,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 		}
 	}
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the report of the sweep that followed the faults", func() bool { return len(f.reports()) == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the report of the sweep that followed the faults", func() bool { return len(f.reports()) == 1 })
 	report := f.reports()[0]
 
 	var line bytes.Buffer
@@ -6909,7 +7007,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 		f.start(f.trimmer())
 
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the report of the sweep that deleted nothing", func() bool { return len(f.reports()) == 1 })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the report of the sweep that deleted nothing", func() bool { return len(f.reports()) == 1 })
 		report := f.reports()[0]
 		switch {
 		case len(report.RefusedReads) != shimwire.VolumeReportRefusedReads:
@@ -6965,6 +7063,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 // The bounds are written out rather than read off the constants, as the other bounds of this
 // package are, since a case staged from the constant it tests moves with it.
 func TestEveryStringOfAReportIsKeptWholeAtItsBoundAndCutAtOneRuneMore(t *testing.T) {
+	t.Parallel()
 	const (
 		pathRunes       = 200
 		stopReasonRunes = 400

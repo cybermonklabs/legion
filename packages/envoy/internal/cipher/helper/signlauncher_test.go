@@ -20,6 +20,7 @@ import (
 // registered session IN_SESSION, since a session acts on itself alone, and the operator's own shell
 // NO_CREDENTIAL until a login: the refusal order proves the session gate ran first.
 func TestSignLauncherRefusedInsideASessionAndSignsOutside(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	r := newRig(t, state)
 	child := sleeper(t) // a real process registered as a session root
@@ -45,6 +46,7 @@ func TestSignLauncherRefusedInsideASessionAndSignsOutside(t *testing.T) {
 // authenticates), an operator route under the other method or with its id missing, split or a
 // dot segment, and a request missing its method or URL.
 func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	cred := r.srv.Broker.cred.Load()
 	tp, err := proof.Thumbprint(&cred.key.PublicKey)
@@ -102,6 +104,7 @@ func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T)
 // user, a password or a query, the id a person typed to `machine revoke` or `grant revoke`, or
 // the method itself. Control: the refusal names this helper's broker, so the check sees a URL.
 func TestSignLauncherRefusalPrintsNothingTheCallerSent(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	typed := "hunter2pw" + "-typedid-" + "7c1e5a"
 	broker := r.srv.Broker.URL.Raw()
@@ -143,6 +146,7 @@ func TestSignLauncherRefusalPrintsNothingTheCallerSent(t *testing.T) {
 // ends short of init, at a parent it cannot read, at the hop limit or in a loop, is answered
 // IN_SESSION naming why. A walk that does reach init signs, so the refusals are the walk's.
 func TestSignLauncherRefusesACallerItCannotTraceOutOfEverySession(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	child := sleeper(t) // a real process registered as a session root, so there is a walk to make
 	r.callerPID.Store(int64(child.Process.Pid))
@@ -202,6 +206,7 @@ func TestSignLauncherRefusesACallerItCannotTraceOutOfEverySession(t *testing.T) 
 // sign does; otherwise a session process the kernel replaced mid-walk could be handed a launcher
 // proof.
 func TestSignLauncherRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	impostor := sleeper(t)
 	peer, err := PinPID(impostor.Process.Pid)

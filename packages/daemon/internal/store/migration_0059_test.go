@@ -13,6 +13,7 @@ import (
 // itself after a trip to backlog (INFRA-214's case), and a member still in its tree keep the
 // default, so each stays adoptable or unaffected as before.
 func TestTheTreeARootLeftIsBackfilledBy0059(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 58)

@@ -63,6 +63,7 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 // the secret with its value in one call, it says that the store may hold the secret or not and
 // names the command that says which. Each exits 1 well before the store would answer.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, store := range []string{"gcp", "aws"} {
 		t.Run(store, func(t *testing.T) {
 			useStoreCallDeadline(t, 300*time.Millisecond)
@@ -98,19 +99,15 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				code   int
 			}
 			done := make(chan result, 1)
+			meter := startStallMeter(t)
 			start := time.Now()
 			go func() {
 				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 				done <- result{stderr, code}
 			}()
-			var got result
-			select {
-			case got = <-done:
-			case <-time.After(10 * time.Second):
-				releaseOnce()
-				got = <-done
-				t.Fatalf("the create waited on a store call the store never answered for more than 10s, past the 300ms deadline; once the store answered: exit %d, stderr %q", got.code, got.stderr)
-			}
+			// The store never answers until the test ends (releaseOnce, a cleanup), so the create
+			// ends by its deadline or not at all; endsByItsDeadline fails a deadline that came late.
+			got := endsByItsDeadline(t, meter, "the create whose store call the store never answers", start, 300*time.Millisecond, done)
 			if got.code != 1 {
 				t.Fatalf("exit %d after %s, stderr %q; want 1", got.code, time.Since(start), got.stderr)
 			}
@@ -147,6 +144,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 // nothing was stored, so it says the store may hold the secret, with its value, and names `secret
 // show`. A store that refuses the one attempt it sees says nothing was stored. Each exits 1.
 func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name      string
 		dropFirst bool
@@ -224,6 +222,7 @@ func (f failedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Creat
 // hold the secret with its value, or nothing, and names `secret show NAME`, which tells them apart.
 // Each exits 1.
 func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	// The two facts the refusal tells apart: a definite refusal says nothing was stored; any other
 	// says the store may hold the secret and names the command that tells.
 	const nothing = "nothing was stored"
@@ -276,6 +275,7 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 // naming the command that tells which. The cleanup is run here as the signal would run it, right
 // after the store's answer.
 func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
@@ -302,6 +302,7 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 // whether a failed CreateSecret made the secret carries the AWS_PROFILE prefix the create ran
 // under, so it reads the store as the identity that wrote to it.
 func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:309); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
@@ -319,6 +320,7 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 // a create given that deadline refuses the value, whenever it comes - a value piped in at once is
 // still stored on AWS.
 func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (valueReadWindow set at secret_create_test.go:325).
 	restore := valueReadWindow
 	valueReadWindow = time.Nanosecond
 	t.Cleanup(func() { valueReadWindow = restore })

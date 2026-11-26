@@ -46,6 +46,19 @@ import (
 // server's resident memory read from /proc, and requests over HTTP and the document websocket.
 // Both files build only under the `memory` tag, which the dispatch-memory CI job sets: their rows
 // run past go test's default deadline, so the unit run of every Go package leaves them out.
+//
+// The tests run at the same time (t.Parallel), each on a database of its own (newMemoryHarness).
+// What a test measures is one server process's own memory - its resident peak above its own idle
+// (peakAboveIdle) or the heap its own collector found live (liveHeapAboveIdle) - which other
+// processes do not move while the machine has memory to spare: the most any test reads is about
+// 400 MiB above a server's idle (TestColdReadCacheEvictionPlateaus), four servers at once on a
+// 16 GB runner. One after another, the suite kept 0.92 of 4 CPUs busy on average (2,461 CPU
+// seconds over 2,675 s, the whole suite pinned to 4 CPUs of a dev box). The two tests that
+// measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
+// and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
+// them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
+// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// reserves both before its first start (dispatchSlots.reserve).
 
 const memoryTestToken = "memory-test-token"
 
@@ -168,13 +181,15 @@ func collectOnSignal() {
 
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
-// take the port before it serves.
+// take the port before it serves. It takes the server's slot before the drain, so what the drain
+// leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
+	releaseSlot := dispatchSlots.take(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
-	command := exec.Command(os.Args[0])
+	command := exec.Command(dispatchCopy(t))
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
@@ -204,11 +219,14 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held.Pass(command, "DISPATCH_LISTEN_FD")
 	// This server is a Dispatch process like any other a test starts, so the connection guard
 	// counts it, and releases it before exited closes, so a test that sees the exit sees the
-	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
-	// of the held socket once the server has started, so the server releases the port when it
-	// exits.
+	// count fall (requireConnectionCeiling, cmdtest.StartThen); its slot goes back with it.
+	// StartThen closes the test's copy of the held socket once the server has started, so the
+	// server releases the port when it exits.
 	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
-	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	process := cmdtest.StartThen(t, "the Dispatch server", command, func() {
+		releaseConnections()
+		releaseSlot()
+	})
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
 	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
@@ -240,12 +258,11 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		time.Sleep(50 * time.Millisecond)
 	}
 	// The idle is read after a collection that gives the heap's free memory back to the system.
-	// Every boot compiles the pg_query WebAssembly module its migrations parse with
-	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
-	// a collection frees that before /healthz answers is the luck of where the boot's collections
-	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
-	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
-	// low, and below zero (INFRA-3904).
+	// Whether a collection had freed what a boot left dead before /healthz answered was the luck of
+	// where the boot's collections fell: read at once, the idle was about 90 MiB on one server and
+	// about 330 MiB on the next, and a request then reused the dead pages, so its peak above idle
+	// read up to about 240 MiB low, and below zero (INFRA-3904). Most of that dead heap was the
+	// migrations' libpg_query parse, which a start no longer runs (pgmigrate.LoadBuilt).
 	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server

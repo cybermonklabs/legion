@@ -1,34 +1,36 @@
 name: CI job envoy-go-checks
 
-# The steps of ci.yaml's `envoy-go-checks` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-go-checks` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
+# envoy's script tests, each a bash harness over fakes. The job runs in the merge queue only:
+# ci.yaml's envoy_go_checks output carries the event term
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), and its
+# build, vet, format, generated-code and migration checks are envoy-go-build's, which a pull
+# request runs.
+#
+# The harnesses run through .github/scripts/harness-pool.sh: each harness step queues its harness
+# and returns, the harnesses run beside each other, and the step "Wait for the script harnesses
+# and judge them" before the ci-ok report is their verdict, with each harness's log, exit status
+# and wall and CPU seconds in its log and the job summary
+# (.github/ci-notes/ci.md#the-harness-pool).
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
-      migration-base:
-        description: >-
-          On a workflow_dispatch run, the commit main pointed at before the push the run tests
-          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base the
-          edited-migrations check compares the run's tree with. A dispatch on main must name it;
-          a dispatch on another branch that names none compares with the branch's merge base
-          with main.
-        type: string
-        required: false
-        default: ''
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -41,20 +43,12 @@ env:
 
 jobs:
   envoy-go-checks:
-    # ubuntu-24.04, the runner release-envoy-listener.yaml builds the release's listener archives
-    # on. The pack step below builds those archives as the release does, with no CGO_ENABLED, and
-    # Go turns cgo on for a native build where gcc is present and off for a cross build: on this
-    # runner that gives the release's own pair, an amd64 listener linked against glibc and a
-    # static arm64 one. On ubuntu-24.04-arm the same step built the reverse pair (measured on run
-    # 44082892660's artifact), so a failure of the release's build mode would pass the pull
-    # request and fail the release after the merge. The job therefore stays on the x86_64 pool,
-    # which changes nothing a release ships.
+    # ubuntu-24.04, the runner these script tests ran on when they shared a job with the pack step,
+    # which needed it; that step is envoy-go-build's now.
     runs-on: ubuntu-24.04
-    # The builds below download the envoy module's dependencies and compile ./cmd/listener for
-    # each release architecture, so the job restores go-envoy, the family whose entry holds that
-    # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
-    # it the pack step would recompile the set per architecture from nothing on every push, which
-    # is the runner time this change exists to cut.
+    # The setup below (Bun, the workspace install, Go and the go-envoy restore) is the one these
+    # tests ran under in that job, kept whole so that no test loses a tool it reads. Their steps took
+    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22.
     timeout-minutes: 30
     env:
       JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -62,55 +56,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The composite action other repositories call, run over this repository's own
-      # .dispatch/architecture (its default path), so every part of it is exercised here before
-      # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
-      # matcher, its path resolved against the workspace, its cache restore, and its count output,
-      # which the next step reads. In a pull request and a merge group it restores its cache and
-      # saves nothing (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
-      # "Caches"). It runs right after the checkout, before this
-      # job's own setup-go, which adds setup-go's `go` problem matcher back for every later step
-      # of the job: the placement "before the Go setup of the job" of the action's README.md, "The
-      # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
-      # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
-      # the check's lines"). A refused note set fails the job before its other checks run.
-      - id: architecture-notes
-        name: Check this repository's architecture notes with the composite action
-        uses: ./.github/actions/architecture-check
-      # A caller reads the count through env, never inside run:, and so does this step. It runs
-      # only when the action succeeded, which without allow-empty means a valid set of one note or
-      # more, so a count that is missing or not a positive whole number is the action's fault.
-      - name: Read the note count the action hands to the job
-        env:
-          COUNT: ${{ steps.architecture-notes.outputs.count }}
-        run: |
-          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
-            exit 1
-          fi
-          echo "The architecture-check action judged $COUNT notes."
-      # The spec-file action, run over this repository's own .dispatch/spec (its default path) for
-      # the reasons and in the place the architecture-note action above runs: every part of it is
-      # exercised here, and it runs before this job's own setup-go. Its own setup-go adds the `go`
-      # matcher again and it removes it again. Main holds no spec file yet, so the directory does
-      # not exist and allow-empty reads it as the empty tree; a pull request that adds a spec file
-      # is judged by every rule. A refused tree fails the job before its other checks run.
-      - id: spec-files
-        name: Check this repository's spec files with the composite action
-        uses: ./.github/actions/spec-check
-        with:
-          allow-empty: 'true'
-      # It runs only when the action succeeded: a valid tree, or with allow-empty the empty one, so
-      # 0 is a count, and a count that is missing or not a whole number is the action's fault.
-      - name: Read the statement count the spec-file action hands to the job
-        env:
-          COUNT: ${{ steps.spec-files.outputs.count }}
-        run: |
-          if ! [[ $COUNT =~ ^(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::the spec-check action's count output is '$COUNT', not a whole number"
-            exit 1
-          fi
-          echo "The spec-check action read $COUNT statements."
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
@@ -120,6 +65,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -127,216 +73,115 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Check Go formatting
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
-            echo "$unformatted"
-            exit 1
-          fi
-        working-directory: packages/envoy
-      # These five packages need no database, so they run here on every push. This is their one
-      # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
-      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
-      - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
-        working-directory: packages/envoy
-      # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
-      # type-checks the daemon's listener clients, so they run here, their one run, and a change to
-      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
-      # leaves both packages out, its `grep -Ev` and this step's package list built from
-      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
-      - name: Test the listener's wire package, its clients and wirecheck
-        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
-        working-directory: packages/envoy
-      - name: Check Go contracts are generated from the shared schema
-        run: bun run check:go
-        working-directory: packages/contracts
-      - name: Check the OpenAPI document is generated from the route table
-        run: go run ./cmd/dispatch openapi --check
-        working-directory: packages/envoy
-      # No CI job compares the spec files with the approved spec: R2 of The Spec gives that
-      # comparison at each push to Dispatch. The guard reads every file under .github/workflows,
-      # .github/actions, .github/scripts and scripts as text, names each place where the command's
-      # name and then the word compare follow each other, a comment or a quoted text too, and fails
-      # on it. It does not find a command that an expansion, an escape or an alias builds, or one
-      # with another word between the two. It fails when it read no workflow.
-      - name: Check that no CI file of this repository compares the spec files
-        run: go run ./cmd/spec-check guard --root ../..
-        working-directory: packages/envoy
-      - name: Check pmdoc fixtures are up to date
-        run: bun run check
-        working-directory: packages/envoy/internal/dispatch/pmdoc/gen
-      # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
-      # whose display reading changed and a fixture nobody regenerated fails here rather than
-      # leaving a view's test asserting against a stale tree. This is the one run of that test,
-      # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats
-      # the same file: without `--check` the first writes the fixture instead of checking it, so
-      # envoy-go's unit step skips both by the same names, both texts built from
-      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
-      - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
-        working-directory: packages/envoy
-      # pmdoc's readers on tables in a build made without inlining, the mode of every debugger
-      # build: the table tests read through the block reader, and the display fixture test reads
-      # the display corpus, whose tables go through the display reader. goldmark builds both
-      # readers while pmdoc's package variables are initialized, and it calls into pmdoc there
-      # through the goldmark.Extender interface (lazyAwareTable.Extend,
-      # internal/dispatch/pmdoc/table.go), which Go's initialization order does not look through.
-      # So a reader that copied a variable of pmdoc there could be handed nil in a build without
-      # inlining, where inlining set the same variable at link time in every other build: each
-      # table then failed to read in the first build and read in the second. No other step builds
-      # pmdoc without inlining.
-      - name: Test pmdoc's tables in a build without inlining
-        run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
-        working-directory: packages/envoy
-      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
-        run: bash scripts/dev-broker.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
-        run: bash scripts/dev-airlock.test.sh
-        working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
-        run: bash scripts/airlock-check.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for proxy-role-check.sh (its usage, placeholder assertion and TLS stand-in GitHub; no stack)
-        run: bash scripts/proxy-role-check.test.sh
-        working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
-        run: bash scripts/judge-check.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: bash scripts/dev-stack.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
-        run: bash scripts/project-secrets-check.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
-        run: bash scripts/callout-check.test.sh
-        working-directory: packages/envoy
-      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
-        run: bash scripts/dev-postgres.test.sh
-        working-directory: packages/envoy
-      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
-        run: bash scripts/restore-dispatch-dump.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: bash scripts/listener-deploy-probe.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-        run: bash scripts/daemon-release-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-purge.test.sh
-        working-directory: packages/envoy
-      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
-        run: bash loadtest/run-step.test.sh
-        working-directory: packages/envoy
-      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
-        run: bash loadtest/common.test.sh
+      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
+      # instead of building helm with `go run`, which downloads and compiles it first: the render
+      # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
+      # 137388344183. It is a step before the pool's first start, since a harness started in the
+      # background takes the PATH the steps before it left.
+      - uses: ./.github/actions/install-helm
+      # The script harnesses of the module, each a bash script of fakes that mostly waits on its
+      # fakes' answers, polls and deadlines rather than computing. As one step after another they
+      # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22, when the
+      # job held the build and vet steps envoy-go-build holds now) while the runner's other cores
+      # idled. Each step below keeps its name and hands its harness to
+      # .github/scripts/harness-pool.sh, which queues it and returns; the harnesses then run beside
+      # each other, no more at once than the runner has cores, in the order queued (the longest
+      # first, so the shorter ones fill the other cores around them), and "Wait for the script
+      # harnesses and judge them" is their verdict and prints each one's log.
+      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
+      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        run: bash loadtest/cluster/cluster.test.sh
+        run: ../../.github/scripts/harness-pool.sh start loadtest/cluster/cluster.test.sh bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: bash loadtest/vm/vm.test.sh
+        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
         working-directory: packages/envoy
-      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
-        run: bash loadtest/vm/sample.test.sh
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
-      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
+      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale, so the
+      # locale is generated first, inside the same pooled command.
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
-        run: |
-          sudo locale-gen en_US.UTF-8
-          bash deploy/scripts/autodeploy_test.sh
+        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/autodeploy_test.sh bash -c 'sudo locale-gen en_US.UTF-8 && bash deploy/scripts/autodeploy_test.sh'
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
+        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh bash scripts/legacy-subjects-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
+        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh
+        working-directory: packages/envoy
+      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/common.test.sh bash loadtest/common.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/callout-check.test.sh bash scripts/callout-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: ../../.github/scripts/harness-pool.sh start scripts/project-secrets-check.test.sh bash scripts/project-secrets-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-broker.test.sh bash scripts/dev-broker.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-airlock.test.sh bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
       - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
-        run: bash deploy/scripts/up-dispatch_test.sh
+        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh
         working-directory: packages/envoy
-      - name: Build envoy services
-        run: go build ./cmd/dispatch ./cmd/listener
+      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-postgres.test.sh bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy
-      # A migration a database may already have run must keep its identity, or accept what such a
-      # database records of it, its first identity, the base's text and every identity and text the
-      # base's replaces lines name, in `-- replaces:` lines that begin with the base's, in their
-      # order, then one naming the base's file itself:
-      # each runner refuses a database whose version table records what its file does not accept
-      # (internal/pgmigrate, Reconcile), so an edit of an applied file, a comment included, is
-      # caught here, before any database boots it. The base is what this run's tree lands onto,
-      # and .github/scripts/edited-migrations-base.sh picks it, fetches it into this checkout, which
-      # is one commit deep, and prints it. On a pull request and in the merge queue it is the first
-      # parent of the commit the run checked out: of the pull request's merge commit, and of a
-      # merge-group entry's commit (main, or the entry before it, whose own run checks its change).
-      # On the bypass check's dispatch at main's tip after a push the queue never tested, which can
-      # carry several commits, it is the commit main pointed at before that push (migration-base),
-      # and a dispatch on main that names none fails here rather than compare the tip with its
-      # parent alone. On a dispatch of any other branch that names none, a full run started by
-      # hand, it is the branch's merge base with main. A push whose `before` is the all-zero
-      # commit, or a commit GitHub no longer serves, fails the base's fetch, so the check fails
-      # closed: an operator then dispatches the run again by hand with a base GitHub serves, the
-      # newest commit of main the queue tested before the push, as
-      # `gh workflow run ci.yaml --ref main -f migration-base=<that commit>`. The assignment of the
-      # base is a line of its own, so under bash -e the script's exit, 2 included, is the step's.
-      # The command is built and then run, not run through `go run`, which turns its exit 2, a
-      # check that could not be taken, into an exit 1.
-      - name: Check that no migration a database may have run is edited without its replaces line
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
+        working-directory: packages/envoy
+      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/judge-check.test.sh bash scripts/judge-check.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/sample.test.sh bash loadtest/vm/sample.test.sh
+        working-directory: packages/envoy
+      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
+        run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for proxy-role-check.sh (its usage, placeholder assertion and TLS stand-in GitHub; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/proxy-role-check.test.sh bash scripts/proxy-role-check.test.sh
+        working-directory: packages/envoy
+      # The verdict on the script harnesses the steps above queued: it waits for the last of them,
+      # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
+      # each harness that failed (.github/scripts/harness-pool.sh). A job that passed every step
+      # to here queued all of its harnesses, so a wait that finds none fails it; one that failed
+      # before the harness steps has nothing to judge, and --allow-none keeps that from adding a
+      # second error to the first. `!cancelled()` rather
+      # than `always()`: the runner signals a running step on a cancel only when its condition no
+      # longer holds, and the wait answers that signal by naming each harness still running with
+      # its log so far; `exec`, so the signal reaches the wait itself.
+      - id: harness-wait
+        name: Wait for the script harnesses and judge them
+        if: ${{ !cancelled() }}
         env:
-          MIGRATION_BASE: ${{ inputs.migration-base }}
+          JOB_STATUS: ${{ job.status }}
         run: |
-          base=$(../../.github/scripts/edited-migrations-base.sh)
-          go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations
-          "$RUNNER_TEMP/edited-migrations" --base "$base"
-        working-directory: packages/envoy
-      # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
-      # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
-      # build constraint that uses a symbol only a `//go:build linux` file defines compiles on this
-      # runner and nowhere else. The vet runs once per tag set .github/scripts/go_build_tags.py
-      # reads off the module's own build constraints, so a file under a tag that lands later, or
-      # under a negated one, is vetted too rather than passed over in silence. One
-      # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
-      # Its objects go to a build cache of their own, the GOCACHE in the step's env, which the
-      # go-envoy-darwin-vet family holds (.github/workflows/ci-caches.yaml fills it again on every
-      # push to main): restored from nothing, the vet compiled the standard library and every
-      # dependency for darwin on every run, 137.9 s of job 137308591036 and 172 s at the median of
-      # 550 pull request runs. Kept out of go-envoy, whose entry every envoy job downloads.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/go-build-darwin
-          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-darwin-vet-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Vet envoy for darwin, its tagged tests included
-        env:
-          GOCACHE: ${{ runner.temp }}/go-build-darwin
-        run: |
-          flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
-          while IFS= read -r flag; do
-            echo "Vetting for darwin with $flag"
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
-          done <<< "$flags"
-        working-directory: packages/envoy
-      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
-      - name: Pack envoy binaries
-        run: |
-          for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
-            out="../../out/pr-artifacts/envoy-$arch"
-            mkdir -p "$out"
-            GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
-            GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
-            tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
-            tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
-          done
-        working-directory: packages/envoy
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: legion-envoy-binaries-pr
-          path: |
-            out/pr-artifacts/legion-envoy-amd64.tar.gz
-            out/pr-artifacts/legion-envoy-arm64.tar.gz
+          args=()
+          if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
+      # A job cancelled, or past its timeout, before the step above began: name each harness it
+      # queued as it is, with its log so far, rather than lose them with the job.
+      - name: Name the script harnesses a cancelled job left
+        if: cancelled() && steps.harness-wait.outcome == 'skipped'
+        run: .github/scripts/harness-pool.sh wait --allow-none --now
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

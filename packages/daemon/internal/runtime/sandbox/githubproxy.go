@@ -60,12 +60,15 @@ func withProxyOwned(owned map[string]bool) map[string]bool {
 	return names
 }
 
-// runtimeOwnedComposedOrProxy and runtimeOwnedComposedExchangeOrProxy are runtimeOwnedOrComposed
-// and runtimeOwnedComposedOrExchange with proxyOwned, what a launch spec may not set where the
-// deployment puts any role's GitHub behind the proxy (specOwned).
+// runtimeOwnedComposedOrProxy, runtimeOwnedComposedExchangeOrProxy and
+// runtimeOwnedComposedExchangeBrokerOrProxy are runtimeOwnedOrComposed,
+// runtimeOwnedComposedOrExchange and runtimeOwnedComposedExchangeOrBroker with proxyOwned, what a
+// launch spec may not set where the deployment puts any role's GitHub behind the proxy
+// (specOwned).
 var (
-	runtimeOwnedComposedOrProxy         = withProxyOwned(runtimeOwnedOrComposed)
-	runtimeOwnedComposedExchangeOrProxy = withProxyOwned(runtimeOwnedComposedOrExchange)
+	runtimeOwnedComposedOrProxy               = withProxyOwned(runtimeOwnedOrComposed)
+	runtimeOwnedComposedExchangeOrProxy       = withProxyOwned(runtimeOwnedComposedOrExchange)
+	runtimeOwnedComposedExchangeBrokerOrProxy = withProxyOwned(runtimeOwnedComposedExchangeOrBroker)
 )
 
 // proxiesGitHubIn is the one decision whether a generation of role started now in a pod reaches

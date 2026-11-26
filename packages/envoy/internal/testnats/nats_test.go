@@ -1,5 +1,8 @@
 package testnats
 
+//ci:builds packages/envoy ./... go list -f ... ./... in packages/envoy
+//ci:reads packages/envoy/**/*.go !packages/envoy/infra/** !packages/envoy/testdata/** containerImporters and dockerDriverFiles walks packages/envoy but infra, node_modules and testdata, and reads every .go file it finds, test files included (dockerDriverFiles, called by TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime)
+
 import (
 	"context"
 	"errors"
@@ -568,7 +571,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 						return
 					default:
 					}
-					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
+					if _, err := conn.Request("$JS.API.INFO", nil, requestWait(t)); err != nil {
 						failures <- err
 						return
 					}
@@ -629,7 +632,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.Request("more.echo", nil, requestWait(t)); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }

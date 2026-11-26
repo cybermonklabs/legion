@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testtypes"
@@ -367,7 +368,7 @@ func TestTheBackstopReportsASuspendedEndAsSuspended(t *testing.T) {
 // process is gone either way, so a stall told to nobody is a worker that stopped and an
 // architect that never hears of it. Here the launch the backstop made could not be written, so
 // the stalled process was let go and stopped and its replacement waits on the probe interval
-// (launchNow, relaunchLater).
+// (launchTries, relaunchLater).
 func TestTheBackstopTellsTheOwnerOfAnEndWhoseLaunchWriteFailed(t *testing.T) {
 	h, stops := backstopReports(t)
 	h.workingOnATask("implement the plan")
@@ -418,7 +419,7 @@ func TestTheBackstopTellsTheOwnerOfARelaunchWhoseWriteFailed(t *testing.T) {
 }
 
 // failingWriteAfterResume starts the replacement and then refuses every claim write, which is
-// the window launchNow's own last line sits in: the process runs and the record of it does not
+// the window launchTries' own last line sits in: the process runs and the record of it does not
 // reach the store.
 type failingWriteAfterResume struct {
 	*fake.Runtime
@@ -544,6 +545,71 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	}
 }
 
+// podBackstopReports is backstopReports over a harness whose machines start their processes
+// through one pod start gate (podHarness), with the claim stalled in a turn and another role of
+// its issue pod loading its session when the backstop comes: the architect's process started
+// after the claim's own load ended, and it holds the pod's start (askPod). It answers the
+// moment and the record the sweep read, as stalledSweep does, and the loading role.
+func podBackstopReports(t *testing.T) (*harness, *[]StallBackstopStop, time.Time, StepRecord, *podRole) {
+	t.Helper()
+	h := podHarness(t, "")
+	stops := &[]StallBackstopStop{}
+	h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { *stops = append(*stops, stop) }
+	c := queuedClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	last, swept := stalledSweep(h)
+	loading := h.podRole(claim.RoleArchitect, StateSuspended)
+	h.mustPostTo(loading.m, RequestResume{Claim: loading.token})
+	h.wantStarts(loading.token, 1)
+	return h, stops, last, swept, loading
+}
+
+// A replacement whose launch waits at its issue pod's gate, while another role of the pod loads
+// its session, is an end of its own (EndRelaunchWaitsForPod), told as that once. The claim alone
+// reads as a relaunch still to make — launching, with no process — but nothing refused or cut it
+// short: the stalled process was let go and stopped at the park (askPod, stopPrevious), and the
+// replacement starts at the gate's grant. Told the relaunch pending, the owner would read that no
+// replacement was started and wait for a retry nobody makes; and the end is told before the
+// grant, which tells nobody again.
+func TestTheBackstopTellsTheOwnerOfAReplacementWaitingForItsIssuePod(t *testing.T) {
+	h, stops, last, swept, loading := podBackstopReports(t)
+	stalledLoc := h.locator()
+
+	h.must(h.backstop(last))
+
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunchWaitsForPod}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v over a replacement waiting at its pod's gate, want the one end it made, %+v", *stops, want)
+	}
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with no process while its replacement waits at the gate", c.State, c.Locator)
+	}
+	if p := h.pending(); !p.Interrupted || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim's task after the backstop = %+v, want it taken back and owed", p)
+	}
+	if waiting := h.podWaiting(); !slices.Equal(waiting, []claim.Token{h.token}) {
+		t.Fatalf("starts waiting for the pod = %v, want the replacement's alone", waiting)
+	}
+	h.wantStarts(h.token, 1)
+	if stopped := h.wantCalls("Suspend", 1)[0]; stopped.Locator != stalledLoc {
+		t.Fatalf("stopped %+v, want the stalled process %+v, stopped where the replacement parked", stopped.Locator, stalledLoc)
+	}
+
+	// The other role's load ends and the gate grants the replacement, which brings the session
+	// back and tells nobody again: the end the owner was told is the one this grant carries out.
+	h.loadEnds(loading)
+	h.wantGrantedStart(&podRole{token: h.token, m: h.m}, 2)
+	if resumed := h.calls("Resume"); len(resumed) == 0 || resumed[len(resumed)-1].Spec.Claim != h.token {
+		t.Fatalf("the replacement's start was no resume of the claim's session: %v", h.rt.Methods())
+	}
+	if len(*stops) != 1 {
+		t.Fatalf("the backstop reported %+v, want the one notice", *stops)
+	}
+}
+
 // The fourth of the failure paths: a held suspension whose write the store refused. The process
 // is stopped and the claim is suspended in memory, so the worker has stopped whatever the store
 // took, and the owner is told the end that was reached rather than the write that failed
@@ -618,6 +684,12 @@ func TestEveryProcessEndTellsItsOwnerExactlyOnce(t *testing.T) {
 				t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 			}
 			return stops
+		},
+		EndRelaunchWaitsForPod: func(t *testing.T) []StallBackstopStop {
+			h, stops, last, _, _ := podBackstopReports(t)
+			h.must(h.backstop(last))
+			h.wantState(StateLaunching)
+			return *stops
 		},
 		EndRelaunchPending: func(t *testing.T) []StallBackstopStop {
 			h, stops := backstopReports(t)
@@ -816,7 +888,7 @@ func compiledDependencies(t *testing.T) importer.Lookup {
 //
 // Here the launch's write was refused and the stop of the process it let go was refused too,
 // so the claim is left with the replacement still to make and with a process nobody has seen
-// end (launchNow, stopPrevious, relaunchLater).
+// end (launchTries, stopPrevious, relaunchLater).
 func TestTheBackstopReportsAStopTheRuntimeRefusedWithTheLaunchWrite(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)
@@ -838,7 +910,7 @@ func TestTheBackstopReportsAStopTheRuntimeRefusedWithTheLaunchWrite(t *testing.T
 
 // A refusal an earlier try of the same launch met is not what the launch that started says of
 // the process it replaced: the start was handed that process and waits it out, so nothing is
-// left for anyone to be told of (launchNow, start). An owner told otherwise would go looking
+// left for anyone to be told of (launchTries, start). An owner told otherwise would go looking
 // for a pod the replacement had already taken over.
 func TestTheBackstopReportsNoUnconfirmedStopOnceTheReplacementStarted(t *testing.T) {
 	h, stops := backstopReports(t)
@@ -859,7 +931,7 @@ func TestTheBackstopReportsNoUnconfirmedStopOnceTheReplacementStarted(t *testing
 }
 
 // A stop the runtime refused and then made is a process somebody saw stop. The tries of one
-// launch stop one process — the one letGo moved into previous, which launchNow holds until a
+// launch stop one process — the one letGo moved into previous, which launchTries holds until a
 // start succeeds — so the latest answer about it is the answer, and a claim that ends failed
 // with every start refused but its process stopped on the second ask is a claim whose owner
 // must not be sent after a pod that is not there: the notice of an unconfirmed stop opens by
@@ -893,7 +965,7 @@ func TestTheBackstopReportsNoUnconfirmedStopOnceALaterStopWasMade(t *testing.T) 
 
 // refusingTheFirstStop refuses the first stop the machine asks for and makes every one after
 // it, which is a runtime that dropped one request: the process the launch let go is the same
-// process each try (launchNow holds it in previous until a start succeeds), so the stop the
+// process each try (launchTries holds it in previous until a start succeeds), so the stop the
 // second try made is a stop of the process the first try could not stop.
 type refusingTheFirstStop struct {
 	*fake.Runtime
@@ -919,7 +991,7 @@ func (r *refusingTheFirstStop) Suspend(ctx context.Context, loc runtime.Locator)
 // (backstopStalledTurn), so a claim that comes to the backstop with failures already charged
 // and is relaunched at the first try was charged nothing for the stall, however full its
 // budget is: this case is what holds the subtraction to the budget it came with rather than to
-// zero (replaceProcess, launchNow).
+// zero (replaceProcess, launchTries).
 func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)
@@ -940,7 +1012,7 @@ func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
 // The daemon's own stop inside the start: the launch wrote itself, the runtime was asked, and
 // the context ended there. The process the launch let go was never stopped, and nothing stops
 // it before the next boot's orphan reconciliation, so the owner hears that rather than that it
-// was stopped (launchNow).
+// was stopped (launchTries).
 func TestTheBackstopReportsAnUnconfirmedStopWhenItsOwnStopCutTheLaunchShort(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)
@@ -960,7 +1032,7 @@ func TestTheBackstopReportsAnUnconfirmedStopWhenItsOwnStopCutTheLaunchShort(t *t
 }
 
 // cancelInsideResume ends the daemon's own context where the runtime is asked to start the
-// replacement, which is the window launchNow answers by leaving the claim launching: the stop
+// replacement, which is the window launchTries answers by leaving the claim launching: the stop
 // of the process it let go is never made, and the next boot is what reaps it.
 type cancelInsideResume struct {
 	*fake.Runtime
@@ -976,7 +1048,7 @@ func (r *cancelInsideResume) Resume(ctx context.Context, _ *runtime.Locator, _ r
 // starts without it (replaceProcess): this end's stop was made, and the owner is told that
 // however an earlier end of the claim went. The earlier refusal is written onto the machine
 // directly, because every path that records one either ends the claim or goes on to a start
-// that clears it (launchNow), and the clear at the head of the replacement is what this pins.
+// that clears it (launchTries), and the clear at the head of the replacement is what this pins.
 func TestTheBackstopReportsAStopTheRuntimeMadeAfterAnEarlierRefusal(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)

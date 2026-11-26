@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -66,30 +66,23 @@ func withBearer(token string) http.Header {
 	return http.Header{"Authorization": {"Bearer " + token}}
 }
 
-// sockets waits for exactly n sockets open on the server and answers them.
+// sockets waits for exactly n sockets open on the server and answers them. Its one bound is the
+// test binary's deadline (testwait.Until), and its failure names the count it last read.
 func (rig *liveSocketRig) sockets(t *testing.T, n int) []*liveSocket {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("%d live sockets open on the server", n), func() ([]*liveSocket, bool) {
 		open := rig.served.liveSockets.all()
-		if len(open) == n {
-			return open
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d live sockets open on the server, want %d", len(open), n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return open, len(open) == n
+	})
 }
 
 // socketClient is one page's GET /ws/live connection. Once it reads, every message it is sent
-// lands in frames, and ended closes when the connection ends, with err saying how and endedAt when.
+// lands in frames, and ended closes when the connection ends, with err saying how.
 type socketClient struct {
-	conn    *gws.Conn
-	frames  chan []byte
-	ended   chan struct{}
-	err     error
-	endedAt time.Time
+	conn   *gws.Conn
+	frames chan []byte
+	ended  chan struct{}
+	err    error
 	// database is the store of the server behind the socket, which a wait on its event feed
 	// names as the test's own (eventFeedFrame): the rig's, or the one servedBy names.
 	database *store.Store
@@ -105,7 +98,7 @@ func (rig *liveSocketRig) open(t *testing.T, dialer *gws.Dialer, header http.Hea
 // reads nothing until read.
 func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.Header) *socketClient {
 	t.Helper()
-	conn, response, err := dialer.Dial(url, header)
+	conn, response, err := dialLive(t, dialer, url, header)
 	if err != nil {
 		status := "no response"
 		if response != nil {
@@ -117,6 +110,91 @@ func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.
 	return &socketClient{conn: conn, frames: make(chan []byte, 4096), ended: make(chan struct{})}
 }
 
+// dialLive dials url with dialer and answers what the dial answered. The handshake ends on the
+// server's answer: dialer's own HandshakeTimeout, 45 s on gorilla's DefaultDialer, is dropped, and
+// the wait's one bound is the test binary's deadline (testwait.Receive), so an answer a loaded
+// machine sends late still ends it and one that never comes fails the test by name.
+//
+// The dial runs on a context the test's cleanup cancels, and the cleanup waits for the dial's
+// goroutine to return, so no dial outlives the test. That context ends gorilla's TCP connect but
+// not its read of the server's answer, which DialContext makes with no deadline when the dialer
+// sets no timeout, so until the handshake ends the context's end also closes the connection the
+// dial opened. A connection the handshake answers once the test no longer waits for it is closed,
+// as the test would have closed it. A dialer whose connect takes no context (NetDial alone) could
+// outlive the cleanup, so dialLive refuses it.
+func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) (*gws.Conn, *http.Response, error) {
+	t.Helper()
+	if dialer.NetDial != nil && dialer.NetDialContext == nil {
+		t.Fatalf("dialLive dials %s with a dialer whose connect takes no context (NetDial), which no cleanup can end; give it NetDialContext", url)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	unbounded := *dialer
+	unbounded.HandshakeTimeout = 0
+	// connect is the TCP connect gorilla makes for a ws:// URL: the dialer's NetDialContext, else a
+	// plain net.Dialer's. Both end with ctx.
+	connect := (&net.Dialer{}).DialContext
+	if dialer.NetDialContext != nil {
+		connect = dialer.NetDialContext
+	}
+	// release stops the close the context's end would make of the dialed connection. Gorilla calls
+	// NetDialContext on the goroutine that called DialContext, so only that goroutine sets it and
+	// reads it.
+	var release func() bool
+	unbounded.NetDial = nil
+	unbounded.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		conn, err := connect(dialCtx, network, address)
+		if err == nil {
+			release = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, err
+	}
+	type dialed struct {
+		conn     *gws.Conn
+		response *http.Response
+		err      error
+	}
+	answered := make(chan dialed, 1)
+	// worked closes once the dial's goroutine has returned, which the cleanup waits for.
+	worked := make(chan struct{})
+	// abandoned says no one takes the answer any more, which the cleanup sets; mu orders it with
+	// the answer's send, so an answer is either taken from answered or closed, never left open.
+	var mu sync.Mutex
+	abandoned := false
+	go func() {
+		defer close(worked)
+		conn, response, err := unbounded.DialContext(ctx, url, header)
+		if release != nil {
+			release()
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned && conn != nil {
+			_ = conn.Close()
+			conn = nil
+		}
+		answered <- dialed{conn: conn, response: response, err: err}
+	}()
+	t.Cleanup(func() {
+		stop()
+		mu.Lock()
+		abandoned = true
+		// An answer the dial sent that the test never took, its wait having given up first.
+		select {
+		case got := <-answered:
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
+		default:
+		}
+		mu.Unlock()
+		// The cancel ends the connect, and the close the context's end makes ends the handshake's
+		// read, so the goroutine returns once it has closed any connection it was answered.
+		<-worked
+	})
+	got := testwait.Receive(t, "the server's answer to the upgrade of "+url, answered)
+	return got.conn, got.response, got.err
+}
+
 // dial opens the socket and reads it.
 func (rig *liveSocketRig) dial(t *testing.T, header http.Header) *socketClient {
 	t.Helper()
@@ -126,7 +204,7 @@ func (rig *liveSocketRig) dial(t *testing.T, header http.Header) *socketClient {
 // refused dials the socket and answers the status Dispatch refused the upgrade with.
 func (rig *liveSocketRig) refused(t *testing.T, header http.Header) int {
 	t.Helper()
-	conn, response, err := gws.DefaultDialer.Dial(rig.url, header)
+	conn, response, err := dialLive(t, gws.DefaultDialer, rig.url, header)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("the upgrade succeeded; want it refused")
@@ -145,12 +223,10 @@ func (c *socketClient) read() *socketClient {
 			kind, data, err := c.conn.ReadMessage()
 			if err != nil {
 				c.err = err
-				c.endedAt = time.Now()
 				return
 			}
 			if kind != gws.TextMessage {
 				c.err = fmt.Errorf("a message of kind %d", kind)
-				c.endedAt = time.Now()
 				return
 			}
 			c.frames <- data
@@ -175,39 +251,23 @@ func (c *socketClient) sendText(t *testing.T, data []byte) {
 	}
 }
 
-// take is the next message within within, failing the test when none comes or the socket ends.
-func (c *socketClient) take(t *testing.T, within time.Duration, what string) []byte {
+// take is the next message, failing the test when the socket ends first. Its one bound is the test
+// binary's deadline (testwait.Receive): a frame a loaded machine sends late still ends the wait,
+// and one that never comes fails it by name.
+func (c *socketClient) take(t *testing.T, what string) []byte {
 	t.Helper()
-	return c.takeBy(t, time.Now().Add(within), within, what)
-}
-
-// takeBy is take for a wait that began earlier: deadline ends it, and within, the whole wait, is
-// what its failure names.
-func (c *socketClient) takeBy(t *testing.T, deadline time.Time, within time.Duration, what string) []byte {
-	t.Helper()
-	select {
-	case data := <-c.frames:
-		return data
-	case <-c.ended:
-		// The reader queues every message before it ends.
-		select {
-		case data := <-c.frames:
-			return data
-		default:
-		}
-		t.Fatalf("the socket ended (%v) waiting for %s", c.err, what)
-	case <-time.After(time.Until(deadline)):
-		t.Fatalf("no frame within %s, waiting for %s", within, what)
+	arrived := testwait.Receive(t, what, c.arrivalOf(true))
+	if arrived.ended {
+		t.Fatalf("the socket ended (%v) waiting for %s", arrived.err, what)
 	}
-	return nil
+	return arrived.data
 }
 
 // next is the next frame but a heartbeat, decoded by its type.
-func (c *socketClient) next(t *testing.T, within time.Duration, what string) any {
+func (c *socketClient) next(t *testing.T, what string) any {
 	t.Helper()
-	deadline := time.Now().Add(within)
 	for {
-		frame := decodeSocketFrame(t, c.takeBy(t, deadline, within, what))
+		frame := decodeSocketFrame(t, c.take(t, what))
 		if _, beat := frame.(LiveHeartbeat); !beat {
 			return frame
 		}
@@ -227,14 +287,17 @@ type socketArrival struct {
 // until it has sent, so the caller takes from frames again only once it has received; the channel
 // is buffered, so the goroutine leaves even when nobody receives, at the latest when the test's
 // cleanup closes the socket.
-func (c *socketClient) arrival() <-chan socketArrival {
+func (c *socketClient) arrival() <-chan socketArrival { return c.arrivalOf(false) }
+
+// arrivalOf is arrival, sending a heartbeat on too when heartbeats is set (take).
+func (c *socketClient) arrivalOf(heartbeats bool) <-chan socketArrival {
 	arrived := make(chan socketArrival, 1)
-	// deliver sends data unless it is a heartbeat, and says whether it sent.
+	// deliver sends data unless it is a heartbeat arrival passes over, and says whether it sent.
 	deliver := func(data []byte) bool {
 		var head struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(data, &head) == nil && head.Type == "heartbeat" {
+		if !heartbeats && json.Unmarshal(data, &head) == nil && head.Type == "heartbeat" {
 			return false
 		}
 		arrived <- socketArrival{data: data}
@@ -266,9 +329,9 @@ func (c *socketClient) arrival() <-chan socketArrival {
 	return arrived
 }
 
-func (c *socketClient) snapshot(t *testing.T, within time.Duration, sub string) DeliveryLiveSnapshot {
+func (c *socketClient) snapshot(t *testing.T, sub string) DeliveryLiveSnapshot {
 	t.Helper()
-	frame := c.next(t, within, "the snapshot of "+sub)
+	frame := c.next(t, "the snapshot of "+sub)
 	snapshot, ok := frame.(DeliveryLiveSnapshot)
 	if !ok || snapshot.Sub != sub {
 		t.Fatalf("frame = %+v, want the snapshot of %s", frame, sub)
@@ -276,9 +339,9 @@ func (c *socketClient) snapshot(t *testing.T, within time.Duration, sub string) 
 	return snapshot
 }
 
-func (c *socketClient) delta(t *testing.T, within time.Duration, sub string) DeliveryLiveDelta {
+func (c *socketClient) delta(t *testing.T, sub string) DeliveryLiveDelta {
 	t.Helper()
-	frame := c.next(t, within, "a delta of "+sub)
+	frame := c.next(t, "a delta of "+sub)
 	delta, ok := frame.(DeliveryLiveDelta)
 	if !ok || delta.Sub != sub {
 		t.Fatalf("frame = %+v, want a delta of %s", frame, sub)
@@ -286,9 +349,9 @@ func (c *socketClient) delta(t *testing.T, within time.Duration, sub string) Del
 	return delta
 }
 
-func (c *socketClient) refusal(t *testing.T, within time.Duration, sub, code string) LiveError {
+func (c *socketClient) refusal(t *testing.T, sub, code string) LiveError {
 	t.Helper()
-	frame := c.next(t, within, code+" for "+strconv.Quote(sub))
+	frame := c.next(t, code+" for "+strconv.Quote(sub))
 	refusal, ok := frame.(LiveError)
 	if !ok || refusal.Sub != sub || refusal.Code != code {
 		t.Fatalf("frame = %+v, want %s for %q", frame, code, sub)
@@ -296,17 +359,16 @@ func (c *socketClient) refusal(t *testing.T, within time.Duration, sub, code str
 	return refusal
 }
 
-// refusals reads frames within within until each of subs has been refused with code, in any order,
-// failing on any other frame but a heartbeat.
-func (c *socketClient) refusals(t *testing.T, within time.Duration, code string, subs ...string) {
+// refusals reads frames until each of subs has been refused with code, in any order, failing on
+// any other frame but a heartbeat.
+func (c *socketClient) refusals(t *testing.T, code string, subs ...string) {
 	t.Helper()
-	deadline := time.Now().Add(within)
 	waiting := make(map[string]bool, len(subs))
 	for _, sub := range subs {
 		waiting[sub] = true
 	}
 	for len(waiting) > 0 {
-		switch frame := decodeSocketFrame(t, c.takeBy(t, deadline, within, code+" for each of "+strings.Join(subs, ", "))).(type) {
+		switch frame := decodeSocketFrame(t, c.take(t, code+" for each of "+strings.Join(subs, ", "))).(type) {
 		case LiveHeartbeat:
 		case LiveError:
 			if frame.Code != code || !waiting[frame.Sub] {
@@ -320,9 +382,9 @@ func (c *socketClient) refusals(t *testing.T, within time.Duration, code string,
 }
 
 // event is the next frame but a heartbeat, which must be one of sub's events.
-func (c *socketClient) event(t *testing.T, within time.Duration, sub string) LiveEventFrame {
+func (c *socketClient) event(t *testing.T, sub string) LiveEventFrame {
 	t.Helper()
-	frame := c.next(t, within, "an event of "+sub)
+	frame := c.next(t, "an event of "+sub)
 	event, ok := frame.(LiveEventFrame)
 	if !ok || event.Sub != sub {
 		t.Fatalf("frame = %+v, want an event of %s", frame, sub)
@@ -348,74 +410,52 @@ func (c *socketClient) quiet(t *testing.T, within time.Duration, what string) {
 	}
 }
 
-// closeError waits within within for the socket to end, passing over the messages it is sent
-// first, and answers the close frame Dispatch ended it with.
-func (c *socketClient) closeError(t *testing.T, within time.Duration) *gws.CloseError {
+// closeError waits for the socket to end, passing over the messages it is sent first, and answers
+// the close frame Dispatch ended it with.
+func (c *socketClient) closeError(t *testing.T) *gws.CloseError {
 	t.Helper()
-	deadline := time.After(within)
-	for {
-		select {
-		case <-c.frames:
-		case <-c.ended:
-			var closed *gws.CloseError
-			if !errors.As(c.err, &closed) {
-				t.Fatalf("the socket ended with %v, which carries no close code", c.err)
-			}
-			return closed
-		case <-deadline:
-			t.Fatalf("the socket was still open after %s", within)
-		}
+	c.awaitEnd(t)
+	var closed *gws.CloseError
+	if !errors.As(c.err, &closed) {
+		t.Fatalf("the socket ended with %v, which carries no close code", c.err)
 	}
+	return closed
 }
 
-// closeCode waits within within for the socket to end, counting the messages it is sent first, and
-// answers the close code Dispatch ended it with: 1006 for an end with no close frame, which gorilla
-// reads from the connection's end, and 0 for an error with no code, such as a reset.
-func (c *socketClient) closeCode(t *testing.T, within time.Duration) (code, messages int) {
+// closeCode waits for the socket to end, counting the messages it is sent first, and answers the
+// close code Dispatch ended it with: 1006 for an end with no close frame, which gorilla reads from
+// the connection's end, and 0 for an error with no code, such as a reset.
+func (c *socketClient) closeCode(t *testing.T) (code, messages int) {
 	t.Helper()
-	deadline := time.After(within)
-	for {
-		select {
-		case <-c.frames:
-			messages++
-		case <-c.ended:
-			messages += len(c.frames)
-			var closed *gws.CloseError
-			if errors.As(c.err, &closed) {
-				return closed.Code, messages
-			}
-			t.Logf("the socket ended with an error that carries no close code: %v", c.err)
-			return 0, messages
-		case <-deadline:
-			t.Fatalf("the socket was still open after %s", within)
-		}
+	messages = c.awaitEnd(t)
+	var closed *gws.CloseError
+	if errors.As(c.err, &closed) {
+		return closed.Code, messages
 	}
+	t.Logf("the socket ended with an error that carries no close code: %v", c.err)
+	return 0, messages
 }
 
-// throughputWait bounds a wait whose answer comes only once megabytes have crossed the socket and
-// been parsed, which takes as long as the loaded machine takes. It is the smaller of
-// throughputWaitCap and what the test binary's deadline leaves after throughputWaitMargin
-// (testwait.Remaining), so a server that never answers fails the test by name, and leaves the
-// binary's timeout to the package's later tests. A deadline that leaves no more than
-// throughputWaitMargin to begin with fails once, by name, saying whether the -timeout was too short
-// or the tests before used it up. A wait that needs no bulk read keeps a fixed 10 s bound.
-func throughputWait(t *testing.T) time.Duration {
+// awaitEnd waits for the socket to end, taking every message it is sent meanwhile so the reader
+// never stops at a full frames, and answers how many it was sent. Its one bound is the test
+// binary's deadline (testwait.Until), and its failure names the messages counted so far.
+func (c *socketClient) awaitEnd(t *testing.T) int {
 	t.Helper()
-	return min(testwait.Remaining(t, throughputWaitMargin), throughputWaitCap)
+	messages := 0
+	return testwait.Until(t, "the socket's end (messages taken so far)", func() (int, bool) {
+		for {
+			select {
+			case <-c.frames:
+				messages++
+			case <-c.ended:
+				// The reader queues every message before it ends.
+				return messages + len(c.frames), true
+			default:
+				return messages, false
+			}
+		}
+	})
 }
-
-const (
-	// throughputWaitCap is above the slowest run of these tests measured (17.9 s, with the client's
-	// writes throttled to 512 KiB/s) and the slowest loopback transfer of 8.5 MB measured on the
-	// development machine (54 s, through 16 KiB socket buffers). A test that waits on it builds its
-	// rig with it as the heartbeat: a frame holds the client's write lock until it is written, and
-	// the client's ping handler waits 1 s for that lock before it drops the pong, so a slow transfer
-	// answers no ping, and the server's pong deadline, twice the heartbeat, must outlast the wait.
-	throughputWaitCap = 2 * time.Minute
-	// throughputWaitMargin is what throughputWait leaves of the test binary's deadline for the
-	// failed test's cleanups: the socket rig's took at most 26 ms after a wait that timed out.
-	throughputWaitMargin = 30 * time.Second
-)
 
 // open reports whether the socket has not ended.
 func (c *socketClient) open() bool {
@@ -506,10 +546,11 @@ func (l smallSendBuffers) Accept() (net.Conn, error) {
 
 // smallReadDialer dials with a small receive buffer, so a page that stops reading holds back the
 // socket's writer after kilobytes; beside smallSendBuffers it is how a test plays a slow page. A
-// test that must know the writer stays held holds it with heldWrites instead.
+// test that must know the writer stays held holds it with heldWrites instead. Its handshake ends on
+// the server's answer (dialLive).
 func smallReadDialer() *gws.Dialer {
-	return &gws.Dialer{HandshakeTimeout: 5 * time.Second, NetDial: func(network, address string) (net.Conn, error) {
-		conn, err := net.Dial(network, address)
+	return &gws.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetReadBuffer(4096)
 		}
@@ -536,9 +577,9 @@ func (held *heldWrites) listen(listener net.Listener) net.Listener {
 	return heldListener{Listener: listener, held: held}
 }
 
-// hold makes every write the server starts from now on wait at the gate until release, or until
-// its connection's write deadline passes, as a write a page holds back would. The test's cleanup
-// releases it, ahead of the rig's, so no socket's handler is left waiting on its writer.
+// hold makes every write the server starts from now on wait at the gate until release, however
+// long the test takes to release it (heldConn). The test's cleanup releases it, ahead of the rig's,
+// so no socket's handler is left waiting on its writer.
 func (held *heldWrites) hold(t *testing.T) {
 	t.Helper()
 	held.mu.Lock()
@@ -563,7 +604,7 @@ func (held *heldWrites) release() {
 // the writer writes nothing and takes nothing from either queue until release.
 func (held *heldWrites) waitHeld(t *testing.T, socket *liveSocket) {
 	t.Helper()
-	pollUntil(t, 10*time.Second, "the writer held with the stream queue full", func() bool {
+	waitUntil(t, "the writer held with the stream queue full", func() bool {
 		return held.waiting.Load() > 0 && streamFull(socket)
 	})
 }
@@ -587,8 +628,10 @@ func (l heldListener) Accept() (net.Conn, error) {
 	return &heldConn{Conn: conn, held: l.held}, nil
 }
 
-// heldConn is one accepted connection whose writes wait at the gate. It keeps the write deadline
-// the writer sets, so a write the test never releases fails as a stalled one would.
+// heldConn is one accepted connection whose writes wait at the gate. A write waits there for the
+// test's release alone: the write deadline the writer set (liveSocketWriteWait) moves on by the time
+// the write waited, so a release later than that deadline, as a loaded machine can make it between
+// the test's steps, still lets the write through rather than failing it as a stalled one.
 type heldConn struct {
 	net.Conn
 	held     *heldWrites
@@ -614,39 +657,111 @@ func (c *heldConn) setWriteDeadline(at time.Time) {
 
 func (c *heldConn) Write(p []byte) (int, error) {
 	if gate := c.held.current(); gate != nil {
+		reached := time.Now()
+		c.held.waiting.Add(1)
+		<-gate
+		c.held.waiting.Add(-1)
 		c.mu.Lock()
 		deadline := c.deadline
 		c.mu.Unlock()
-		var expired <-chan time.Time
 		if !deadline.IsZero() {
-			timer := time.NewTimer(time.Until(deadline))
-			defer timer.Stop()
-			expired = timer.C
-		}
-		c.held.waiting.Add(1)
-		select {
-		case <-gate:
-			c.held.waiting.Add(-1)
-		case <-expired:
-			c.held.waiting.Add(-1)
-			return 0, os.ErrDeadlineExceeded
+			if err := c.Conn.SetWriteDeadline(deadline.Add(time.Since(reached))); err != nil {
+				return 0, err
+			}
 		}
 	}
 	return c.Conn.Write(p)
 }
 
-// pollUntil polls condition every 10 ms for up to within, failing the test with what when it
-// never holds.
-func pollUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, condition) {
-		t.Fatalf("%s: not within %s", what, within)
-	}
-}
-
 // streamFull reports whether socket's stream queue holds all it can.
 func streamFull(socket *liveSocket) bool {
 	return cap(socket.stream) > 0 && len(socket.stream) == cap(socket.stream)
+}
+
+// servedSpans wraps the server's listener so a test reads, for each connection the server accepts,
+// in the order it accepts them, how long the server itself served it: from the server's first write
+// on the connection, its answer to the upgrade, which a live socket writes just before it arms its
+// first pong deadline (awaitPong, on Deps.LiveSocketClock, which sets no deadline on the
+// connection until it fires) and its writer starts the socket's age, to the server's end of the
+// socket - the close frame it writes, or, where it writes none (a page that answered no ping), its
+// close of the connection. A span read off the server's own calls holds none of the client's dial,
+// scheduling, reads or close reply, which a loaded machine stretches, so a bound on it bounds the
+// server alone.
+type servedSpans struct {
+	mu    sync.Mutex
+	conns []*spannedConn
+}
+
+// listen is newLiveSocketRig's listen: every connection the server accepts records its span.
+func (spans *servedSpans) listen(listener net.Listener) net.Listener {
+	return spannedListener{Listener: listener, spans: spans}
+}
+
+// span is how long the server served the nth connection it accepted, and false until the server
+// has both written on that connection and closed it.
+func (spans *servedSpans) span(n int) (time.Duration, bool) {
+	spans.mu.Lock()
+	defer spans.mu.Unlock()
+	if n >= len(spans.conns) {
+		return 0, false
+	}
+	conn := spans.conns[n]
+	if conn.opened.IsZero() || conn.closed.IsZero() {
+		return 0, false
+	}
+	if !conn.closeFrame.IsZero() {
+		return conn.closeFrame.Sub(conn.opened), true
+	}
+	return conn.closed.Sub(conn.opened), true
+}
+
+type spannedListener struct {
+	net.Listener
+	spans *servedSpans
+}
+
+func (l spannedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return conn, err
+	}
+	spanned := &spannedConn{Conn: conn, spans: l.spans}
+	l.spans.mu.Lock()
+	l.spans.conns = append(l.spans.conns, spanned)
+	l.spans.mu.Unlock()
+	return spanned, nil
+}
+
+// spannedConn is one accepted connection, which records when the server first wrote on it, when it
+// began to write its close frame, and when it closed the connection; spans.mu guards the three.
+type spannedConn struct {
+	net.Conn
+	spans                      *servedSpans
+	opened, closeFrame, closed time.Time
+}
+
+// Write records the server's first write on the connection, and its close frame as it starts to
+// write it. gorilla writes a control frame in one Write, its first byte the FIN bit and the opcode;
+// no data frame's write starts with that byte, and a JSON payload written on its own starts with
+// '{'.
+func (c *spannedConn) Write(p []byte) (int, error) {
+	c.record(&c.opened, true)
+	c.record(&c.closeFrame, len(p) > 0 && p[0] == 0x80|gws.CloseMessage)
+	return c.Conn.Write(p)
+}
+
+func (c *spannedConn) Close() error {
+	c.record(&c.closed, true)
+	return c.Conn.Close()
+}
+
+// record stamps moment with now, when ok is set and moment holds no stamp yet.
+func (c *spannedConn) record(moment *time.Time, ok bool) {
+	c.spans.mu.Lock()
+	defer c.spans.mu.Unlock()
+	if ok && moment.IsZero() {
+		*moment = time.Now()
+	}
 }
 
 func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
@@ -658,7 +773,7 @@ func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
 
 	client := rig.dial(t, asUser("alice"))
 	client.send(t, deliverySubscribe("t", timelineRange(now.Add(-48*time.Hour), now, "")))
-	snapshot := client.snapshot(t, 10*time.Second, "t")
+	snapshot := client.snapshot(t, "t")
 	requireSameBody(t, "the socket's snapshot", snapshot.Body, getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, snapshot.Body, "")))
 	if _, ok := snapshot.Revs.Items["prs"]["acme/widgets#1"]; !ok {
 		t.Fatalf("the snapshot's revisions %v hold no revision of acme/widgets#1", snapshot.Revs.Items)
@@ -666,7 +781,7 @@ func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
 
 	// A merge after the snapshot reaches the page as a delta that lands on the GET route's body.
 	upsertPR(t, rig.database, hubPR(2, now.Add(-2*time.Hour)))
-	delta := client.delta(t, 10*time.Second, "t")
+	delta := client.delta(t, "t")
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
 		t.Fatalf("the merge's delta upserts %v, want acme/widgets#2", got)
 	}
@@ -703,7 +818,7 @@ func TestAForeignOriginIsRefused(t *testing.T) {
 	own.Set("Origin", "http://"+rig.host)
 	client := rig.dial(t, own)
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-	client.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+	client.refusal(t, "", "INVALID_FRAME")
 }
 
 func TestABearerMayReadTheSocket(t *testing.T) {
@@ -715,31 +830,38 @@ func TestABearerMayReadTheSocket(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client := rig.dial(t, withBearer(token))
 			client.send(t, deliverySubscribe("p", presetView(deliveryLiveTimeline, 7, "")))
-			client.snapshot(t, 10*time.Second, "p")
+			client.snapshot(t, "p")
 		})
 	}
 }
 
 // A bearer revoked while its socket is open loses the socket at the next heartbeat's resolution, as
-// the document socket does: the request's context ends, and the socket closes
-// with 1008. The heartbeat is a second, so the client's pong, which gorilla's default handler
-// writes, has a heartbeat to meet the pong deadline on a loaded runner: the socket must last until
-// the revocation, and a pong timeout would end it first.
+// the document socket does: the request's context ends, and the socket closes with 1008. The
+// socket's read deadline runs on a fake no one moves (liveSocketClock), so no pong the runner holds
+// back ends the socket before the revocation; the heartbeat paces only the resolutions and the
+// heartbeat frames the row reads.
 func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	t.Parallel()
 	const heartbeat = time.Second
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: clocktest.Held()}, nil)
 	minted := mintAgentToken(t, rig.handler)
 	client := rig.dial(t, withBearer(minted.Token))
 
-	time.Sleep(3 * heartbeat)
+	// The token's resolutions run on a heartbeat that starts before the socket's writer's, so by the
+	// writer's third heartbeat frame the caller has been resolved again on each earlier heartbeat. A
+	// resolution that failed would have closed the socket, which take reports as its end.
+	for n := range 3 {
+		if data := client.take(t, fmt.Sprintf("heartbeat %d of a socket whose token resolves", n+1)); string(data) != `{"type":"heartbeat"}` {
+			t.Fatalf("the idle socket was sent %s, want a heartbeat", data)
+		}
+	}
 	if !client.open() {
 		t.Fatalf("the socket of a token that resolves ended: %v", client.err)
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+minted.ID, nil, "alice"); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke the token: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if code, _ := client.closeCode(t, heartbeat+3*time.Second); code != gws.ClosePolicyViolation {
+	if code, _ := client.closeCode(t); code != gws.ClosePolicyViolation {
 		t.Fatalf("the revoked token's socket closed with %d, want 1008", code)
 	}
 	rig.sockets(t, 0)
@@ -755,12 +877,12 @@ func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
 	client := rig.dial(t, asUser("alice"))
 
 	client.sendText(t, []byte(`{"type":"subscribe","sub":"p","since":1,"view":{"kind":"timeline","window":{"preset":7,"anchor":"end"},"query":"","density":"compact"}}`))
-	client.snapshot(t, 10*time.Second, "p")
+	client.snapshot(t, "p")
 
 	client.sendText(t, []byte(`{"type":"resubscribe","sub":"q"}`))
-	client.refusal(t, 3*time.Second, "q", "INVALID_FRAME")
+	client.refusal(t, "q", "INVALID_FRAME")
 	client.sendText(t, []byte(`{"type":"subscribe","sub":"r","view":{"kind":"forecast"}}`))
-	client.refusal(t, 3*time.Second, "r", "INVALID_FRAME")
+	client.refusal(t, "r", "INVALID_FRAME")
 }
 
 func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
@@ -793,7 +915,7 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 		if err := client.conn.WriteMessage(kind, []byte(test.frame)); err != nil {
 			t.Fatalf("%s: send: %v", test.name, err)
 		}
-		refusal := client.refusal(t, 3*time.Second, test.sub, test.code)
+		refusal := client.refusal(t, test.sub, test.code)
 		if !strings.HasPrefix(refusal.Message, test.names) || strings.ContainsRune(refusal.Message, 0) {
 			t.Fatalf("%s: refusal %q, want one naming %q with no NUL in it", test.name, refusal.Message, test.names)
 		}
@@ -801,12 +923,15 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 
 	// The socket is still open, and the hub answers its next subscribe.
 	client.send(t, deliverySubscribe("h", presetView(deliveryLiveTimeline, 7, "")))
-	client.refusal(t, 10*time.Second, "h", "DELIVERY_NOT_CONFIGURED")
+	client.refusal(t, "h", "DELIVERY_NOT_CONFIGURED")
 }
 
 func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
 	t.Parallel()
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: throughputWaitCap}, nil)
+	// The server's pong deadline, twice the heartbeat, would end the transfer: a frame holds the
+	// client's write lock until it is written, and gorilla's ping handler drops a pong it waited 1 s
+	// for that lock. A heartbeat past the run leaves the test binary's deadline the one bound.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun}, nil)
 	// A write buffer larger than either message sends each as one frame, as Firefox sends a message.
 	dialer := *gws.DefaultDialer
 	dialer.WriteBufferSize = 10 << 20
@@ -814,23 +939,23 @@ func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
 
 	// A resume's revisions may run to megabytes: a frame under 8 MiB is read, and this one is answered
 	// for its view, which names no kind. The answer comes only once all 7 MiB have arrived and been
-	// parsed, so its wait is throughputWait, and so is the write's: it is one frame, which only the
-	// server's pong deadline, twice the heartbeat, would otherwise end if the transfer stalled.
+	// parsed, and the write returns only once the server has read most of them, each as late as the
+	// loaded machine makes it: the write runs on a goroutine of its own, and the test waits for what
+	// it answers (testwait.Receive), with the test binary's deadline its one bound.
 	revisions := strings.Repeat("0", 7<<20)
 	subscribe := []byte(`{"type":"subscribe","sub":"r","view":{"kind":"bogus"},"resume":{"seq":"0","revs":{"items":{},"maps":{},"counts":{},"fields":{"f":"` + revisions + `"}}}}`)
-	written := throughputWait(t)
-	_ = client.conn.SetWriteDeadline(time.Now().Add(written))
-	if err := client.conn.WriteMessage(gws.TextMessage, subscribe); err != nil {
-		t.Fatalf("write the 7 MiB subscribe frame within throughputWait (%s): %v", written, err)
+	written := make(chan error, 1)
+	go func() { written <- client.conn.WriteMessage(gws.TextMessage, subscribe) }()
+	if err := testwait.Receive(t, "the write of the 7 MiB subscribe frame", written); err != nil {
+		t.Fatalf("write the 7 MiB subscribe frame: %v", err)
 	}
-	_ = client.conn.SetWriteDeadline(time.Time{})
-	client.refusal(t, throughputWait(t), "r", "INVALID_FRAME")
+	client.refusal(t, "r", "INVALID_FRAME")
 
 	// One over it closes the socket with 1009. gorilla compares a frame's declared length with the
 	// limit as it reads the frame's header, so Dispatch answers before reading any of the 9 MiB.
 	oversized := []byte(`{"type":"unsubscribe","sub":"` + strings.Repeat("a", 9<<20) + `"}`)
 	go func() { _ = client.conn.WriteMessage(gws.TextMessage, oversized) }()
-	if code, _ := client.closeCode(t, 10*time.Second); code != gws.CloseMessageTooBig {
+	if code, _ := client.closeCode(t); code != gws.CloseMessageTooBig {
 		t.Fatalf("a 9 MiB frame closed the socket with %d, want 1009", code)
 	}
 	rig.sockets(t, 0)
@@ -842,7 +967,9 @@ func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
 // socket with 1009, though the message never finishes.
 func TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket(t *testing.T) {
 	t.Parallel()
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: throughputWaitCap}, nil)
+	// A heartbeat past the run, as TestAFrameOverTheReadLimitClosesTheSocket's: the transfer holds
+	// back the client's pongs.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun}, nil)
 	const frame = 131000
 	dialer := *gws.DefaultDialer
 	dialer.WriteBufferSize = frame
@@ -855,9 +982,9 @@ func TestAMessageOverTheReadLimitInChromesFramesClosesTheSocket(t *testing.T) {
 		t.Fatalf("open a message: %v", err)
 	}
 	go func() { _, _ = writer.Write(bytes.Repeat([]byte("a"), 65*frame+1)) }()
-	// Dispatch reads the 64 frames under the limit before the 65th's header, so the wait is
-	// throughputWait.
-	if code, _ := client.closeCode(t, throughputWait(t)); code != gws.CloseMessageTooBig {
+	// Dispatch reads the 64 frames under the limit before the 65th's header, so the close comes only
+	// once 8 MiB have crossed the socket, as late as the loaded machine makes it.
+	if code, _ := client.closeCode(t); code != gws.CloseMessageTooBig {
 		t.Fatalf("65 frames of 131,000 bytes closed the socket with %d, want 1009", code)
 	}
 	rig.sockets(t, 0)
@@ -871,39 +998,50 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 	to := time.Now().UTC().Truncate(time.Second)
 
 	client.send(t, deliverySubscribe("wide", timelineRange(to.Add(-maxDeliveryWindow-time.Second), to, "")))
-	if refusal := client.refusal(t, 3*time.Second, "wide", "INVALID_QUERY"); refusal.Message != "from..to must not span more than 84 days" {
+	if refusal := client.refusal(t, "wide", "INVALID_QUERY"); refusal.Message != "from..to must not span more than 84 days" {
 		t.Fatalf("refusal %q, want the GET route's", refusal.Message)
 	}
 
 	// The widest window the GET route answers is answered too, on the same socket.
 	client.send(t, deliverySubscribe("widest", timelineRange(to.Add(-maxDeliveryWindow), to, "")))
-	client.snapshot(t, 10*time.Second, "widest")
+	client.snapshot(t, "widest")
 }
 
+// The page stops reading, so the server's writer waits in a write on the connection, its queue
+// fills, and the next frame overflows it. The writer is held at the gate of heldWrites, as a page
+// that reads nothing holds it, rather than by TCP backpressure on shrunken buffers
+// (smallSendBuffers, smallReadDialer), whose wall-clock write deadline this row cannot keep: with
+// that deadline dropped instead, one run in about nine stopped with the page's own frames no
+// longer reaching the server, so the queue never overflowed. ss showed it on such a run: the page's
+// side held 1.2 MB unsent and retransmitted with its timer backed off nine times, while the server
+// had received 101 KB and the page knew of 29 KB acknowledged. Two
+// product timers would end the held socket on the wall clock before the page reads again on a
+// loaded machine, neither of which is this row's subject: the pong deadline, two default
+// heartbeats after the open, which runs on a fake no one moves here (liveSocketClock), and the
+// write deadline the writer sets on the connection (liveSocketWriteWait), which heldConn moves on
+// by the time the write waited at the gate.
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
 	t.Parallel()
-	rig := newLiveSocketRig(t, testServerOptions{}, func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(), asUser("alice"))
+	held := &heldWrites{}
+	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, held.listen)
+	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
+	socket := rig.sockets(t, 1)[0]
+	held.hold(t)
 
 	// Every frame is answered with an error frame echoing its 4 KiB sub, and the page reads none of
-	// them: the socket's writer blocks, its queue fills, and the next frame overflows it.
+	// them: the socket's writer waits at the gate with the first, its queue fills, and the next
+	// frame overflows it.
 	const sent = 300
 	sub := strings.Repeat("s", 4096)
 	for n := range sent {
 		client.sendText(t, []byte(`{"type":"resubscribe","sub":"`+sub+strconv.Itoa(n)+`"}`))
 	}
-	socket := rig.sockets(t, 1)[0]
-	deadline := time.Now().Add(5 * time.Second)
-	for !socket.overflowed() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the socket's %d-frame queue never overflowed", liveSocketQueue)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, fmt.Sprintf("the socket's %d-frame queue to overflow", liveSocketQueue), socket.overflowed)
 
-	// Once the page reads again it is sent what the connection already carried, then 1013, and not
-	// the answers queued behind the overflow.
-	code, messages := client.read().closeCode(t, 15*time.Second)
+	// Once the page reads again it is sent what the writer already held, then 1013, and not the
+	// answers queued behind the overflow.
+	held.release()
+	code, messages := client.read().closeCode(t)
 	if code != gws.CloseTryAgainLater {
 		t.Fatalf("the slow page's socket closed with %d, want 1013", code)
 	}
@@ -921,13 +1059,13 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 	person := rig.dial(t, asUser("alice"))
 	agent := rig.dial(t, withBearer("agent-token"))
 	person.send(t, deliverySubscribe("t", presetView(deliveryLiveTimeline, 7, "")))
-	person.snapshot(t, 10*time.Second, "t")
+	person.snapshot(t, "t")
 	agent.send(t, liveSubscribe("e", eventsView(), ""))
-	running := events.next(t, 5*time.Second, "the agent's events subscription")
+	running := events.next(t, "the agent's events subscription")
 
 	rig.stop()
 	for name, client := range map[string]*socketClient{"the person's": person, "the agent's": agent} {
-		if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+		if code, _ := client.closeCode(t); code != gws.CloseServiceRestart {
 			t.Errorf("%s socket closed with %d, want 1012", name, code)
 		}
 	}
@@ -951,17 +1089,25 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
 	t.Parallel()
 	const age = 200 * time.Millisecond
-	rig := newLiveSocketRig(t, testServerOptions{liveSocketAge: func() time.Duration { return age }}, nil)
-	opened := time.Now()
+	spans := &servedSpans{}
+	rig := newLiveSocketRig(t, testServerOptions{liveSocketAge: func() time.Duration { return age }}, spans.listen)
 	client := rig.dial(t, asUser("alice"))
-	closed := client.closeError(t, age+3*time.Second)
+	closed := client.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != "max age" {
 		t.Fatalf("the socket past its age closed with %d %q, want %d \"max age\", which a page answers by reopening at once", closed.Code, closed.Text, contracts.LiveSocketMaxAgeClose)
 	}
-	if lived := client.endedAt.Sub(opened); lived < age {
-		t.Fatalf("the socket closed %s after it opened, before its age (%s)", lived, age)
-	}
+	// The server drops the socket from its set once it has closed the connection, so its span is
+	// whole by then: from its answer to the upgrade, written before its writer started the age, to
+	// the close frame it wrote at the age. The close comes at the age, so a second past it leaves
+	// only the scheduling of a loaded machine, and a writer that closes later fails.
 	rig.sockets(t, 0)
+	if lived, ok := spans.span(0); !ok {
+		t.Fatal("UNKNOWN: the server's span of the socket was not recorded, so its age was not measured")
+	} else if lived < age {
+		t.Fatalf("the server served the socket for %s, closing it before its age (%s)", lived, age)
+	} else if lived > age+time.Second {
+		t.Fatalf("the server served the socket for %s, closing it more than a second after its age (%s)", lived, age)
+	}
 }
 
 func TestEachSocketsAgeFallsInItsWindow(t *testing.T) {
@@ -998,14 +1144,14 @@ func requireTheHookClosesEverySocket(t *testing.T, hook string, code int, reason
 		t.Fatalf("POST %s: status=%d body=%s", hook, response.Code, response.Body.String())
 	}
 	for name, client := range map[string]*socketClient{"the person's": person, "the agent's": agent} {
-		if closed := client.closeError(t, 5*time.Second); closed.Code != code || closed.Text != reason {
+		if closed := client.closeError(t); closed.Code != code || closed.Text != reason {
 			t.Errorf("%s socket closed with %d %q, want %d %q", name, closed.Code, closed.Text, code, reason)
 		}
 	}
 
 	again := rig.dial(t, asUser("alice"))
 	again.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-	again.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+	again.refusal(t, "", "INVALID_FRAME")
 }
 
 func TestTheRotateHookClosesEverySocketWithMaxAge(t *testing.T) {
@@ -1029,7 +1175,7 @@ func TestTheLiveTestHooksAreMountedOnlyUnderTestHooks(t *testing.T) {
 			}
 		}
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-		client.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+		client.refusal(t, "", "INVALID_FRAME")
 	})
 	t.Run("the delivery socket's hook is gone", func(t *testing.T) {
 		rig := newLiveSocketRig(t, testServerOptions{testHooks: true}, nil)
@@ -1046,11 +1192,13 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	t.Parallel()
 	busy := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
-	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
+	// A heartbeat past the run: the page reads nothing while the writer is held, so it answers no
+	// ping, and the pong deadline would end the socket however long the held steps take.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: pastTheRun, liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	held.hold(t)
 	client.send(t, liveSubscribe("busy", eventsView(), ""))
-	busy.next(t, 5*time.Second, "the busy events subscription")
+	busy.next(t, "the busy events subscription")
 	socket := rig.sockets(t, 1)[0]
 	held.waitHeld(t, socket)
 
@@ -1062,7 +1210,7 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 		subs[n] = "d" + strconv.Itoa(n)
 		client.send(t, deliverySubscribe(subs[n], livePipelineView(nil)))
 	}
-	pollUntil(t, 10*time.Second, "the hub answers every delivery view", func() bool { return len(socket.queue) == answers })
+	waitUntil(t, "the hub answers every delivery view", func() bool { return len(socket.queue) == answers })
 	if socket.overflowed() {
 		t.Fatal("the hub's queue overflowed beside a full stream queue")
 	}
@@ -1071,10 +1219,9 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	// then the stream again.
 	held.release()
 	client.read()
-	deadline := time.Now().Add(10 * time.Second)
 	var first LiveError
 	for {
-		frame := decodeSocketFrame(t, client.takeBy(t, deadline, 10*time.Second, "the first hub frame"))
+		frame := decodeSocketFrame(t, client.take(t, "the first hub frame"))
 		if refusal, ok := frame.(LiveError); ok {
 			first = refusal
 			break
@@ -1087,37 +1234,46 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	if len(rest) != answers-1 {
 		t.Fatalf("the first hub frame refuses %q, not one of the delivery views %v", first.Sub, subs)
 	}
-	client.refusals(t, 3*time.Second, "DELIVERY_NOT_CONFIGURED", rest...)
-	client.event(t, 5*time.Second, "busy")
+	client.refusals(t, "DELIVERY_NOT_CONFIGURED", rest...)
+	client.event(t, "busy")
 	if !client.open() {
 		t.Fatalf("the socket ended: %v", client.err)
 	}
 }
 
-// A page that answers each ping keeps its socket, idle, across many heartbeats. The heartbeat is a
-// second, so the page's first pong has a heartbeat to arrive before the pong deadline, two
-// heartbeats after the socket opened, and a loaded runner that delays it most of a heartbeat still
-// meets it. A page that answers no ping, which a short heartbeat ends quickly, is the next test's.
+// A page that answers each ping keeps its socket, idle, across many heartbeats: each pong moves the
+// socket's read deadline two heartbeats past it (serveLiveSocket's pongWait). The read deadline runs
+// on a fake of the row's own (liveSocketClock), which the row moves a heartbeat at a time, each time
+// once a pong the page sent after the last move has moved the deadline two heartbeats past the
+// clock: four heartbeats on, the socket has outlived the deadline its upgrade armed and the one
+// after it, through its pongs alone. The pings run on the wall clock's heartbeat, and a move waits
+// for a pong however late a loaded machine sends it. A page that answers no ping is the next test's.
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	t.Parallel()
-	const heartbeat = time.Second
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	const heartbeat = 100 * time.Millisecond
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	deadlines := clocktest.New(start)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: deadlines}, nil)
 	answering := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	var pings atomic.Int32
 	answering.conn.SetPingHandler(func(data string) error {
 		pings.Add(1)
-		return answering.conn.WriteControl(gws.PongMessage, []byte(data), time.Now().Add(time.Second))
+		// No write deadline: the pong waits for the connection's write lock alone, which nothing
+		// else on this idle page takes.
+		return answering.conn.WriteControl(gws.PongMessage, []byte(data), time.Time{})
 	})
 	answering.read()
 
-	// Four heartbeats is twice the pong deadline, so the page still holds its socket only through
-	// its pongs.
-	time.Sleep(4 * heartbeat)
-	if !answering.open() {
-		t.Fatalf("an idle page that answers every ping lost its socket: %v", answering.err)
+	// The upgrade arms the first pong deadline two heartbeats on. A pong read after a move arms the
+	// next one two heartbeats past the moved clock, which no deadline before the move stands at, so
+	// each wait below ends only on a pong the page sent after that move.
+	awaitArmedAt(t, deadlines, "the pong deadline the upgrade armed", start.Add(2*heartbeat))
+	for range 4 {
+		deadlines.Advance(heartbeat)
+		awaitArmedAt(t, deadlines, "the pong deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
 	}
-	if got := pings.Load(); got < 3 {
-		t.Fatalf("the idle page was pinged %d times in four heartbeats, want one each", got)
+	if !answering.open() {
+		t.Fatalf("an idle page that answers every ping lost its socket after %d pings: %v", pings.Load(), answering.err)
 	}
 	rig.sockets(t, 1)
 }
@@ -1130,43 +1286,52 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 	t.Parallel()
 	const heartbeat = 200 * time.Millisecond
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	spans := &servedSpans{}
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, spans.listen)
 	// Where a page that answers no ping ends with the wrong close, it does so through a race in the
 	// writer, so one silent page would show a regression only in some runs. Eight pages, each racing
 	// on its own, make it fail nearly every run: at an even race a run misses with odds of 1 in 256.
 	const silentPages = 8
 	silent := make([]*socketClient, silentPages)
-	opened := make([]time.Time, silentPages)
 	for i := range silent {
 		silent[i] = rig.open(t, gws.DefaultDialer, asUser("bob"))
 		silent[i].conn.SetPingHandler(func(string) error { return nil })
-		opened[i] = time.Now()
 		silent[i].read()
 	}
 
 	for i, page := range silent {
-		select {
-		case <-page.ended:
-			if waited := page.endedAt.Sub(opened[i]); waited < heartbeat || waited > 2*heartbeat+time.Second {
-				t.Errorf("silent page %d's socket ended %s after it opened, want about two heartbeats (%s)", i, waited, 2*heartbeat)
-			}
-			var closed *gws.CloseError
-			if !errors.As(page.err, &closed) || closed.Code != gws.CloseAbnormalClosure {
-				t.Errorf("silent page %d's socket ended with %v, want an end with no close frame (1006)", i, page.err)
-			}
-		case <-time.After(2*heartbeat + 3*time.Second):
-			t.Errorf("silent page %d, which answers no ping, kept its socket", i)
+		testwait.Receive(t, fmt.Sprintf("the end of silent page %d's socket, which answers no ping", i), page.ended)
+		var closed *gws.CloseError
+		if !errors.As(page.err, &closed) || closed.Code != gws.CloseAbnormalClosure {
+			t.Errorf("silent page %d's socket ended with %v, want an end with no close frame (1006)", i, page.err)
 		}
 	}
+	// The server drops each socket from its set once it has closed the connection, so every span is
+	// whole by then: from the server's answer to the upgrade, written just before it armed the
+	// socket's first pong deadline, to that close. The pages opened one after another, so the
+	// server accepted their connections in their order.
 	rig.sockets(t, 0)
+	for i := range silent {
+		served, ok := spans.span(i)
+		switch {
+		case !ok:
+			t.Errorf("UNKNOWN: the server's span of silent page %d's socket was not recorded", i)
+		case served < heartbeat || served > 2*heartbeat+time.Second:
+			t.Errorf("the server served silent page %d's socket for %s, want about two heartbeats (%s), its pong deadline", i, served, 2*heartbeat)
+		}
+	}
 }
 
+// The rig's heartbeat is 300 ms, so on the real clock the pong deadline, two heartbeats after the
+// open, would end the socket of a loaded run before its first heartbeat frame. The read deadline
+// runs on a fake no one moves (liveSocketClock), so the socket waits for its first frame however
+// long the machine takes.
 func TestAnIdleDeliverySocketIsSentAHeartbeat(t *testing.T) {
 	t.Parallel()
 	const heartbeat = 300 * time.Millisecond
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: clocktest.Held()}, nil)
 	client := rig.dial(t, asUser("alice"))
-	if data := client.take(t, heartbeat+time.Second, "the heartbeat"); string(data) != `{"type":"heartbeat"}` {
+	if data := client.take(t, "the heartbeat"); string(data) != `{"type":"heartbeat"}` {
 		t.Fatalf("an idle socket's first frame = %s, want {\"type\":\"heartbeat\"} alone", data)
 	}
 }

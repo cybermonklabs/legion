@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
+import { EventEditedMark } from "../activity/EventBody";
+import { SentenceParts } from "../activity/SentenceParts";
 import { eventDescription } from "../issue/event-description";
 import { writePin } from "../issue/pin-write";
 import {
@@ -14,11 +16,12 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
-import { AgentParts } from "../refs/AgentName";
+import { EditedMark } from "../refs/PostMarks";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
-import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf } from "./issue-tree";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
@@ -38,12 +41,23 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and
  * with its options (`EVENT_FRESH`: kept fresh by events, never read again by its age, and by a
  * window focus only while its last read failed), so it shares the outline's answer and is read
- * again only when the outline's is. A record's words are the server's reading of its text, as its
- * row draws them, and its first line is drawn whole, wrapping rather than cut. Where a read has
- * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
- * history has read - the pin is drawn by the page's word for its kind and never by its id. Until
- * the reader's own state has answered, which pins there are is not known: the section draws its
- * heading alone, and says None only once that state holds no pin.
+ * again only when the outline's is. A record's line is its one line, as the outline draws a
+ * node's (`PinLine`), drawn whole, wrapping rather than cut. Where a read has not answered, has
+ * failed, or holds no words for a pin - a handoff, an event older than the history has read -
+ * the pin is drawn by the page's word for its kind and never by its id. Until the reader's own
+ * state has answered, which pins there are is not known: the section draws its heading alone,
+ * and says None only once that state holds no pin.
+ *
+ * A comment or a message its author corrected carries its mark here as its row in the outline
+ * does (INFRA-1523, R2 and R3), read from the same answer as its words: one its author deleted
+ * is drawn as the deleted line (`node-line.tsx`'s `DeletedLine`), from the delete and never from
+ * its words, its actor named as the page names an author, and stays a link to the post; one its
+ * author edited says ` · edited` after its line (`EditedMark`), as a parent line in the outline
+ * says it (`ParentLink`). A line of the history whose post its author edited since says
+ * ` · edited` after the line (`EventEditedMark`), as the margin's Pinned tab says it; the line
+ * of a deleted post's event already says who deleted it (`eventDescription`). Both marks are the
+ * page's own words (`CONTROL_LABELS.post_deleted_by`, `CONTROL_LABELS.post_edited`), marked as
+ * its chrome.
  */
 export function IssuePins({
   dismissed,
@@ -68,20 +82,34 @@ export function IssuePins({
     queryKey: ["events", issueKey],
   });
   const events = eventPins.length === 0 ? [] : (log.data?.pages.flat() ?? []);
-  const pinWords = (kind: ConversationPinKind, id: string): string | undefined => {
+  /** The record a pin names, as the read that holds it answered it: its text as stored, the
+   *  server's reading of it, and for a comment or a message its author's corrections of it
+   *  (`edited_at`, `deleted_at`, `deleted_by`), which its line is marked by. None where that read
+   *  has not answered or holds no such record, and for a handoff, whose words no read here
+   *  holds. */
+  const pinRecord = (kind: ConversationPinKind, id: string): PinnedRecord | undefined => {
     if (kind === "ask") {
       const ask = asks.data?.find((one) => one.id === id);
-      return ask === undefined ? undefined : recordWords(ask.question, ask.question_tree);
+      return ask === undefined
+        ? undefined
+        : { deleted: null, edited: null, text: ask.question, tree: ask.question_tree };
     }
-    if (kind === "comment") {
-      const comment = comments.data?.find((one) => one.id === id);
-      return comment === undefined ? undefined : recordWords(comment.body, comment.body_tree);
-    }
-    if (kind !== "message") return undefined;
-    const message = (messages.data ?? [])
-      .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
-      .find((one) => one.id === id);
-    return message === undefined ? undefined : recordWords(message.body, message.body_tree);
+    const post =
+      kind === "comment"
+        ? comments.data?.find((one) => one.id === id)
+        : kind === "message"
+          ? (messages.data ?? [])
+              .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
+              .find((one) => one.id === id)
+          : undefined;
+    return post === undefined
+      ? undefined
+      : {
+          deleted: postDeletion(post),
+          edited: post.edited_at,
+          text: post.body,
+          tree: post.body_tree,
+        };
   };
   const list = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -118,8 +146,7 @@ export function IssuePins({
         <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
-            const words = pinWords(pin.kind, pin.id);
-            const line = words === undefined ? "" : drawnLine(firstLineOf(words));
+            const record = pinRecord(pin.kind, pin.id);
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
@@ -130,10 +157,18 @@ export function IssuePins({
                       : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
                   }
                 >
-                  {line === "" ? (
+                  {/* Where no read holds the record - its read has not answered or has failed,
+                      or it is a handoff, whose words no read here holds - there are no words to
+                      wait on, so the pin is drawn by the page's word for its kind at once. */}
+                  {record?.deleted != null ? (
+                    <DeletedLine deleted={record.deleted} />
+                  ) : record === undefined ? (
                     <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
                   ) : (
-                    <span {...authorText}>{line}</span>
+                    <>
+                      <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
+                      <EditedMark at={record.edited} marks={pageChrome} />
+                    </>
                   )}
                 </Link>
                 <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
@@ -146,11 +181,16 @@ export function IssuePins({
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 {event === undefined ? null : (
-                  <span
-                    className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}
-                    {...authorText}
-                  >
-                    <AgentParts parts={[{ actor: event.actor }, " ", ...eventDescription(event)]} />
+                  <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}>
+                    <span {...authorText}>
+                      <SentenceParts
+                        parts={[{ actor: event.actor }, " ", ...eventDescription(event)]}
+                      />
+                    </span>
+                    {/* ` · edited` is the page's own word, as a row's edited mark is. */}
+                    <span {...pageChrome}>
+                      <EventEditedMark event={event} />
+                    </span>
                   </span>
                 )}
                 <Link
@@ -170,9 +210,48 @@ export function IssuePins({
   );
 }
 
-/** A pinned record's words as its row in the outline reads them (`issue-tree.ts`'s `nodeWords`):
- *  the words of the server's reading of its text where the read sent one, so the line holds
- *  none of the symbols its body draws as formatting, and its text as stored otherwise. */
-function recordWords(text: string, tree: DisplayTree | undefined): string {
-  return tree === undefined ? text : wordsOf(tree);
+/** A pinned record's text as stored, the server's reading of it where the read sent one, and a
+ *  comment's or a message's corrections: its delete and when it was last edited, none for an
+ *  ask. */
+interface PinnedRecord {
+  readonly deleted: PostDeletion | null;
+  readonly edited: string | null | undefined;
+  readonly text: string;
+  readonly tree: DisplayTree | undefined;
+}
+
+/** A pin's line: its record's one line, as the outline draws a node's (`node-line.tsx`'s
+ *  `useNodeLine`) - its first line, projected from the server's reading of its text where the
+ *  read sent one and from its text as stored otherwise, each reference in it read as its
+ *  target's name, and cut by R1's first-line rule - with the record as the source its references
+ *  are read against. Nothing of it until the projection has answered, and the page's word for
+ *  the pin's kind where the line holds no words. A pin no read holds the record of is drawn by
+ *  `IssuePins` itself, so the projection runs only for a record there is. */
+function PinLine({
+  id,
+  issueKey,
+  kind,
+  record,
+}: {
+  id: string;
+  issueKey: string;
+  kind: ConversationPinKind;
+  record: PinnedRecord;
+}): ReactNode {
+  const { line, reads } = useNodeLine(
+    {
+      id,
+      source: textSourceOf(textSourceKind(kind), id, issueKey),
+      text: record.text,
+      tree: record.tree,
+      type: kind,
+    },
+    { surface: "issue-pin" }
+  );
+  return (
+    <>
+      {reads}
+      <span {...(line === "" ? pageChrome : authorText)}>{lineOrKindWord(line, kind)}</span>
+    </>
+  );
 }

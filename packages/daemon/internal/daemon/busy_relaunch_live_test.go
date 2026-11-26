@@ -79,15 +79,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -304,33 +300,28 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	return r
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the API
-// listener the fixture holds, and the workflow's App tokens stood in for. The clock is the real
-// one: the daemon's wait for a turn is what a held recall outlasts, and it is measured where it is
-// real.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), and
+// the workflow's App tokens stood in for. The clock is the real one: the daemon's wait for a turn
+// is what a held recall outlasts, and it is measured where it is real.
 func (r *busyRelaunchLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens = &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the five issues as the daemon would hold them at the moment each one's worker
 // began, as claim_compaction_live_test.go's seed does and for its reasons: each a root handed to
-// Legion, in the phase its worker works, holding its tree's admission slot with its lifecycle
-// open, and that worker's claim mid-launch, which this boot relaunches. Each phase worker's claim
-// holds the task its phase's start left pending, which is what keeps admission's repair of a
-// slotted worker holding no task off it (internal/admit/admit.go's resumeSlottedWorkers) — that
-// repair would give the claim its phase's resume task, and every deliver of this driver would be
-// refused `a delivery is already pending` — and every pane answers it before the first step. The
-// root architect's issue stands in accepting, where no phase worker runs, so the repair passes it
-// over as it passes over every architect; its claim holds nothing, as an architect's start leaves
-// it.
+// Legion, in the phase its worker works, with its lifecycle open, an admission slot the seed
+// writes (liveProof.admit), and that worker's claim mid-launch, which this boot relaunches. Each
+// phase worker's claim holds the task its phase's start left pending, which is what keeps
+// admission's repair of a slotted worker holding no task off it (internal/admit/admit.go's
+// resumeSlottedWorkers) — that repair would give the claim its phase's resume task, and every
+// deliver of this driver would be refused `a delivery is already pending` — and every pane
+// answers it before the first step. The root architect's issue stands in accepting, where no
+// phase worker runs, so the repair passes it over as it passes over every architect; its claim
+// holds nothing, as an architect's start leaves it. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *busyRelaunchLive) seed() {
 	t := r.t
 	t.Helper()

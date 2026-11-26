@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
@@ -46,7 +47,7 @@ import {
   sessionActivity,
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity";
-import { stallLimits } from "@legion/pi-shared/stall-limits";
+import { stallLimits, stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   createStallWatchdog,
   type StallWatchdog,
@@ -86,6 +87,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -241,26 +248,25 @@ export default function legionExtension(pi: PiApi): void {
   // The Envoy listener this entry's own notices go to — the architect's reminder notice, and the
   // stall watch's notice of a stuck call — built once and only when a notice is due: this entry
   // reaches no listener of its own otherwise. Envoy off for the session leaves it undefined, and
-  // the reminder keeps coming without a notice.
-  let noticePublisher: { readonly publish: EnvoyPublish | undefined } | undefined;
-  const publisher = (): EnvoyPublish | undefined => {
-    if (noticePublisher === undefined) {
-      const envoy = sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
-        cwd: process.cwd(),
-        nats: false,
-        session: currentSessionID,
+  // the reminder keeps coming without a notice. The build is kept as it starts, so two notices
+  // due together wait for one; a build that failed is dropped, and the next notice tries again.
+  let noticePublisher: Promise<EnvoyPublish | undefined> | undefined;
+  const publisher = (): Promise<EnvoyPublish | undefined> => {
+    noticePublisher ??= sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
+      cwd: process.cwd(),
+      nats: false,
+      session: currentSessionID,
+    })
+      .then((envoy) =>
+        envoy.enabled
+          ? createEnvoyClient({ baseUrl: envoy.url, credential: envoy.credential, fetch }).publish
+          : undefined
+      )
+      .catch((error: unknown) => {
+        noticePublisher = undefined;
+        throw error;
       });
-      noticePublisher = {
-        publish: envoy.enabled
-          ? createEnvoyClient({
-              baseUrl: envoy.url,
-              credential: envoy.credential,
-              fetch,
-            }).publish
-          : undefined,
-      };
-    }
-    return noticePublisher.publish;
+    return noticePublisher;
   };
   const phaseReminder = createPhaseReminder({
     sendReminder: (reminder) =>
@@ -375,12 +381,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
-    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
-    // process loaded, as the claim's registration reads it. The daemon serves each answer in
-    // the shape the contract the caller states describes.
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { pluginContract: pkg.legion.daemonApiVersion }
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };
@@ -427,8 +432,9 @@ export default function legionExtension(pi: PiApi): void {
    * hands it to this instance instead (`subagentCall`).
    */
   let stallWatch: StallWatchdog | undefined;
-  /** The 5-second sweep, on the interval each session arms below. It is never awaited: a step of
-   * the ladder can outlast the tick that armed it, and the detector takes one sweep at a time. */
+  /** The sweep, on the interval each session arms below, `stallSweepMs(limits)` apart: 5 s on
+   * production's step gap. It is never awaited: a step of the ladder can outlast the tick that
+   * armed it, and the detector takes one sweep at a time. */
   const stallSweep = (): void => {
     void stallWatch?.sweep();
   };
@@ -635,17 +641,20 @@ export default function legionExtension(pi: PiApi): void {
       logger.error(refusal);
       exitProcess(1);
     }
-    // Every Legion session watches its own tool calls; a subagent's instance returned above.
+    // Every Legion session watches its own tool calls; a subagent's instance returned above. The
+    // sweep has a managed interval of its own, a quarter of the ladder's step gap and never more
+    // than 5 s apart, which bounds how late a stuck call or a due step is found against a gap
+    // that is minutes long in production: the controller reports no activity, and a worker's
+    // activity period below is not the ladder's to set.
     armStallWatch(session);
+    context.setInterval(stallSweep, stallSweepMs(limits));
     // The controller registers through the controller session and gets the `legion` tool's
     // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
     // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no
-      // managed interval of its own, and the stall watch takes one here: its session runs tool
-      // calls that can stick like any other's.
-      context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS);
+      // managed interval of its own beside the stall watch's sweep above.
     } else {
       // A resume whose role launcher found the workspace recreated since the session was last
       // written (src/workspace-recreated.ts) is told so in a message saved to the session ahead of
@@ -717,18 +726,15 @@ export default function legionExtension(pi: PiApi): void {
       // Between turns, the host's own managed interval is the only sight of this session's
       // background work; it sends nothing unless what it reads has changed. Every claimed
       // session reports, an architect's as much as a phase worker's: the daemon releases a pod
-      // only when each of its live roles has said it runs nothing. The stall watch's sweep rides
-      // the same 5 seconds, which bounds how late a stuck call is found against a ladder whose
-      // own steps are minutes apart.
+      // only when each of its live roles has said it runs nothing. The stall watch's sweep has
+      // its own interval, above.
       context.setInterval(() => {
         if (paneContext !== undefined) {
           void reportActivity(paneContext, { onlyWhenChanged: true });
         }
-        // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
-        // ladder that outlasts the tick, never delays the activity report the daemon reads to
-        // decide whether the pod may be released.
+        // Neither is awaited: a measurement that runs for up to 10 s never delays the activity
+        // report the daemon reads to decide whether the pod may be released.
         void capabilitySchedule?.tick();
-        stallSweep();
       }, SESSION_ACTIVITY_PERIOD_MS);
     }
     // The claim is registered, so this session is a Legion role's: a worker the daemon
@@ -763,6 +769,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("agent_start", async (_event, context) => {
     recreatedNotice = undefined;
     clearStartupTurn(context.sessionManager.getSessionId());
+    // Whether this run is a prompt of the daemon's is the turn-outcome report's to read
+    // (`src/turn-outcome.ts`, and its `input` handler below).
+    turnOutcomes.runStarted(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
     // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
@@ -885,7 +894,14 @@ export default function legionExtension(pi: PiApi): void {
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
   // The host does not await this handler and nothing of the turn waits on the report, but the
   // report is awaited inside it all the same, so its failure is the handler's own promise rather
-  // than a floating one, and the reporter never rejects.
+  // than a floating one, and the reporter never rejects. What it reads of which runs a prompt of
+  // the daemon's started comes from that prompt's RPC `input`, below, and the next `agent_start`
+  // (the handler above), so that a turn no prompt ran is reported as one, for the daemon to judge
+  // from the report (dispatch://INFRA-4508's R4). The input handler changes nothing of the input.
+  pi.on("input", async (event, context) => {
+    turnOutcomes.inputArrived(context.sessionManager.getSessionId(), event);
+    return undefined;
+  });
   pi.on("agent_end", async (event, context) => {
     await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });
@@ -967,10 +983,12 @@ export default function legionExtension(pi: PiApi): void {
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(
-            sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
-              cwd: process.cwd(),
-              session: currentSessionID,
-            }).dispatch
+            (
+              await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
+                cwd: process.cwd(),
+                session: currentSessionID,
+              })
+            ).dispatch
           );
           if (config === null) {
             throw new Error(

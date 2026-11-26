@@ -64,6 +64,10 @@ type Options struct {
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
+	// Intake is the replay and the discard of the project's give-ups (intake.GiveUps), which the
+	// four give-up routes run. Nil, a daemon with no workflow and so no intake, answers those
+	// routes 503.
+	Intake GiveUps
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
 	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
@@ -317,6 +321,7 @@ type server struct {
 	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
 	stateBound  time.Duration
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
+	giveUps     GiveUps
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
 	// awaitStream is Options.AwaitStream (apply).
@@ -420,6 +425,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		stateTransactions:  opts.StateTransactions,
 		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
+		giveUps:            opts.Intake,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
 		awaitStream:        opts.AwaitStream,
@@ -527,7 +533,7 @@ type statingContract struct {
 }
 
 func (s statingContract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))
+	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion()))
 	s.handler.ServeHTTP(w, r)
 }
 
@@ -561,6 +567,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
 		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/plans/register", s.registerPlan},
+		{"POST /legion/v1/tasks/stop", s.stopTask},
 		{"POST /legion/v1/waves/release", s.waveRelease},
 		{"POST /legion/v1/phase/backward", s.phaseBackward},
 		{"POST /legion/v1/phase/retry", s.phaseRetry},
@@ -568,6 +576,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/roots/close", s.closeRoot},
 		{"POST /legion/v1/children/park", s.removedChildRoute},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
+		{"POST /legion/v1/intake/replay", s.intakeReplay},
+		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
 
@@ -582,6 +592,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+		{"POST /legion/v1/operator/intake/replay", s.operator(s.operatorIntakeReplay)},
+		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
 

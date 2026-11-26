@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The way back of migration 20261111225552 is one text standing in two files: the header of the
@@ -534,7 +533,7 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 // What the second run reads is the record that daemon kept current: the token on the phases row.
 // The fill numbers the role entry 1 and finds no start row to take a task from, so the record
 // holds no task of that entry and the sweep sends the line the daemon composes for a worker
-// already in its phase (workflow.ResumePhaseTask, through Engine.SendOwedEntry), at entry 1.
+// already in its phase (workflow's Engine.ResumeTask, through Engine.SendOwedEntry), at entry 1.
 //
 // The control is this same half under the zeroing way back: the six entry columns left standing
 // at zero and this migration's version row left where it is. Migrate then applies nothing, the
@@ -637,7 +636,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the sweep after the roll-forward sent %s %+v, want the one start of entry 1: a role whose task that daemon lost is what the re-arm exists to send again",
 			key, starts)
 	}
-	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue), entry: 1}
+	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: resumeTaskOf(t, pool, w.engine, key), entry: 1}
 	if starts[0] != want {
 		t.Fatalf("the start the sweep sent %s = %+v, want %+v: the record holds no task of that entry, so what is sent is the line the daemon composes for a worker already in its phase",
 			key, starts[0], want)

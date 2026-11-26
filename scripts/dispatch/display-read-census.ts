@@ -1282,8 +1282,8 @@ function parseArguments(argv: readonly string[]): RunOptions {
   };
 }
 
-function dispatchConfig(): DispatchConfig {
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(
+async function dispatchConfig(): Promise<DispatchConfig> {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }
@@ -1307,7 +1307,7 @@ async function main(options: RunOptions): Promise<number> {
     return checkNoStoredText(options.checkFiles, options.corpus);
   }
   if (options.fetch) {
-    const config = dispatchConfig();
+    const config = await dispatchConfig();
     const rate = new Rate(options.rate);
     const projects =
       options.projects.length > 0

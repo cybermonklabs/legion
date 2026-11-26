@@ -102,12 +102,13 @@ func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 	}
 }
 
-// controllerSession registers ses_controller as the project's controller, as `legion controller
-// start` and the session's registration do, and answers a grant that session minted.
-func (h *pauseHarness) controllerSession() string {
+// controllerSession registers the project's controller as the session the constant
+// controllerSession names, as `legion controller start` and the session's registration do, and
+// answers a grant that session minted.
+func (h *harness) controllerSession() string {
 	h.t.Helper()
-	registration := h.registeredController(h.mintedSecret(), "ses_controller")
-	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	registration := h.registeredController(h.mintedSecret(), controllerSession)
+	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
 	}
@@ -684,9 +685,9 @@ func TestThePauseContractIsTheContractThatAddedTheKeys(t *testing.T) {
 		t.Fatalf("pauseContract = %d, want %d, the contract whose entry in version.go added `paused` and `lastPause`",
 			pauseContract, addedPause)
 	}
-	if pauseContract > DaemonAPIVersion {
+	if pauseContract > DaemonAPIVersion() {
 		t.Fatalf("pauseContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			pauseContract, DaemonAPIVersion)
+			pauseContract, DaemonAPIVersion())
 	}
 }
 

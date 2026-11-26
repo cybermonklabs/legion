@@ -212,7 +212,13 @@ func (s *Session) call(ctx context.Context, method, path, query string, body any
 	if client == nil {
 		client = directClient
 	}
-	status, raw, cut, err := exchange(ctx, client, method, target, path, body, answerBytes, func(req *http.Request) { req.Header.Set("Proof", proof) })
+	var encoded []byte
+	if body != nil {
+		if encoded, err = json.Marshal(body); err != nil {
+			return err
+		}
+	}
+	status, _, raw, cut, err := exchange(ctx, client, method, target, path, encoded, answerBytes, func(req *http.Request) { req.Header.Set("Proof", proof) })
 	if err != nil {
 		return err
 	}

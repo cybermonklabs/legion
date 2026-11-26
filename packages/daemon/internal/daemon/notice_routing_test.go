@@ -527,6 +527,54 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 	}
 }
 
+// A task-stopped notice of an owner's stop_task names the architect that made the call
+// (record.Notice.StoppedBy), and that architect is answered by its own call: the executor
+// finishes the row without publishing when the architect the notice's issue reaches is the one
+// that stopped the task, with one log line, and publishes it to that architect when it is
+// another claim. The route takes the stop from any architect of the issue's tree, so the two
+// differ in both directions: the root's architect stopping a child whose sub-architect runs, and
+// the child's own sub-architect stopping it.
+func TestATaskStoppedNoticeReachesNoArchitectThatStoppedTheTask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, issue, stoppedBy string
+		want                   []string
+	}{
+		{name: "a root's task stopped by the root's architect", issue: "LEGION-1", stoppedBy: "LEGION-1"},
+		{name: "a child's task stopped by the root's architect, its sub-architect running", issue: "LEGION-2", stoppedBy: "LEGION-1",
+			want: []string{"task-stopped to LEGION-2"}},
+		{name: "a child's task stopped by its own sub-architect", issue: "LEGION-2", stoppedBy: "LEGION-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+			architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
+			by := mustClaimToken(t, tc.stoppedBy, claim.RoleArchitect)
+			why := "task a of " + tc.issue + " was stopped by its owner"
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, tc.issue, record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
+				StoppedBy: by, Reason: why + ", the architect " + string(by)}, time.Now()))
+			var logged bytes.Buffer
+			publisher := &holderPublisher{}
+			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
+				project: "legion", now: time.Now}
+
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("run the notice: %v", err)
+			}
+			_, delivered := publisher.snapshot()
+			if got := deliveredKinds(t, delivered); !slices.Equal(got, tc.want) || outboxRows(t, pool) != 0 {
+				t.Fatalf("delivered %v with %d rows left, want %v and the row finished", got, outboxRows(t, pool), tc.want)
+			}
+			if tc.want == nil && !strings.Contains(logged.String(), "its architect stopped the task itself") {
+				t.Fatalf("log %q, want the line that the row finished because its architect stopped the task itself", logged.String())
+			}
+		})
+	}
+}
+
 // A root architect the operator suspended outside a linger comes back when the operator resumes it
 // (`legion claims resume` or `deliver`), so its notices are held for it, not finished: the row waits,
 // logged once, and is delivered once the architect holds its role again. The fence is per
@@ -798,7 +846,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
+		if _, err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, mustOutboxRow(t, "LEGION-1", catchUp(2), clock))

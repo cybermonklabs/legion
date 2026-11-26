@@ -108,10 +108,16 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 }
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write
-// prints nothing. A refusal prints the guard's own report, which names the record and the class
-// and never the text that matched; a setup failure prints the guard's own line, which says it is
-// one, so a person reading a log tells a broken pod from a write that names something private; and
-// a not-found prints the guard's line for a destination GitHub answers 404 for, which is neither.
+// prints nothing here, and so does one cleared with no rule file named: the guard then ran the
+// shared check alone, where one runs, and the daemon's boot has said once that the deployment
+// names no rule file.
+// A refusal prints the guard's own report. One by the private-name rules — the deployment's rule
+// file, which LEGION_PRIVATE_NAME_RULES_FILE names — shows, for each finding, the record, the
+// rule's description, the text that matched and the line it stands on: the agent about to make
+// the write wrote that text, so there is nothing in it to hide from the agent the refusal is shown
+// to. A setup failure prints the guard's own line, which says it is one, so a person reading a log
+// tells a broken pod from a write that names something private; and a not-found prints the
+// guard's line for a destination GitHub answers 404 for, which is neither.
 //
 // The statuses are the shared public leak check's own vocabulary, which is what a pre-push hook
 // needs, and they are the guard's exported constants rather than a second copy of the three

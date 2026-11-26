@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,15 +23,15 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
-// budget has failed, and the start that retries it starts a new session (supervise's
-// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
-// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
-// root architect its whole tree, a child's architect the child and every issue under it — and so
-// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
-// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
-// same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
+// one (supervise's freshSession), as does any launch whose session no store holds any more
+// (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
+// owns (QueueCatchUp) — a root architect its whole tree, a child's architect the child and every
+// issue under it — and so does a start that finds the claim still running (the outbox's start), as
+// the TypeScript daemon sends the overseer catch-up at every ready of an active root
+// (onTreeReady). A relaunch in the same generation is told again: it may be an architect that died
+// during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost, and
+// nothing else wakes either.
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -47,11 +48,13 @@ import (
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
-// cap counts — so it takes its turn in the daemon's pacing (Config.Reserve) and the row is due at
-// the moment that turn comes, rather than at once. The turn is taken here, inside the fact's
-// transaction, so a start row that runs again after a crash takes no second one: the fact applies
-// once for the row that wrote it. A launch's own ready takes none, since the launch took its turn
-// at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
+// cap counts — so it takes its turn in the daemon's pacing: it is written held, with no due
+// moment (record.CatchUpHeldAt), and joins the pacing's queue once this fact commits
+// (Config.HoldCatchUp), whose let-out makes it due (dispatch://INFRA-5682 R1). The join is the
+// commit's hook rather than a step of the fact, so a fact that rolls back spends no turn, and a
+// start row that runs again after a crash joins once: the fact applies once for the row that
+// wrote it. A launch's own ready is held to nothing, since the launch took its turn at the
+// machine's gate (supervise's reserveWake); nor is any ready while the pacing is off.
 //
 // A launch's ready that carries the sentence of what the last let-go of the architect's process
 // ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
@@ -81,12 +84,11 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 			return intake.Result{}, err
 		}
 	}
-	now := e.now()
-	var paced time.Time
-	if fact.Paced && e.cfg.Reserve != nil {
-		paced = e.cfg.Reserve(now)
+	var hold func(id int64, issue string)
+	if fact.Paced {
+		hold = e.cfg.HoldCatchUp
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced)
+	return intake.Result{}, queueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, e.now(), hold)
 }
 
 // QueueCatchUp is the one composer of an architect's catch-up, which both the ready (claimReady)
@@ -117,22 +119,30 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // tree) and stays the root architect's, so a child's catch-up carries no Decided and no Kept. The
 // notice goes through the outbox like any other, so it is held and re-held as they are.
 //
-// paced is the moment the daemon's wake pacing reserved for this catch-up, which is both the
-// notice row's next_at and the moment the notice itself carries (record.Notice.PacedAt): the zero
-// value, which every caller but the paced ready passes (CatchUpTheTreesOwed for HandOverKept, and
-// the ready of a launch), is now, so a catch-up no pacing holds is due as it always was. The row
-// keeps the moment of its own because a failed attempt rewrites next_at to its backoff: the
-// moment is what keeps a ready from pulling the row forward before its turn (the daemon's
-// releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
-// that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
-// pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
-func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
+// The catch-up is due now. The one the wake pacing holds is the paced ready's alone (claimReady,
+// queueCatchUp): every other caller writes one no pacing holds (CatchUpTheTreesOwed for
+// HandOverKept).
+func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now time.Time) error {
+	return queueCatchUp(ctx, tx, store, steps, issue, launch, relaunch, now, nil)
+}
+
+// queueCatchUp is QueueCatchUp, and with a hold it writes the catch-up held instead: the row's
+// next_at and the moment the notice carries are record.CatchUpHeldAt, which is no due moment,
+// with now beside it as the moment the hold began (record.Notice.PacedAt, PacedFrom), and hold is
+// called with the row's id once the transaction commits, which is where the daemon joins the row
+// to its wake pacing's queue (Config.HoldCatchUp). The row keeps the moment of its own because a
+// failed attempt rewrites next_at to its backoff: the moment is what keeps a ready from pulling
+// the row forward before its turn (the daemon's releaseWaiting), and with the moment the hold
+// began it is the wait in the line that wake writes when it runs (the daemon's wakeRan). Neither
+// is written on a catch-up no pacing holds, which reports no wait, having had none.
+func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,
+	relaunch string, now time.Time, hold func(id int64, issue string)) error {
+	catchUp, awaiting, err := treeCatchUp(ctx, tx, records, steps, issue)
 	if err != nil {
 		return err
 	}
 	catchUp.Launch = launch
-	if err := store.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
+	if _, err := records.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
 		return err
 	}
 	var kept *record.KeptDecisions
@@ -145,7 +155,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		// in this transaction; its publish forgets those rows (the outbox's notice), and a
 		// catch-up a newer one supersedes hands them to a fresh catch-up (HandOverKept).
 		var decided string
-		if decided, kept, err = ParkedDecisionTask(ctx, tx, store, steps, issue); err != nil {
+		if decided, kept, err = ParkedDecisionTask(ctx, tx, records, steps, issue); err != nil {
 			return err
 		}
 		catchUp.Decided, catchUp.Kept = decided, kept
@@ -157,13 +167,17 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
-	at := now
 	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
-	if !paced.IsZero() {
-		at = paced
-		notice.PacedAt, notice.PacedFrom = paced, now
+	if hold == nil {
+		return EnqueueNaming(ctx, tx, records, issue.Key, issue.Tree, notice, kept, now)
 	}
-	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+	notice.PacedAt, notice.PacedFrom = record.CatchUpHeldAt, now
+	id, err := enqueueNamingID(ctx, tx, records, issue.Key, issue.Tree, notice, kept, record.CatchUpHeldAt)
+	if err != nil {
+		return err
+	}
+	store.OnCommit(ctx, func() { hold(id, issue.Key) })
+	return nil
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
@@ -226,7 +240,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // reads no slot and carries no entry, the claim being on the entry its row names already; the
 // owed entry's start takes the slot mark the slot rule gives its phase, as every start
 // Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
+// that keeps a slot and for none in accepting, retro or merging (record.KeepsSlot). Most often such an issue
 // holds that slot already: a claim whose agent has just said it is ready is running, and
 // admission has long since given its tree a slot. The one such issue at work that holds none is
 // one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
@@ -284,8 +298,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
+	resume, err := e.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",

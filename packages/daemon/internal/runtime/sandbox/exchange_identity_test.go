@@ -24,10 +24,18 @@ const (
 	tokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 )
 
-// exchangeEnrolled is the broker enrollment of the root-enrolled golden with the exchange identity
-// turned on.
+// rootEnrolled is the enrollment an agent_secrets block that names only url and token_file settles
+// on: the loader's default audience, `cipher`, and its default hour (config's
+// TestKubernetesAudienceDefaultsToCipher). The root-enrolled golden pins its pod.
+func rootEnrolled() *AgentSecrets {
+	return &AgentSecrets{URL: testBrokerURL, Audience: "cipher", TokenExpiry: time.Hour}
+}
+
+// exchangeEnrolled is rootEnrolled with the exchange identity turned on.
 func exchangeEnrolled() *AgentSecrets {
-	return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
+	enrolled := rootEnrolled()
+	enrolled.ExchangeAudience = testExchangeAudience
+	return enrolled
 }
 
 // exchangeTokenVolumes are the pod's volumes that project a ServiceAccount token for audience.
@@ -52,6 +60,7 @@ func exchangeTokenVolumes(pod corev1.PodSpec, audience string) []corev1.Volume {
 // the issue pod's Sandbox byte for byte; its start command, which the golden does not hold, is read
 // here for the two variables.
 func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +120,7 @@ func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
 // pool's audience, is the endpoint's and no exchange identity
 // (TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees pins it), so it is passed over.
 func TestNoIdentityWithoutTheKey(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +158,7 @@ func TestNoIdentityWithoutTheKey(t *testing.T) {
 // is not there would fail every trade it tries, where one told of no identity keeps the credential
 // it had. The enrollment it does carry it is still told of.
 func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -194,9 +205,7 @@ var exchangeDeployments = []struct {
 	exchanges    bool
 }{
 	{"no agent_secrets block", func() *AgentSecrets { return nil }, false},
-	{"agent_secrets with no exchange_audience", func() *AgentSecrets {
-		return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}, false},
+	{"agent_secrets with no exchange_audience", rootEnrolled, false},
 	{"exchange_audience set", exchangeEnrolled, true},
 }
 
@@ -208,6 +217,7 @@ var exchangeDeployments = []struct {
 // builds carries it as the operator wrote it. A deployment that names an audience refuses that
 // pod, naming the piece of it that collides.
 func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
+	t.Parallel()
 	const operatorVolume = "operator-identity"
 	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	cases := []struct {
@@ -284,6 +294,7 @@ func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
 // of an enrolled pod both, and a spec setting either is refused as one setting any variable the
 // runtime sets itself (runtime.ValidateSpawnSpec).
 func TestALaunchSpecMayNameTheExchangeVariablesWhileTheExchangeIsOff(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range exchangeDeployments {
 		for name, value := range map[string]string{identityVariable: "metadata", tokenFileVariable: "/etc/operator/identity/token"} {
 			t.Run(deployment.name+"/"+name, func(t *testing.T) {

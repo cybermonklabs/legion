@@ -30,8 +30,13 @@ type writeReading struct {
 	// nothing stops every admission of the migration.
 	voided string
 	// changedBy names, by table, the first earlier pending migration that touches the table with
-	// anything but bounded writes (Census keeps it).
+	// anything but bounded writes or a concurrent index build, where that migration is not a
+	// catalog-only one that only adds plain columns to the table or only references it by its
+	// primary key (Census keeps it).
 	changedBy map[string]string
+	// reviewed are the enabled triggers a table may be admitted beside
+	// (CensusOptions.reviewedTriggers).
+	reviewed []reviewedTrigger
 }
 
 // boundedVerdict is what boundedWrites answers for one table: where it admits the table, the
@@ -82,11 +87,19 @@ type boundedVerdict struct {
 //     whose size and keys the census does not read;
 //   - the census reads the table's keys, rules and triggers as they stand before any pending
 //     migration applies, so no earlier pending migration may touch the table with anything but
-//     bounded writes (changedBy), and neither the migration nor an earlier pending one may hold a
-//     statement whose effect the census cannot read (voided): a statement off the keep-on list, a
-//     DO block among them, or one that names a relation of pg_catalog (takesLaterExemptions). Nor
-//     may the migration hold a statement after which its names can resolve to another table than
-//     the one the census read (catalogReadsOff), a set of search_path among them.
+//     bounded writes or a concurrent index build, which changes none of them (changedBy), and
+//     neither the migration nor an earlier pending one may hold a statement whose effect the
+//     census cannot read (voided): a statement off the keep-on list, a DO block among them, or
+//     one that names a relation of pg_catalog (takesLaterExemptions). Nor may the migration hold
+//     a statement after which its names can resolve to another table than the one the census
+//     read (catalogReadsOff), a set of search_path among them. An earlier pending migration that
+//     the census exempts as catalog-only does not count as a change either where it only adds
+//     plain columns to the table, each nullable with no default and no constraint
+//     (addsPlainColumns), or where it touches the table only as the table its foreign keys
+//     reference, each by columns of its primary key (referencedByItsPrimaryKey): like a
+//     concurrent index build, neither changes what the verdict reads of the table
+//     (boundedTableQuery: the primary key and its types, the columns foreign keys reference,
+//     rules, row-level security, child tables and enabled triggers) in a way that moves it.
 //
 // An enabled trigger of the table runs for each row the writes write, and it can read any table,
 // while the census does not read its body, as it reads no function's. So the table is admitted
@@ -163,7 +176,7 @@ func (w *writeReading) boundedWrites(ctx context.Context, table string, oid uint
 	case facts.rowSecurity:
 		return boundedVerdict{why: table + " has row-level security, whose policies can read any table for each row a write meets"}, nil
 	}
-	if why := unreviewedTriggers(table, facts.triggers); why != "" {
+	if why := unreviewedTriggers(table, facts.triggers, w.reviewed); why != "" {
 		return boundedVerdict{why: why}, nil
 	}
 	return boundedVerdict{statements: len(touching), triggers: facts.triggers}, nil
@@ -183,17 +196,41 @@ type reviewedTrigger struct {
 // enabled trigger that is not here is refused, and its trigger is reviewed and added before the
 // migration can pass. An entry names a trigger as the table holds it when the entry is written:
 // a later migration that replaces the trigger's function changes the body the entry reviewed, so
-// that migration reads the entry again. The store's census tests meet no shipped migration the
-// census admits for bounded writes of a table with an enabled trigger, so the list holds none.
-var reviewedTriggers = []reviewedTrigger{}
+// that migration reads the entry again.
+//
+// graph_nodes' two are Dispatch's: the first type migration written after the store's backfill
+// (20261123080000_graph_supertags_plan_task_steps) writes graph_nodes by bounded writes alone, and
+// the census admits it above the limit only beside them. Both run block_schema_changed, as
+// 20261109051232_graph_supertags created it and no later migration replaced it.
+var reviewedTriggers = []reviewedTrigger{
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
+		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_removed",
+		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+}
+
+// ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,
+// in its order: the triggers a store's own test holds to the definitions their entries reviewed
+// (dispatch store's TestTheReviewedTriggersAreTheOnesTheStoreHolds), since this list names a
+// trigger and not its body.
+func ReviewedTriggerNames(table string) []string {
+	var names []string
+	for _, reviewed := range reviewedTriggers {
+		if reviewed.table == table {
+			names = append(names, reviewed.trigger)
+		}
+	}
+	return names
+}
 
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the
-// triggers that are not on reviewedTriggers, in words that follow "and"; "" where every one is.
-func unreviewedTriggers(table string, triggers []string) string {
+// triggers that are not on reviewed, the census's list (CensusOptions.reviewedTriggers), in words
+// that follow "and"; "" where every one is.
+func unreviewedTriggers(table string, triggers []string, reviewed []reviewedTrigger) string {
 	var unreviewed []string
 	for _, trigger := range triggers {
-		if !slices.ContainsFunc(reviewedTriggers, func(reviewed reviewedTrigger) bool {
-			return reviewed.table == table && reviewed.trigger == trigger
+		if !slices.ContainsFunc(reviewed, func(entry reviewedTrigger) bool {
+			return entry.table == table && entry.trigger == trigger
 		}) {
 			unreviewed = append(unreviewed, trigger)
 		}
@@ -272,6 +309,146 @@ const boundedTableQuery = `with key as (
 		coalesce((select array_agg(t.tgname::text order by t.tgname) from pg_trigger t
 			where t.tgrelid = r.oid and not t.tgisinternal and t.tgenabled <> 'D'), '{}')
 	from pg_class r where r.oid = $1::oid`
+
+// primaryKeyQuery, Catalog read 9, names the columns of the primary key of the table the name $1
+// resolves to, '{}' where it resolves to none, has no primary key, or has one whose index is not
+// valid, as Catalog read 8 reads the key. It resolves the name, so it reads only in the
+// migration's catalog.
+const primaryKeyQuery = `select coalesce(array_agg(a.attname::text), '{}')
+	from pg_constraint p
+	join pg_index i on i.indexrelid = p.conindid and i.indisvalid
+	cross join lateral unnest(p.conkey) k(attnum)
+	join pg_attribute a on a.attrelid = p.conrelid and a.attnum = k.attnum
+	where p.conrelid = to_regclass($1) and p.contype = 'p'`
+
+// referencedByItsPrimaryKey says whether a pending migration touches table only as the table its
+// foreign keys reference, each by columns of table's primary key, so that Census does not count
+// the migration as a change of table (changedBy). Census asks it only of a migration it exempts
+// from the limit as catalog-only, whose own statements leave the catalog reads on. code is the
+// migration's code (readMigration). Every touch of table that the census reads must come from a
+// references clause (referencesPattern): none of the other forms of touchedTablePatterns names
+// it, the migration drops or alters no index (the census reads an index's table from the
+// catalog, and this reads names alone), and the parser reads a foreign key referencing table for
+// each references clause that names it (foreignKeyTargets). Each of those keys must name only
+// columns of table's primary key, or none, which names the key; Catalog read 9 reads the key in
+// the migration's catalog, so where Census gives the migration none, table counts as changed.
+//
+// Such a key changes nothing boundedWrites decides by. It adds the key's columns to the columns
+// a foreign key references (Catalog read 8), and an update may not set a column of the primary
+// key anyway (boundedUpdate). The triggers Postgres makes for the key are internal, which the
+// census leaves out of the table's triggers, and they act only on a delete or on an update that
+// changes the referenced columns. The key changes no rule, row-level security or child table.
+func (w *writeReading) referencedByItsPrimaryKey(code, table string) (bool, error) {
+	if w.statements == nil || w.c.catalog == nil || len(indexMatches(code)) > 0 {
+		return false, nil
+	}
+	references := 0
+	for _, form := range touchedTablePatterns {
+		for _, name := range namesMatching(code, form.pattern) {
+			if name != table {
+				continue
+			}
+			if form.pattern != referencesPattern {
+				return false, nil
+			}
+			references++
+		}
+	}
+	var targets []keyTarget
+	for _, s := range w.statements {
+		for _, target := range foreignKeyTargets(s.body) {
+			if target.table == table {
+				targets = append(targets, target)
+			}
+		}
+	}
+	if references == 0 || len(targets) != references {
+		return false, nil
+	}
+	var primaryKey []string
+	found, err := w.c.read(w.c.catalog, primaryKeyQuery, table, &primaryKey)
+	if err != nil || !found || len(primaryKey) == 0 {
+		return false, err
+	}
+	for _, target := range targets {
+		for _, column := range target.columns {
+			if !slices.Contains(primaryKey, column) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+// keyTarget is one foreign key a statement adds, as foreignKeyTargets reads it: the table it
+// references, named as the census names a touched table (matchedNames folds it to lower case and
+// takes public. off), and the columns it names there, none where it names no column and so
+// references the table's primary key.
+type keyTarget struct {
+	table   string
+	columns []string
+}
+
+// foreignKeyTargets reads every foreign key that node, a parse tree or any part of one, holds,
+// wherever the tree holds its Constraint node: an ALTER TABLE's ADD CONSTRAINT, an added
+// column's REFERENCES, and a CREATE TABLE's column or table constraint. A foreign key whose node
+// it cannot read is left out, so referencedByItsPrimaryKey finds fewer keys than references
+// clauses and counts the table as changed.
+func foreignKeyTargets(node json.RawMessage) []keyTarget {
+	var list []json.RawMessage
+	if json.Unmarshal(node, &list) == nil {
+		var targets []keyTarget
+		for _, item := range list {
+			targets = append(targets, foreignKeyTargets(item)...)
+		}
+		return targets
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(node, &object) != nil {
+		return nil
+	}
+	var targets []keyTarget
+	for key, value := range object {
+		if key == "Constraint" {
+			var constraint struct {
+				Type    string    `json:"contype"`
+				Pktable *rangeVar `json:"pktable"`
+				PkAttrs []struct {
+					String *struct {
+						Sval string `json:"sval"`
+					} `json:"String"`
+				} `json:"pk_attrs"`
+			}
+			if json.Unmarshal(value, &constraint) == nil && constraint.Type == "CONSTR_FOREIGN" && constraint.Pktable != nil {
+				target, ok := keyTarget{table: keyTable(*constraint.Pktable)}, true
+				for _, attribute := range constraint.PkAttrs {
+					if attribute.String == nil {
+						ok = false
+						break
+					}
+					target.columns = append(target.columns, attribute.String.Sval)
+				}
+				if ok {
+					targets = append(targets, target)
+				}
+			}
+		}
+		targets = append(targets, foreignKeyTargets(value)...)
+	}
+	return targets
+}
+
+// keyTable names the table a foreign key references as matchedNames names a touched table: its
+// parts joined by dots, folded to lower case, with public. taken off.
+func keyTable(relation rangeVar) string {
+	var parts []string
+	for _, part := range [...]string{relation.Catalogname, relation.Schemaname, relation.Relname} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.TrimPrefix(strings.ToLower(strings.Join(parts, ".")), "public.")
+}
 
 // writtenRelation reads the RangeVar of the table a bounded write writes: ok where it names table
 // as the census reads a touched name (matchedNames folds it to lower case and takes public. off,

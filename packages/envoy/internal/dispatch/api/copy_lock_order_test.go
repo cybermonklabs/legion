@@ -6,6 +6,8 @@
 
 package api
 
+//ci:builds packages/envoy ./cmd/dispatch buildCopyLockGraph go list -deps -export ./cmd/dispatch in packages/envoy
+
 import (
 	"bytes"
 	"encoding/json"
@@ -48,11 +50,26 @@ var (
 // caller's, and commit it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
 // each settlement settleOwedNow runs opens and commits its own, and SettleIssueDocuments, which
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
-// its own.
+// its own; writeIssue, the PATCH's write core, begins and commits its own, so what one call of it
+// takes does not order its caller's later calls; the pass of R25's boot fix under its lease
+// (parentStatusFixPass.run) holds no transaction and no ledger across its steps: its planning
+// transaction rolls back before the first step, each step commits its own in writeIssue, and its
+// record is a statement of its own, so the pass holds nothing when it returns and a later try of
+// the lease is not ordered after it; and the two boot one-shots that main runs before that fix
+// (api.RunParentStatusFixAtBoot) and that take a pending row or append an event hold nothing when
+// they return, so main holds neither when the fix runs: restoreDecidedWordings runs
+// docs.Service.RestoreDecidedWordings, which begins one transaction and commits it or rolls it
+// back before it returns; and repairIssueAsks runs api.RepairIssueAsks, which repairs each issue
+// in a transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred rollback
+// ends.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
+	"api.server.writeIssue",
+	"api.parentStatusFixPass.run",
+	"main.restoreDecidedWordings",
+	"main.repairIssueAsks",
 }
 
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock
@@ -316,6 +333,42 @@ func buildCopyLockGraph() (*lockGraph, error) {
 		return nil, errors.New("docs.projectCopiesLock, the statement the copy lock is taken with, is gone: point the guard at its replacement")
 	}
 	copyLock = sqlWhitespace.ReplaceAllString(strings.ToLower(copyLock), " ")
+	graph := newLockGraph(root, modules, constants)
+	for _, name := range ownTransactionFunctions {
+		fn := graph.named[name]
+		if fn == nil {
+			return nil, fmt.Errorf("%s, which ownTransactionFunctions lists as running in a transaction of its own, is gone: point the list at its replacement", name)
+		}
+		fn.ownTransaction = true
+	}
+	for _, fn := range graph.functions {
+		fn.seeds = statementLocks(fn, constants, copyLock)
+		fn.reach = fn.seeds
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range graph.functions {
+			reach := fn.reach
+			for _, callees := range graph.calls(fn) {
+				for _, callee := range callees {
+					reach |= callee.reach
+				}
+			}
+			if reach != fn.reach {
+				fn.reach, changed = reach, true
+			}
+		}
+	}
+	return graph, nil
+}
+
+// newLockGraph builds the call graph over the packages modules type-checked from source, as the
+// copy-lock guard (buildCopyLockGraph) and the spec-writer guard's planted module
+// (plantedSpecWriterGraph) both read it: the module's concrete types, the candidates for an
+// interface method call; every function, method and function literal (addFile); and the
+// functions each variable and struct field stores (addStored). It reads no lock: what each
+// function takes is the copy-lock guard's own pass over the graph.
+func newLockGraph(root string, modules *moduleImporter, constants map[string]string) *lockGraph {
 	graph := &lockGraph{
 		root:            root,
 		info:            modules.info,
@@ -340,35 +393,10 @@ func buildCopyLockGraph() (*lockGraph, error) {
 	for _, source := range modules.sources {
 		graph.addFile(source)
 	}
-	for _, name := range ownTransactionFunctions {
-		fn := graph.named[name]
-		if fn == nil {
-			return nil, fmt.Errorf("%s, which ownTransactionFunctions lists as running in a transaction of its own, is gone: point the list at its replacement", name)
-		}
-		fn.ownTransaction = true
-	}
 	for _, source := range modules.sources {
 		graph.addStored(source)
 	}
-	for _, fn := range graph.functions {
-		fn.seeds = statementLocks(fn, constants, copyLock)
-		fn.reach = fn.seeds
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, fn := range graph.functions {
-			reach := fn.reach
-			for _, callees := range graph.calls(fn) {
-				for _, callee := range callees {
-					reach |= callee.reach
-				}
-			}
-			if reach != fn.reach {
-				fn.reach, changed = reach, true
-			}
-		}
-	}
-	return graph, nil
+	return graph
 }
 
 // addFile registers every function, method and function literal source declares, including the
@@ -650,6 +678,18 @@ func (g *lockGraph) callees(call *ast.CallExpr) []*lockFunction {
 		for _, argument := range call.Args {
 			callees = append(callees, g.functionValue(argument)...)
 		}
+	}
+	return callees
+}
+
+// calleesAndPassed is what call runs as callees resolves it, and every function call is passed,
+// whatever call does with it: a function handed to a Go method or time.AfterFunc too, which
+// callees leaves out as another goroutine's. The keyed-write guard (keyedWriteGuard.callees) and
+// the spec-writer guard (specWriterWalk.step) follow a call this way.
+func (g *lockGraph) calleesAndPassed(call *ast.CallExpr) []*lockFunction {
+	callees := g.callees(call)
+	for _, argument := range call.Args {
+		callees = append(callees, g.functionValue(argument)...)
 	}
 	return callees
 }

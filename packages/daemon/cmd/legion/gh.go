@@ -68,15 +68,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, one whose checks could not be made to run, and one whose destination GitHub answers
-// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. A call that
-// writes nothing, by the rule ghWritesNothing
-// holds and under the shared check that rule was proven against (ghReadsProvenCheck), is read by
-// that check alone and gets no read of a repository's visibility and no private-name pass. Three
-// calls pass unchecked: `legion gh auth git-credential`, which answers above before any of this,
-// the exact `gh api rate_limit` (ghRateLimitRead), and the guard's own visibility reads
-// (ghVisibilityRead). The shared check's visibility read this command answers itself
-// (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs the rate-limit
-// read, the guard's own visibility reads and each call the shared check alone read with no pager.
+// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. Its
+// private-name pass runs the deployment's rule file, the one LEGION_PRIVATE_NAME_RULES_FILE names;
+// where none is named, the guard runs the shared check alone, where the deployment runs one, and
+// reads no visibility, and this command prints nothing of it, since the daemon's boot has said
+// once that the deployment names no rule file. A call that writes nothing, by the rule
+// ghWritesNothing holds and under the shared check that rule was proven against
+// (ghReadsProvenCheck), is read by that check alone and gets no read of a repository's visibility
+// and no private-name pass. Three calls pass unchecked: `legion gh auth git-credential`, which
+// answers above before any of this, the exact `gh api rate_limit` (ghRateLimitRead), and the
+// guard's own visibility reads (ghVisibilityRead). The shared check's visibility read this command
+// answers itself (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs
+// the rate-limit read, the guard's own visibility reads and each call the shared check alone read
+// with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, since a deployment that reaches GitHub through a proxy names it
@@ -115,10 +119,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // gh under the variable again, so a real gh that leads back is still refused one start later, with
 // or without a caller's GH_TOKEN.
 //
-// Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
-// children, the shared check and the visibility reads, which the guard starts under the context
-// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
-// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
+// Everything this command starts before gh — the git reads of the repository's configuration and
+// remotes (ghRepoGitConfigRefusal, readGitRemotes), the help reads (readGhHelp), and the leak
+// guard's children, the shared check and the visibility reads, which the guard starts under the
+// context it is given (leakguard's Guard.run) — runs in a process group of its own, which none of
+// the terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
 // cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
 // hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
 // 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
@@ -186,7 +191,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// The two exact reads run `gh api` on an endpoint with no placeholder, which starts no git at
 	// all, so they read none: each stays the one gh process the guard counts on.
 	if !rateLimitRead && !isVisibilityRead {
-		if err := ghRepoGitConfigRefusal(helpEnv); err != nil {
+		err := ghRepoGitConfigRefusal(beforeGh, helpEnv)
+		if status, ok := signalled(beforeGh); ok {
+			return status
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
@@ -231,7 +240,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// reads anything of it. gh's help of each command on the way is read once per gh binary
 		// and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, readGitRemotes,
+		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status
@@ -273,23 +282,37 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// handed to the guard as one (leakguard.GhRequest.WritesNothing), with the sha256 of the
 	// shared check its rule was proven against, which this binary holds (ghReadsProvenCheck).
 	// Under that check the guard runs the check and nothing more, and says so
-	// (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any other it
-	// runs whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every
-	// other call is guarded whole, the visibility read and the private-name pass included.
+	// (leakguard.GhReadCheckedOnly), and the log line says checked-only; under any other it runs
+	// whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every other
+	// call is guarded whole, the visibility read and the private-name pass included, where the
+	// deployment names its rule file (LEGION_PRIVATE_NAME_RULES_FILE, leakguard.RulesFileVar).
+	// Where it names none, the guard runs the shared check alone, where one runs, reads no
+	// visibility and no file the call sends, and says so (leakguard.GhReadNoRules): the log line
+	// says no-rules, and standard error holds nothing of it, so that a script reading gh's output
+	// reads gh's alone.
 	//
 	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
 	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
 	// answered 404. All three exit 2, this command's status for a refusal made before gh runs,
 	// which is what an unreadable command and an unset variable already exit with, and all three
-	// print the guard's own message, which never holds the text it refused.
+	// print the guard's own message. A refusal by the private-name rules shows, for each finding,
+	// the record, the rule's description, the text that matched and the line it stands on: the
+	// agent that runs this command wrote that text, so there is nothing in it to hide from the
+	// agent the refusal is shown to.
 	//
-	// The files the call would send go with it, read out of the parse above, which knew each
-	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,
-	// and needs no second reader of the argv for a call this command checked. So does whether
-	// the call sends its standard input as content, which the guard reads itself where no shared
-	// check runs to ask for it (leakguard.GhRequest.StdinSent).
+	// What the call would send goes with it, read out of the parse above, which knew each
+	// option's arity from the leaf's own help (ghSentFiles), as one answer
+	// (leakguard.GhRequest.Sent): the files, whose text the guard reads, so it needs no second
+	// reader of the argv for a call this command checked; the use the call makes of standard
+	// input, which says whether that input is a request body (`gh api --input -`, `gh
+	// workflow run --json`), the value of fields, or text GitHub stores as it stands, and where
+	// two options name it with different uses the parse hands none and the guard reads the input
+	// both ways; and whether the call sends its standard input as content at all, by which the
+	// guard reads that input as leakguard.GhRequest.Sent says.
 	var buffered []byte
-	checkedOnly := false
+	// read is how much of the guard the call had (leakguard.GhRead), whole for a mode that runs
+	// no guard.
+	read := leakguard.GhReadWhole
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
 	switch mode {
 	case ghRateLimitCall:
@@ -308,8 +331,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
-			Files:         target.files,
-			StdinSent:     target.stdinSent,
+			Sent:          target.sent,
 			WritesNothing: mode == ghReadCall,
 			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
@@ -320,9 +342,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}
-		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
-		if checkedOnly {
+		buffered, read = answer.Stdin, answer.Read
+		switch read {
+		case leakguard.GhReadCheckedOnly:
 			visibilitySource = ghCheckedOnlyVisibility
+		case leakguard.GhReadNoRules:
+			visibilitySource = ghNoRulesVisibility
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
@@ -338,15 +363,20 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
-	// A call no private-name pass read runs no pager program: such a program runs with this call's
-	// token directory and could write what that pass never read. Its pager is cat, which gh reads
-	// as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its standard
-	// output is a terminal). No call is given a browser, an editor or a pager from the caller's
-	// environment (ghChildEnviron); gh's config `browser` is left, because gh reads it only to open
-	// a page, which such a call never does: a leaf of ghReadLeaves opens one only under --web,
-	// which no read grammar names, so a call giving it is guarded whole (ghWritesNothing), and `gh
-	// api` opens none.
-	if mode == ghRateLimitCall || mode == ghVisibilityCall || checkedOnly {
+	// A call that went around the private-name pass — the rate-limit read and the guard's own
+	// visibility reads, which run no guard, and a call the shared check alone read
+	// (leakguard.GhReadCheckedOnly) — runs no pager program: such a program runs with this call's
+	// token directory and could write what that pass never read. Its pager is cat, which gh
+	// reads as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its
+	// standard output is a terminal). A call guarded whole keeps gh's config `pager`, and so does
+	// a call the guard answered leakguard.GhReadNoRules: the deployment names no private-name
+	// rule, so there is no pass for it to go around, and what its pager could write no pass would
+	// have read either. No call is given a browser, an editor or a pager from the caller's
+	// environment (ghChildEnviron); gh's config `browser` is left, because gh reads it only to
+	// open a page, which such a call never does: a leaf of ghReadLeaves opens one only under
+	// --web, which no read grammar names, so a call giving it is guarded whole
+	// (ghWritesNothing), and `gh api` opens none.
+	if mode == ghRateLimitCall || mode == ghVisibilityCall || read == leakguard.GhReadCheckedOnly {
 		set["GH_PAGER"] = "cat"
 	}
 	childEnv, err := withGitHubUseHTTPPath(ghChildEnviron(os.Environ(), set))
@@ -730,77 +760,105 @@ func ghWrapperFile(path string) (bool, error) {
 // the selectors named no owner or two; and repo, that repository's name keyed as gh reads a name
 // of it where every selector of the command named that one repository of that owner and "" where
 // they named more than one, where one named the owner alone, and where none named a repository
-// at all. command is the resolved command path with no arguments. files are the files the
-// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of,
-// and stdinSent whether it sends its standard input as content as well. writesNothing is whether
-// the call is in a read grammar (ghWritesNothing), so that under the shared check that rule was
+// at all. command is the resolved command path with no arguments. sent is what the command would
+// send to GitHub beside its argv (ghSentFiles), the leak guard's to read: the files it sends as
+// content, the use it makes of standard input, leakguard.StdinUnknown where no option names it (a
+// file option's `-`, a field's `@-`, `gh workflow run --json`) or two name it with different
+// uses, and whether any of them names it, so that the command sends its standard input as
+// content as well. It is nil only in the targets of the two exact reads, which runGh builds
+// without ghTargetOf and hands no guard. ghTargetOf answers it for every command, so the guard
+// reads none of it out of the argv again (leakguard.GhRequest.Sent), and a command that only
+// prints gets the zero GhSent, which names nothing (ghPrintsOnly). writesNothing is whether the
+// call is in a read grammar (ghWritesNothing), so that under the shared check that rule was
 // proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call sends
 // no file: no grammar names an option of ghSentFileOptions
 // (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	command          string
-	files            []leakguard.GhFile
-	stdinSent        bool
+	sent             *leakguard.GhSent
 	writesNothing    bool
 }
 
-// ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
-// sends to GitHub as content: true where the whole value is the path, and false for `gh api`'s
-// --field, whose file is the `@<path>` half of a `<name>=@<path>` value. They are the same four
-// plus the field that leakguard's own table holds (its ghFileArgs), read here by their long
-// names because the leaf's own help has already said which option each argument is: a `-F` is
-// --body-file in `gh pr create`, --notes-file in `gh release create` and --field in `gh api`,
-// and a short cluster (`-dF <path>`) and an attached value (`-F=<path>`) are read as pflag
-// reads them.
-var ghSentFileOptions = map[string]bool{
-	"body-file":  true,
-	"notes-file": true,
-	"input":      true,
-	"from-file":  true,
-	"field":      false,
+// ghPrintsOnly is ghTargetOf's target of a command gh only prints for — `gh --version` and `gh
+// -h`, each the whole argv (ghTargetOf refuses any other -h before the leaf's name), `gh` with no
+// command, a group with no leaf, a leaf whose help is asked for, by `--help` or by a `-h` no
+// option of the leaf takes, and `gh help`, with a command or without — which names no owner and
+// sends nothing beside its argv. Its sent is the zero GhSent, so the guard opens no file its
+// options name: `gh pr comment 1 --body-file <path> --help` prints the leaf's help and reads no
+// <path>, and a guard that read the leaf's options with tables of its own would refuse the call
+// where no file is at <path>.
+func ghPrintsOnly() ghTarget {
+	return ghTarget{sent: &leakguard.GhSent{}}
 }
 
-// ghSentFiles are the files the parsed command would send to GitHub as content, each named once
-// and each named by the option it came from, for the leak guard to read the text of
-// (leakguard.GhRequest.Files), and whether it sends its standard input as content as well. The
-// files are never nil, so a command that sends no file is a command the guard reads no file of,
-// rather than one it reads the argv of again with a table of its own.
+// ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
+// sends to GitHub as content, each with the use its value of `-` makes of standard input
+// (leakguard.StdinUse): the request body for `gh api`'s --input, the value of a field for
+// --field, whose file is the `@<path>` half of a `<name>=@<path>` value, and text GitHub stores as
+// it stands for the rest. They are the options leakguard's own tables read (its readGhArgv),
+// read here by their long names because the leaf's own help has already said which option each
+// argument is: a `-F` is --body-file in `gh pr create`, --notes-file in `gh release create` and
+// --field in `gh api` and `gh workflow run`, and a short cluster (`-dF <path>`) and an attached
+// value (`-F=<path>`) are read as pflag reads them.
+var ghSentFileOptions = map[string]leakguard.StdinUse{
+	"body-file":  leakguard.StdinText,
+	"notes-file": leakguard.StdinText,
+	"input":      leakguard.StdinRequestBody,
+	"from-file":  leakguard.StdinText,
+	"field":      leakguard.StdinField,
+}
+
+// ghSentFiles is what the parsed command would send to GitHub beside its argv (leakguard.GhSent),
+// for the leak guard to read as one answer (leakguard.GhRequest.Sent): the files it sends as
+// content, each named once and each named by the option it came from, whose text the guard
+// reads; the use the command makes of standard input; and whether it sends that input as content
+// at all. command is the leaf's path. What each option's value names is leakguard.GhSent's rule,
+// the one the guard's own reader of a bare argv keeps to, so the two readers name what one
+// option's value sends the same way. Finding the values is this parse's reading by the leaf's
+// help, which reads calls the guard's own reader cannot, such as `gh pr create -dF <path>`
+// (`--draft --body-file <path>`), and the guard takes this answer in place of its own reading.
+// The answer is never nil, so a command that sends nothing is a command the guard reads nothing
+// of, rather than one it reads the argv of again with tables of its own. A file a field names
+// (`-F <name>=@<path>` in `gh api`) carries the field's name (leakguard.GhFile.Field), which is
+// what tells the guard that the file of a `gh api graphql` call's `query` field is a GraphQL
+// query.
 //
-// A value of `-`, and an `@-`, is standard input, which is no file to open: the guard reads it
-// through the shared check's own handshake, and reads it itself where no shared check runs
-// (leakguard.GhRequest.StdinSent). The options are read in the order their names sort, since a
-// parse holds each option's values together and not the argv's order across options, and a
-// report that named two files must name them the same way twice.
-func ghSentFiles(parsed ghArgs) (files []leakguard.GhFile, stdin bool) {
-	files = []leakguard.GhFile{}
+// A value of `-`, and an `@-`, is standard input, which is no file to open, and which the guard
+// reads as leakguard.GhRequest.Sent says. What is answered for it instead is that it is sent and
+// the use the option that named it makes of it (ghSentFileOptions), since that says what the
+// input is: `gh api --input -` makes it the request body, a `--field <name>=@-` the value of
+// a field, and each other option text GitHub stores as it stands. `gh workflow run --json`, where
+// its last value is true (ghArgs.booleans), names it too (leakguard.GhSent.UsesStdin): gh reads
+// the run's inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub
+// keeps each input apart, so it is a JSON request body, read one string at a time. Only the
+// command path says so, since `--json` takes the names of fields to print in every other gh
+// command. (leakguard.GhSent.UsesStdin says what two options naming it with different uses
+// answer.) The options are read in the order their names sort, since a parse holds each option's
+// values together and not the argv's order across options, and a report that named two files
+// must name them the same way twice.
+func ghSentFiles(command []string, parsed ghArgs) *leakguard.GhSent {
+	sent := &leakguard.GhSent{}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
-		whole := ghSentFileOptions[name]
+		use, option := ghSentFileOptions[name], "--"+name
 		for _, value := range parsed.values[name] {
-			path := value
-			if !whole {
-				_, after, found := strings.Cut(value, "=")
+			path, field := value, ""
+			if use == leakguard.StdinField {
+				fieldName, after, found := strings.Cut(value, "=")
 				if !found || !strings.HasPrefix(after, "@") {
 					// A field given a literal value, and `gh project field-list --field <name>`,
 					// name no file.
 					continue
 				}
-				path = strings.TrimPrefix(after, "@")
+				path, field = strings.TrimPrefix(after, "@"), fieldName
 			}
-			if path == "-" {
-				stdin = true
-				continue
-			}
-			if path == "" {
-				continue
-			}
-			if slices.ContainsFunc(files, func(file leakguard.GhFile) bool { return file.Path == path }) {
-				continue
-			}
-			files = append(files, leakguard.GhFile{Option: "--" + name, Path: path})
+			sent.Names(option, path, field, use)
 		}
 	}
-	return files, stdin
+	if parsed.booleans["json"] && slices.Equal(command, []string{"workflow", "run"}) {
+		sent.UsesStdin(leakguard.StdinRequestBody)
+	}
+	return sent
 }
 
 // ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,
@@ -814,11 +872,12 @@ func ghCallerToken(env map[string]string) string {
 	return ""
 }
 
-// ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
-// target when the command names no owner. It fails closed: whenever it cannot be certain which
-// gh directory the command needs it is an error, which names the argument it could not place, and
-// nothing is sent. `gh --version` alone, and a command whose last --help is true, name none,
-// since gh only prints.
+// ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`). A command
+// naming no owner gets a target with no owner, no repository and no directory, and a sent that is
+// never nil. It fails closed: whenever it cannot be certain which gh directory the command needs
+// it is an error, which names the argument it could not place, and nothing is sent. `gh
+// --version` and `gh -h` alone, and a command whose last --help is true, name none and send
+// nothing, since gh only prints (ghPrintsOnly).
 //
 // It reads the command as gh does, from gh's own help of each command on the way (help): the
 // path of subcommands down to the leaf the arguments run, every option's arity, and the arguments
@@ -828,13 +887,13 @@ func ghCallerToken(env map[string]string) string {
 // token itself, are errors before its help is read, since reading it could run them (ghWalk); so
 // is such a word as the target of `gh help`, which for an extension gh runs (ghHelpTarget), and a
 // word whose help is another command's that lists no such alias of its own. Before the leaf only
-// the inherited -R/--repo and --help/-h may come, read with the leaf's own options; anything else
-// there, a subcommand gh does not know, help that lists an option incompletely or not at all, an
-// option the leaf's help does not list or names a selector of in a way this does not know, and an
-// argument its USAGE has no place for or names in a way this does not know (ghSlotKinds) are
-// errors. The leaf's options are read with pflag's rules, and after `--` the rest are its
-// arguments, unless its USAGE passes them on (`gh repo clone <repository> [<directory>] [--
-// <gitflags>...]`).
+// the inherited -R/--repo and --help may come, read with the leaf's own options, and a -h only as
+// the whole argv (`gh -h`; the walk's -h case says why); anything else there, a subcommand gh
+// does not know, help that lists an option incompletely or not at all, an option the leaf's help
+// does not list or names a selector of in a way this does not know, and an argument its USAGE has
+// no place for or names in a way this does not know (ghSlotKinds) are errors. The leaf's options
+// are read with pflag's rules, and after `--` the rest are its arguments, unless its USAGE passes
+// them on (`gh repo clone <repository> [<directory>] [-- <gitflags>...]`).
 //
 // Every selector the leaf's help names counts: a `<repository>` (or another repository) argument,
 // before `--` or, for a leaf passing the rest on, the first after it; an `<owner>`; a URL argument
@@ -875,20 +934,22 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if name := ghCallerToken(env); name != "" {
 		return ghTarget{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
 	}
+	// `--version` and `-h` are gh's two print-only words that stand alone: `gh --version` prints
+	// gh's version, and `gh -h` alone names no command and prints gh's help.
+	if len(argv) == 1 && (argv[0] == "--version" || argv[0] == "-h") {
+		return ghPrintsOnly(), nil
+	}
 	walk := ghWalk{help: help}
 	var rest []string
 	var cmd *ghCommand
 	for i := 0; i < len(argv) && cmd == nil; i++ {
 		arg := argv[i]
 		switch {
-		case len(walk.path) == 0 && arg == "--version":
-			if len(argv) == 1 {
-				return ghTarget{}, nil
-			}
-			// gh reads a word after it as a command, an alias's or an extension's among them.
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh's version is `gh --version` alone)", false)
 		case len(walk.path) == 0 && arg == "help":
-			return ghTarget{}, ghHelpTarget(argv[i+1:], help)
+			if err := ghHelpTarget(argv[i+1:], help); err != nil {
+				return ghTarget{}, err
+			}
+			return ghPrintsOnly(), nil
 		case arg == "-R" || arg == "--repo":
 			if i+1 == len(argv) {
 				return ghTarget{}, cannotPlace(arg, "has no value", false)
@@ -896,11 +957,34 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 			rest = append(rest, arg, argv[i+1])
 			i++
 		case strings.HasPrefix(arg, "--repo=") || (strings.HasPrefix(arg, "-R") && len(arg) > 2) ||
-			arg == "--help" || strings.HasPrefix(arg, "--help=") || arg == "-h":
+			arg == "--help" || strings.HasPrefix(arg, "--help="):
 			// The leaf reads these as its own, in order with the rest of its arguments.
 			rest = append(rest, arg)
 		case strings.HasPrefix(arg, "-"):
-			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may", false)
+			why := "comes before the command's name, and only -R/--repo and --help may"
+			switch {
+			case len(walk.path) == 0 && arg == "--version":
+				// gh reads a word after it as a command, an alias's or an extension's among them.
+				why += " (gh's version is `gh --version` alone)"
+			case arg == "-h":
+				// cobra v1.10.2, the one gh 2.98.0 pins (command.go), finds the command before it
+				// adds a help flag (InitDefaultHelpFlag runs in execute, after Find, and adds none
+				// to gh, whose root defines --help itself, a persistent boolean with no -h), and
+				// neither gh's root nor any of its groups defines a -h. Find strips each command's
+				// options on the way with stripFlags, which reads a two-letter option the command
+				// does not define as a boolean (shortHasNoOptDefVal) as one whose value is the next
+				// word, but only when two or more words follow it
+				// (`if len(args) <= 1 { break Loop }`). So with two or more words after it, gh
+				// takes the first as the -h's value and runs the command the later words name,
+				// whose own -h, where it has one (--hostname, --host, --homepage), reads a later
+				// -h: `gh -h status config set -h github.com editor x` runs `gh config set`. With
+				// one word after it, stripFlags stops there, Find goes no deeper, and pflag answers
+				// the undefined -h with the help of the command found so far. Either way the walk
+				// refuses it, since gh's contract (docs/deployment.md) admits only -R/--repo and
+				// --help before the command; --help, a boolean, takes no word.
+				why += " (gh can take the word after such a -h as its value and run another command; ask for help with --help)"
+			}
+			return ghTarget{}, cannotPlace(arg, why, false)
 		default:
 			if err := walk.check(arg); err != nil {
 				return ghTarget{}, err
@@ -917,11 +1001,14 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	}
 	if cmd == nil {
 		// No leaf: `gh`, or a group alone, which prints its help.
-		return ghTarget{}, nil
+		return ghPrintsOnly(), nil
 	}
 	parsed, err := cmd.parse(rest)
-	if err != nil || parsed.help {
+	if err != nil {
 		return ghTarget{}, err
+	}
+	if parsed.help {
+		return ghPrintsOnly(), nil
 	}
 	// A refused command only prints under --help, as any command does.
 	if err := ghRefusedCommand(cmd.path); err != nil {
@@ -934,7 +1021,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err := sel.fromOwnRepository(cmd, parsed, env, remotes); err != nil {
 		return ghTarget{}, err
 	}
-	files, stdinSent := ghSentFiles(parsed)
+	sent := ghSentFiles(cmd.path, parsed)
 	command := strings.Join(cmd.path, " ")
 	writesNothing := ghWritesNothing(argv, cmd.path)
 	fallback := ""
@@ -945,7 +1032,8 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err != nil {
 		return ghTarget{}, err
 	}
-	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, nil
+	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command,
+		sent: sent, writesNothing: writesNothing}, nil
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
@@ -959,13 +1047,17 @@ func cannotPlace(arg, why string, api bool) error {
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
-// value given each option, by long name, the last value given each boolean option but --help, by
-// long name, and whether gh only prints the leaf's help.
+// value given each option that takes one, by long name, the last value given each boolean option
+// but --help, by long name, and whether gh only prints the leaf's help.
 type ghArgs struct {
 	positionals []string
 	values      map[string][]string
-	booleans    map[string]bool
-	help        bool
+	// booleans are the boolean options given but --help, by long name, each at its last value,
+	// which is the one pflag keeps (`gh workflow run --json --json=false` reads no inputs). They
+	// are kept apart from values, every option of which is read for what it selects
+	// (selectors.fromOptions), and a boolean selects nothing.
+	booleans map[string]bool
+	help     bool
 }
 
 // parse reads args, the arguments of the leaf with its path taken out, as pflag does, refusing an
@@ -1139,9 +1231,10 @@ func ghCloneGitFlagList() string {
 }
 
 // set records value given the option name: --help's as a boolean; another boolean's as pflag
-// reads it (strconv.ParseBool), the last given deciding, and false for a value that is no boolean,
-// which gh refuses itself; any other's taking a value in the order given. An option of
-// ghRefusedOptions is refused first, naming the argument it came in.
+// reads it (strconv.ParseBool), the last given deciding (booleans), where a value that is no
+// boolean leaves the option as it was, since gh refuses that call itself; any other's taking a
+// value in the order given. An option of ghRefusedOptions is refused first, naming the argument it
+// came in.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	if why, refused := ghRefusedOptions[name]; refused {
 		return fmt.Errorf("%q %s, so it sends nothing", arg, why)
@@ -1156,7 +1249,10 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	case flag.value:
 		p.values[name] = append(p.values[name], value)
 	default:
-		p.booleans[name], _ = strconv.ParseBool(value)
+		// A value that is no boolean leaves the option as it was: gh refuses that call itself.
+		if on, err := strconv.ParseBool(value); err == nil {
+			p.booleans[name] = on
+		}
 	}
 	return nil
 }
@@ -1252,16 +1348,13 @@ func refuseLegionGhAsRealGh(gh string) error {
 // ghHelpTimeout is the longest readGhHelp waits for the real gh to print a command's help. The
 // real gh prints it from its own binary in well under a second; a gh that has not in 30 s is
 // hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
-// that never returns. A test shortens it to read that the stop comes.
+// that never returns. A test shortens it to read that the stop comes. It is a variable so that
+// this package's tests can give it their own deadline otherwise (programbound); readGhHelp reads
+// it through programbound.Of.
 var ghHelpTimeout = 30 * time.Second
 
-// The bounds legion sets on a program it starts and waits for, which this package's tests give
-// their own deadline through programbound: the git reads of `legion gh` (ghGitReadBound), its read
-// of gh's help (ghHelpTimeout), its answer to the shared check's own visibility read
-// (visibilityAnswerBound), the credential helper's fork read (forkReadBound), and the worker shim's
-// grace for its agent (workerShimGrace). Each wait reads its bound through programbound.Of.
 func init() {
-	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace)
+	programbound.Register(&ghHelpTimeout)
 }
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for

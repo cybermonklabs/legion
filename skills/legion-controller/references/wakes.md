@@ -10,7 +10,7 @@ A `silent` entry is a phase worker nothing will prompt: the daemon sends its tas
 
 ## `awaiting-person`
 
-A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
+A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, within its priority, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.
 
 ## `tree-stalled`
 
@@ -42,4 +42,4 @@ Six turns of `role` in a row ended in a provider error; the daemon keeps prompti
 
 ## GitHub mentions
 
-Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names, and the Verification document where the root registered it as `criteria`; a project that wants no gate sets `gates.design: []` in `legion.yaml`.

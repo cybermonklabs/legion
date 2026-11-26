@@ -44,9 +44,9 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Each component's prose is registered with the request's reader as the component is shaped
-	// into the answer below: the trees are the table's rows where it holds them, and the read
-	// stores what it did not.
+	// Each component's prose and each Not architectural row's reason are registered with the
+	// request's reader as the answer is shaped below: the trees are the table's rows where it
+	// holds them, and the read stores what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer := architectureTreeRead{Components: make([]architectureComponentRead, len(components))}
+	shaped := make([]architectureComponentRead, len(components))
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}
 	tree.RetiredLinks = []model.ArchitectureTreeRetired{}
@@ -78,8 +78,8 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		if component.Total == 0 && !component.External {
 			tree.Totals.ComponentsWithoutWork++
 		}
-		answer.Components[index].ArchitectureTreeComponent = *component
-		reader.text(&answer.Components[index].ProseTree, component.Prose)
+		shaped[index].ArchitectureTreeComponent = *component
+		reader.text(&shaped[index].ProseTree, component.Prose)
 	}
 	for _, issue := range issues {
 		tree.Totals.IssuesTotal++
@@ -107,11 +107,29 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
+	notArchitectural := make([]architectureTreeNoneRead, len(tree.NotArchitectural))
+	for index, row := range tree.NotArchitectural {
+		notArchitectural[index].ArchitectureTreeNone = row
+		reader.text(&notArchitectural[index].ReasonTree, row.Reason)
+	}
 	// The trees are filled before the answer is written, and the store of what the table did
 	// not hold runs on a goroutine of its own, beside the rest of the request.
 	reader.resolve()
-	answer.ArchitectureTree = tree
-	WriteJSON(w, http.StatusOK, answer)
+	WriteJSON(w, http.StatusOK, architectureTreeRead{
+		ArchitectureTree: tree,
+		NotArchitectural: notArchitectural,
+		RetiredLinks:     tree.RetiredLinks,
+		Components:       shaped,
+	})
+}
+
+// architectureTreeNoneRead is one issue of the Not architectural list with the tree of the reason
+// it gives for touching no component: the reason is markdown its writer typed in a box that
+// carries the reference picker (`architecture-reason`), so the dashboard draws it through the
+// renderer, from this tree.
+type architectureTreeNoneRead struct {
+	model.ArchitectureTreeNone
+	ReasonTree model.DisplayTree `json:"reason_tree,omitempty"`
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id
@@ -195,16 +213,19 @@ func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue
 // attachTreeIssues joins every issue's effective set to the component containment closure
 // (transitive over components.parent, capped at parentDepthCap like the parent walks) and appends each
 // issue once to every component it counts for, in the issues' order. When an issue qualifies
-// several ways the strongest wins: direct (its own row names the component) over inherited (an
-// ancestor's row does) over contained (its set names a component this one contains; via is
-// that component). Retired ids match no component and count for nothing.
+// several ways the strongest wins: direct (its own row names the component) over inherited (the
+// row of an ancestor in its own project does) over contained (its set names a component this one
+// contains; via is that component). Retired ids match no component and count for nothing. The
+// owner walk climbs only to parents of the project, as issueComponentsTerms does, so an issue
+// under an issue of another project takes no attachment from it: component ids belong to one
+// project's model.
 func attachTreeIssues(ctx context.Context, q queryer, project string, issues []treeIssue, byID map[string]*model.ArchitectureTreeComponent) error {
 	rows, err := q.Query(ctx, `
 		with recursive chain as (
 			select i.key as start, i.key, i.parent_key, 0 as depth from issues i where i.project_key = $1
 			union
 			select c.start, p.key, p.parent_key, c.depth + 1
-			from chain c join issues p on p.key = c.parent_key
+			from chain c join issues p on p.key = c.parent_key and p.project_key = $1
 			where c.depth < `+parentDepthCapSQL+`
 		), owner as (
 			select distinct on (c.start) c.start as key, c.key as owner_key

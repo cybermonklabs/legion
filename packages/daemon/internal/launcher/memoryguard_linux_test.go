@@ -59,11 +59,12 @@ const memoryGuardHeld = 64 << 20
 // holder's, each a link to the process's own directory in /proc, so the guard can end nothing of
 // the machine's.
 func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
+	t.Parallel()
 	switch os.Getenv(memoryGuardRoleEnv) {
 	case "init":
-		memoryGuardRoleInit()
+		memoryGuardRoleInit(t)
 	case "hold":
-		memoryGuardHold()
+		memoryGuardHold(t)
 	}
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -84,7 +85,7 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initProcess := exec.Command(self, "-test.run=^TestMemoryGuardOnRealRoleNamespaces$")
+	initProcess := exec.Command(self, reentry(t, "TestMemoryGuardOnRealRoleNamespaces")...)
 	initProcess.Env = append(os.Environ(), memoryGuardRoleEnv+"=init")
 	initProcess.ExtraFiles = []*os.File{readyWrite, statusWrite}
 	initProcess.SysProcAttr = attr
@@ -213,8 +214,9 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 // /proc of the PID namespace the holder is started in; then it starts the holder in that nested
 // user namespace as the image's unprivileged user, as runRoleShim starts the shim, hands it the
 // test's ready pipe (fd 3), waits on it, and writes the wait status it read on the test's status
-// pipe (fd 4).
-func memoryGuardRoleInit() {
+// pipe (fd 4). The holder is this process's own re-entered child, so its -test.timeout ends
+// before this process's own deadline (reentry).
+func memoryGuardRoleInit(t *testing.T) {
 	ready, status := os.NewFile(3, "ready"), os.NewFile(4, "status")
 	self, err := os.Executable()
 	if err != nil {
@@ -229,7 +231,7 @@ func memoryGuardRoleInit() {
 		fmt.Fprintln(os.Stderr, "role-init: mount the role's own /proc:", err)
 		os.Exit(1)
 	}
-	hold := exec.Command(self, "-test.run=^TestMemoryGuardOnRealRoleNamespaces$")
+	hold := exec.Command(self, reentry(t, "TestMemoryGuardOnRealRoleNamespaces")...)
 	hold.Env = append(os.Environ(), memoryGuardRoleEnv+"=hold")
 	hold.ExtraFiles = []*os.File{ready}
 	hold.Stdout, hold.Stderr = os.Stdout, os.Stderr
@@ -248,13 +250,13 @@ func memoryGuardRoleInit() {
 	_ = hold.Wait()
 	ws, _ := hold.ProcessState.Sys().(syscall.WaitStatus)
 	fmt.Fprintf(status, "%d\n", uint32(ws))
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // memoryGuardHold is the holder: it writes every page of memoryGuardHeld bytes, says so on the
 // ready pipe, and keeps them until it is killed, or for two minutes, so a test that fails before
 // the kill leaves nothing behind for long.
-func memoryGuardHold() {
+func memoryGuardHold(t *testing.T) {
 	held := make([]byte, memoryGuardHeld)
 	for i := 0; i < len(held); i += os.Getpagesize() {
 		held[i] = 1
@@ -264,7 +266,7 @@ func memoryGuardHold() {
 	_ = ready.Close()
 	time.Sleep(2 * time.Minute)
 	runtime.KeepAlive(held)
-	os.Exit(0)
+	exitHelper(t)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -331,9 +333,14 @@ const (
 // the time of the high, the counter's high and low and the largest process, the agent; the next
 // hour's line carries that hour's readings alone.
 func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skipf("no python3 to start the agent's Python kernel with: %v", err)
+	}
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatal(err)
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -570,7 +577,7 @@ func argumentParts(args []string) []string {
 func controllerHelperPids(t *testing.T, dir string, log *lockedBuffer) map[string]int {
 	t.Helper()
 	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		var err error
 		body, err = os.ReadFile(filepath.Join(dir, "pids"))
 		return err == nil

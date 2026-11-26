@@ -352,6 +352,26 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			l.kept = &kept
 		}
 	}
+	// Whether this launch keeps its pod is settled now, so under dispatch_token_broker so is its
+	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
+	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
+	// waits for that pod's update round (dispatchCredential).
+	if err := r.dispatchCredential(&l, pod); err != nil {
+		return runtime.Locator{}, err
+	}
+	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
+	// where the configuration trades, and a launch that keeps a pod that trades nothing drops it
+	// here, once, so each reader of l.omp reads it alone (ompInputs), save agentArgv's first case,
+	// which owns a resume of a session the claim records with no file (spec.ResumeSession) as the
+	// one word `--resume=<id>` and needs no l.omp.resume. A launch that resumes by id, with no id
+	// Oh My Pi can read as one, is refused here, before anything of the pod is touched, and a
+	// launch that trades nothing resumes by its file as before (ompResumeRefusal).
+	if !l.trades(r) {
+		l.omp = ompInputs{}
+	}
+	if err := l.ompResumeRefusal(); err != nil {
+		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, err)
+	}
 	if installing && replace {
 		// Replaced, a controller pod built on another image included: the fresh pod comes up on
 		// the configured image, whose plugins are already current, so nothing is installed into it.
@@ -395,6 +415,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
 				return fail("remove the release's record that its secrets are deleted", err)
 			}
+			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
 			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
@@ -417,7 +438,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("wait for its new pod", err)
 		}
 		s = running
-		if err := r.bindLauncherSecrets(bounded, s, l, string(pod.UID)); err != nil {
+		if err := r.bindLauncherSecrets(bounded, s, l.roles, string(pod.UID)); err != nil {
 			return fail("bind its role launchers to the new pod", err)
 		}
 	}
@@ -445,7 +466,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
@@ -462,7 +483,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
+	// Whether the start carries a Dispatch token is the launch's own decision (prepare's bearer,
+	// dispatchCredential's transition token), recorded with the generation's addresses so a
+	// restarted daemon counts it too (Runtime.DispatchTokens).
+	carried := l.secrets[dispatchTokenKey] != ""
+	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r), carried); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
@@ -492,10 +517,18 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), session, command); err != nil {
+	// A pod of a kept volume is recorded with that volume before the role's start
+	// (recordKeptPod). A record the store could not write refuses this launch before its Start
+	// frame goes out, as the leak check's refusal does, so no role runs in a pod of a kept volume
+	// the issue's update round has no record of; nothing was issued, so nothing is stopped.
+	if err := r.launchers.recordKeptPod(starting, session); err != nil {
+		return fail("record its pod with its kept volume", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, session, command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
+	r.launchedDispatchToken(loc, carried)
 	r.join(loc)
 	return loc, nil
 }
@@ -533,10 +566,52 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 		checker: checker, recorded: recorded, proxied: r.proxiesGitHubIn(&spec, l.spec.Role)}, true
 }
 
+// dispatchCredential settles, under dispatch_token_broker, the Dispatch credential l's generation
+// carries, once relaunch knows whether l keeps pod, the live pod it found (l.kept), whose name is
+// its Sandbox's (l.name). prepare gave no launch a Dispatch token under the setting. A launch whose
+// pod carries an exchange identity — every pod a launch builds, since configure takes the setting
+// only beside an exchange audience, and a kept pod built with that identity — keeps none, and its
+// role trades the identity for a token of its own (launch.brokersDispatch,
+// DISPATCH_TOKEN_BROKER). A launch that keeps a pod built before the identity has none to trade
+// until the pod's update round replaces the pod (keptPod.trades), so it carries the transition
+// token as a launch carries the bearer without the setting, the role reading it through
+// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused with
+// runtime.AwaitingPodRound, which is runtime.ErrAwaitingPodRound naming the pod, and the supervisor
+// waits for that round, charging nothing. The refusal names the pod by the locator this launch's
+// process in it would have had (locatorFor). The supervisor keeps that locator on the claim, and
+// the round opens over the pod and replaces it through that locator where no claim records a
+// process there. A launch never replaces a pod a round covers, and the controller's pod, which no
+// round covers, is never kept without the identity: its launch replaces it for that drift
+// (movedInPod).
+//
+// A launch that carries the transition token is counted, and logged naming the claim, the pod and
+// both counts, once its start is sent (launchedDispatchToken): those are the launches a deployment
+// waits out before it removes dispatch_token_transition_file, and a launch that fails before its
+// start never handed its role the token.
+//
+// pod is read only for a launch that keeps it, which is a launch that found it live: a launch
+// that replaces its pod, or finds none, trades the identity the pod it builds carries.
+func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
+	if !r.dispatch.Broker || l.trades(r) {
+		return nil
+	}
+	if r.dispatch.Transition == "" {
+		return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
+			Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
+			Reason: fmt.Sprintf("pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+				l.name),
+		})
+	}
+	l.secrets[dispatchTokenKey] = r.dispatch.Transition
+	return nil
+}
+
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
 // unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
 // launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
-// refuses that launch before its Start is built.
+// refuses that launch before its Start is built. Nor does a launch whose pod of a kept volume the
+// store could not record: recordKeptPod refuses it before its Start is sent
+// (runtime.KeptPodUnrecorded).
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
 // same connection, so the launcher handles it once it has handled the Start. It runs with its own
@@ -1212,9 +1287,12 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 }
 
 // writeLauncherSecrets makes, for each launcher role of the pod (l.roles), a role-private Secret
-// holding a fresh launcher token. It runs only before a new pod starts, so every pod's launchers
-// authenticate with tokens no earlier pod held; a role's launch credentials travel in its
-// launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
+// holding a fresh launcher token. It runs only before a pod a launch makes starts, so the launchers
+// of such a pod authenticate with tokens no pod of an earlier launch held. A pod Agent Sandbox
+// makes again outside a launch, after an eviction or a node loss, projects the same Secrets, so
+// its launchers hold the tokens of the pod it replaced, which is gone; it is bound to them at its
+// launchers' first hello (bindAtHello). A role's launch credentials travel in its launcher's start
+// command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
 // hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
 // (GitHubPairsKey, empty where the project has none that resolve) and the default owner
@@ -1455,29 +1533,49 @@ func ownedBySandbox(refs []metav1.OwnerReference, uid types.UID) bool {
 }
 
 // lockPod takes a pod's launch turn, keyed by its Sandbox's name, an issue pod's and the project
-// controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod at a time
-// holds it. Role starts in a healthy pod share it only while they select a launcher command; the
-// pods of one tree's issues take turns of their own, never one another's.
+// controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod, or one
+// binding of its launchers at a hello (bindAtHello), at a time holds it. Role starts in a healthy
+// pod share it only while they select a launcher command; the pods of one tree's issues take turns
+// of their own, never one another's.
 func (r *Runtime) lockPod(ctx context.Context, sandbox string) (func(), error) {
 	return r.takeTurn(ctx, r.podTurns, sandbox)
+}
+
+// tryLockPod takes a pod's launch turn where nothing holds it, and takes nothing and reports false
+// where something does (lockPod).
+func (r *Runtime) tryLockPod(sandbox string) (func(), bool) {
+	turn := r.turnOf(r.podTurns, sandbox)
+	select {
+	case turn <- struct{}{}:
+		return func() { <-turn }, true
+	default:
+		return nil, false
+	}
 }
 
 // takeTurn waits for key's turn in turns, a map r.mu guards, until ctx ends; the returned func
 // gives the turn back.
 func (r *Runtime) takeTurn(ctx context.Context, turns map[string]chan struct{}, key string) (func(), error) {
-	r.mu.Lock()
-	turn, ok := turns[key]
-	if !ok {
-		turn = make(chan struct{}, 1)
-		turns[key] = turn
-	}
-	r.mu.Unlock()
+	turn := r.turnOf(turns, key)
 	select {
 	case turn <- struct{}{}:
 		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// turnOf is key's turn in turns, a map r.mu guards, made where key has none yet: a channel of one
+// slot, held while it is full.
+func (r *Runtime) turnOf(turns map[string]chan struct{}, key string) chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	turn, ok := turns[key]
+	if !ok {
+		turn = make(chan struct{}, 1)
+		turns[key] = turn
+	}
+	return turn
 }
 
 // jsonPatchOp is one RFC 6902 operation.

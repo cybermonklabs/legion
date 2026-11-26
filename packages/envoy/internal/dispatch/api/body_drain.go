@@ -51,7 +51,12 @@ func (s *server) drainTime() time.Duration {
 // connection of its own (a test's recorder) bounds nothing.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(time.Now().Add(s.drainTime())); err != nil {
+	began := time.Now()
+	deadline := began.Add(s.drainTime())
+	if s.drainDeadlineSet != nil {
+		s.drainDeadlineSet(began, deadline)
+	}
+	if err := controller.SetReadDeadline(deadline); err != nil {
 		return func() {}
 	}
 	return func() { _ = controller.SetReadDeadline(time.Time{}) }

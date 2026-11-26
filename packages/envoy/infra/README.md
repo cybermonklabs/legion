@@ -1407,6 +1407,45 @@ component refuses, by name, a value outside 1-65535 and the two ports the app po
 its loopback, `envoy-dispatch`'s `8766` and the `cloud-sql-proxy` sidecar's `5432`. Setting or
 unsetting it replaces the app's pods as any change to its pod template does.
 
+`parentStatusRule`, `false` by default, turns on Dispatch's parent-status rule: `true` renders
+`DISPATCH_PARENT_STATUS_RULE=on` on the `envoy-dispatch` container alone, in every mode that runs
+Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it with the outside
+inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
+`signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
+its children's, and at boot it runs the one-time fix of the parents and children that break the
+rule. The fix runs once per database, so turning the input off and on again runs nothing: a
+parent and a child that came to break the rule while it was off still break it once it is on
+again, and each status move of that child is refused until a person takes the child off that
+parent or closes it (`packages/envoy/cmd/dispatch/README.md`, the fix's bullet). Set
+it only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+the releases with the daemon's side of the rule, which send the parent-status options. Second,
+each project's instructions retry a failed root architect with a status write of `todo` alone,
+not `backlog` and then `todo`, and that project's daemon and controller have read them. The
+rule refuses that `backlog` while an issue under the root is in work. Set it with no process
+of the earlier setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is
+rendered, so a deployment that leaves it unset renders the pod it always had. An `envoyImage`
+whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its
+settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting
+it replaces the app's pods as any change to its pod template does.
+
+`legionStatusScope`, `false` by default, turns on Dispatch's refusal of three writes of a Legion
+issue: `true` renders `DISPATCH_LEGION_STATUS_SCOPE=on` on the `envoy-dispatch` container alone,
+in every mode that runs Dispatch, right after `DISPATCH_PARENT_STATUS_RULE` (or where that
+variable would be). The three writes are a write of the issue's status, the removal of its
+`legion` label, and a move that leaves it under no labelled issue. With it Dispatch refuses
+them to a credential that holds neither the `person` scope nor `legion-status`, but for the
+status write of the architect of an issue above, of the issue's own project. A Legion issue
+carries the `legion` label, in any letter case, or is under an issue of its own project that
+carries it. The setting's row in
+`packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
+place of the procedure: which releases to deploy first, and the four conditions on each project's
+Legion daemon and controller under which an operator sets the input. The refusal needs no
+one-time step and no crossing: a pod with the setting off beside one with it on takes those writes
+until the roll ends. Unset, nothing is rendered, so a deployment that leaves it unset renders the
+pod it always had. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as it
+ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list. Setting or unsetting it replaces the app's pods as any change to its pod template does.
+
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
 renders no priority class and no budget.
@@ -1518,6 +1557,10 @@ list, so the audience is the whole of the bound. Pick one no other workload of t
 kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
 behaves today: neither variable renders and no token is verified.
 
+`projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
+full member, whom Dispatch makes, at boot, the owner of every project the migration left without
+one. Unset, nothing renders.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret
@@ -1529,6 +1572,13 @@ The key is never parsed here; Dispatch checks it at boot (an RSA private key, PK
 Setting the App also starts Dispatch's webhook redelivery sweep, which needs the NATS redelivery
 bucket the hub's Dispatch user is granted (`DispatchPermissions`): a pod whose NATS user lacks it
 exits at boot. With either group unset, nothing renders and the app's pod template is unchanged.
+
+`verdictAppId` (plain, optional, with the App) is the id of the App that writes `legion-verdict`,
+rendered as `DISPATCH_VERDICT_APP_ID` after the App's three variables and only when given: Dispatch's
+CI reconcile pass, which the App's key runs, leaves that App's check suites out of the CI record, as
+the listener does under `ENVOY_VERDICT_APP_ID` (`aws:WebhookListener`'s `verdictAppId`). Set the
+listener's and this one to the same App id, or neither: with the listener's set and this one unset,
+the pass writes the App's completed suite back into a settled record and the head is published twice.
 
 The Azure embedder's inputs are a third optional group, which takes no secret value either, and
 which reaches the app's `envoy-dispatch` container alone. `azureEmbedEndpoint` turns meaning search
@@ -1625,7 +1675,8 @@ inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
-Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+Secret's key (as `seedSecretKey`'s rule above), a `verdictAppId` without the App, blank, or not a
+GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
@@ -1858,10 +1909,15 @@ a process reads the event log for its live readers only up to the safe horizon b
 event is final. A build from before that change (#2392) reads past an event still open below the
 newest one, so during a roll that first brings the change, at more than one replica, an old pod's
 live stream and delivery hub can skip an event a new pod commits out of id order; deploy that
-release at one replica, which recreates the pod, and raise the count afterwards. Each process
-closes a client connection after its next response once the connection is 60 seconds old, so
-after a roll the front door's and the in-cluster callers' keep-alive connections spread onto the
-pods that have just come up.
+release at one replica, which recreates the pod, and raise the count afterwards.
+`parentStatusRule` makes a crossing too: a process with the rule off still takes writes that
+break it after the one fix at boot has run, and the fix does not run again. So no process of the
+earlier setting may serve once a process of the new one does, whether the apply changes the input
+or first brings an image that reads it. At one replica the app's `Recreate` strategy stops the
+old pod before the new one starts; at more replicas, scale the app to zero before that apply.
+Each process closes a client connection after its next response once the connection is 60
+seconds old, so after a roll the front door's and the in-cluster callers' keep-alive connections
+spread onto the pods that have just come up.
 
 Every container reads its environment once, at start, and Dispatch reads the Azure key file and
 the NATS seed once, at boot, as the listener reads the seed, so a pod boots on a secret's new value
@@ -2843,6 +2899,7 @@ environment, in this order:
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
 | `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
+| `ENVOY_VERDICT_APP_ID` | `verdictAppId`, with `github`, only when given |
 
 ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `github`,
 `ENVOY_SLACK_SIGNING_SECRET` with `slack`, `ENVOY_API_TOKEN`, and `NATS_NKEY_SEED` with
@@ -2883,6 +2940,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
+| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, refused when it is not a GitHub App id (a whole number above 0 with no leading zero), and refused while `webhooks` does not list `github`. Give Dispatch the same App id (`envoy-infra:gcp:Dispatch`'s `verdictAppId`, or `DISPATCH_VERDICT_APP_ID`), or the head is published twice: Dispatch's CI reconcile pass otherwise writes the App's completed suite back into a settled record. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
@@ -3237,7 +3295,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--verdict-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -3262,6 +3320,9 @@ none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`
 
 Without `--reviewer-app-id`, it prints
 `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
+
+`--verdict-app-id` sets `verdictAppId` and prints `ENVOY_VERDICT_APP_ID` after the other GitHub
+lines; left out, it prints none.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or
@@ -3894,8 +3955,9 @@ connection, so the auth service must do that when its handler stops answering.
 The two options apply to every client connection on the server. A client whose event loop blocks,
 or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
 stale after one longer than 40 to 80 s; under the defaults, 4 to 8 minutes (the same test file
-keeps a client through a 15 s stall). envoy-client's own 10 s `Bun.spawnSync` block
-(`packages/envoy-client/src/envoy-config.ts:332-372`) is survived. A client that sends nothing for
+keeps a client through a 15 s stall). envoy-client's settings read no longer blocks: a `!` token
+command runs while the client's event loop goes on serving (`runCommand` in
+`packages/envoy-client/src/envoy-config.ts`). A client that sends nothing for
 a whole 20 s interval while the server's queue to it takes more than about 40 to 60 s to drain is
 closed as stale 40 to 60 s in, where under the defaults the server kept it 4 to 6 minutes; no hub
 client is known to read that slowly. All in-cluster sessions reach
@@ -4041,7 +4103,16 @@ It publishes to:
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
-  sends.
+  sends, and `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, which the known-session store's
+  purge of its replaced chunks' markers sends every five minutes (a user without it keeps those
+  markers for the bucket's 30-day MaxAge, and its listener logs one WARN and serves on).
+  NATS grants a purge by stream alone: the subject a purge filters to is in the request, not in
+  the subject the grant matches, so each entry lets its user purge any key of that bucket.
+  That removes nothing the user's `$KV.<bucket>.>` write could not: a delete or a rollup purge
+  of a key already removes its record and its history and leaves one marker, and the stream purge
+  removes that marker too.
+  Its one difference is that a purge of a live record leaves no marker a watcher is delivered, so
+  a running listener keeps serving that record until it reads the bucket again.
 
 Each bucket in that list is granted to every user built on this set: the listener's own, the host
 user a host's sessions share (`HostPermissions`) and Dispatch's.
@@ -4329,6 +4400,446 @@ client on the server gets, other listeners' durable push deliveries included. Th
 `envoy-dispatch` runs under that grant against nats-server 2.10 and 2.15.1 in
 `core/dispatch_permissions_live_test.go`, which also checks Dispatch's own user is refused a
 publish to a session's frames.
+
+Two grants have no static set, since no hub renders a user for them: the auth service alone
+answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator` and `probe`, each listed
+once, as `operator/-/*=<account>` and `probe/-/*=<account>`. `natsgrant.Operator(phase)` is the
+deployment's one operator identity's grant, a function of the NATS writer hold's phase, which the
+hold's row in the secrets broker's Postgres holds and the auth service reads at each decision. Each
+phase holds the one before it, and every phase subscribes `_INBOX_envoy._operator.>` alone, so an
+operator connects with that inbox prefix, which sits under the one reply root `_INBOX_envoy`
+(`natsgrant.ReplyRoot`), the token a render that gives JetStream its own account exports:
+
+- `released`, no hold, and the grant whenever the auth service cannot read the row, which names no
+  subject that writes: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`,
+  `KV_envoy_session_consumers` and each copied bucket (`envoy_interests`, `envoy_roles`,
+  `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`); the stored-message get of
+  `KV_envoy_session_consumers`, the consumer names and infos of `ENVOY_NOTIFICATIONS`, and the info
+  of `ENVOY_MEASURE`. Its one backup is a records-only copy of `KV_envoy_session_consumers`, its
+  messages read one by one with that get (`internal/bus/kvrecords`, format `envoy-kv-records-v1`),
+  each with its sequence, subject, headers, time and data, signed with the operator's hold key. A
+  restore from it writes each message again, so it cannot reproduce the stream's `last_seq`. No
+  snapshot and no stream create is in `released`: nats-server checks a snapshot's deliver subject
+  for its syntax alone and sends every chunk there from the stream's own sender, and a create
+  carries a republish or a source of the caller's choosing, so either writes any subject, a
+  protected bucket's key among them. A stream create or update reads every stream of the account
+  through a source, and writes any KV bucket of the account through a RePublish whose destination
+  is a KV subject: the server checks only that the destination does not loop into the stream itself
+  (measured on 2.15.1 and 2.10.29 with a user holding exactly the measurement job's old grant), so
+  it writes chosen self-keyed records and a bucket's sentinel. The streams change (#4687) removes
+  stream creates and updates from every callout answer but the held operator's and narrows every
+  static user on a callout hub, so after the cutover the held operator is their only holder. Naming
+  no write subject does not keep a grant from writing:
+  the boundary is one bus, a grant per connection, and every client in `$G`, and any grant that
+  holds a JetStream API request can have the server store a JetStream answer on any subject a
+  stream in `$G` captures, by naming it as the request's reply. The writers of a bucket by design
+  (today Listener, ListenerHost, Dispatch, and Host, which retires) can choose those bytes, by
+  writing a key of a bucket they write and direct-getting it with that reply; Measure can copy a
+  listener lease message, with its headers, onto any captured subject; Daemon can have a
+  notification it may pull stored, under the notification's own subject, in any stream that
+  captures the pull's reply subject; every other principal can store only a server JSON document,
+  and the held operator writes keys by design. Session grants hold no `$JS.API.` publish. So no
+  record the hold trusts for completion is in NATS (the broker's cutover record in Postgres
+  decides), and every reader of a bucket value decodes strictly and fails closed on a value that is
+  not an exact record of its key's kind;
+- `prepare`, a hold being prepared while every client is still admitted: also
+  `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*`, which raises the consumers' inactive thresholds
+  (one subject serves a consumer's create and its update, so it admits a named create too), and the
+  infos of `KV_legion_agents`, `KV_envoy_dpop_proofs` and `KV_envoy_webhook_redelivery`;
+- `held`, a hold set, while only the operator should be connected: also the barrier
+  stream `ENVOY_HOLD_BARRIER`'s create and delete; `STREAM.LIST`, `STREAM.NAMES` and
+  `CONSUMER.LIST.*`; the consumer delete on `ENVOY_NOTIFICATIONS`; the create of `ENVOY_MEASURE`;
+  the session consumers' records, their bucket's create, snapshot and restore; each copied bucket's
+  create, update, delete, snapshot and restore with its chunks, and its barrier key
+  `$KV.<bucket>.hold.barrier.*`; the create and update of `ENVOY_NOTIFICATIONS` and every other
+  bucket; every stream's and consumer's delete; and the snapshot and restore of every other
+  protected stream. Every snapshot, and so every backup of a copied bucket (`envoy-infra buckets
+  backup`), is taken under a hold.
+
+No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance`.
+`natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
+a subject nothing else uses, so the probe only shows whether the hub admits a connection.
+
+**The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
+machine's clock, and the broker refuses a row signed more than five minutes
+(`signedrecord.SignedAtSkew`) before or after its own clock, or more than five minutes before the
+latest signing time it has taken or the log's verified entries hold, which both replicas share:
+409 `clock_skew`, naming both times and the gen compared with, with nothing stored. So the clocks
+of every machine that runs these commands must agree with each other, and with the broker's,
+within five minutes; two clocks each within five minutes of true time can be ten apart, so keep
+them synchronized (NTP), not merely close. A signing time more than five minutes ahead of the
+broker's clock (a row stored before this check, or read after the broker's clock jumped back) is
+no genuine row's: the broker judges later rows against its own clock instead, so such a time holds
+no correct clock back, and a refusal judged that way names that clock. A restart does not clear
+such a time, since the log keeps it, and needs not. Each replica decides with its own clock, as
+it reads, whether a time is that far ahead, so while one is in the log a row the writing replica
+stores can read as unknown on the other, whose floor took the far time and whose clock does not
+put it that far ahead, until the next move or until that replica starts again. Only clocks
+outside this requirement reach that state (a broker clock that jumped back, or replicas or
+operator machines more than five minutes apart), and it fails closed, on that replica alone.
+
+**Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
+command of a hold through the broker's records, one command at a time: while one command's intent
+is pending every other is refused, but its own pending intent admits it again, its rerun after a
+crash, so the operator runs one command of a hold at a time (assumption A2), and the journal cannot
+tell a rerun from a second process. A command whose own check refuses after its intent
+writes a `stop` entry naming what it left, and `hold abort` ends the hold once a command has
+stopped and no other command's intent is pending; `hold release` follows only a complete record or
+one whose stops all left nothing changed. In `hub-restore`, before a done `hold prove`, `hold abort`
+passes its disk check only with each target's disk its step-1 one. After a done prove, `hold abort`
+is admitted only once the pending command's latest entry is a `stop` (a census that cannot read a
+stream, say), or once its own latest entry is a stop, and is refused otherwise; it then releases
+the row, its entry carrying the stop's record of what was left, after `envoy-infra hold abort`
+compares each disk with the done prove's record. After a failed re-prove on a disk that moved,
+restore that target back onto the done prove's disk, then run `hold abort`. If the proven disk is
+gone (a 404 by name, or that name now has another numeric id), `hold abort` writes a stop naming
+it: restore that target onto another disk, run `hold prove` there, and run `hold abort` again,
+which reruns the reconcile for the stores its stop named and releases over the new prove's disks.
+A `hold abort` whose process was killed before its release is run again: its own pending intent
+admits it, and the rerun repeats the whole abort from its start, the disk check against the newest
+done prove and then the reconcile over every store, trusting nothing the killed run wrote.
+The residual: on this path clients reach the restored and proven hub before its census, until a
+`streams-census` hold runs clean.
+
+**The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
+hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
+gen it has served or written, with the digest of that row's signed lines and the latest time the
+operator signed a row it took. A row put back below that gen, or another row at it, reads as
+unknown, and so does a row at a higher gen signed more than five minutes before that time
+(`signedrecord.SignedAtSkew`, the clock-skew allowance between operator processes): a row of an
+earlier history of the tables, put back after a database restore or a log emptied or cut back,
+whose gens started again below the old ones. A move or restore is judged by the same time before
+it is written, so the broker never stores a row it would read as unknown. No move is made
+from such a row, no route's 409 carries it as the row it refused against (it answers `below_floor`
+instead), and a row a write's statement answers changed (a trigger, say) raises no floor, so the
+operator never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say).
+It keeps a floor of each hold record it has written or served too (`recordFloors`): an older signed
+record put back, or a record gone that no route deleted, reads as unknown, and the command that
+reads it stops. The one record the routes delete, the cohort that `hold abort` from `prepare`
+deletes, goes with the operator's signed delete kept beside the records in the same statement
+(`nats_hold_record_deletes`), so every replica reads it as deleted, refuses a write of its key
+again, and the abort's rerun passes on whichever replica serves it. A cohort gone with no delete
+that verifies, or with one signed over an earlier gen than a replica saw, reads as unknown on each
+replica that saw it, and so does a hold's journal gone or older: the cohort delete on a released
+row reads a missing journal as no journal only on a replica whose floor never saw that hold's done
+record, and refuses a journal older than one its floor saw. The residual: every floor is per
+replica and lasts as long as its process, so a replica that starts again, or one that has not
+served the row or a record since its newer gen, serves an older signed one put back as it would
+the genuine one; production runs two replicas. Records carry no signed history of their own, but
+a journal is bound to the row's signed log: each of its entries names the hold row it was written
+under, so the restore reads a journal as unknown when an entry names a row this log does not hold
+as a verified entry, as another history's journal put back alone does once that history wrote an
+entry under a row it moved to (its release's done entry, written under its `released` row). It
+does not refuse a journal from a fork taken while the row was `held` when the writer also puts
+back that history's later log entries: every row its entries name is then the `held` row both
+histories share or a row of that history's the writer put back, so it binds (one of the cases
+that still store, below). The other records (a
+cohort, a conversion's saved set, the selection inputs) carry no such binding: after a database
+restore, a replica that starts again reads them as the restore left them, an older signed version
+or one gone included. A floor both replicas share, kept outside the database, is the fix if that
+acceptance changes.
+
+**Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
+its log holds, which no command can read: a restore at any other gen is refused naming that gen
+(`restore_gen`), which `Bootstrap` answers as a `RestoreGenError` once the log holds entries. Each
+log entry carries the row the operator signed, with its signing time and signature, and the route
+judges a restore only by a latest entry that verifies and that its floor of the row takes, so it
+refuses a restore at or below a row it served, read or wrote, and a log emptied under one: each is
+409 `below_floor`, and nothing is stored. The client bounds the gen too: once it has verified a row
+at gen N (read, moved or restored it), every restore it sends, `released` and `Bootstrap`'s gen 1
+included, goes at N+1 alone, and any other gen is `ErrUnknown` with nothing sent. A client that has
+seen no row, a process that has just started, has no seen gen, and then only the route bounds it.
+A row lost mid-hold is restored `held` with its hold id (`RestoreRow`, which sends it at N+1, or
+follows `restore_gen` once when it has seen no row); `RestoreRow` reads the hold's journal first and
+refuses `held` for a hold whose `hold release` or `hold abort` is done, and the route stores `held`
+only after a verified `prepare` or `held` entry of the same hold id, so a hold that `hold abort`
+from `prepare` ended, which leaves no journal entry, is not held again. A row lost after a hold
+ended, or before the first, is restored `released`: take the gen the `RestoreGenError` names and run
+`RestoreRow` with it, `released` and no hold id (or the ended hold's), which reads no journal and
+sends the row once at that gen. A row lost while the hold is `prepare`, before its journal starts
+or after, is restored the same way, `released` with that hold's id, the row `hold abort` from
+`prepare` would have written. When the journal was written, `hold abort` then runs on the released
+row: Admit admits it while the journal shows prepare (no done `hold set`, no ended entry), the
+cohort-delete route deletes the hold's cohort on that row, and abort's done entry ends the journal.
+When the row was lost before the journal was written, there is nothing for Admit to read: run
+`hold abort`, whose cohort delete the route admits on the released row of a hold with no done
+record, and which writes no entry. The next hold starts with `hold set` and a new hold id. The route
+stores `released` only after a verified `released` entry; after a `prepare` entry only with that
+entry's hold id, since a `prepare` row refuses no client and a `released` row under another id, or
+none, would leave the prepared hold's cohort and journal where no command reaches them (409
+`hold_mismatch`, whose `hold_id` field names the prepared hold, `RouteError.HoldID` in the
+operator's client: name it and restore again); or after a `held` one whose hold's signed journal
+shows `hold release` or `hold abort` done. After any other `held` entry it refuses
+`bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
+latest entry, it first reads every hold's journal, an ended hold's included, against the broker's
+record floor, its signature and the log: an older version than one the broker wrote or served,
+one that does not verify, or one bound to rows this log does not hold is unknown (409
+`below_floor`). A journal is bound to the log by its entries: each names the hold row it was
+written under, its gen and signing time (`Operation.Row`: the row `Admit` read for an intent, the
+row read when a done or stop entry is written), and a journal one of whose entries names a row
+the verified log does not hold, or names none, is refused: another history's journal put back
+without the log entries it names, or one whose hold's log entries were cut or deleted. An entry
+whose row's log entry is there but does not verify is refused naming that entry's signature error,
+and the key id when its key has left `BROKER_NATS_HOLD_SIGNING_KEYS`. A journal whose entries all
+name rows the log holds binds, another history's included when the writer puts back its log
+entries too (the cases that still store, below). It then refuses a `released` row, naming a hold
+or none, while a hold's signed journal shows `hold set` done and no end, or shows `hold set` not
+done while the verified log holds that hold's `held` entry: that hold is held by its own record. A
+done `hold release` or `hold abort` shows a hold ended. A verified `released` entry naming a hold,
+at any gen, shows it ended only while its journal shows the end that history admitted: `hold
+release`'s or `hold abort`'s intent as that command's latest entry, cut before its done entry, and
+no other command's intent pending. Nothing else shows a hold ended. After a point-in-time restore,
+or saved rows put back into a log cut back, the log holds entries of two histories: gens and
+signing times say nothing across holds, so a later hold's `prepare` says nothing of a hold, and the
+live hold's own `released` entry from the other history says nothing of whether this history ended
+it, so it ends a hold idle between commands, stopped, or running one no more than it ends one whose
+journal admitted no end. Each refusal names the hold, and for a signature whose key has left
+`BROKER_NATS_HOLD_SIGNING_KEYS` that key's id (`RouteError.Message` in the operator's client); it
+advises restoring the row `held` with the hold's id only when the route admits that restore, after
+a log whose latest entry is that hold's own `prepare` or `held` entry, and otherwise names the
+log's latest entry by its phase, gen and hold id. The log and the floors are per database and per
+process: a database writer who empties the log, or cuts it back to an earlier entry, lets
+`Bootstrap` or a restore at the gen it names write a row again on a replica that has served no row
+since it started, sent by a client that has seen no row; the journals stop a `released` row then
+only while a hold's journal shows it held.
+
+Three cases still store a `released` row while a hold is live, each a database writer's. First,
+the live hold's own `released` entry from another history put back with `hold release`'s or `hold
+abort`'s intent written and the row not yet moved: the end was begun, but in `hub-restore` its
+check may not have run, `hold release`'s disk check or the check in which `hold abort` compares
+each disk with the done prove's record, and may write a stop, before it moves the row. Refusing it
+would refuse a genuine end cut after its intent. Second, the live hold's `held` entry deleted while
+`hold set` runs, which makes the log look like an abort from `prepare`. Third, another history's
+journal of the live hold put back together with the log entries it names, from a fork taken while
+the row was `held`: every entry that history wrote while the row sat at `held` names the `held`
+row both histories share, and each entry it wrote under a row it moved to, its release's done
+entry, names that history's own `released` row, which the writer puts back too, so the journal
+binds, with no restart; nothing in the database tells that state from that history's own lost
+row. A history cut after its row's move and before its release's done entry wrote no entry under
+a row it moved to: every entry of its journal names the shared `held` row, so the journal binds
+even put back alone, and the restore is then refused 400 `bad_transition`, since the journal
+shows `hold set` done and no end. Put back with that history's `released` entry, it stores, not
+because of the binding but because that entry ends the hold by the rule for a `released` entry
+above: its journal shows `hold release`'s intent as that command's latest entry, cut before its
+done entry. Any copy of the hold tables taken while a hold was live is the third case's input, so
+a saved copy of them from mid-hold is as sensitive as a writer's access. A floor both
+replicas share, kept outside the database, is the remedy for this case (the floors above).
+
+The residual: a database writer can leave the operator no restore on any route, and that lasts
+after the writer stops. Each of these does it: one unsigned insert of a done record under a hold
+id no hold uses; an older version of any hold's journal put back, an ended hold's included,
+whether on a replica that saw the newer one or, for a version from while the hold was held, on
+any replica; another history's journal of a hold put in this one's place without the log entries
+it names; a live hold's done record deleted; an ended hold's `released` entry deleted; the log cut
+back under any hold's entries while that hold's journal stays; or an entry from another history
+put back above a live hold. Every `released` restore is then refused, and a `held` one too unless
+the log's latest entry is that hold's own and its done record is there; with
+`BROKER_NATS_HOLD_READ=true` every client but the operator is refused meanwhile. No route can tell
+such a record from a live hold's journal a writer broke, and skipping it would free every client
+mid-hold. The refusal names the rows: 409 `below_floor` naming the hold whose done record does not
+verify, is older than one the broker saw, or holds an entry whose hold row the log does not hold
+(naming the entry and that row's gen) or whose log entry does not verify (naming the entry, the
+signature error, and the key id when its key has left the list, with step 4 of the rotation below
+as the repair); 400 `bad_transition` naming the hold whose journal shows it held while the log's
+latest entry, named by its phase, gen and hold id, is not that hold's, and when the log names that
+hold released, the released entry's gen with the two causes the route cannot tell apart: that
+entry put back from another history, or an older version of this hold's journal put back; or 400
+`bad_transition` naming the hold of a latest `held` entry that has no done record. The hand repair,
+by a database admin, starts by reading the named hold's rows (`select * from nats_hold_records
+where hold_id = '<hold>'` and `select * from nats_hold_log where hold_id = '<hold>' order by gen`),
+then by cause:
+
+- A done record no hold of the operator's wrote: delete it by name (`delete from nats_hold_records
+  where hold_id = '<hold>' and kind = 'done'`), then send the restore again.
+- A journal put back, another history's or an older version, or a done record or log entries
+  deleted: restore them from a backup, then send the restore again. A journal whose entry names a
+  row the log lost to a cut-back, of a hold whose journal shows it ended, may instead be deleted by
+  name; then restart each broker replica that served the row before the cut, since a replica that
+  did not start again keeps refusing the cut log under the row it served (409 `below_floor`), and
+  send the restore again.
+- An entry from another history put back above a live hold, which the refusal names as the log's
+  latest entry or as the `released` entry naming the hold: first compare the named hold's journal
+  with a backup. When the backup holds a later version of it, one that shows `hold release` or
+  `hold abort` admitted or done, the journal was put back older and that `released` entry is the
+  hold's genuine end: restore the journal (the case above) and keep the entry, since deleting it
+  would hold an ended hold again. Otherwise delete the entry by gen
+  (`delete from nats_hold_log where gen = <gen>;`); restart each broker replica that answered a
+  restore since it was put back, since judging that restore took the entry into the replica's
+  floor of the row, which then refuses the log below it until the replica starts again; then
+  restore the row `held` with the live hold's id.
+
+**Rotating the hold signing key.** `BROKER_NATS_HOLD_SIGNING_KEYS` is the one list every hold row,
+record, log entry, record delete and cutover row verifies against, and so is every records-only
+copy (`internal/bus/kvrecords`), which is signed with the same key. Every signature names its key:
+it is `<key id>.<signature>`, the key id the unpadded base64url of the first 8 bytes of the public
+key's SHA-256 (`signedrecord.KeyID`), which holds no key material. A record whose key has left the
+list reads as unknown, and a done record that does then refuses every `released` restore, naming
+the hold and the key id; so does a journal the new key wrote last whose entries name log entries
+the old key signed, naming the entry and the old key id. The log and the journals are kept: no
+route deletes a log entry or a done record, so after any hold the old key signed, its rows stay
+until step 4, the hand repair, deletes them, and until then the old key stays in the list,
+verify-only. Verify-only is the operator's practice, not a rule the broker enforces: the broker
+takes any write a listed key signs. So a rotation goes in this order:
+
+1. Add the new public key to `BROKER_NATS_HOLD_SIGNING_KEYS` beside the old one, and roll it out to
+   the broker and to every command that verifies the hold's rows.
+2. Sign with the new key alone, and destroy the old private key: the operator's commands hold only
+   the newest private key. Then, in a routine rotation, run one hold under the new key, which
+   re-signs the hold row, and within it re-sign each family's cutover row with `PutCutover` at the
+   state it holds, so the first read in step 3 lists neither and step 4 deletes neither.
+3. Read which stored rows the old key signed, by its id (`<old>` below). A signature written before
+   signatures named their key has no dot, so `split_part` gives the whole signature and the read
+   lists it too:
+
+   ```sql
+   select 'nats_hold' as tbl, gen::text as row from nats_hold where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_log', gen::text from nats_hold_log where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_records', hold_id || ' ' || kind || ' ' || key from nats_hold_records where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_hold_record_deletes', hold_id || ' ' || kind || ' ' || key from nats_hold_record_deletes where split_part(sig, '.', 1) in ('<old>', sig)
+   union all select 'nats_cutover', family from nats_cutover where split_part(sig, '.', 1) in ('<old>', sig);
+   ```
+
+   Then read which records-only copies it signed, with `<copies>` the directory the copies are
+   kept under: each copy is a directory whose `manifest.sig` opens with its key's id and a dot, or
+   holds no dot when it was written before signatures named their key. The read first counts the
+   copies, and when the directory holds none it says so on stderr, naming the directory. Its exit
+   status is 0 when it lists a copy the old key signed, 1 when the directory holds copies and none
+   is the old key's (the clean answer), and 2 when the directory holds no copy at all, so a wrong
+   directory never reads as clean, to a person or to a script that reads stdout or the exit status.
+   It runs in a subshell, so pasted into an interactive shell its exit does not close that shell:
+
+   ```sh
+   ( count=$(find <copies> -name manifest.sig | wc -l)
+   if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; exit 2; fi
+   grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies> )
+   ```
+
+4. The hand repair, which removes the old key. With no hold live, a database admin deletes by name
+   every row the first read lists, the hold row and the cutover rows included, and for each log
+   entry it lists, first the journal of that entry's hold, since the journal names the entry (one
+   the new key wrote last, of a hold that began under the old key, still names rows the old key
+   signed, and the restore reads a journal naming rows its log does not hold as unknown):
+
+   ```sql
+   delete from nats_hold where gen = <gen>;
+   delete from nats_hold_records where kind = 'done' and hold_id in (select hold_id from nats_hold_log where gen = <gen>);
+   delete from nats_hold_log where gen = <gen>;
+   delete from nats_hold_records where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';
+   delete from nats_hold_record_deletes where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';
+   delete from nats_cutover where family = '<family>';
+   ```
+
+   When the read listed the hold row, deleting it leaves the auth service's view unknown, so with
+   `BROKER_NATS_HOLD_READ=true` every client but the operator is refused from that delete until the
+   restore; the hold step 2 runs under the new key re-signs the row, and then the read lists no
+   hold row to delete. The read lists a cutover row only when step 2's re-signing was skipped, or
+   for a leaked key, whose cutover rows are deleted, not re-signed. A deleted family has no cutover
+   row until a hold's conversion or rollback writes one again (`Cutovers()`, which reads every
+   family's row, fails on one left signed by a key no longer listed), and the streams census, which
+   runs only once every family it declares has a `done` cutover row (INFRA-4015's plan), exits
+   naming that step until the family is converted again, so a `hub-restore` hold, which a census
+   completes, cannot complete either. Each copy the second read lists stops reading once the old
+   key leaves the list: take it again with the new key, and delete the old one. Then remove the old
+   key from the list, restart each broker replica (a replica that served the old row refuses an
+   emptied or cut-back log under it until it starts again), and restore the row, when the read
+   listed the hold row: `Bootstrap` when the log is empty, otherwise the restore at the gen its
+   `RestoreGenError` names.
+
+A key removed because it leaked takes step 4 as soon as no hold is live, since what it signed can
+no longer be trusted, and its cutover rows are deleted rather than re-signed, since it may have
+signed one no conversion wrote. When a hold is live, do steps 1 and 2 first, end the live hold
+with the new key (`hold release`, or `hold abort` once a command stopped), and only then run both
+reads in step 3 with the leaked key's id and follow step 4 as written.
+
+**Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
+precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
+shell it runs in and requests no credential. It lists a guarded namespace's token Secrets asking the
+API server for the Table form first, whose rows carry no Secret's data, only each Secret's name, type,
+number of data keys and age beside its metadata, and keeps the names. Two cases still bring a token
+into `kubectl`'s memory, though nothing prints or writes it: a token Secret made by `kubectl apply`
+from a manifest that held its token carries the token in its
+`kubectl.kubernetes.io/last-applied-configuration` annotation, which is metadata; and a server or
+proxy that cannot make the Table answers with the Secrets whole, data included, which the check
+reads as UNKNOWN, since `kubectl` then prints no `TYPE` and `DATA` columns. It lists each
+principal that is not a person and can mint the token of a guarded ServiceAccount (the operator's,
+the secrets broker's, and each
+`--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
+namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
+certificate for any user, mint the operator's Google service account's token, make a guarded
+namespace on another cluster of the project or of the workload pool's fleet, register a cluster to
+that fleet or write the namespaces and RBAC its scopes put on the members, make or change a
+Deployment Manager deployment on the project (Deployment Manager creates a deployment's resources as
+the project's Google APIs service agent, which holds `roles/editor` there), set IAM policy over any
+of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
+right outright or limits it to an object by name, and each principal that can become one of those:
+through IAM impersonation, reported as the chain, by minting the token of a Google service
+account an RBAC finding names, by impersonating a user who holds GKE's IAM permissions, or in
+Kubernetes by running, entering or minting the token of a ServiceAccount that holds such a right. On
+each cluster of the project, of the pool project and of the pool's fleet it reviews every
+ServiceAccount outside the system namespaces, Kubernetes' own groups, each binding subject that is
+not a person (a person is an email outside `gserviceaccount.com`), and anyone unauthenticated, and
+reports every binding of `system:masters` but the bootstrap one. Any other Group is no finding while
+GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or on a fleet member that is no
+GKE cluster, as an email-shaped User bound there does; a cluster with legacy ABAC or the identity
+service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. A deployment whose pool
+project has no fleet passes `--fleet none`: an empty membership list then passes, and each
+membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
+cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. In the
+IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the projects the check reads
+(`--project`, the pool project and each fleet member's project) are allowed; another project's
+agent is a finding naming its project number, and another Google service agent the deployment
+needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
+which takes no other address. Admission power
+outside the admission objects counts too: the backend of a webhook that can match a guarded
+namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
+a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
+selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. One admission
+refusal is credited: the broker's pod fence, whose `broker-pod-connect` refuses exec, attach and
+port forward to every `envoy-broker-*` pod and whose `broker-pod-update` refuses any change but
+metadata to a broker pod, each bound `Deny` with `failurePolicy: Fail` in `dispatch` and with no
+exception. When `dispatch/envoy-broker` is a guarded pair (`--broker-workload` or a `--guarded`),
+and only when the renders and the operator's cluster each hold the five `broker-*` policies and
+their bindings with the reviewed specs `scripts/operator-token-minters/broker-fence.json` holds
+(each spec, or the sha256 of the two workload policies', less what the API server and GKE fill in);
+at least one `envoy-broker-*` pod runs as `envoy-broker`; no pod of `dispatch` named otherwise runs
+as `envoy-broker` or takes `--db-secret`, a token Secret there or a Secret a broker pod takes; and
+no webhook, whatever its selectors and rules, calls a Service in `dispatch`, a grant of exec,
+attach or port forward in `dispatch` prints a `CREDIT` line naming its use on the broker's pods
+instead of a finding, and goes into `--report`'s `credited` with the policy and the declared and
+live versions. Its use on the other pods of `dispatch` the fence does not refuse: Dispatch's own
+database login there can write the writer hold's tables, the residual `broker-fence.json` states
+and INFRA-4604 tracks, so each such grant also prints an `ALLOWANCE` line naming it and goes into
+`--report`'s `residuals`, and so does each chain to its holder: who can become such a
+ServiceAccount, or mint, sign as or act as such a Google service account (its minters' step), and
+so on along the chain, Google and Kubernetes alike, read until a pass names no new account. A
+chain that also reaches an account with a finding is a finding. Everything else stays a finding: a
+pod patch or update in `dispatch` (`broker-pod-update` admits a change of any pod's metadata, and a
+pod given the broker's label `app: envoy-broker` takes the broker's Services' traffic), an ephemeral container
+there, `create pods` there, every workload write, the token, impersonation, Secrets, every Google
+IAM right, the hold writers, and whoever can write or delete the fence. A fence missing or held
+otherwise prints `NO CREDIT` naming why and credits nothing; one whose policies, pods or webhooks
+cannot be read, or are answered as no list, is UNKNOWN. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal
+and right, or 2 naming each step it could not read, a run that stopped mid-way included. It asks
+a cluster's SubjectAccessReviews in up to `REVIEW_WORKERS` kubectl calls at once (10 unless set),
+never more than the seats that cluster's API server gives the priority level global-default, which
+it reads from the server's `/metrics`, and in one call when it cannot read them. `--report <file>`
+writes the same as JSON, with each credit under `credited`, each `ALLOWANCE` line under
+`residuals`, and each allowance flag the run was given (`--service-agent`, `--rbac-only-member`,
+`--fleet none`, `--credentials-arg`) under `allowances`,
+and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
+(a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
+any step runs, and a value of another form is a usage error naming the flag, never the value, as is
+a value shaped as a credential its issuer marks, which some forms admit: a GitHub token (`ghp_`,
+`gho_`, `ghu_`, `ghs_`, `ghr_` or `github_pat_`), a Google OAuth access token (`ya29.`), a Slack
+token (`xoxb-` and the like), or an OpenAI, Dispatch, Datadog, GitLab or npm token (`sk-`, `dsp_`,
+`ddsat_`, `ddpat_`, `ddapp_`, `glpat-`, `npm_`), each with 20 or more characters after its prefix; a
+Google API key, `AIza` and 35 or more; or an AWS access key ID, `AKIA` or `ASIA` and exactly 16. A
+value of the flag's form that is not so shaped is used, and may be printed, as given: a short
+`ghp_abc` is. A file flag's file is named by the flag and its place (`--rbac-render entry 2`), never
+its path.
+`scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
+`gcloud`, `curl` and `agent-secrets`.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

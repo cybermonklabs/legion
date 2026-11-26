@@ -276,7 +276,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 				and coalesce(payload->>'task', '') <> ''`, childKey).Scan(&task); err != nil {
 		t.Fatalf("read the implementer's start at generation 2: %v", err)
 	}
-	if want := "Issue: " + childKey + ". Phase: implementing. Resume the existing phase work."; !strings.Contains(task, want) {
+	if want := resumeTaskOf(t, pool, engine, childKey); !strings.Contains(task, want) {
 		t.Fatalf("the implementer's start task = %q, want it to say %q", task, want)
 	}
 	run("the carry's rows once the implementer has stopped")

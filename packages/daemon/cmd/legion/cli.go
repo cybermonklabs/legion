@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -27,10 +28,12 @@ import (
 // to its Oh My Pi probe's foreground attempts, where a launch prefix writes its prompt. Each of the
 // three passes its own lines through the rule itself (the launcher's roleLog and its subcommands'
 // writers, the bridge's log and printRefusal, and the controller's lines through this writer).
-// Other streams that go to a child untouched: `legion gh` and `legion git` give their child this
-// process's own os.Stdout and os.Stderr; `legion worker-shim` gives Oh My Pi its os.Stderr
-// (internal/shim) and agent-secrets the same os.Stderr for both of its streams; and `legion
-// controller start` gives its foreground Oh My Pi session os.Stdin, os.Stdout and os.Stderr.
+// Other streams that go to a child untouched: `legion gh`, `legion git` and `legion jj` give the
+// real command they run this process's own os.Stdout and os.Stderr (what `legion jj`'s push step
+// reads of a jj it runs first, and prints again, passes the rule); `legion worker-shim` gives Oh
+// My Pi its os.Stderr (internal/shim) and agent-secrets the same os.Stderr for both of its
+// streams; and `legion controller start` gives its foreground Oh My Pi session os.Stdin,
+// os.Stdout and os.Stderr.
 func newRoot(stdout, stderr io.Writer) *cobra.Command {
 	own := redact.Writer(stderr)
 	root := group(&cobra.Command{
@@ -54,6 +57,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		),
 		newRestartCommand(own),
 		newClaimsCommand(stdout, own),
+		newIntakeCommand(stdout, own),
 		newProjectCommand(stdout, own),
 		group(&cobra.Command{Use: "sessions", Short: "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
 			newSessionsImportCommand(stdout, own),
@@ -71,6 +75,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		newWorkspaceInitCommand(stdout, own),
 		passThrough("git-credential", "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names, or of a fork's parent's or source's owner where the path's owner has no gh directory (git runs it, never a person)", runGitCredential, stdout, own),
 		passThrough("git", "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)", runGit, stdout, own),
+		passThrough("jj", "the jj first on a tmux pane's PATH and the push half of a pod's jj: sets the author of a commit a push sends from its Legion-Role trailer, where its rules let it (docs/deployment.md), then runs the real jj (a jj wrapper runs it, never a person)", runJJ, stdout, own),
 		passThrough("gh", "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)", runGh, stdout, own),
 		newLeakCheckCommand(own),
 	)
@@ -131,10 +136,18 @@ func newHelpCommand() *cobra.Command {
 // run is `legion` on argv, its exit status what the command answered. A usage error, cobra's or a
 // command's own, exits 2 and names the command and the help that says how to call it; an old form
 // of a command that moved exits 2 and names the new one (movedForm) before cobra reads anything.
+// A build whose contract registry cannot be built runs no command at all, and is refused before
+// the command tree is made, since some flags' defaults read this build's contract: its stamp does
+// not name exactly the entries it registers, so its contract numbers would name other entries
+// than every other build's, and it exits 1 naming each difference (api.ContractRegistryError).
 // What run prints itself goes to the root's stderr, through the URL rule as every command's does
-// (newRoot).
+// (newRoot), and so does that refusal.
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	args := argv[1:]
+	if err := api.ContractRegistryError(); err != nil {
+		fmt.Fprintf(redact.Writer(stderr), "legion: %v\n", err)
+		return 1
+	}
 	root := newRoot(stdout, stderr)
 	if message, moved := movedForm(args); moved {
 		fmt.Fprintln(root.ErrOrStderr(), message)
