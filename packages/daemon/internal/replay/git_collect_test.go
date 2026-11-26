@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,8 @@ import (
 
 // gitRemote is a repository a test builds with the git CLI in a directory of its own, which
 // collect-git clones and fetches from as GitHub's remote: it lets a fetch name any commit it holds
-// and a clone leave blobs out, as GitHub does. Each commit is made a minute after the one before.
+// and honours a fetch's filter, as GitHub does, so a clone that asked to leave blobs out would lack
+// them. Each commit is made a minute after the one before.
 type gitRemote struct {
 	t       *testing.T
 	dir     string
@@ -40,8 +42,16 @@ func newGitRemote(t *testing.T) *gitRemote {
 // what it printed.
 func (r *gitRemote) git(args ...string) string {
 	r.t.Helper()
+	return r.gitInput("", args...)
+}
+
+// gitInput runs git args in the repository as git does, with stdin on its standard input, and is
+// what it printed.
+func (r *gitRemote) gitInput(stdin string, args ...string) string {
+	r.t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.dir
+	cmd.Stdin = strings.NewReader(stdin)
 	stamp := time.Date(2001, time.March, 5, 6, 0, 0, 0, time.UTC).Add(time.Duration(r.minutes) * time.Minute).Format(time.RFC3339)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_AUTHOR_NAME=person-1",
 		"GIT_AUTHOR_EMAIL=person-1@example.invalid", "GIT_COMMITTER_NAME=person-1", "GIT_COMMITTER_EMAIL=person-1@example.invalid",
@@ -51,6 +61,25 @@ func (r *gitRemote) git(args ...string) string {
 		r.t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// mergedAlone is git's verdict at base of head merged alone, as git merge-tree --write-tree
+// --no-messages --name-only -z <base> <head> in the repository gives it: clean on exit 0, and a
+// conflict in the paths it names after the merged tree, sorted, on exit 1.
+func (r *gitRemote) mergedAlone(base, head string) GitVerdict {
+	r.t.Helper()
+	cmd := exec.Command("git", "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", base, head)
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	conflict := errors.As(err, &exit) && exit.ExitCode() == 1
+	if err != nil && !conflict {
+		r.t.Fatalf("git merge-tree of %s and %s: %v", base, head, err)
+	}
+	paths := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")[1:]
+	slices.Sort(paths)
+	return GitVerdict{Base: base, Conflict: conflict, Paths: paths}
 }
 
 // commit writes files, by name, on the branch checked out and commits them as message, and is the
@@ -374,14 +403,17 @@ func describeLines(lines []string) string {
 // m5 or m6, the pull request's own merge and the commit after it. #13, open, runs to m6, and its
 // one head, which the remote does not hold, is a head-unreachable missing input. Every request the
 // GitHub stub saw is a GET, each pull request read once and #12's timeline over its two pages; git
-// merged each verdict once; and ReadWindow reads the window back with the file as typed data.
+// merged each head with its bases in one merge-tree --stdin (batchMergeTree); git cloned and fetched
+// with no filter, so the clone lacks no object its refs reach; and ReadWindow reads the window back
+// with the file as typed data.
 func TestCollectGitWritesEachHeadsVerdictsAndSendsGetAlone(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
 	dir := c.windowDir(t)
 	calls := &gitCalls{}
 	var finished []GitPullFinished
-	config := c.config(dir, filepath.Join(t.TempDir(), "clones"), calls)
+	clones := filepath.Join(t.TempDir(), "clones")
+	config := c.config(dir, clones, calls)
 	config.Finished = func(done GitPullFinished) { finished = append(finished, done) }
 	collected, err := CollectGit(context.Background(), config)
 	if err != nil {
@@ -412,8 +444,20 @@ func TestCollectGitWritesEachHeadsVerdictsAndSendsGetAlone(t *testing.T) {
 		}
 	}
 	gitRan := calls.take()
-	if merges, trees := countCalls(gitRan, "merge-tree"), countCalls(gitRan, "diff-tree"); merges != 8 || trees != 7 || countCalls(gitRan, "clone") != 1 {
-		t.Errorf("git ran %d merge-trees, %d diff-trees and %d clones, want 8, 7 and 1: %q", merges, trees, countCalls(gitRan, "clone"), gitRan)
+	if trees := countCalls(gitRan, "diff-tree"); trees != 7 || countCalls(gitRan, "clone") != 1 || countCalls(gitRan, "fetch") == 0 {
+		t.Errorf("git ran %d diff-trees, %d clones and %d fetches, want 7, 1 and some: %q", trees, countCalls(gitRan, "clone"),
+			countCalls(gitRan, "fetch"), gitRan)
+	}
+	if got, want := callsOf(gitRan, "merge-tree"), slices.Repeat([][]string{batchMergeTree}, 3); !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("git ran the merge-trees %q, want %q, one for each of p1, p1b and p2", got, want)
+	}
+	for _, call := range slices.Concat(callsOf(gitRan, "clone"), callsOf(gitRan, "fetch")) {
+		if slices.ContainsFunc(call, func(arg string) bool { return strings.HasPrefix(arg, "--filter") }) {
+			t.Errorf("git ran %q, which leaves objects out of the clone", call)
+		}
+	}
+	if lacked := lackedObjects(t, filepath.Join(clones, "acme__widgets")); len(lacked) != 0 {
+		t.Errorf("the clone lacks the objects %q, which its refs reach", lacked)
 	}
 	read, err := ReadWindow(dir)
 	if err != nil {
@@ -478,8 +522,8 @@ func TestCollectGitWritesAPullRequestGitHubWillNotReadAsPullUnread(t *testing.T)
 // holds: run again with the same clones, it sends GitHub no request, since the file holds both
 // pull requests with no missing input of GitHub's, and runs no git but what reaches for #13's head,
 // whose missing input names it: the check of the clone, the ask of the remote for #13's head ref,
-// which it holds none of, the fetch of the head alone into a ref of its own and the check. The file
-// it leaves is the one the first run wrote, byte for byte.
+// which it holds none of, the fetch of the head alone into a ref of its own, with no filter, and the
+// check. The file it leaves is the one the first run wrote, byte for byte.
 func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -498,7 +542,7 @@ func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 		t.Fatalf("CollectGit again: %v", err)
 	}
 	list := []string{"ls-remote", "origin", "refs/pull/13/head"}
-	fetch := []string{"fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", unreachableHead + ":refs/fetched/" + unreachableHead}
+	fetch := []string{"fetch", "--quiet", "--no-tags", "origin", unreachableHead + ":refs/fetched/" + unreachableHead}
 	check := []string{"cat-file", "--batch-check"}
 	if got, want := calls.take(), [][]string{check, list, fetch, check}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 		t.Errorf("collect-git run again ran git %q, want only the reach for #13's head %q", got, want)
@@ -518,6 +562,29 @@ func TestCollectGitAgainAsksForNothingTheFileHolds(t *testing.T) {
 // callsOf is each of calls that runs the git subcommand named, in order.
 func callsOf(calls [][]string, subcommand string) [][]string {
 	return slices.DeleteFunc(slices.Clone(calls), func(call []string) bool { return len(call) == 0 || call[0] != subcommand })
+}
+
+// batchMergeTree is the merge-tree that merges a head with each base commit a line of its stdin
+// names.
+var batchMergeTree = []string{"merge-tree", "--stdin", "--write-tree", "--no-messages", "--name-only", "-z"}
+
+// lackedObjects is each object a ref of the repository in dir reaches that it does not hold, asked
+// with lazy fetching off (git rev-list --objects --missing=print --all).
+func lackedObjects(t *testing.T, dir string) []string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "rev-list", "--objects", "--missing=print", "--all")
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-list --objects --missing=print --all in %s: %v", dir, err)
+	}
+	var lacked []string
+	for line := range strings.Lines(string(out)) {
+		if sha, missing := strings.CutPrefix(strings.TrimSpace(line), "?"); missing {
+			lacked = append(lacked, sha)
+		}
+	}
+	return lacked
 }
 
 // cloneRefs is each ref the repository in dir holds (git show-ref), its commit by its name.
@@ -665,8 +732,9 @@ func TestCollectGitKeepsARefOfEachCommitAndSplitsAFailingFetch(t *testing.T) {
 // collect-git asks git once for what a head two pull requests share rests on. Here the git file
 // alone gives #12 and #13 each the one head p1, neither merged in the window's inputs, so each reads
 // p1 against m6, the merges file's last commit: git gives p1's merge base with m6, its paths since
-// and its verdict at each base commit once, and the second pull request takes them, so both write
-// the same reading. It fails where git is asked again for what it gave the run.
+// and, in one merge-tree --stdin, its verdict at each of the five base commits that change f.txt,
+// once, and the second pull request takes them, so both write the same reading. It fails where git
+// is asked again for what it gave the run.
 func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
 	t.Parallel()
 	c := newGitCase(t)
@@ -678,14 +746,8 @@ func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
 		t.Fatalf("CollectGit --git-only: %v", err)
 	}
 	ran := calls.take()
-	merges := make(map[string]int)
-	for _, call := range callsOf(ran, "merge-tree") {
-		merges[strings.Join(call, " ")]++
-	}
-	for call, n := range merges {
-		if n != 1 {
-			t.Errorf("git ran %q %d times, want once", call, n)
-		}
+	if got, want := callsOf(ran, "merge-tree"), [][]string{batchMergeTree}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("git ran the merge-trees %q, want the one %q of p1's bases", got, want)
 	}
 	if bases, diffs := countCalls(ran, "merge-base"), countCalls(ran, "diff"); bases != 1 || diffs != 1 {
 		t.Errorf("git ran %d merge-bases and %d diffs, want one of each for p1: %q", bases, diffs, ran)
@@ -706,9 +768,133 @@ func TestCollectGitReadsAHeadTwoPullRequestsShareOnce(t *testing.T) {
 	if errA != nil || errB != nil {
 		t.Fatal(errA, errB)
 	}
-	if h := twelve.Heads[0]; !h.Read() || len(h.Verdicts) != len(merges) || len(merges) == 0 || !bytes.Equal(a, b) {
-		t.Errorf("the git file holds p1 of #12 as %s and of #13 as %s, want the same reading, one verdict for each of git's %d merge-trees", a, b,
-			len(merges))
+	if h := twelve.Heads[0]; !h.Read() || len(h.Verdicts) != 5 || !bytes.Equal(a, b) {
+		t.Errorf("the git file holds p1 of #12 as %s and of #13 as %s, want the same reading, a verdict at each of m1, m3, m4, m5 and m6", a, b)
+	}
+}
+
+// collect-git merges a head with each base commit it reads a verdict at in one git merge-tree
+// --stdin (batchMergeTree), a line of its stdin for each pair, rather than in a merge-tree for each
+// pair. Here the git file alone gives #13, which did not merge, the one head q, off c1, which changes
+// f.txt's fifth line as p1 does and other.txt, so q reads against m6, and each of m1 to m6 changes
+// one of its paths. git runs one merge-tree, and q's verdicts are those git gives each pair merged
+// alone: clean at m1, a conflict in other.txt at m2, in f.txt and other.txt at m3 and m4, and in
+// other.txt alone at m5 and m6, which change f.txt's fifth line as q does. It fails where git runs a
+// merge-tree for each pair, or where a verdict is not the one of its pair merged alone.
+func TestCollectGitMergesAHeadWithItsBasesInOneMergeTree(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	c.remote.git("checkout", "--quiet", "--detach", c.c1)
+	q := c.remote.commit("q", map[string]string{"f.txt": nineLines(map[int]string{5: "PR"}), "other.txt": "o3\n"})
+	c.remote.git("checkout", "--quiet", "main")
+	heads := []GitHead{{SHA: q, At: c.window.From, From: GitHeadCommit}}
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
+	dir := c.windowDir(t)
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.gitOnly(dir, filepath.Join(t.TempDir(), "clones"), calls)); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	if got, want := callsOf(calls.take(), "merge-tree"), [][]string{batchMergeTree}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("git ran the merge-trees %q, want the one %q of q's six bases", got, want)
+	}
+	conflict := func(base string, paths ...string) GitVerdict {
+		return GitVerdict{Base: base, Conflict: true, Paths: paths}
+	}
+	want := []GitVerdict{{Base: c.m1, Paths: []string{}}, conflict(c.m2, "other.txt"), conflict(c.m3, "f.txt", "other.txt"),
+		conflict(c.m4, "f.txt", "other.txt"), conflict(c.m5, "other.txt"), conflict(c.m6, "other.txt")}
+	alone := make([]GitVerdict, len(want))
+	for i, verdict := range want {
+		alone[i] = c.remote.mergedAlone(verdict.Base, q)
+	}
+	if !sameReading(alone, want) {
+		t.Fatalf("git merges q with each base alone as %s, want %s", describeReading(alone), describeReading(want))
+	}
+	read, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-git wrote: %v", err)
+	}
+	input := read.Git["acme/widgets"]
+	pull, held := input.Pull(13)
+	if !held || len(pull.Heads) != 1 || len(input.Missing) != 0 {
+		t.Fatalf("the git file holds #13 as %+v (%v) and the missing inputs %+v, want q and none missing", pull, held, input.Missing)
+	}
+	if h := pull.Heads[0]; h.Tip != c.m6 || h.MergeBase != c.c1 || !slices.Equal(h.Paths, []string{"f.txt", "other.txt"}) || !sameReading(h.Verdicts, alone) {
+		t.Errorf("the git file holds q as %s, want it read against m6 from c1, its paths f.txt and other.txt, and the verdicts %s", describeReading(h),
+			describeReading(alone))
+	}
+}
+
+// mergeFailed is the start of the detail of the missing input of a verdict git's merge-tree of the
+// base and the head alone did not give, where git died.
+const mergeFailed = "git merge-tree of the base and the head: git exits 128: "
+
+// collect-git keeps each verdict its merge-tree --stdin gave whole before it broke off, and merges
+// alone each pair it gave none of, as one merge-tree a pair did, up to the first git does not give.
+// Here the clone already holds main and x, a commit on m6 whose f.txt is a blob the clone does not
+// hold, and y, a commit on x whose tree is m6's; the merges file runs on from m6 to x and y, and the
+// git file alone gives #13 the one head p1, which reads against y. Of p1's bases m1, m3, m4, m5, m6,
+// x and y, the merge-tree --stdin gives m1 to m6 and dies at x, which git cannot read; collect-git
+// keeps those five, merges x alone, which fails too, and writes the five, a git-error missing input
+// at x whose detail is that of x's merge-tree alone, and no verdict at y, which rests on x. It fails
+// where a verdict the batch gave is merged again, where y is merged, or where the missing input is
+// not x's.
+func TestCollectGitMergesAloneWhatItsMergeTreeStdinDidNotGive(t *testing.T) {
+	t.Parallel()
+	c := newGitCase(t)
+	clones := filepath.Join(t.TempDir(), "clones")
+	clone := filepath.Join(clones, "acme__widgets")
+	c.remote.git("clone", "--quiet", "--no-checkout", "--bare", "--single-branch", "--no-tags", "--branch", "main", "file://"+c.remote.dir, clone)
+	gone := c.remote.gitInput("a blob the clone does not hold\n", "hash-object", "--stdin")
+	var entries []string
+	for _, entry := range strings.Split(c.remote.git("-C", clone, "ls-tree", c.m6), "\n") {
+		if strings.HasSuffix(entry, "\tf.txt") {
+			entry = "100644 blob " + gone + "\tf.txt"
+		}
+		entries = append(entries, entry)
+	}
+	tree := c.remote.gitInput(strings.Join(entries, "\n")+"\n", "-C", clone, "mktree", "--missing")
+	x := c.remote.git("-C", clone, "commit-tree", "-p", c.m6, "-m", "x", tree)
+	y := c.remote.git("-C", clone, "commit-tree", "-p", x, "-m", "y", c.m6+"^{tree}")
+	c.window.Merges["acme/widgets"] = append(c.window.Merges["acme/widgets"],
+		Merge{SHA: x, At: capturedTime(t, "2001-03-05T10:45:00Z"), Branch: "main"}, Merge{SHA: y, At: capturedTime(t, "2001-03-05T10:50:00Z"), Branch: "main"})
+	heads := []GitHead{{SHA: c.p1, At: c.window.From, From: GitHeadCommit}}
+	c.window.Git = map[string]GitInput{"acme/widgets": {Pulls: []GitPull{{Number: 13, Base: "main", Heads: heads}}}}
+	dir := c.windowDir(t)
+	calls := &gitCalls{}
+	if _, err := CollectGit(context.Background(), c.gitOnly(dir, clones, calls)); err != nil {
+		t.Fatalf("CollectGit --git-only: %v", err)
+	}
+	alone := []string{"merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", x, c.p1}
+	if got, want := callsOf(calls.take(), "merge-tree"), [][]string{batchMergeTree, alone}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("git ran the merge-trees %q, want the one of p1's seven bases and x's alone %q", got, want)
+	}
+	read, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("ReadWindow of the window collect-git wrote: %v", err)
+	}
+	pull, held := read.Git["acme/widgets"].Pull(13)
+	if !held || len(pull.Heads) != 1 {
+		t.Fatalf("the git file holds #13 as %+v (%v), want its head p1", pull, held)
+	}
+	clean := func(base string) GitVerdict { return GitVerdict{Base: base, Paths: []string{}} }
+	want := []GitVerdict{clean(c.m1), {Base: c.m3, Conflict: true, Paths: []string{"f.txt"}}, {Base: c.m4, Conflict: true, Paths: []string{"f.txt"}},
+		clean(c.m5), clean(c.m6)}
+	if h := pull.Heads[0]; h.Tip != y || h.MergeBase != c.c1 || !sameReading(h.Verdicts, want) {
+		t.Errorf("the git file holds p1 as %s, want it read against y from c1 with the verdicts %s", describeReading(h), describeReading(want))
+	}
+	var missing []string
+	for _, line := range gitFileLines(t, dir, mergeFailed) {
+		if strings.HasPrefix(line, `{"kind":"missing"`) {
+			missing = append(missing, line)
+		}
+	}
+	wantMissing := []string{fmt.Sprintf(`{"kind":"missing","pr":13,"head":%q,"base":%q,"reason":"git-error","detail":"%s%s"}`, c.p1, x, mergeFailed,
+		gitDetailOfGit)}
+	if !slices.Equal(missing, wantMissing) {
+		t.Errorf("the git file holds the missing lines%s\nwant%s", describeLines(missing), describeLines(wantMissing))
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "git", "acme__widgets.jsonl")); err != nil || !bytes.Contains(data, []byte(gone)) {
+		t.Errorf("the git file (%v) names no blob %s, which x's merge-tree alone cannot read:\n%s", err, gone, data)
 	}
 }
 

@@ -353,13 +353,14 @@ reach's start, and each head a read of a merge state in the window's log names, 
 timeline does not give at the read's time. The token is read from the environment variable
 --github-token-env names, and is never printed.
 
-The git phase reads no GitHub API. It clones --repo once into --clones, the base branch alone with
-no blob (git clone --filter=blob:none --bare), with the credential your git credential helper
-gives, which collect-git never reads, prints or stores, and fetches each commit it needs that the
-clone lacks. It writes the paths each commit of the base branch changes, and for each head the
-paths it changes since its merge base and git's verdict of merging it with the base as it stands
-at each later commit of the base that changes one of those paths, up to the pull request's own
-merge (git merge-tree). Each git command runs alone, its process group killed once its memory
+The git phase reads no GitHub API. It clones --repo once into --clones, the base branch alone and
+every blob it reaches (git clone --no-checkout --bare --single-branch), with the credential your
+git credential helper gives, which collect-git never reads, prints or stores, and fetches each
+commit it needs that the clone lacks, its blobs with it, so no merge fetches. It writes the paths
+each commit of the base branch changes, and for each head the paths it changes since its merge
+base and git's verdict of merging it with the base as it stands at each later commit of the base
+that changes one of those paths, up to the pull request's own merge (git merge-tree --stdin, up to
+200 merges to a command). Each git command runs alone, its process group killed once its memory
 passes --memory-cap or it runs past its time; a kill, and anything git cannot give, is a missing
 input of the file, never a clean verdict, and the run goes on.
 

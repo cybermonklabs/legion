@@ -458,7 +458,7 @@ Each line of the file is one JSON object, in this order:
   `tip` is the base commit that the head's verdicts run to: the first parent of the pull request's own merge commit, where it merged in the window's inputs, and otherwise the last commit of the merges file.
   `mergeBase` is `git merge-base <head> <tip>`, and `paths` is `git diff --no-renames --name-only <mergeBase> <head>`, sorted: the paths that the head changes, which are its profile.
   `verdicts` holds `{"base","conflict","paths"}` for each first-parent commit of the merges file after the merge base, up to the tip (`git rev-list --first-parent <tip> ^<head>`, oldest first), whose commit line shares a path with the head's `paths`.
-  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`): clean on exit 0, and a conflict in the `paths` that git names on exit 1.
+  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`, or the same merge as a line of `git merge-tree --stdin`): clean, or a conflict in the `paths` that git names.
   So the first verdict that conflicts names its cause, and each later verdict holds the earlier commits.
   A head that git did not read has no `tip`, `mergeBase`, `paths` or `verdicts`.
 
@@ -476,19 +476,23 @@ A pull request that GitHub still refuses to read after the tries, with the `422`
 A timeline page or event that does not read, a force push that names no commit among them, is a `timeline-unread` missing input: the collector never guesses a head.
 
 The git phase reads no GitHub API.
-It clones `--repo` once into `--clones`, as `git clone --filter=blob:none --no-checkout --bare` of `--branch` alone, from `https://github.com/<owner>/<name>.git`.
+It clones `--repo` once into `--clones`, as `git clone --no-checkout --bare --single-branch` of `--branch` alone, from `https://github.com/<owner>/<name>.git`.
+The clone is whole: it holds every blob of the branch, and each fetch brings the blobs of what it fetches.
 Git takes the credential that your git credential helper gives, and `collect-git` never reads, prints or stores it.
 It tests which commits the clone holds with lazy fetching off (`GIT_NO_LAZY_FETCH=1 git cat-file --batch-check`), and fetches the commits that it lacks.
 It first asks the remote which of the pull requests whose heads the clone lacks have a head ref, `refs/pull/<n>/head` (`git ls-remote`, 200 refs at a time), and fetches each such ref into `refs/pulls/<n>`, 40 at a time.
 It then fetches each commit that it still lacks into a ref of its own, `refs/fetched/<sha>`, in batches of up to 40.
 A batch whose fetch does not bring all its commits splits in two, and each half is fetched in turn, down to a commit alone.
-These refs tell each later fetch which commits the clone holds, so the remote sends no commit or tree twice.
+These refs tell each later fetch which commits the clone holds, so the remote sends no object twice.
 A commit that the remote does not give is a `head-unreachable` or `base-unreachable` missing input.
-`git merge-tree` fetches the blobs that it needs as it merges.
+Since the clone holds every blob that it reads, each command that reads it runs with lazy fetching off (`GIT_NO_LAZY_FETCH=1`), and never fetches from the remote.
+Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
+Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
+It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
 
 Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
-The guard also kills a command past its time: 180 seconds for the clone and for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
+The guard also kills a command past its time: 15 minutes for the clone, 180 seconds for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
 A kill is a `memory-cap` or a `timeout` missing input, any other failure of git a `git-error` one, and the run goes on.
 The guard reads Linux's `/proc`, so the git phase runs on Linux.
 

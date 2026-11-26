@@ -20,10 +20,11 @@ const DefaultGitMemoryCap int64 = 1536 << 20
 // gitPoll is how often the guard reads the resident memory of the process group it watches.
 const gitPoll = 200 * time.Millisecond
 
-// The guard's time of each git command collect-git runs: the clone of the base branch and a fetch
-// of a batch of commits, a fetch of one commit, a merge-tree, and any other command. A command past
-// its time is killed, as one past the memory cap is.
+// The guard's time of each git command collect-git runs: the clone of the base branch, a fetch of a
+// batch of commits, a fetch of one commit, a merge-tree, and any other command. A command past its
+// time is killed, as one past the memory cap is.
 const (
+	gitCloneTime  = 15 * time.Minute
 	gitBranchTime = 180 * time.Second
 	gitFetchTime  = 90 * time.Second
 	gitMergeTime  = 120 * time.Second
