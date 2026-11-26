@@ -93,7 +93,7 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (DATABASE_SKIPS_TEST, f"{at(ENVOY_SKIPS_JOB, DATABASE_SKIPS_TEST_STEP, ENVOY_GO_FILE)} runs it"),
     (GO_LEGS_SCRIPT, at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
-) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + crash_safety_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),

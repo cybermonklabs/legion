@@ -21,10 +21,14 @@ place of the file, every top-level test of a split package in exactly one group,
 runs a group runs that package alone. A module's `twice` names, each with why, the packages two
 jobs each run once in a mode of its own, a plain leg and a race leg: such a package is in the legs
 of exactly two jobs, once in each (in one leg, or split by groups across legs of that job), and is
-refused anywhere else (.github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs). A problem that
-would run a test twice, or nothing at all, is an error and the leg prints nothing; a list that has
-merely gone stale against the source — a test no group names, a group name the package no longer
-declares — is a warning, and the leg places that test itself, by the same rule in every leg.
+refused anywhere else (.github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs). Every module's
+entry has an `unlisted`, naming the job whose last leg runs each package `go list ./...` prints and
+no place of the file names: a new package then runs in exactly one leg, with a warning, before
+anyone lists it, as a test no group names runs in the group `placed` gives it. A problem that would
+run a test twice, or nothing at all, is an error and the leg prints nothing; a list that has
+merely gone stale against the source — a package no place names, a test no group names, a group
+name the package no longer declares — is a warning, and the leg places that package or test
+itself, by the same rule in every leg.
 
 `go list ./...` decides what a package is, as it decides what `go test ./...` would run: a
 directory whose every .go file a build constraint excludes is none, and one with only _test.go
@@ -54,15 +58,19 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGS = ".github/go-legs.yaml"
 ELSEWHERE = "elsewhere"
 TWICE = "twice"
+UNLISTED = "unlisted"
 # The module keys that are no job: each other key of a module's entry is a job whose legs it lists.
-NOT_JOBS = (ELSEWHERE, TWICE)
+NOT_JOBS = (ELSEWHERE, TWICE, UNLISTED)
 # Where a split package's groups are: GROUPS/<module>/<package>.yaml.
 GROUPS = ".github/go-legs"
 # A name `go test -run` matches at the top level: what `go test -list .` prints for each test,
-# fuzz test and example, less the benchmarks, which no -run without -bench runs. `\w` is Unicode
-# in Python 3, as a Go identifier is: `go test` runs a `func TestÄ…` and lists it, and a name this
-# pattern dropped would be in no group and in no leg's -run, with nothing to say so.
-TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)\w*$")
+# fuzz test and example, less the benchmarks, which no -run without -bench runs. After the prefix
+# any character but whitespace and a regex metacharacter: a Go identifier may hold any Unicode
+# letter (`go test` runs a `func TestÄ…` and lists it), and a name this pattern dropped would be in
+# no group and in no leg's -run, with nothing to say so; while a metacharacter would make the
+# group's -run a pattern rather than a list of names. packages/envoy/scripts/database-skips.sh
+# holds a leg's -run names to the same rule (its TEST_NAME), so a name one accepts the other does.
+TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)[^\s.*+?()\[\]{}|^$\\]*$")
 # The longest -run pattern a group may print. go test hands the pattern to the test binary as one
 # argument, `-test.run=<pattern>`, and Linux refuses one argument over 131,072 bytes
 # (MAX_ARG_STRLEN); GNU xargs builds a command line of at most 128 KiB by default and, past it,
@@ -147,7 +155,7 @@ def places(entry: dict) -> tuple:
     (job, leg, the entry as written)."""
     named, malformed = [], []
     for job, legs in entry.items():
-        if job == TWICE:
+        if job in (TWICE, UNLISTED):
             continue
         if job == ELSEWHERE:
             named += [Place(package, ELSEWHERE, runner=runner) for package, runner in (legs or {}).items()]
@@ -213,23 +221,58 @@ def twice_problems(module: str, package: str, held: list, legs_path: str) -> lis
     return found
 
 
+def last_leg(legs: dict) -> str:
+    """A job's last leg, the highest number the file gives it, as the matrix names it."""
+    return max((str(number) for number in legs), key=lambda n: (len(n), n))
+
+
+def unlisted(entry: dict, packages: list) -> list:
+    """The packages of `packages` no place of the entry names and `twice` does not name, in go
+    list's order: the last leg of the job the entry's `unlisted` names runs them."""
+    held = {place.package for place in places(entry)[0]} | set(entry.get(TWICE) or {})
+    return [package for package in packages if package not in held]
+
+
+def unlisted_problems(entry: dict, legs_path: str) -> list:
+    """What keeps the entry's `unlisted` from naming one leg that can run a package no place names:
+    every entry has it, so a new package runs in one leg and never in none; it names a job of the
+    entry, and that job's last leg runs whole packages (a group leg's -run would choose their tests
+    too)."""
+    if UNLISTED not in entry:
+        return [f"{legs_path}'s entry has no {UNLISTED}, so a package `go list ./...` prints and no place names "
+                f"would run in no leg: set `{UNLISTED}: <job>` to the module's plain job, whose last leg then runs "
+                f"each such package"]
+    job = entry[UNLISTED]
+    legs = entry.get(job) if isinstance(job, str) and job not in NOT_JOBS else None
+    if not isinstance(legs, dict) or not legs:
+        return [f"{legs_path}'s {UNLISTED} names {job!r}, which is no job of the entry: name the job whose last "
+                f"leg runs each package no place names, the module's plain job"]
+    last = last_leg(legs)
+    listed = next(listed for number, listed in legs.items() if str(number) == last)
+    if any(item(written)[1] is not None for written in listed or []):
+        return [f"{legs_path}'s {UNLISTED} names job {job}, whose last leg, {last}, runs a group of a package's "
+                f"tests, and the group's -run would choose the tests of the packages it placed there too: give "
+                f"the job a last leg of whole packages"]
+    return []
+
+
 def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) -> list:
     """What keeps the entry from running each of `packages` (directories under the module) in
-    exactly one place: a package in no place, a package in two (unless the two are groups of its
-    tests, split_problems, or legs of two jobs `twice` names it for, twice_problems), a place, or a
-    `twice` entry, that names no package, and an entry of no shape this script reads."""
+    exactly one place: a package in two (unless the two are groups of its tests, split_problems,
+    or legs of two jobs `twice` names it for, twice_problems), a place, or a `twice` entry, that
+    names no package, an `unlisted` that names no leg that can run a package no place names
+    (unlisted_problems; the leg runs such a package, with a warning), and an entry of no shape
+    this script reads."""
     named, malformed = places(entry)
     found = [f"{legs_path} gives job {job} leg {leg} the entry {written!r}, which is neither "
              f"`- <package>` nor `- <package>: <group>`: write it as one of the two"
              for job, leg, written in malformed]
+    found += unlisted_problems(entry, legs_path)
     where = {}
     for place in named:
         where.setdefault(place.package, []).append(place)
     twice = entry.get(TWICE) or {}
-    missing, _, unknown = once(packages, where)
-    found += [f"{module}/{package} is a package `go list ./...` prints, and no leg of {legs_path} "
-              f"runs it: add it to the leg of the job that should run it, or to {ELSEWHERE} with the "
-              f"job that runs it" for package in missing if package not in twice]
+    _, _, unknown = once(packages, where)
     for package in packages:
         held = where.get(package, [])
         if package in twice:
@@ -427,6 +470,14 @@ def main(argv: list) -> int:
         print(f"go_legs.py: {len(found)} problem(s) above; leg {leg} of {job} runs nothing until the file runs "
               f"every package of {module} once, in the legs the job's matrix runs", file=sys.stderr)
         return 1
+    # A package no place names runs in the last leg of the job `unlisted` names, and every leg says
+    # so, as a test no group names runs in the group `placed` gives it: the run stays whole while
+    # the file is stale, and the warning says where to list the package.
+    extra = unlisted(entry, packages)
+    home = (entry[UNLISTED], last_leg(entry[entry[UNLISTED]]))
+    say([f"{module}/{package} is a package `go list ./...` prints that no place of {LEGS} names, so leg "
+         f"{home[1]} of {home[0]} ({UNLISTED}) runs it: add it to the leg its time fits" for package in extra],
+        "warning", LEGS)
     mine = [item(written) for written in mine]
     split = [(package, group) for package, group in mine if group is not None]
     if split:
@@ -434,9 +485,10 @@ def main(argv: list) -> int:
         by_legs = [place.group for place in places(entry)[0]
                    if place.job == job and place.package == package and place.group is not None]
         return run_group(module, job, leg, package, group, by_legs, flags)
-    print(f"go_legs.py: leg {leg} of {job} runs {len(mine)} of the {len(packages)} packages of {module}",
+    running = [package for package, _ in mine] + (extra if home == (job, leg) else [])
+    print(f"go_legs.py: leg {leg} of {job} runs {len(running)} of the {len(packages)} packages of {module}",
           file=sys.stderr)
-    for package, _ in mine:
+    for package in running:
         print(package_argument(package))
     return 0
 

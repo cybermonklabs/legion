@@ -28,7 +28,7 @@ GATE = gate("envoy_session_stall", STALL, runs=[
     ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
     ("packages/contracts/**", at(STALL_LEGS, "Build contracts for the stall suites", STALL_FILE)),
     (BROKER_CLIENT_SRC, f"{at(STALL_LEGS, 'Stall test of claude-envoy', STALL_FILE)} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
-) + ceiling_reads(STALL_LEGS, STALL_FILE) + crash_safety_reads(STALL_LEGS, STALL_FILE)
+) + ceiling_reads(STALL_LEGS, STALL_FILE) + service_settings_reads(STALL_LEGS, STALL_FILE)
   + setup_go(STALL_LEGS, f"{ENVOY}/go.mod", STALL_FILE) + bun_job(STALL_LEGS, STALL_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_session_stall held packages/envoy/** by hand before the filters were computed: it selected 1962 file(s) no other read of this gate declares", but=('**/*_test.go',)),

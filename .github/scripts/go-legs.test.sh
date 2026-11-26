@@ -28,8 +28,11 @@ source "$script_dir/test-lib.sh"
 export GOWORK=off GOFLAGS='' GOPROXY=off GOTOOLCHAIN=local
 
 # tree <name> <legs file text>: a repository under $work/<name> holding that legs file. Echoes its root.
+# Every entry must name the job whose last leg runs a package no place names (go_legs.py's
+# unlisted_problems), so a text that writes no `unlisted:` line gets `  unlisted: job`, the plain
+# job of every fixture here; the one case about an entry without it writes `# no unlisted`.
 tree() {
-  local root="$work/$1"
+  local root="$work/$1" text="$2"
   mkdir -p "$root/.github/scripts" "$root/mod/a" "$root/mod/b/c" "$root/mod/testonly" "$root/mod/tagged"
   cp "$script_dir/go_legs.py" "$root/.github/scripts/"
   printf 'module example.com/mod\n\ngo 1.21\n' > "$root/mod/go.mod"
@@ -38,7 +41,11 @@ tree() {
   printf 'package c\n' > "$root/mod/b/c/c.go"
   printf 'package testonly\n\nimport "testing"\n\nfunc TestX(t *testing.T) {}\n' > "$root/mod/testonly/x_test.go"
   printf '//go:build never\n\npackage tagged\n' > "$root/mod/tagged/t.go"
-  printf '%s\n' "$2" > "$root/.github/go-legs.yaml"
+  case "$text" in
+    *'unlisted:'* | *'# no unlisted'*) ;;
+    *) text+=$'\n  unlisted: job' ;;
+  esac
+  printf '%s\n' "$text" > "$root/.github/go-legs.yaml"
   echo "$root"
 }
 
@@ -72,22 +79,105 @@ check "and says how many of the module's packages they are" "$(contains "$(err)"
 check "leg 2 prints its own" "$(is "$(legs "$root" job 2)" "./b/c/
 exit=0")"
 
-echo "case: a package no place names (a new package, or one taken out of a leg)"
-root=$(tree dropped 'mod:
+echo "case: a package no place names (a new package, or one taken out of a leg) runs in one leg"
+# The last leg of the job `unlisted` names runs it, after the leg's own packages, and every leg
+# says so as a warning: the run stays whole while the file is stale, as a test no group names
+# runs in the group placed() gives it.
+dropped='mod:
+  job:
+    1:
+      - b
+    2:
+      - a
+  race:
+    1:
+      - testonly
+  unlisted: job'
+root=$(tree dropped "$dropped")
+check "the leg before the last prints its own packages alone" "$(is "$(legs "$root" job 1)" "./b/
+exit=0")"
+check "and says which leg runs the package no place names" \
+  "$(contains "$(err)" '^::warning file=.github/go-legs.yaml::mod/b/c is a package `go list ./...` prints that no place of .github/go-legs.yaml names, so leg 2 of job .unlisted. runs it')"
+check "the last leg prints its own and then the package no place names" "$(is "$(legs "$root" job 2)" "./a/
+./b/c/
+exit=0")"
+check "another job's leg leaves it out" "$(is "$(legs "$root" race 1 1)" "./testonly/
+exit=0")"
+check "and warns too" "$(contains "$(err)" 'mod/b/c is a package .go list ./.... prints that no place')"
+
+echo "case: a package added to the module runs in exactly one leg of all the legs"
+root=$(tree added "$whole")
+mkdir -p "$root/mod/fresh"
+printf 'package fresh\n\nimport "testing"\n\nfunc TestFresh(t *testing.T) {}\n' > "$root/mod/fresh/fresh_test.go"
+every="$(legs "$root" job 1)
+$(legs "$root" job 2)"
+check "every leg passes" "$(is "$(grep -c '^exit=0$' <<<"$every")" 2)"
+check "one leg of the two prints the new package" "$(is "$(grep -c '^\./fresh/$' <<<"$every")" 1)"
+check "the last one" "$(contains "$(legs "$root" job 2)" '^\./fresh/$')"
+check "and the go test that leg's step runs runs its test" \
+  "$(contains "$(cd "$root/mod" && set -o pipefail && python3 ../.github/scripts/go_legs.py mod job 2 2 2>/dev/null | xargs go test -count=1 -v 2>&1)" '^--- PASS: TestFresh')"
+
+echo "case: an entry without unlisted"
+root=$(tree no-unlisted "$whole
+  # no unlisted")
+out=$(legs "$root" job 1)
+check "fails every leg" "$(contains "$out" '^exit=1$')"
+check "prints nothing for the leg's go test" "$(is "$out" "
+exit=1")"
+check "naming the key and what to set" \
+  "$(contains "$(err)" "^::error file=.github/go-legs.yaml::.github/go-legs.yaml's entry has no unlisted, so a package .go list ./.... prints and no place names would run in no leg")"
+
+echo "case: unlisted names no job of the entry, or a job whose last leg runs a group"
+root=$(tree unlisted-elsewhere "$whole
+  unlisted: elsewhere")
+check "elsewhere fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming it" "$(contains "$(err)" "unlisted names 'elsewhere', which is no job of the entry")"
+root=$(tree unlisted-typo "$whole
+  unlisted: jobs")
+check "a name no key holds fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+root=$(tree unlisted-group 'mod:
   job:
     1:
       - b
       - a
-    2: []
+      - b/c
+    2:
+      - testonly: 1
+  unlisted: job')
+check "a last leg of a group fails" "$(contains "$(legs "$root" job 1)" '^exit=1$')"
+check "naming the leg" "$(contains "$(err)" 'unlisted names job job, whose last leg, 2, runs a group of a package.s tests')"
+
+echo "case: a package added to an envoy-shaped entry runs in exactly one leg of all its jobs' legs"
+# "A package added to the module runs in exactly one leg", above, is packages/daemon's shape.
+# packages/envoy's entry also has a race job, a package `twice` names in a leg of each job, and
+# `elsewhere`: a package added to that module must still
+# run in exactly one leg of all of them, the plain job's last (its `unlisted`), and in none of the
+# race job's, whose detector its tests may not build for.
+envoy_shaped='mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - b/c
+  race:
+    1:
+      - a
+  twice:
+    a: the plain leg counts its skips, the race leg runs it under the detector
   elsewhere:
-    testonly: another-job')
-out=$(legs "$root" job 1)
-check "fails" "$(contains "$out" '^exit=1$')"
-check "prints nothing for the leg's go test" "$(is "$out" "
-exit=1")"
-check "names the package and what to do" "$(contains "$(err)" 'mod/b/c is a package `go list ./...` prints, and no leg of .github/go-legs.yaml runs it: add it to the leg of the job that should run it')"
-check "as an error on the legs file" "$(contains "$(err)" '^::error file=.github/go-legs.yaml::')"
-check "and fails every leg, not only the one that lost it" "$(contains "$(legs "$root" job 2)" '^exit=1$')"
+    testonly: another-job'
+root=$(tree envoy-added "$envoy_shaped")
+mkdir -p "$root/mod/fresh"
+printf 'package fresh\n\nimport "testing"\n\nfunc TestFresh(t *testing.T) {}\n' > "$root/mod/fresh/fresh_test.go"
+every="$(legs "$root" job 1)
+$(legs "$root" job 2)
+$(legs "$root" race 1 1)"
+check "every leg of both jobs passes" "$(is "$(grep -c '^exit=0$' <<<"$every")" 3)"
+check "one leg of the three prints the new package" "$(is "$(grep -c '^\./fresh/$' <<<"$every")" 1)"
+check "the plain job's last" "$(contains "$(legs "$root" job 2)" '^\./fresh/$')"
+check "and the package twice names is still in one leg of each job" \
+  "$(is "$(grep -c '^\./a/$' <<<"$every")" 2)"
 
 echo "case: a package two places name"
 root=$(tree twice 'mod:
@@ -626,6 +716,27 @@ printf 'nothing of the kind\n' > "$work/empty.txt"
 (cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/empty.txt" >/dev/null 2>&1) || status=$?
 check "a run that times nothing is refused rather than balanced from nothing" "$(is "$status" 1)"
 
+echo "case: a test whose work is in parallel subtests is timed by its longest subtest"
+# Go stops a test's clock when its function returns, before the parallel subtests it started run,
+# so such a test's own Elapsed reads close to 0 s while it holds its leg for as long as they take.
+# Read by its own Elapsed, the rebalancer would deal it as free.
+python3 - "$work/subtests.json" <<'PY'
+import json, sys
+events = [{"Action": "run", "Package": "p", "Test": name} for name in
+          ("TestOne", "TestOneMore", "TestTwo", "TestThree", "ExampleThing")]
+events += [{"Action": "pass", "Package": "p", "Test": "TestTwo/world-1", "Elapsed": 30.0},
+           {"Action": "pass", "Package": "p", "Test": "TestTwo/world-2", "Elapsed": 40.0},
+           {"Action": "pass", "Package": "p", "Test": "TestTwo", "Elapsed": 0.0},
+           {"Action": "pass", "Package": "p", "Test": "TestOne", "Elapsed": 5.0},
+           {"Action": "pass", "Package": "p", "Test": "TestOneMore", "Elapsed": 4.0},
+           {"Action": "pass", "Package": "p", "Test": "TestThree", "Elapsed": 3.0},
+           {"Action": "pass", "Package": "p", "Test": "ExampleThing", "Elapsed": 1.0}]
+open(sys.argv[1], "w").write("\n".join(json.dumps(event) for event in events) + "\n")
+PY
+out=$(cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/subtests.json" 2>&1)
+check "TestTwo weighs its longest subtest, 40 s, a group of its own" "$(contains "$out" '1: 40 s (1 tests)')"
+check "and the file records that time, not its own 0.0 s" \
+  "$(contains "$(cat "$root/.github/go-legs/mod/many.yaml")" '^  - TestTwo  # 40.0 s$')"
 echo "case: a package twice names, in a leg of each of two jobs"
 # envoy's NATS auth service runs plain in a unit leg, which counts its hold rows' skips, and under
 # the detector in a race leg: two places, legs of two jobs, which `twice` must name.

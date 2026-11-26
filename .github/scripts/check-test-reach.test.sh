@@ -949,6 +949,20 @@ check "legs-missing: names the test of the package no leg lists" \
   "$(contains "$out" '^check-test-reach: unrun: packages/envoy/three/three_test.go:[0-9]*: TestInNoLeg: no required step.s go test runs its package, packages/envoy/three$')"
 check "legs-missing: and not the test of the package a leg lists" "$(is "$(contains "$out" 'TestInTheFirstLeg')" false)"
 
+echo "case: a package no place names runs in the legs of the job the module's unlisted names"
+root=$(fixture legs-unlisted)
+unit_only "$root"
+go_test_file "$root/packages/envoy/one/one_test.go" one "" TestInTheFirstLeg
+go_test_file "$root/packages/envoy/three/three_test.go" three "" TestInTheLastLegUnlisted
+printf 'packages/envoy:\n  unlisted: legs\n  legs:\n    1:\n      - one\n    2: []\n' > "$root/.github/go-legs.yaml"
+legs_job "$root" legs
+run_check "$root"
+passes "legs-unlisted: go_legs.py's last leg of the unlisted job runs three"
+printf 'packages/envoy:\n  unlisted: other\n  other:\n    1:\n      - unit\n  legs:\n    1:\n      - one\n    2: []\n' > "$root/.github/go-legs.yaml"
+run_check "$root"
+check "legs-unlisted: an unlisted naming another job leaves three unrun" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/three/three_test.go:[0-9]*: TestInTheLastLegUnlisted: no required step.s go test runs its package, packages/envoy/three$')"
+
 echo "case: a legs step whose job go-legs.yaml lists no legs of"
 root=$(fixture legs-no-job)
 printf 'packages/envoy:\n  other:\n    1:\n      - unit\n' > "$root/.github/go-legs.yaml"

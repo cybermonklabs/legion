@@ -2,7 +2,9 @@ name: CI job envoy-go-race
 
 # The steps of `.github/workflows/ci.yaml#envoy-go-race` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
+# this file carries run the forced-order steps in the last leg alone (`matrix.leg == 5`), and let
+# the job envoy-go-race report a failed leg (`!cancelled()`).
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
@@ -66,8 +68,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -88,13 +95,13 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with
       # a database and pools of its own, beside the step's other packages, so this samples the
       # service's client connections every 2 s while the next step runs and the step after it prints
@@ -116,7 +123,7 @@ jobs:
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs go test -count=1 -race -timeout 30m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -184,18 +191,24 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
-      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
-      # reads as able to move what the legs' go commands compile. The error says this job restates
-      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
-      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
-      # only follows the leg's, and read as its own it would hide the leg's.
+      # The jobs this one waits for are the ones `needs:` names, and only there: the test reads
+      # every result through `needs.*.result`, so a job added to `needs:` is tested with the rest.
+      # A job that failed, was cancelled or was skipped fails this one; the error prints their
+      # results, and each job's own check run says why. (`toJSON(needs)` would name each job beside
+      # its result, but it carries every output of every job, which
+      # .github/scripts/check-ci-filters.sh refuses in a run: (rule 23).) The results are written
+      # into the run: rather than set in an env:, which check-ci-filters.sh reads as able to move
+      # what the legs' go commands compile. The error says this job restates its legs' result, in
+      # the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, so a leg the
+      # platform killed still reads as a runner shutdown: this job's failure only follows the
+      # leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
-          if [ "${{ needs.envoy-go-race-legs.result }}" != success ]; then
-            echo "::error::envoy-go-race's legs ended ${{ needs.envoy-go-race-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = true ]; then
+            echo "::error::envoy-go-race's legs ended ${{ join(needs.*.result, ', ') }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
             exit 1
           fi
-          echo "envoy-go-race's legs ended success"
+          echo "envoy-go-race's legs ended ${{ join(needs.*.result, ', ') }}"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

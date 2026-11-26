@@ -8,15 +8,18 @@
 # job, each `- <package>: <group>`, a group of its top-level tests from
 # .github/go-legs/<module>/<package>.yaml, and those places are its one place. A package two jobs
 # each run in a mode of their own (a plain leg and a race leg) is named under the module's `twice`,
-# with why, and is then in the legs of exactly those two jobs, once in each.
+# with why, and is then in the legs of exactly those two jobs, once in each. Every module names
+# under `unlisted` its plain job, whose last leg runs each package `go list ./...` prints and no
+# place here names, with a warning in every leg: a pull request that adds a package and no line
+# here runs it in that leg, once, and the warning says to give it the leg its time fits.
 # .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
 # leg's tests run; which readings are errors that stop a leg and which are warnings it works
 # through is written once, in
 # .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
 # only its own job, so .github/scripts/ci_job_reads.py's hold_daemon_legs and hold_envoy_legs,
 # which the changes job imports, hold each module's job keys to the jobs whose legs run
-# (daemon-go and daemon-go-race; envoy-go and envoy-go-race) beside `elsewhere` and envoy's
-# `twice`; with both, none runs in no job.
+# (daemon-go and daemon-go-race; envoy-go and envoy-go-race) beside `elsewhere`, `unlisted` and
+# envoy's `twice`, and `unlisted` to the plain job; with both, none runs in no job.
 #
 # The legs are balanced from measured times: a leg takes as long as its longest package, or as
 # its packages' sum over the runner's four cores when that is longer, and go test starts its
@@ -130,6 +133,8 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/subreaper
+      - internal/startwalk
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
   # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three
   # legs, a group of its tests each (.github/go-legs/packages/daemon/internal/daemon.yaml), since
@@ -150,6 +155,8 @@ packages/daemon:
   # Packages of the module no leg runs, each with the job that does.
   elsewhere:
     internal/textcheck: text-checks
+  # The leg that runs a package no place names: daemon-go's last.
+  unlisted: daemon-go
 packages/envoy:
   # envoy-go (.github/workflows/ci-job-envoy-go.yaml, job envoy-go-legs): plain, through
   # packages/envoy/scripts/database-skips.sh, which counts the skips of the broker's packages among
@@ -427,6 +434,29 @@ packages/envoy:
     5:
       - internal/cipher/natscallout             # 211 s
       - internal/oidc                           # 42 s
+  # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
+  # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
+  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took
+  # 999-1,043 s alone at main 3ebc542c, its 2,900 tests 8 at a time (run 45782644966), and the
+  # groups are dealt from that run to model 357 s each.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api:
+    1:
+      - internal/dispatch/api: 1                # 935 tests, 357 s modelled
+    2:
+      - internal/dispatch/api: 2                # 937 tests, 357 s modelled
+    3:
+      - internal/dispatch/api: 3                # 1,028 tests, 357 s modelled
+  # envoy-go-race-docs (job envoy-go-race-docs-legs): one package, internal/dispatch/docs, in
+  # three legs, a group of its tests each; 1,430 s alone, and its longest test 491.6 s.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs:
+    1:
+      - internal/dispatch/docs: 1               # 444 s modelled
+    2:
+      - internal/dispatch/docs: 2               # 444 s modelled
+    3:
+      - internal/dispatch/docs: 3               # 444 s modelled
   # The NATS auth service runs in a plain leg and a race leg: its hold rows read the broker's hold
   # row from Postgres and skip without it, and the plain leg's database-skips.sh counts those skips,
   # where the race leg's go test counts none.
@@ -434,8 +464,6 @@ packages/envoy:
     internal/cipher/natscallout: the plain leg counts its hold rows' skips, the race leg runs it under the detector
   # Packages of the module no leg runs, each with the job that does.
   elsewhere:
-    internal/dispatch/api: envoy-go-race-api
-    internal/dispatch/docs: envoy-go-race-docs
     internal/integration: envoy-go-natslive
     internal/textcheck: text-checks
     internal/dispatch/architecture/notes: envoy-go-build
@@ -445,3 +473,5 @@ packages/envoy:
     cmd/spec-check: envoy-go-build
     listenerwire: envoy-go-build
     internal/wirecheck: envoy-go-build
+  # The leg that runs a package no place names: envoy-go's last, the rest of the module.
+  unlisted: envoy-go

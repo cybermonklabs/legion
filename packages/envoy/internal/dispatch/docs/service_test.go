@@ -433,6 +433,91 @@ func contentRowsPastLatestVersion(t *testing.T, database *store.Store, artifactI
 	return rows
 }
 
+// looseList is a loose list as this build writes it, and respelledLooseList the same tree as no
+// renderer version writes it, its first two items standing together: a stored version holds its
+// renderer's spelling of a document, and a test that stores one this build does not write holds
+// at every renderer version, this one and the next.
+const (
+	looseList          = "- first\n\n- second\n\n- third\n"
+	respelledLooseList = "- first\n- second\n\n- third\n"
+)
+
+// respellLatestVersion stores markdown as artifactID's latest version, stamped with a renderer
+// version other than this build's, as a build of that renderer version would have stored its
+// spelling of the document, and returns the version's number.
+func respellLatestVersion(t *testing.T, database *store.Store, artifactID, markdown string) int {
+	t.Helper()
+	var number int
+	if err := database.Pool.QueryRow(context.Background(), `
+		update artifact_versions set markdown = $2, renderer_version = $3
+		where artifact_id = $1 and number = (select max(number) from artifact_versions where artifact_id = $1)
+		returning number
+	`, artifactID, markdown, pmdoc.RendererVersion-1).Scan(&number); err != nil {
+		t.Fatalf("store another renderer version's spelling as the latest version: %v", err)
+	}
+	return number
+}
+
+// typeAndUndo has a browser type into artifactID's first item and take it out again: updates that
+// change the content and leave the tree as it was. It waits until they are stored past the latest
+// version's cursor, where contentChangedSinceVersion reads them.
+func typeAndUndo(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	editLiveTree(t, service, artifactID, replaceRun("first", "first typed"))
+	editLiveTree(t, service, artifactID, replaceRun("first typed", "first"))
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	if rows := contentRowsPastLatestVersion(t, service.store, artifactID); rows == 0 {
+		t.Fatal("the typed and undone edit left no content-class row past the latest version's cursor")
+	}
+}
+
+// requireApprovedAt fails unless artifactID's newest review approves version number and that
+// version is still the latest, so the approval reads approved rather than stale.
+func requireApprovedAt(t *testing.T, service *Service, artifactID string, number int) {
+	t.Helper()
+	review, err := NewestReview(context.Background(), service.store.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the newest review: %v", err)
+	}
+	if review == nil || review.State != "approved" || review.Version != number {
+		t.Fatalf("newest review = %+v, want an approval of version %d", review, number)
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != number {
+		t.Fatalf("the document is at version %d, so the approval of version %d reads stale", latest, number)
+	}
+}
+
+// A renderer change leaves every version stored before it in its renderer's spelling, and an edit
+// typed and undone since changes the content and changes it back. Settlement then renders the same
+// tree in this build's spelling, which the version holds in another: it writes no version, so an
+// approval of that version still reads approved. An edit that stays is still versioned.
+func TestSettlementWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, looseList)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := respellLatestVersion(t, service.store, artifactID, respelledLooseList)
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+	typeAndUndo(t, service, artifactID)
+
+	settleCurrentGeneration(t, service, artifactID)
+
+	if latest := latestVersionNumber(t, service, artifactID); latest != approved {
+		t.Fatalf("settling an edit typed and undone wrote version %d, want none past version %d, which holds the same tree in another renderer version's spelling", latest, approved)
+	}
+	if stored := latestVersionMarkdown(t, service, artifactID); stored != respelledLooseList {
+		t.Fatalf("the latest version holds %q, want %q as it was stored", stored, respelledLooseList)
+	}
+	requireApprovedAt(t, service, artifactID, approved)
+
+	editLiveTree(t, service, artifactID, replaceRun("third", "third, edited"))
+	settleCurrentGeneration(t, service, artifactID)
+	if latest := latestVersionNumber(t, service, artifactID); latest != approved+1 {
+		t.Fatalf("settling an edit that stays left the document at version %d, want %d", latest, approved+1)
+	}
+}
+
 // A settlement that writes no version leaves the document at the version it found, and the
 // events that name one - here `block.invalid`, whose `invalid` attribute no rendering carries -
 // have to say that number rather than the one the settlement would have written.

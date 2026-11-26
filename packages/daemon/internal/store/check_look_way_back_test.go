@@ -20,6 +20,7 @@ import (
 // This exercises the operator's SQL and its scope, not the previous daemon's route. That
 // route needs the previous binary; this tree only holds the new explicit-field route.
 func TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone(t *testing.T) {
+	t.Parallel()
 	s := migratedStore(t)
 	for _, fixture := range []struct {
 		key, project string

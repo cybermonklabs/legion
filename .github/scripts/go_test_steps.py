@@ -68,7 +68,13 @@ NAME = re.compile(r"^(Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*$")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)="?\$\((.+)\)"?$')
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# A lister piped into xargs and the command xargs runs with what it printed. `xargs -r`
+# (`--no-run-if-empty`) runs nothing when its lister prints nothing, and with something printed
+# runs the command plain xargs runs, so the reader reads it as plain xargs. The command may be
+# `env NAME=value …` and a GO_WRAPPERS wrapper before its `go test` (envoy-go-race-docs' legs run
+# `env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`); read_block reads it through
+# go_command, as it reads the same command written on a line of its own.
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<command>.+)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # The script that prints what one leg of a legs job runs, from LEGS_FILE: given `<module> <job>
 # <leg> <legs> [<build flag>…]`, the leg's packages, or a split package's group of tests as
@@ -76,8 +82,10 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 LEGS = ".github/scripts/go_legs.py"
 LEGS_FILE = ".github/go-legs.yaml"
 # The keys of a module's entry in LEGS_FILE that name no job: the packages another job's own steps
-# run (`elsewhere`), and why a package runs in the legs of two jobs (`twice`).
-LEGS_NOT_JOBS = ("elsewhere", "twice")
+# run (`elsewhere`), why a package runs in the legs of two jobs (`twice`), and the job whose last
+# leg runs each package no place names (`unlisted`).
+LEGS_UNLISTED = "unlisted"
+LEGS_NOT_JOBS = ("elsewhere", "twice", LEGS_UNLISTED)
 # A run: that starts a go test or a gotestsum, by its comment-free lines.
 GO_TEST_TEXT = re.compile(r"\b(?:go\s+test|gotestsum)\b")
 # The commands read as gotestsum (parse_gotestsum), by the last part of the word that names them.
@@ -234,18 +242,20 @@ AUDITED_SCRIPTS = {
     # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
     # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
     # order, and counts the table's among them; it changes what is counted, never what runs. With
-    # `--report FILE` it reads a report and runs no test. envoy-go-race-api's race step passes the
-    # argument list below, and envoy-go's unit legs the xargs one, each leg's packages after it.
+    # `--report FILE` it reads a report and runs no test. `-run=^(Name|...)$`, which a leg pipes in
+    # with its package, adds that -run. envoy-go-race-api's legs and envoy-go's unit legs pass an
+    # xargs argument list below, each leg's packages (and group) after it.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
-        commands={
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
-        },
+        commands={},
         xargs={
             f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
+            # envoy-go-race-api's legs: the API package, and the leg's group as `-run=^(Name|...)$`,
+            # come from go_legs.py through xargs, so the command carries neither.
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
+                "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="066b9211ef37bd585062922ff9fc502f799d99dab645d3e98079de8ccfb8eb07",
+        sha256="1fda7c677b2f277920e8a5f16f9da79ab9613e6ba5c356df7bf3c0606ec24670",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -641,8 +651,9 @@ def spellings(path: str, workdir: str) -> set[str]:
 
 
 # A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
-# the lister piped to `xargs <the script's path> <an argument list>`.
-XARGS_AUDITED = re.compile(r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<spelled>\S+) (?P<arguments>[^\n]+)$")
+# the lister piped to `xargs [-r] <the script's path> <an argument list>`.
+XARGS_AUDITED = re.compile(r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?:(?:-r|--no-run-if-empty) )?"
+                           r"(?P<spelled>\S+) (?P<arguments>[^\n]+)$")
 
 
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
@@ -699,13 +710,35 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
                 script=entry.commands[arguments])
 
 
+def module_packages(module: str) -> list[str]:
+    """The directories of `module` that hold a Go package, as go_legs.py's `go list ./...` finds
+    them, read off the tree with no `go` command: each directory under the module holding a `.go`
+    file whose name starts with neither `.` nor `_`, outside a `testdata`, `vendor`, `.`- or
+    `_`-named directory and outside a nested module; `.` for the module's own root. A directory
+    whose every file a build tag excludes is read as a package here, which errs wide; the tag rule
+    holds such files on its own."""
+    base = ROOT / module
+    found: list[str] = []
+    for directory, subdirectories, files in os.walk(base):
+        here = Path(directory)
+        subdirectories[:] = sorted(name for name in subdirectories
+                                   if not name.startswith((".", "_")) and name not in ("testdata", "vendor")
+                                   and not (here / name / "go.mod").exists())
+        if any(name.endswith(".go") and not name.startswith((".", "_")) for name in files):
+            relative = here.relative_to(base).as_posix()
+            found.append("." if relative == "." else relative)
+    return found
+
+
 def legs_packages(step: Step, text: str) -> list[str] | None:
     """The packages a `go_legs.py <module> <job> <leg> <legs> [<flag>…]` lister stands for, read
     off LEGS_FILE with no `go` command: each package any leg of that job lists, once, whole, as
-    `./<directory>/` from the module, in the file's order; or None where `text` calls no LEGS. A
-    split package is whole here: go_legs.py fails a leg unless each of its tests is in one group
-    the job's legs run. A call this reading cannot place - a module or job the file lacks, a step
-    that runs outside the module the packages are relative to - is refused."""
+    `./<directory>/` from the module, in the file's order, and, for the job the module's
+    `unlisted` names, each package of the module (module_packages) that no place of the file names,
+    which go_legs.py runs in that job's last leg; or None where `text` calls no LEGS. A split
+    package is whole here: go_legs.py fails a leg unless each of its tests is in one group the
+    job's legs run. A call this reading cannot place - a module or job the file lacks, a step that
+    runs outside the module the packages are relative to - is refused."""
     words = shlex.split(text)
     at = next((index for index, word in enumerate(words) if word.endswith(Path(LEGS).name)), None)
     if at is None:
@@ -718,18 +751,36 @@ def legs_packages(step: Step, text: str) -> list[str] | None:
         raise Refused(f"{step.label}: `{text}` lists the packages of {module} as paths from that module, "
                       f"and the step runs in {step.workdir}")
     document = yaml.safe_load((ROOT / LEGS_FILE).read_text()) or {}
-    legs = ((document.get(module) or {}).get(job) if job not in LEGS_NOT_JOBS else None)
+    entry = document.get(module) or {}
+    legs = entry.get(job) if job not in LEGS_NOT_JOBS else None
     if not isinstance(legs, dict) or not legs:
         raise Refused(f"{step.label}: {LEGS_FILE} lists no legs of {job} under {module}")
+
+    def listed_packages(of: dict) -> list[str]:
+        packages = []
+        for listed in of.values():
+            for written in listed or []:
+                package = (written if isinstance(written, str)
+                           else next(iter(written), None) if isinstance(written, dict) else None)
+                if not isinstance(package, str):
+                    raise Refused(f"{step.label}: {LEGS_FILE} lists `{written}` in a leg of {module}, which "
+                                  "is no package and no `<package>: <group>`")
+                packages.append(package)
+        return packages
+
     found: list[str] = []
-    for listed in legs.values():
-        for written in listed or []:
-            package = written if isinstance(written, str) else next(iter(written), None) if isinstance(written, dict) else None
-            if not isinstance(package, str):
-                raise Refused(f"{step.label}: {LEGS_FILE} lists `{written}` in a leg of {job}, which is "
-                              "no package and no `<package>: <group>`")
+    for package in listed_packages(legs):
+        argument = "./" if package == "." else f"./{package}/"
+        if argument not in found:
+            found.append(argument)
+    if entry.get(LEGS_UNLISTED) == job:
+        named = set(entry.get("elsewhere") or {}) | set(entry.get("twice") or {})
+        for other, other_legs in entry.items():
+            if other not in LEGS_NOT_JOBS and isinstance(other_legs, dict):
+                named.update(listed_packages(other_legs))
+        for package in module_packages(module):
             argument = "./" if package == "." else f"./{package}/"
-            if argument not in found:
+            if package not in named and argument not in found:
                 found.append(argument)
     return found
 
@@ -772,12 +823,19 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
         piped = XARGS.match(line)
         if piped:
-            lister = expand(piped.group("lister"), variables)
-            appended = answer(step, lister).split()
-            if not appended:
-                raise Refused(f"{step.label}: `{lister}` printed no package")
-            found.append(parse_go_test(step, expand(piped.group("test"), variables), appended))
-            continue
+            command_line = piped.group("command").strip()
+            if command_line.split(None, 1)[0] == "env" and len(command_line.split(None, 1)) == 2:
+                command_line = command_line.split(None, 1)[1]
+            words, command_text = go_command(command_line)
+            if words[:2] == ["go", "test"]:
+                lister = expand(piped.group("lister"), variables)
+                appended = answer(step, lister).split()
+                if not appended:
+                    raise Refused(f"{step.label}: `{lister}` printed no package")
+                command = parse_go_test(step, expand(command_text, variables), appended)
+                command.env = {**line_env(command_line), **command.env}
+                found.append(command)
+                continue
 
         words, command_text = go_command(line)
         if len(words) > 1 and words[0] == "go" and words[1] in NO_TEST_GO:
