@@ -3434,17 +3434,21 @@ test("offline, Take out of epic whose list read outlives its bound lands on an u
   }
 });
 
-// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:42Z): a refused table action keeps
-// its selection, so its bar stays and no hand-off runs then, and it names no row as leaving: only
-// an action that answered what it changed does (`useIssueTableActions`'s `moved`). So when the
-// reader then clears the selection, the landing is made on the checkbox of the issue marked last,
-// and nothing is owed after it: a wheel of theirs moves no focus.
-test("after a refused Take out of epic, Clear selection lands on the issue marked last and owes nothing", async () => {
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:42Z, and the red team's (iv)): a
+// table action that saved one of its changes and was refused the other keeps its selection, so its
+// bar stays and no hand-off runs then. It changed the list all the same, so the List names the
+// issue it saved as leaving, but only while the action and the read after it are out
+// (`useIssueTableActions`'s `leaving`): the issue is still listed once they are over, outside the
+// epic, and is staying. So when the reader then clears the selection, nothing is leaving: the
+// landing is made at once on the checkbox of the issue marked last, and nothing is owed after it,
+// so a wheel of theirs moves no focus. A name that outlived the action would owe that landing
+// instead, and the wheel would take the focus off the checkbox the hand-off parked it on.
+test("after a partly refused Take out of epic, Clear selection lands on the issue marked last and owes nothing", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockRejectedValue(
-    new ApiError(403, { error: "Parent refused", code: "FORBIDDEN" })
-  );
-  restores.push(() => send.mockRestore());
+  answerIssuePatches().mockImplementation(async (key) => {
+    if (key === "CORE-3") return savedIssue(key);
+    throw new ApiError(403, { error: "Parent refused", code: "FORBIDDEN" });
+  });
   table(
     [
       issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
@@ -3456,17 +3460,25 @@ test("after a refused Take out of epic, Clear selection lands on the issue marke
   );
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
-  await user.click(within(bar).getByRole("button", { name: "Take out of epic" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("Parent refused");
-  expect(screen.getByRole("toolbar", { name: "Selected issues" })).toBeInTheDocument();
-
-  await user.click(
-    within(screen.getByRole("toolbar", { name: "Selected issues" })).getByRole("button", {
-      name: "Clear selection",
-    })
+  const bar = () => screen.getByRole("toolbar", { name: "Selected issues" });
+  await user.click(within(bar()).getByRole("button", { name: "Take out of epic" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("1 of 2 changes saved.");
+  // The action is over once it lets its controls go, after the read of the list that draws the
+  // change it saved. The issue it saved is the one it named as moved.
+  const clear = () => within(bar()).getByRole("button", { name: "Clear selection" });
+  await waitFor(() => expect(clear().getAttribute("aria-disabled")).not.toBe("true"));
+  expect(screen.getByRole("checkbox", { name: "Select CORE-3" }).closest("tr")?.dataset.moved).toBe(
+    "true"
   );
-  await waitFor(() => expect(focusedName()).toBe("Select CORE-2"));
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-2" }).checked).toBe(
+    true
+  );
+
+  await user.click(clear());
+  // The landing waits for the foot's own pass alone (`hooks/useFootInset.ts`), not for a name.
+  await afterFrameAndTasks();
+  expect(screen.queryByRole("toolbar", { name: "Selected issues" })).toBeNull();
+  expect(focusedName()).toBe("Select CORE-2");
   document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
   await afterFrameAndTasks();
   expect(focusedName()).toBe("Select CORE-2");
