@@ -1,0 +1,35 @@
+kind: Added
+body: |-
+  The secrets broker reads three job settings. Each lists identities that write to Dispatch as
+  themselves and for no person: `BROKER_EXCHANGE_JOB_ACCOUNTS`
+  (`<service account>=<projects>[=<session>]`, a pod's Kubernetes service account),
+  `BROKER_EXCHANGE_JOB_WORKFLOWS` (`<repository>=<workflow path>=<ref>=<projects>[=<session>]`, a
+  GitHub Actions workflow) and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS`
+  (`<service account email>=<projects>[=<session>]`, an account `BROKER_VM_SERVICES` lists).
+  `<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private
+  projects. The token the exchange mints for such an entry names the identity as its service, names
+  no person and holds no OAuth scope. It carries the entry's projects whatever the request names:
+  the project scope `named` with the one project, or the new project scope `public` with the
+  private projects, beside which it reaches every public project. A request that names a project
+  outside the list is refused, and so is one that asks for the scope `read`, since the broker
+  narrows no job's token. The broker refuses to start on an identity that a job setting and a
+  setting that names a person both list, and on an account that `BROKER_EXCHANGE_JOB_ACCOUNTS` and
+  `BROKER_EXCHANGE_READ_ACCOUNTS` both list. Dispatch, the Envoy listener and the NATS auth service
+  take both token shapes. An edge listener takes a `named` token for its one project and refuses a
+  `public` one. A job pod's or a job machine's secret release is held to its entry's list with no
+  question to Dispatch about a person, so it gets no secret tagged with a private project. The boot
+  line `token exchange state=on` counts the entries as `job_accounts`, `job_workflows` and
+  `job_machines`.
+
+  Both broker clients take `AGENT_SECRETS_MACHINE_IDENTITY=github-actions`. A GitHub Actions job
+  that holds `id-token: write` then trades its run's OIDC token, which the client asks GitHub for at
+  `ACTIONS_ID_TOKEN_REQUEST_URL` with `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, for the audience
+  `AGENT_SECRETS_MACHINE_AUDIENCE` names. That audience must equal the broker's
+  `BROKER_EXCHANGE_GITHUB_AUDIENCE`. The Legion controller and `natsprobe` take the identity. The
+  broker mints no launcher credential for a workflow run, so the helper gets none with it, and
+  `agent-secrets` refuses it (exit 2), as it refuses `kubernetes`. `scripts/dev-broker.sh` lists a
+  job pod and a job workflow, and `dev-oidc-issuer --actions-token` stands in for GitHub's token
+  request.
+time: 2026-11-24T01:52:17Z
+custom:
+    Issue: job-tokens
