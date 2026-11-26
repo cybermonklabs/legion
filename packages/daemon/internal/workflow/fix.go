@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -831,25 +832,30 @@ func fixDirOf(dir func(record.Issue) string) func(record.Issue) string {
 // fixSentence is the sentence of a fix's task that names what it fixes, from its start facts: its
 // check, the head the check failed at, and its CI job as the read found it: its name, how it ended
 // (CICase) and its page; its name and how to find its run where Dispatch holds no page; and the
-// read's error and how to find the run where the read found no job.
+// read's error and how to find the run where the read found no job. The job's name and page are a
+// CI system's, and the read's error can carry Dispatch's own answer, so each is quoted, as other
+// writers' text inside a sentence of the daemon's is (quotedList): it stays one value on one line,
+// and nothing in it reads as the daemon's own words.
 func fixSentence(key string, facts startFacts) string {
 	find := fmt.Sprintf("find its run from %s with dispatch results --issue %s", facts.Head, key)
 	switch {
 	case facts.Job == "" && facts.ReadFailed != "":
-		return fmt.Sprintf(" This is a fix: check %s failed at %s (Dispatch could not be read for its job: %s; %s).", facts.Check, facts.Head, facts.ReadFailed, find)
+		return fmt.Sprintf(" This is a fix: check %s failed at %s (Dispatch could not be read for its job: %q; %s).", facts.Check, facts.Head, facts.ReadFailed, find)
 	case facts.Page == "":
 		return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s; Dispatch holds no address of its page, so %s).", facts.Check, facts.Head,
 			jobOf(record.TaskFix{JobName: facts.Job}), find)
 	}
-	return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s ended %s, page %s).", facts.Check, facts.Head, facts.Job, facts.CICase, facts.Page)
+	return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s ended %s, page %q).", facts.Check, facts.Head,
+		jobOf(record.TaskFix{JobName: facts.Job}), facts.CICase, facts.Page)
 }
 
-// jobOf is the name of fix's CI job, or "of the check" where the read found none.
+// jobOf is the name of fix's CI job, quoted, since a CI system names it (fixSentence), or "of the
+// check" where the read found none.
 func jobOf(fix record.TaskFix) string {
 	if fix.JobName == "" {
 		return "of the check"
 	}
-	return fix.JobName
+	return strconv.Quote(fix.JobName)
 }
 
 // tellStepsOfFix tells each other step of w's task that runs or was handed work in this run (its
@@ -1338,8 +1344,10 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 // step's own branch beside the fix that its start was bound to, where its commits are ("" for
 // none), which the fix takes before its end push: the one wording of the message a running fix
 // gets (reportToFix) and of the task of the start of a fix that got the report before (fixTask).
+// The step's summary is its own text, so it is quoted (quotedList): one value on one line, which
+// nothing in it can turn into the daemon's words.
 func reportSentence(step standing, handoff record.PhaseRow, branch string) string {
-	body := fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
+	body := fmt.Sprintf("The %s of step %d reports: %q. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
 	if branch != "" {
 		body += fmt.Sprintf(" Its commits are on its own branch %s: take them before your end push, as your task says.", branch)
 	}
