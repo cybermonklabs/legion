@@ -3,7 +3,7 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
-import type { DecisionNode } from "../decision-nodes/decision-nodes";
+import { type DecisionNode, decidedByPerson } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, inReviewList, reviewState } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
@@ -21,21 +21,23 @@ import { type DecisionState, isReader } from "../page-words";
  *    and that a `shaped` tie names a statement of this issue for, newest first. The list is
  *    read from the ties alone (`decision-review.ts`'s `inReviewList`): a decision that waits and
  *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
- *    one the reader sent a Change on, which waits on its agent.
+ *    one the reader sent a Change on, which waits on its agent. A decision a person decided is
+ *    no agent's and never waits for review, whatever the read's `waiting_review` says.
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
- *    and each agent decision a statement rests on that the reader kept or asked to change, by
- *    the time they did. An answered ask is the person's decision itself, and a declined one
- *    reads as a question the person declined,
+ *    each decision whose `decided_by` names the reader, and each agent decision a statement
+ *    rests on that the reader kept or asked to change, by the time they did. An answered ask is
+ *    the person's decision itself, and a declined one reads as a question the person declined,
  *    never as an answer.
  * 4. **What others decided**, newest first: the same entries where the person who answered,
- *    declined, kept or changed is not the reader, and a question its asker took back. R2 names
- *    the third part "his own decisions", and Dispatch has several readers: another person's
+ *    declined, decided, kept or changed is not the reader, and a question its asker took back. R2
+ *    names the third part "his own decisions", and Dispatch has several readers: another person's
  *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
  *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
  * 5. **The agents' decisions that no statement rests on**, at the foot and unfolded, which the
  *    page folds only when the reader folds them: an agent decision no `shaped` tie names a
  *    statement for, whether a person kept it, asked to change it or neither, and a replaced one,
- *    which no statement stands on any longer (R5: "A replaced decision draws no line").
+ *    which no statement stands on any longer (R5: "A replaced decision draws no line"). A
+ *    decision a person decided stands here never: it is that person's, wherever it is tied.
  *
  * An overtaken decision or question, a node the read answers `overtaken`, stands in the part its
  * kind puts it in, and no reader waits on it (`waitingOrder`, R2).
@@ -49,7 +51,12 @@ import { type DecisionState, isReader } from "../page-words";
  * `decisionNodes` makes of the ask's node and addresses by the ask's own address
  * (`decision-nodes.ts`' `fromAnsweredAsk`). So the ask's entry is the person's decision, and it
  * carries the statements that decision's `shaped` ties name: the person's decision reaches every
- * statement it shaped.
+ * statement it shaped. A `decision` block whose `decided_by` names a person is that person's
+ * decision too (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision 516), drawn as the
+ * block's node, which names that person as who decided it (`tree-read/tree-nodes.ts`'
+ * `draftDecision`): it stands with the decisions of that person, as their answered ask does, by
+ * the time its words last changed, and it is not an agent's to keep or change: it waits for no
+ * review, and the one state it stands in is replaced, where it was.
  *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
  * restatement of a person's answer appears anywhere in the view"): a `reading` block, which
@@ -77,7 +84,8 @@ import { type DecisionState, isReader } from "../page-words";
  *   made since it last changed (`decision-review.ts`'s `decisionNodeChanges`).
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
  *   the decision model's: the tree draws them on the decision's node, and this model reads of a
- *   decision only its ties, its time and how it stands, as the tree reads them.
+ *   decision only its ties, its time, how it stands, and whether a person decided it
+ *   (`decidedByPerson`), as the tree reads them.
  */
 
 /** The parts, in the order the filter draws them (R2). */
@@ -344,6 +352,23 @@ export function decisionsParts({
       continue;
     }
     const shapes = shapesOf(row, nodeIdOf, placed);
+    const overtaken = row.node.state === "overtaken" ? { overtaken: true as const } : {};
+    if (decidedByPerson(row)) {
+      // A decision a person decided is that person's, as their answered ask is: it stands with
+      // the decisions of that person, by the time its words last changed, in no review list and
+      // never at the agents' foot, and no Change or Keep is an agent's to ask of it, so it stands
+      // only replaced, where it is.
+      const standing = reviewState({ replaced: row.replaced }, false);
+      decidedBy(row.decidedBy).push({
+        ...base,
+        ...timeOf(row.changed_at ?? node.at),
+        ...overtaken,
+        kind: "decision",
+        shapes,
+        ...(standing === undefined ? {} : { standing }),
+      });
+      continue;
+    }
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = reviewState(row, asked !== undefined);
     const keptBy: Actor | undefined =
@@ -366,7 +391,7 @@ export function decisionsParts({
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
-      ...(row.node.state === "overtaken" ? { overtaken: true as const } : {}),
+      ...overtaken,
       kind: "decision",
       shapes,
       ...(standing === undefined ? {} : { standing }),

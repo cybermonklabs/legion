@@ -58,7 +58,11 @@ export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "ed
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
  * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
- * the list.
+ * the list. A decision a person decided is no agent's decision, whatever its `waiting_review`
+ * says, and is never an entry (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision
+ * 516): that rule is read from the decision nodes, whose module reads this one, so each caller
+ * reads it before this one (`waiting.ts`, `decisions-filter/decisions-parts.ts`,
+ * `tree-read/tree-nodes.ts`' `draftDecision`).
  */
 export function inReviewList(
   decision: Pick<DecisionNode, "links" | "waiting_review">,
@@ -87,7 +91,10 @@ export interface DecisionContent {
  * the reader asked for, which waits on its agent and not on the reader (`decisionNodeChanges`);
  * then waiting for review; then kept, by the person whose name the row draws after it
  * (`TreeNode.keptBy`). It is the one rule the outline (`tree-read/tree-nodes.ts`'
- * `draftDecision`) and the Decisions filter (`decisions-filter/decisions-parts.ts`) read.
+ * `draftDecision`) and the Decisions filter (`decisions-filter/decisions-parts.ts`) read. A
+ * decision a person decided (`decision-nodes.ts`' `decidedByPerson`) stands in no state of an
+ * agent's decision's review, kept, asked to change or waiting, so each hands it only whether it
+ * was replaced.
  */
 export function reviewState(
   decision: Partial<Pick<Decision, "kept" | "replaced" | "waiting_review">>,

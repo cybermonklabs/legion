@@ -17,6 +17,7 @@ import {
   askOfNode,
   type DecisionNode,
   type DecisionReads,
+  decidedByPerson,
   decisionNodes,
   restatesAnswer,
 } from "./decision-nodes";
@@ -564,6 +565,32 @@ test("a decision whose from_ask names an answered ask restates it, and one under
       inReviewList(untied, (reference) => reference === blockRef("spec", "r1")),
     "the decision under the answered ask, tied to a statement, waits for no review"
   ).toBe(true);
+});
+
+// INFRA-1196's decision 516: a decision block a person decided is that person's decision. The
+// test is who its `decided_by` names, read as every reader of a decision reads it
+// (`DecisionNode.decidedBy`): a person makes it that person's, and a session, or no `decided_by`
+// at all, makes it an agent's. The read answers each of the three waiting for review, as the
+// decisions read answers every decision block neither kept nor replaced; that says nothing of
+// whose it is.
+test("a decision whose decided_by names a person is that person's, and one naming a session is an agent's", () => {
+  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
+  const tree = answer(
+    [decision("d-person"), decision("d-session"), decision("d-nobody"), ALICE, planner],
+    [tuple("decided_by", "d-person", "alice"), tuple("decided_by", "d-session", "session-planner")]
+  );
+
+  expect(
+    decisionNodes(tree, READS).map((one) => [
+      one.block_id,
+      one.waiting_review,
+      decidedByPerson(one),
+    ])
+  ).toEqual([
+    ["d-person", true, true],
+    ["d-session", true, false],
+    ["d-nobody", true, false],
+  ]);
 });
 
 // A decision is addressed in the document its `document` member names, and

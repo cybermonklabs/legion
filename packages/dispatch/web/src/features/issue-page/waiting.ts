@@ -1,6 +1,6 @@
 import type { Comment, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { askOfNode, decidedByPerson, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, deletedPostIds, inReviewList } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -35,6 +35,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * of a document. A Change its author deleted asks nothing any more, as in the outline:
  * `comments`, the page's comments read, says which were (`deletedPostIds`), since the tree read
  * answers a deleted comment with no mark of the delete.
+ *
+ * A decision a person decided, whose `decided_by` names a person, is that person's decision and
+ * never waits for review (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision 516), so
+ * it is not counted, whatever the read's `waiting_review` says, as the outline marks it waiting
+ * on nobody (`draftDecision`). Who decided it is the answer's `decided_by` tuple, so the
+ * decisions read with no asks say it too.
  *
  * An overtaken decision or question, a node the tree read answers `overtaken`, counts in no
  * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,
@@ -86,6 +92,7 @@ export function waitingOnReader(
     const changes = decisionNodeChanges(tree, undefined, deletedPostIds(comments));
     reviewing = [...decisionsOfAnswer(tree, issue.key).values()].filter(
       (decision) =>
+        !decidedByPerson(decision) &&
         decision.node.state !== "overtaken" &&
         inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
     ).length;

@@ -29,6 +29,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * is no decision (`restatesAnswer`, INFRA-1196's decision 513): it is the old decisions
  * document's section that restates the person's answer, and the person's decision is the answered
  * ask itself, in their own words (INFRA-1150), so no reader of a decision draws it or counts it.
+ * A node of supertag `decision` whose `decided_by` names a person is that person's decision
+ * (`decidedByPerson`, INFRA-1196's decision 516), as an answered ask is, and never waits for
+ * review, whatever the read's `waiting_review` says; one whose `decided_by` names a session, or
+ * nobody, is an agent's.
  *
  * Beside the answer this reads the issue's key, which a node of this issue is addressed in, its
  * documents and its open asks, and the asks read: the answer holds no ask's answer, and it names
@@ -51,7 +55,8 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
 export interface DecisionNode extends Decision {
   /** Who decided it: the person or the session its `decided_by` tuple names, which the read
    *  answers as context (`tree-drafts.ts`' `deciderOf`, the outline's one rule); absent where
-   *  the read holds no such tuple. */
+   *  the read holds no such tuple. A decision it names a person on is that person's
+   *  (`decidedByPerson`). */
   readonly decidedBy?: Actor;
   /** The id of the document the node is a block of (its `document` member), which Keep and a
    *  Change's anchor are written against; undefined for an ask of the conversation, which is a
@@ -121,8 +126,10 @@ const decisionsByAnswer = new WeakMap<TreeAnswer, Map<string, ReadonlyMap<string
  * on it, and the read answers one on every ask a person answered (`issue_tree_read.go`'s
  * `readDecisions`), so the answer alone says which question is a person's decision and which
  * agent's decision restates that answer (`restatesAnswer`). And Keep and Change are drawn only on
- * a decision waiting for review, which is an agent's, and a person's decision never waits for
- * review, so neither reader finds another decision with them.
+ * a decision waiting for review, which is an agent's, and a person's decision - an answered ask,
+ * or a `decision` block whose `decided_by` names a person, which the answer alone says too
+ * (`decidedByPerson`) - never waits for review, so neither reader finds another decision with
+ * them.
  */
 export function decisionsOfAnswer(
   answer: TreeAnswer,
@@ -245,6 +252,26 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
     document: node.document.artifact_id,
     ref,
   };
+}
+
+/**
+ * Whether `decision` is a person's decision because a person decided it (INFRA-1196's decision
+ * 516): its `decided_by` names a person (`decidedBy`, a `user` actor, which `deciderOf` reads a
+ * `person:<login>` end as). One whose `decided_by` names a session, or nobody, is an agent's. A
+ * `decision` block a person decided is that person's decision, as an answered ask is, whose
+ * `decided_by` names its person too: it stands with the reader's own decisions where that person
+ * is the reader, and with what others decided, under that person's name, for every other reader
+ * (`decisions-filter/decisions-parts.ts`), and the Spec filter's column says a person said it
+ * (`spec-filter/spec-decided-by.ts`). It never waits for review - root R35 has only an agent's
+ * decision that changed a statement wait - so it stands in no review list and no count of what
+ * waits (`waiting.ts`, `tree-read/tree-nodes.ts`' `draftDecision`), and neither Keep nor Change is
+ * drawn on it (`DecisionActions.tsx`), whatever the read's `waiting_review` says: the decisions
+ * read answers that true for every such block that is neither kept nor replaced
+ * (`decisionread/decisions.go`' `decision`), and the person's own decision is not an agent's to
+ * keep or change (INFRA-1253's person-node rule). An agent's decision keeps every rule it has.
+ */
+export function decidedByPerson(decision: Pick<DecisionNode, "decidedBy">): boolean {
+  return decision.decidedBy?.kind === "user";
 }
 
 /**
