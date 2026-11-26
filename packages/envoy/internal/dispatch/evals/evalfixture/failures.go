@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
@@ -767,20 +768,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 	if err != nil {
 		return fmt.Errorf("write the issue %s: %w", issue.key, err)
 	}
-	var kinds, actors, payloads []string
-	var times []time.Time
-	add := func(kind string, who model.Actor, payload any, when time.Time) error {
-		actorJSON, err := json.Marshal(who)
-		if err != nil {
-			return err
-		}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		kinds, actors, payloads, times = append(kinds, kind), append(actors, string(actorJSON)), append(payloads, string(body)), append(times, when)
-		return nil
-	}
+	var seeded []legiontest.SeededIssueEvent
 	if issue.link != "" {
 		if _, err := tx.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`, issue.key, issue.link); err != nil {
 			return fmt.Errorf("link %s to %s: %w", issue.key, issue.link, err)
@@ -791,11 +779,12 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		if issue.link != "" {
 			links = append(links, map[string]string{"url": issue.link, "kind": "url"})
 		}
-		if err := add("issue.created", failuresFlagger, map[string]any{
-			"key": issue.key, "project": issue.project, "title": issue.title, "labels": issue.labels, "external_links": links,
-		}, issue.created); err != nil {
-			return fmt.Errorf("encode the creation of %s: %w", issue.key, err)
-		}
+		seeded = append(seeded, legiontest.SeededIssueEvent{
+			Type: "issue.created", Actor: failuresFlagger, At: issue.created,
+			Payload: map[string]any{
+				"key": issue.key, "project": issue.project, "title": issue.title, "labels": issue.labels, "external_links": links,
+			},
+		})
 	}
 	var artifact string
 	if len(issue.results) > 0 {
@@ -807,40 +796,24 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		}
 	}
 	for _, result := range issue.results {
-		if err := add("result.recorded", failuresTester, model.CheckResultEventPayload{
-			ResultID: result.id(issue.project), Issue: issue.key, CheckIssue: issue.key, CheckArtifactID: artifact,
-			CheckBlockID: result.block, CheckVersion: 1, When: model.CheckWhenAfterMerge, Verdict: result.verdict, Role: "tester",
-			CommitSHA: result.commit,
-		}, result.at); err != nil {
-			return fmt.Errorf("encode the result %s of %s: %w", result.block, issue.key, err)
-		}
+		seeded = append(seeded, legiontest.SeededIssueEvent{
+			Type: "result.recorded", Actor: failuresTester, At: result.at,
+			Payload: model.CheckResultEventPayload{
+				ResultID: result.id(issue.project), Issue: issue.key, CheckIssue: issue.key, CheckArtifactID: artifact,
+				CheckBlockID: result.block, CheckVersion: 1, When: model.CheckWhenAfterMerge, Verdict: result.verdict, Role: "tester",
+				CommitSHA: result.commit,
+			},
+		})
 	}
-	if len(kinds) > 0 {
-		seqs := make([]int32, len(kinds))
-		for i := range seqs {
-			seqs[i] = int32(i + 1)
-		}
-		statement := `
-		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-		select $1, seq, kind, actor::jsonb, payload::jsonb, false, at
-		from unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) as seeded(seq, kind, actor, payload, at)`
-		if keywordFill {
-			statement = `
-		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + statement
-		}
-		if _, err := tx.Exec(ctx, statement, issue.key, seqs, kinds, actors, payloads, times); err != nil {
-			return fmt.Errorf("write the events of %s: %w", issue.key, err)
-		}
-		if _, err := tx.Exec(ctx, `update issues set last_seq = $2 where key = $1`, issue.key, len(kinds)); err != nil {
-			return fmt.Errorf("settle the last event of %s: %w", issue.key, err)
-		}
+	if err := legiontest.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
+		return err
 	}
 	tester, err := json.Marshal(failuresTester)
 	if err != nil {
 		return fmt.Errorf("encode the tester: %w", err)
 	}
 	for index, result := range issue.results {
-		seq := len(kinds) - len(issue.results) + index + 1
+		seq := len(seeded) - len(issue.results) + index + 1
 		if _, err := tx.Exec(ctx, `
 			insert into check_results (id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 				check_sha256, role, commit_sha, verdict, actor, event_seq, created_at)

@@ -1,9 +1,10 @@
-// Each project's delivery settings, saved on its settings tab (dispatch://INFRA-978, R1, R2 and
-// R4): two projects keep settings of their own, one with two deploy sources; a project turned off
-// shows the switch alone and the pipeline counts none of its runs; and the editor saves under the
-// stack's agent bearer with no sign-in, the surface INFRA's own settings are saved through on
-// production (the spec's check k5). acme-shaped placeholders throughout (AGENTS.md: "This
-// repository is public").
+/** saves per-project delivery settings against the fake GitHub App's repository access check and
+ *  re-reads the stored settings, resolved default repositories and eval targets across tabs and
+ *  reloads; turns delivery off and polls the server's recomputed deployment-wide pipeline count;
+ *  and saves under the stack's agent bearer with no sign-in and asserts the stored writer session
+ *  (dispatch://INFRA-978, R1, R2, R4 and k5). */
+
+// acme-shaped placeholders throughout (AGENTS.md: "This repository is public").
 import type { Page } from "@playwright/test";
 
 import {

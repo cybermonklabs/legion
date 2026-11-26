@@ -21,14 +21,17 @@ package legiontest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -841,4 +844,56 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 			as seeded(issue, field, value, at)`,
 		s.spec.Project, s.rows.observeIssues, s.rows.observeFields, s.rows.observeValues,
 		s.rows.observeAt)
+}
+
+// SeededIssueEvent is one backdated issue event WriteIssueEvents stores for a fixture issue.
+type SeededIssueEvent struct {
+	Type    string
+	Actor   model.Actor
+	Payload any
+	At      time.Time
+}
+
+// WriteIssueEvents inserts events for issueKey in tx with sequences 1..len(events) and settles the
+// issue's last_seq. The events are dated in the fixture's past, so where keywordFill is true the
+// insert nulls the keyword fill's stored reach in the same statement (as seeding.write does).
+func WriteIssueEvents(ctx context.Context, tx pgx.Tx, issueKey string, events []SeededIssueEvent, keywordFill bool) error {
+	if len(events) == 0 {
+		return nil
+	}
+	seqs := make([]int32, len(events))
+	kinds := make([]string, len(events))
+	actors := make([]string, len(events))
+	payloads := make([]string, len(events))
+	times := make([]time.Time, len(events))
+	for i, event := range events {
+		actorJSON, err := json.Marshal(event.Actor)
+		if err != nil {
+			return fmt.Errorf("encode the actor of %s event %d: %w", issueKey, i+1, err)
+		}
+		payloadJSON, err := json.Marshal(event.Payload)
+		if err != nil {
+			return fmt.Errorf("encode the payload of %s event %d: %w", issueKey, i+1, err)
+		}
+		seqs[i] = int32(i + 1)
+		kinds[i] = event.Type
+		actors[i] = string(actorJSON)
+		payloads[i] = string(payloadJSON)
+		times[i] = event.At
+	}
+	statement := `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select $1, seq, kind, actor::jsonb, payload::jsonb, false, at
+		from unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[]) as seeded(seq, kind, actor, payload, at)`
+	if keywordFill {
+		statement = `
+		with reset as (update public.search_text_versions_fill set reach = null where id = 1)` + statement
+	}
+	if _, err := tx.Exec(ctx, statement, issueKey, seqs, kinds, actors, payloads, times); err != nil {
+		return fmt.Errorf("write the events of %s: %w", issueKey, err)
+	}
+	if _, err := tx.Exec(ctx, `update issues set last_seq = $2 where key = $1`, issueKey, len(events)); err != nil {
+		return fmt.Errorf("settle the last event of %s: %w", issueKey, err)
+	}
+	return nil
 }

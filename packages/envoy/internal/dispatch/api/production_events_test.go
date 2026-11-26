@@ -457,8 +457,8 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 // the handler's own read of production_events.
 func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 	database := storetest.Open(t)
-	marked := &markedStatements{}
-	rig := newBrokerTokenRigOn(t, testServerOptions{store: storetest.TracedStore(t, database, marked)})
+	traced := &poolStatements{}
+	rig := newBrokerTokenRigOn(t, testServerOptions{store: storetest.TracedStore(t, database, traced)})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-reading-the-record"
 	rig.broker.Says(token, readOnlyToken(caller.jkt))
@@ -466,7 +466,7 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 		t.Fatalf("create project RDR: status=%d body=%s", created.Code, created.Body.String())
 	}
 	writeProductionDeploy(t, database, "RDR", 1, time.Now().UTC().Add(-time.Hour))
-	marked.take()
+	from := traced.count()
 
 	request := caller.presenting(t, http.MethodGet, productionEventsPath("RDR"), token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
@@ -474,36 +474,13 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 	if page := decodeBody[productionEventList](t, response); response.Code != http.StatusOK || page.Total != 1 {
 		t.Fatalf("the read-only token's read: status=%d body=%s, want 200 and the one deploy", response.Code, response.Body.String())
 	}
-	requireOnlyProofAndCaches(t, marked.take(), regexp.MustCompile(`(?i)\bfrom\s+production_events\b`))
-}
-
-// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
-// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
-// read, is among them too. Each statement is read by writesOf (read_only_token_test.go).
-func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) {
-	t.Helper()
-	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
-	var proofInserted, readByHandler bool
-	var written []string
-	for _, statement := range statements {
-		writes, readable := writesOf(statement)
-		if !readable {
-			t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
-		}
-		for _, write := range writes {
-			written = append(written, write)
-			verb, table, _ := strings.Cut(write, " ")
-			if !allowed[table] {
-				t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
-			}
-			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
-		}
-		readByHandler = readByHandler || handlerRead.MatchString(statement)
-	}
-	if !proofInserted {
+	statements := traced.since(from)
+	written := requireReadsWrites(t, "GET "+productionEventsPath("RDR"), statements)
+	if !holdsStatement(statements, proofInsert) {
 		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
 	}
-	if !readByHandler {
+	handlerRead := regexp.MustCompile(`(?i)\bfrom\s+production_events\b`)
+	if !holdsStatement(statements, handlerRead) {
 		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
 	}
 	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
