@@ -243,9 +243,9 @@ type overrides struct {
 	listen func(network, address string) (net.Listener, error)
 	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every
 	// script of the panes' launcher directory execs: bin/legion, bin/gh, bin/git and bin/jj. Empty,
-	// in production, is this process's own executable. A test that boots the daemon inside its test
-	// binary names the legion it built (buildProofLegion). Run as `legion jj`, the test binary runs
-	// the package's tests.
+	// in production, is this process's own executable. A test whose panes run these scripts (a live
+	// proof over localRuntime, through its daemonOverrides) names the legion it built
+	// (buildProofLegion).
 	paneLegion string
 	// streamListen takes the worker stream's listener for the address the stream binds
 	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen

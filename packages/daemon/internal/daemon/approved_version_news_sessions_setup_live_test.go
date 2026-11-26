@@ -598,24 +598,21 @@ func (r *sessionsRun) boot() {
 	r.seed()
 	r.standAtTheirEntries()
 	r.daemon = newRecordingLog(r.log())
-	gated := &sessionsRuntime{localRuntime: r.rt, launchable: r.launchable}
-	r.d = startDaemonWithin(t, r.cfg, overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
-			// plan), and no pane starts before the runtime exists.
-			if r.arm == sessionsBase {
-				if err := r.s.writeBasePrompts(r.cfg.StateDir); err != nil {
-					return nil, err
-				}
+	o := r.rt.daemonOverrides(&sessionsRuntime{localRuntime: r.rt, launchable: r.launchable})
+	wired := o.runtime
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+		// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
+		// plan), and no pane starts before the runtime exists.
+		if r.arm == sessionsBase {
+			if err := r.s.writeBasePrompts(r.cfg.StateDir); err != nil {
+				return nil, err
 			}
-			r.rt.conns, r.rt.stream = listener, address
-			return gated, nil
-		},
-		listen:         heldListen,
-		paneLegion:     r.rt.legion,
-		workflowTokens: &workflowTokenRecorder{},
-	}, slog.New(r.daemon), 2*time.Minute)
+		}
+		return wired(ctx, listener, address, apps, repository, st, cached)
+	}
+	o.workflowTokens = &workflowTokenRecorder{}
+	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.daemon), 2*time.Minute)
 	r.deadline = time.Now().Add(sessionsRunBound)
 	for _, member := range r.members {
 		for _, role := range member.roles {
