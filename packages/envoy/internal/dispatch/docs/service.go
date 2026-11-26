@@ -1199,8 +1199,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on the
-// service's clock (Deps.Clock), the real clock in production.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:

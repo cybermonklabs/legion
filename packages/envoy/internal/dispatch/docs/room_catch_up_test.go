@@ -110,18 +110,27 @@ func countNotes(notes chan string, artifactID string) int {
 	}
 }
 
-// awaitCatchUpLane returns once service's catch-up lane has run everything queued on it now. The
-// lane runs its work in the order it was queued (roomSyncLane), and a notification's decision
-// queues the catch-up it asks for before it notes the decision (roomCatchUps.request), so once a
-// marker queued after the decisions a test heard has run, every catch-up they asked for has read.
+// awaitCatchUpLane returns once service's catch-up lane has run everything queued on it now, and
+// everything the work it was running then queued in turn. The lane runs its work in the order it
+// was queued (roomSyncLane), and a notification's decision queues the catch-up it asks for before
+// it notes the decision (roomCatchUps.request), so once a marker queued after the decisions a test
+// heard has run, every catch-up they asked for has read. But a catch-up the test heard read may
+// still be running when that marker is queued, and a catch-up it queues itself (closeReplaced's
+// c.request) lands behind the marker. So a second marker follows the first: once the first has
+// run, that catch-up has returned, and what it queued stands ahead of the second.
 func awaitCatchUpLane(t *testing.T, service *Service) {
 	t.Helper()
 	service.catchUps.mu.Lock()
 	lane := service.catchUps.lane
 	service.catchUps.mu.Unlock()
-	reached := make(chan struct{})
-	lane.push(func(context.Context) { close(reached) })
-	testwait.Receive(t, "the catch-up lane to run a marker queued after the decisions", reached)
+	for _, what := range []string{
+		"the catch-up lane to run a marker queued after the decisions",
+		"the catch-up lane to run a marker queued after what the running catch-up queued",
+	} {
+		reached := make(chan struct{})
+		lane.push(func(context.Context) { close(reached) })
+		testwait.Receive(t, what, reached)
+	}
 }
 
 // replaceStoredHistory replaces artifactID's stored history with markdown as a rebuild does

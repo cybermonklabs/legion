@@ -288,11 +288,11 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
 	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to: the budget runs on the service's
-	// clock, which the test moves seven seconds once Shutdown has armed the budget on it, before
-	// it lets the appends go. How long the machine takes between those steps spends none of it.
+	// inside the 9 s per-room budget: the budget runs on Deps.Clock, the drain budget's clock,
+	// which the test moves seven seconds once Shutdown has armed the budget on it, before it lets
+	// the appends go. How long the machine takes between those steps spends none of it.
 	budget := drainClock.Now().Add(ShutdownDrainBudget)
-	testwait.Until(t, "Shutdown's drain budget to be armed on the service's clock", func() ([]time.Time, bool) {
+	testwait.Until(t, "Shutdown's drain budget to be armed on Deps.Clock", func() ([]time.Time, bool) {
 		armed := drainClock.Armed()
 		return armed, slices.ContainsFunc(armed, budget.Equal)
 	})
