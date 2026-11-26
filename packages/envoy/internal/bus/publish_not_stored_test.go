@@ -3,7 +3,6 @@ package bus
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -52,24 +51,7 @@ func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStream
 		t.Fatalf("both deliveries publish to %s, want a topic each", published.Topic)
 	}
 
-	const most = 1024
-	filled := 0
-	for ; filled < most; filled++ {
-		err := client.Publish(contracts.Envelope{
-			EventID: fmt.Sprintf("fill-%d", filled), Source: "dispatch",
-			Topic: fmt.Sprintf("notifications.agent.s%d", filled), DedupeKey: fmt.Sprintf("fill.%d", filled),
-		})
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, ErrStreamFull) {
-			t.Fatalf("fill publish %d = %v, want nil or ErrStreamFull", filled, err)
-		}
-		break
-	}
-	if filled == 0 || filled == most {
-		t.Fatalf("%d of %d fill publishes stored within %d bytes, want the stream to fill part way", filled, most, limit)
-	}
+	testnats.FillStream(t, client.JS(), Stream, "notifications.github.fill")
 	if err := client.Publish(published); !errors.Is(err, ErrStreamFull) {
 		t.Fatalf("a publish of the delivery into the full stream = %v, want ErrStreamFull", err)
 	}
@@ -178,21 +160,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 	if !contracts.DedupeKeyNamesTheUpstreamEvent(item) {
 		t.Fatal("the envelope publishes under no MsgId")
 	}
-	for filled := 0; ; filled++ {
-		if filled == 1024 {
-			t.Fatal("1024 fill publishes all stored; want the stream full")
-		}
-		err := client.Publish(contracts.Envelope{
-			EventID: fmt.Sprintf("fill-%d", filled), Source: "dispatch",
-			Topic: fmt.Sprintf("notifications.agent.s%d", filled), DedupeKey: fmt.Sprintf("fill.%d", filled),
-		})
-		if errors.Is(err, ErrStreamFull) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("fill publish %d = %v, want nil or ErrStreamFull", filled, err)
-		}
-	}
+	testnats.FillStream(t, client.JS(), Stream, "notifications.github.fill")
 	// The full stream refuses the envelope and stores nothing of it; a purge then leaves room.
 	if err := <-client.WindowUntil(nil).PublishAsync(item); !errors.Is(err, ErrStreamFull) {
 		t.Fatalf("a send into the full stream = %v, want ErrStreamFull", err)

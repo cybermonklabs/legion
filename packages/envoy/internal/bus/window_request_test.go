@@ -269,7 +269,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 		settleWithin = time.Second
 	)
 	_, _, client := requestClient(t, bus.WithStreamMaxBytes(limit))
-	bustest.FillStream(t, client, 1024)
+	bustest.FillStream(t, client)
 
 	holder := contracts.LegacyAgentSubject("ses_request_full")
 	item := forwardEnvelope("full")

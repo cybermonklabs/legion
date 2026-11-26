@@ -2,7 +2,6 @@ package bus
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -38,28 +37,6 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 			IssuedAt:      contracts.NowMillis(),
 		}
 	}
-	// fill publishes until the stream refuses a message, as a busy day's deliveries do.
-	fill := func(round int) {
-		t.Helper()
-		const most = 1024
-		for filled := 0; ; filled++ {
-			if filled == most {
-				t.Fatalf("round %d: %d fill publishes all stored within %d bytes, want the stream full", round, most, limit)
-			}
-			err := client.Publish(contracts.Envelope{
-				EventID:   fmt.Sprintf("fill-%d-%d", round, filled),
-				Source:    "dispatch",
-				Topic:     fmt.Sprintf("notifications.agent.ses_fill_%d_%d", round, filled),
-				DedupeKey: fmt.Sprintf("fill.%d.%d", round, filled),
-			})
-			if errors.Is(err, ErrStreamFull) {
-				return
-			}
-			if err != nil {
-				t.Fatalf("round %d fill publish %d = %v, want nil or ErrStreamFull", round, filled, err)
-			}
-		}
-	}
 	// held is how many messages the stream holds on subject.
 	held := func(subject string) uint64 {
 		t.Helper()
@@ -80,12 +57,13 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 			return nil
 		}
 	}
-	// refused fills the stream, forwards item to holder under opts, which the full stream refuses
+	// refused fills the stream until it holds too much to store even a one-byte message
+	// (testnats.FillStream), forwards item to holder under opts, which the full stream refuses
 	// with an error acknowledgement that settles the forward as ErrStreamFull at once, and purges
 	// the stream, leaving it with room to store the forward.
 	refused := func(round int, holder string, item contracts.Envelope, opts RequestOptions) {
 		t.Helper()
-		fill(round)
+		testnats.FillStream(t, client.JS(), Stream, "notifications.github.fill")
 		err := answer(client.WindowUntil(nil).Request(holder, item, opts))
 		if !errors.Is(err, ErrStreamFull) || errors.Is(err, ErrNotAcknowledged) {
 			t.Fatalf("round %d: a forward into the full stream = %v, want ErrStreamFull and no ErrNotAcknowledged", round, err)
