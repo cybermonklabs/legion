@@ -366,14 +366,14 @@ export function DecisionsFilterBody({
   );
   // The same rows with each agent decision's readings right after its row, each a row of its own
   // (R3): the rows the page draws and the keys walk.
-  const drawn = useMemo(() => listed.flatMap((entry) => [entry, ...readingsOf(entry)]), [listed]);
+  const drawn = useMemo(() => withReadings(listed), [listed]);
   // Every entry the list draws, in the order it draws them, whether its page is drawn or not
   // and whether the foot is folded or not, each agent decision's readings right after it as
   // `drawn` holds them: the entries an address may name.
   const every = useMemo(
     () =>
-      DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]).flatMap(
-        (entry) => [entry, ...readingsOf(entry)]
+      withReadings(
+        DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part])
       ),
     [parts]
   );
@@ -399,7 +399,7 @@ export function DecisionsFilterBody({
     const rows = parts.named.map(nodeRow);
     for (const part of footShown ? [...HEADED, "agents" as const] : HEADED) {
       const entries: readonly (DecisionsEntry | NamedEntry)[] = shown[part];
-      rows.push(...entries.flatMap((entry) => [entry, ...readingsOf(entry)]).map(nodeRow));
+      rows.push(...withReadings(entries).map(nodeRow));
       const left = parts[part].length - entries.length;
       if (left <= 0) continue;
       const page = { kind: "page", left, level: 1, of: view, trail: [] } as const;
@@ -511,9 +511,7 @@ export function DecisionsFilterBody({
     for (const part of DECISIONS_PART_ORDER) {
       // Each entry and each reading under it, in the order the page draws them: a reading stands
       // in its decision's part, right after it.
-      for (const entry of parts[part]) {
-        for (const held of [entry, ...readingsOf(entry)]) parted.set(held.node.id, part);
-      }
+      for (const held of withReadings(parts[part])) parted.set(held.node.id, part);
       for (const entry of parts[part]) parted.set(entry.node.id, part);
     }
     return parted;
@@ -1295,6 +1293,13 @@ function drawnRowOf(entry: DecisionsEntry | NamedEntry, viewId: string): DrawnRo
  *  decision's (`DecisionEntry.readings`), and none for any other entry. */
 function readingsOf(entry: DecisionsEntry | NamedEntry): readonly ReadingEntry[] {
   return entry.kind === "decision" ? (entry.readings ?? []) : [];
+}
+
+/** `entries`, each with its readings right after it (`readingsOf`), as the list draws them. */
+function withReadings(
+  entries: readonly (DecisionsEntry | NamedEntry)[]
+): readonly (DecisionsEntry | NamedEntry)[] {
+  return entries.flatMap((entry) => [entry, ...readingsOf(entry)]);
 }
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before

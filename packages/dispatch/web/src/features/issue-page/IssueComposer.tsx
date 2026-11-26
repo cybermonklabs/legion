@@ -23,6 +23,7 @@ import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -638,8 +639,7 @@ function CriterionForm({
     }
     if (!wasOut.current) return;
     wasOut.current = false;
-    const active = document.activeElement;
-    if (line.answer !== undefined && (active === null || active === document.body)) {
+    if (line.answer !== undefined && focusOnDocument()) {
       // The line's one field is its only textarea (`MentionField`).
       form.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     }

@@ -2,13 +2,8 @@ import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import { borrowedReads } from "../model-rows/model-drafts";
 import { type CheckState, coverageNotes, type StatementState } from "../page-words";
-import {
-  type CheckStateReads,
-  checkStanding,
-  newestFirst,
-  standingResults,
-  standsAtBasis,
-} from "../tree-drafts";
+import type { CheckStateReads } from "../tree-drafts";
+import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
 import { outOfCounts } from "../tree-fold";
 import { isForeign } from "../tree-read/tree-nodes";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
@@ -93,11 +88,11 @@ export interface CheckReading {
   readonly standsOn?: string;
   /** The check's own node, with its words and the four attributes its body draws. */
   readonly node: TreeNode;
+  // A check of another issue has no state where the Verification view's read answers no words'
+  // sum on it or no `result` on one of its results.
   /** How the check stands, in the seven states the page has a word for, or `undefined` while
-   *  the results read has not answered for it, and for a check of another issue where the
-   *  Verification view's read answers no words' sum on it or no `result` on one of its results: a
-   *  check the page has not read how it stands draws no state, because none of the seven is true
-   *  of it. */
+   *  the results read has not answered for it: a check the page has not read how it stands
+   *  draws no state, because none of the seven is true of it. */
   readonly state?: CheckState;
 }
 
@@ -164,9 +159,9 @@ export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
  * that. `checks` is the issue's results read, which the page has already made for its tree
  * (`useIssueTree.ts`), and which is what holds a result's commit, its verdict and its
  * withdrawal; a check node is tied to its block by its own address, which the tree carries
- * (`tree-drafts.ts` writes `check.ref` into the node's `reference`). A check of an issue under
- * this one is read from the Verification view's read the view's issue node holds (`checkReader`),
- * and names no commit.
+ * (`tree-drafts.ts` writes `check.ref` into the node's `reference`).
+ * A check of an issue under this one is read from the Verification view's read the view's issue
+ * node holds (`checkReader`), and names no commit.
  */
 export function verificationReading({
   checks,
@@ -312,15 +307,9 @@ export function inCounts<Reading extends { readonly node: TreeNode }>(
   return readings.filter((reading) => !outOfCounts(reading.node));
 }
 
-/**
- * How one check node of the tree reads (`checkReading`). A check of this issue is tied to its
- * block by its own address, which the tree carries (`tree-drafts.ts` writes `check.ref` into the
- * node's `reference`). A check of an issue under this one, which the results read does not answer
- * for, is read from what the Verification view's read held on `issue`, the issue's own node
- * (`TreeNode.views`), answers of the node of the check's full read id (`TreeNode.readId`), as its
- * row's standing is read (`model-rows/model-drafts.ts`' `borrowedReads`), and never from a block
- * of this issue, whose address its node can carry where the two share a block id.
- */
+/** How one check node of the tree reads (`checkReading`): the node is tied to its block by its
+ *  own address, which the tree carries (`tree-drafts.ts` writes `check.ref` into the node's
+ *  `reference`). */
 function checkReader(
   checks: readonly CheckBlock[],
   issue: TreeNode
@@ -328,6 +317,11 @@ function checkReader(
   const blocks = new Map(
     checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
   );
+  // A check of an issue under this one, which the results read does not answer for, is read from
+  // what the Verification view's read held on `issue`, the issue's own node (`TreeNode.views`),
+  // answers of the node of the check's full read id (`TreeNode.readId`), as its row's standing is
+  // read (`model-rows/model-drafts.ts`' `borrowedReads`), and never from a block of this issue,
+  // whose address its node can carry where the two share a block id.
   const answer = issue.views?.verification;
   const borrowed = new Map<string, TreeAnswerNode & { readonly issue: string }>();
   for (const node of answer?.nodes ?? []) {
@@ -345,8 +339,9 @@ function checkReader(
 }
 
 /**
- * How one check stands, and the result the body draws under it, from what the results read
- * answers of it (`block`), or for a check of another issue what the Verification view's read does.
+ * How one check stands, and the result the body draws under it.
+ * It reads them from what the results read answers of the check (`block`), or for a check of
+ * another issue from what the Verification view's read does.
  *
  * The state, and the result it stands on, are `checkStanding`'s (`tree-drafts.ts`): the one
  * reading of a check the tree's node holds too, which reads each result at the commit the server

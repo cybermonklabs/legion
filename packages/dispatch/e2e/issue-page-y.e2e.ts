@@ -2,6 +2,7 @@
  *  answers, and the issue room the server admits each editor to. */
 import type { Locator, Page } from "@playwright/test";
 
+import type { IssueTreeRead } from "../web/src/api/types";
 import { agentRoleWord } from "../web/src/features/issue-page/agent-role";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
@@ -550,14 +551,15 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 
     // (2) Two lines with a reference, sent: a row under the comment, as typed, alice's, focused
     // and on screen. Just before the send the spec's approval, read through the API and not by
-    // the page, stands at the spec's version then current: (4) reads it against the criterion's.
+    // the page, stands approved, with the version it stands at, which (4) reads the criterion's
+    // later version against.
     const reference = `dispatch://${seeded.parentKey}`;
     const typed = `${WRITTEN.first}: a reader finds every statement this issue asks for.\nIt starts from ${reference} and its spec.`;
     await composerField(page).fill(typed);
     const standing = (await getArtifact(seeded.specArtifactId)).approval;
     expect(
       { state: standing?.state, version: standing?.version },
-      "just before the send the spec's approval does not stand at its current version"
+      "just before the send the spec's approval does not stand approved, at a version"
     ).toEqual({ state: "approved", version: expect.any(Number) });
     const approvedVersion = standing?.version ?? 0;
     const versionBeforeSend = standing?.latest_version ?? 0;
@@ -1691,16 +1693,17 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     const traffic = watchApiRequests(page);
     const conversation = outlineAnswerOf(page, "conversation");
     const graph = outlineAnswerOf(page, "graph");
+    // Whether a read holds the overtaken criterion as overtaken, which each load below waits for.
+    const holdsOvertaken = (held: IssueTreeRead): boolean =>
+      (held.nodes ?? []).some(
+        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
+      );
 
     // (1) The page as it first opened, before any press: the overtaken question open with its
     // criterion and its statement. Conversation's read names its kinds (`CONVERSATION_KINDS`) and
     // holds each question by its ask's node rather than its block (`questionReadId`).
     await gotoIssue(page, plain);
-    const firstAnswer = await heldTreeAnswer(conversation, "the first load", (held) =>
-      (held.nodes ?? []).some(
-        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
-      )
-    );
+    const firstAnswer = await heldTreeAnswer(conversation, "the first load", holdsOvertaken);
     const conversationQuestion = questionReadId(firstAnswer, states, "overtakenQuestion");
     await expectOpenWith(
       page,
@@ -1734,11 +1737,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     // (3) The same in Graph, whose read holds no `kind=` filter and so holds the question's block
     // (`questionReadId`).
     await pickSettled(page, traffic, PRESET_NAMES.graph);
-    const graphAnswer = await heldTreeAnswer(graph, "Graph's load", (held) =>
-      (held.nodes ?? []).some(
-        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
-      )
-    );
+    const graphAnswer = await heldTreeAnswer(graph, "Graph's load", holdsOvertaken);
     const graphQuestion = questionReadId(graphAnswer, states, "overtakenQuestion");
     await expectOpenWith(
       page,
@@ -1762,11 +1761,7 @@ test("a criterion is marked, drawn open and counted as part X draws every node",
     // (`HeldRow.margin`).
     const foldedWatch = outlineAnswerOf(page, "conversation");
     await loadSettled(page, traffic, plain);
-    const answer = await heldTreeAnswer(foldedWatch, "the fold load", (held) =>
-      (held.nodes ?? []).some(
-        (node) => node.id === criteria.overtaken.id && node.state === "overtaken"
-      )
-    );
+    const answer = await heldTreeAnswer(foldedWatch, "the fold load", holdsOvertaken);
     const foldedQuestion = questionReadId(answer, states, "overtakenQuestion");
     const margin = await marginComments(key);
     expect(

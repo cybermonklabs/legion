@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { IssueTreeNode, IssueTreeParent, IssueTreeRead } from "../web/src/api/types";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import {
   criterionEdits,
   criterionMarkdown,
@@ -56,11 +56,11 @@ import { composer } from "./issue-page-l";
  *
  * - **The tree read** `GET /api/v1/issues/{key}/tree` is read through `readTree`
  *   (`e2e/issue-layout-seed-support.ts`), every page merged, and narrowed by `treeAnswerOf` to
- *   `converted`, `tree`, `view_of`, and each node's `id`, `block_id`, `document`, `issue`,
- *   `supertag`, `parent` and `text`. `treeWordsOf` reads the same read as the page's client asks
- *   for it, with each stored text's display tree, for each node's words as the page reads them.
- *   `artifactRoomOf` reads the artifact read's `room` through `getArtifact`, typed by hand, since
- *   the generated artifact holds no such member yet.
+ *   `converted`, `tree`, `view_of` and `nodes`, an empty list where the read holds none, each
+ *   node whole as the read answers it (`IssueTreeNode`). `treeWordsOf` reads the same read as the
+ *   page's client asks for it, with each stored text's display tree, for each node's words as the
+ *   page reads them. `artifactRoomOf` reads the artifact read's `room` through `getArtifact`,
+ *   typed by hand, since the generated artifact holds no such member yet.
  * - **The rows** are the outline's `[data-node-row]`, each carrying `data-node-type`
  *   (`NodeRow.tsx`): a criterion's row is `criterion` and a reading's `reading`. A node of
  *   another issue carries a link `[data-node-issue]` to that issue before its kind tag, which
@@ -105,27 +105,11 @@ const MODEL_WORDS = {
 // The tree read and the artifact read.
 // ---------------------------------------------------------------------------------------------
 
-/** One node of the tree read, by the members these rows read. Its `parent` is the read's own
- *  `IssueTreeParent`: the node it stands under, named by its `id`. */
-export interface TreeReadNode {
-  /** The block's own id inside its document or tree, absent for a node that is no block. */
-  readonly block_id?: string;
-  /** The document a typed block of one of this issue's documents lives in, absent otherwise. */
-  readonly document?: IssueTreeNode["document"];
-  readonly id: string;
-  /** The owning issue of a foreign node, absent for a node of this issue. */
-  readonly issue?: string;
-  /** The node it stands under, or null for a node at the top. */
-  readonly parent: IssueTreeParent | null;
-  readonly supertag: string;
-  readonly text: string;
-}
-
 /** One issue's tree read, its pages merged. */
 export interface TreeReadAnswer {
   readonly converted: boolean;
   /** Every page's nodes, in the read's order. */
-  readonly nodes: readonly TreeReadNode[];
+  readonly nodes: readonly IssueTreeNode[];
   /** The issue's tree artifact, which a criterion is written into; null where the conversion
    *  has not reached the issue. */
   readonly tree: string | null;
@@ -228,7 +212,7 @@ interface Wanted {
  *  found in. */
 interface Placed {
   readonly answer: TreeReadAnswer;
-  readonly nodes: ReadonlyMap<string, TreeReadNode>;
+  readonly nodes: ReadonlyMap<string, IssueTreeNode>;
 }
 
 /**
@@ -240,7 +224,7 @@ async function awaitPlaced(key: string, wanted: readonly Wanted[]): Promise<Plac
   const deadline = Date.now() + SETTLED_WITHIN_MS;
   for (;;) {
     const answer = await treeAnswerOf(key);
-    const nodes = new Map<string, TreeReadNode>();
+    const nodes = new Map<string, IssueTreeNode>();
     const missing = wanted.find((want) => {
       const parent = want.under === undefined ? undefined : nodes.get(want.under)?.id;
       const node = answer.nodes.find(
@@ -265,7 +249,7 @@ async function awaitPlaced(key: string, wanted: readonly Wanted[]): Promise<Plac
 }
 
 /** The node `placed` found for the entry `name`. */
-function placedNode(placed: Placed, name: string): TreeReadNode {
+function placedNode(placed: Placed, name: string): IssueTreeNode {
   const node = placed.nodes.get(name);
   if (node === undefined) throw new Error(`the wait found no ${name}`);
   return node;
@@ -332,7 +316,7 @@ export async function writeCriterionApi(
   const node = placedNode(placed, name);
   return {
     id: node.id,
-    row: treeIdOfNode(node as IssueTreeNode, key),
+    row: treeIdOfNode(node, key),
   };
 }
 
@@ -670,8 +654,7 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
   if (tree === null) throw new Error(`the tree read of ${key} names no tree artifact`);
 
   const id = (name: string) => placedId(placed, name);
-  const rowOfPlaced = (name: string): string =>
-    treeIdOfNode(placedNode(placed, name) as IssueTreeNode, key);
+  const rowOfPlaced = (name: string): string => treeIdOfNode(placedNode(placed, name), key);
   const specBlock = (name: string, block: string): ModelNode => ({
     address: blockAddress(key, spec.slug, block),
     id: id(name),

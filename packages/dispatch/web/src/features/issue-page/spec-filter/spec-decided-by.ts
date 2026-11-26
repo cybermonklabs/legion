@@ -156,7 +156,7 @@ export interface SpecStatement {
   /** Every other decision that shaped it, beyond the one its run is headed by (R5). */
   readonly alsoShapedBy: readonly SpecDecision[];
   /** How its checks stand (R17); the row of a criterion draws none, since no check serves what a
-   *  person wants to be able to do (`SpecFilterBody.tsx`'s `Group`). */
+   *  person wants to be able to do (`SpecFilterBody.tsx`'s `Statement`). */
   readonly mark: SpecMark;
   /** The node as the filter's view left it, whose words the row draws. */
   readonly node: TreeNode;
@@ -256,19 +256,7 @@ export function specDecidedBy({
   // A row the view draws under a criterion carries that criterion as its parent's line, as a row
   // whose parent the view draws as no row carries its own (`withCriterionLines`), so a statement
   // written under a criterion stands in the group that criterion heads.
-  const lined = withCriterionLines(view);
-  if (lined !== view) {
-    return specDecidedBy({
-      asksHeld,
-      checks,
-      decisions,
-      nameOf,
-      nodeIdOf,
-      reader,
-      root,
-      view: lined,
-    });
-  }
+  view = withCriterionLines(view);
   const nodes = nodesById(root);
   const asks = asksById(nodes);
   const shaped = shapedBy({ asks, asksHeld, decisions, nameOf, nodeIdOf, nodes, reader });
@@ -283,6 +271,7 @@ export function specDecidedBy({
   const isStatement = isListed;
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
+  // Here `isStatement` is `isListed`, so a criterion is one of these rows too.
   const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter(isStatement)) {
     const parent = parentOf(node, nodes, nameOf);

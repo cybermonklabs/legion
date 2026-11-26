@@ -1068,10 +1068,6 @@ function Group({
   report?: { readonly line: string; readonly row: string };
   tabStop: string | undefined;
 }): ReactNode {
-  // A criterion draws no mark: no check serves what a person wants to be able to do, so its row
-  // says nothing of checks, and no "No check" (R1). The run's `marked` stands for every other row.
-  const markOf = (statement: SpecStatement): { readonly marked?: boolean } =>
-    statement.node.type === "criterion" ? { marked: false } : {};
   // The marks of the node the statements hang under, which its heading's line carries: each of
   // its statements names it by that line.
   const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
@@ -1120,7 +1116,6 @@ function Group({
                 focused={focused === statement.node.id}
                 key={statement.node.id}
                 marked={marked}
-                {...markOf(statement)}
                 onFocus={(row) => onFocus(row, statement.node)}
                 onPressWords={() => onPressWords(statement.node.id, statement.node)}
                 {...(report?.row === statement.node.id ? { report: report.line } : {})}
@@ -1395,7 +1390,7 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
  * A criterion of the view is drawn as a statement is, in the statements' bullet colour, with a
  * line over its words that names its kind as its tag, who wrote it and when, as a group's
  * heading names its parent: what a person wants to be able to do is theirs, and no statement of
- * the spec (R1). It carries no mark (`Group`).
+ * the spec (R1). It carries no mark (`Statement`).
  *
  * It is edited in place (`SpecFilterBody`): while it is the row edited it draws its document's
  * one editor on its stage in place of its words (`useDocumentStage`), whole, with its chips under
@@ -1437,6 +1432,9 @@ function Statement({
   // draws the mark "No check": no count reads them, which is why they read as served by no check,
   // and the row draws no mark in its place.
   if (outOfCounts(node) && statement.mark === "no_check") marked = false;
+  // A criterion draws no mark: no check serves what a person wants to be able to do, so its row
+  // says nothing of checks, and no "No check" (R1).
+  if (node.type === "criterion") marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);

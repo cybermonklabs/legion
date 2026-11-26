@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { partialMatchKey, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
 import { api } from "../../../api/client";
@@ -143,9 +143,16 @@ export function useRoomFacts(issueKey: string | undefined): RoomFacts | undefine
   const subscribe = useCallback(
     (changed: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
-        if (event.type === "updated" || event.type === "removed") changed();
+        // The facts are read from the issue's tree reads alone, each held under the tree's key.
+        if (
+          (event.type === "updated" || event.type === "removed") &&
+          issueKey !== undefined &&
+          partialMatchKey(event.query.queryKey, issueTreeKey(issueKey))
+        ) {
+          changed();
+        }
       }),
-    [queryClient]
+    [issueKey, queryClient]
   );
   const snapshot = (): RoomFacts | undefined => {
     const answer = issueKey === undefined ? undefined : heldTreeRead(queryClient, issueKey);
