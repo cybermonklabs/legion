@@ -2,6 +2,7 @@ package redeliver_test
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -44,7 +45,7 @@ func TestTheSweepWaitsAtMostTwoMinutesBetweenSweeps(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var mu sync.Mutex
 				var dues []time.Time
-				gate := func(_ context.Context, _ duty.Leases, _ string, due time.Time, _ time.Duration, _ func(context.Context)) bool {
+				gate := func(_ context.Context, _ *slog.Logger, _ duty.Leases, _ string, due time.Time, _ time.Duration, _ func(context.Context)) bool {
 					mu.Lock()
 					defer mu.Unlock()
 					dues = append(dues, due)

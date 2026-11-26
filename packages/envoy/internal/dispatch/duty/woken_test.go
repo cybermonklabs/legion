@@ -2,6 +2,7 @@ package duty_test
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -61,7 +62,7 @@ func wantPassesAt(t *testing.T, passes *passClock, start time.Time, offsets ...t
 
 // noLease is an exclusive the rows without a lease never call.
 func noLease(t *testing.T) duty.ExclusiveFunc {
-	return func(context.Context, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
+	return func(context.Context, *slog.Logger, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
 		t.Error("a loop with no lease asked for one")
 		return false
 	}
@@ -238,7 +239,7 @@ type fakeLease struct {
 	periods  []time.Duration
 }
 
-func (f *fakeLease) exclusive(ctx context.Context, _ duty.Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+func (f *fakeLease) exclusive(ctx context.Context, _ *slog.Logger, _ duty.Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	f.mu.Lock()
 	f.attempts = append(f.attempts, time.Now())
 	f.names = append(f.names, name)
@@ -342,7 +343,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			attempts := 0
-			cutShort := func(context.Context, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
+			cutShort := func(context.Context, *slog.Logger, duty.Leases, string, time.Time, time.Duration, func(context.Context)) bool {
 				attempts++
 				cancel()
 				return false

@@ -2,6 +2,7 @@ package duty_test
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -22,7 +23,7 @@ type periodGate struct {
 	served []time.Time
 }
 
-func (g *periodGate) exclusive(ctx context.Context, _ duty.Leases, _ string, due time.Time, period time.Duration, pass func(context.Context)) bool {
+func (g *periodGate) exclusive(ctx context.Context, _ *slog.Logger, _ duty.Leases, _ string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	boundary := duty.PeriodBoundary(due, period)
 	g.mu.Lock()
 	refused := len(g.served) > 0 && g.served[len(g.served)-1].Equal(boundary)
