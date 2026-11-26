@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -24,14 +23,14 @@ import (
 //
 // Each move's document write also leaves the issue's two documents owing a settlement, which saves
 // a version of each and appends an artifact.version event of the issue for it (commitVersion). On
-// newCloseAsksFixture's 20 ms settle delay those events landed between the move and the test's
-// read of the issue, which then answered their sequence, not the move's (INFRA-3904: 20 for a close
-// at 19 in a main run). The fixture here settles after an hour, so the read meets the issue as the
-// move left it, and the test runs the settlement itself once it has read the move, as the timer
-// would have, before the next move.
+// a settle timer the machine runs, those events landed between the move and the test's read of the
+// issue, which then answered their sequence, not the move's (INFRA-3904: 20 for a close at 19 in a
+// main run). This fixture's document service is on a clock nothing moves, so no settle timer
+// fires and a settlement runs only where this test runs it: once it has read each move, as the
+// timer would have, before the next move.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
 	t.Parallel()
-	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
+	f := newCloseAsksFixtureSettlingWhenAsked(t)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},

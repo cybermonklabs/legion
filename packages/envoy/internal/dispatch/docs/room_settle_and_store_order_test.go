@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -41,7 +42,7 @@ func TestARemoteChangeRearmsOnlyAnArmedSettlement(t *testing.T) {
 	}
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
 	state := pair.taskA.room(pair.artifactID)
-	settleOf := func() (timer *time.Timer, armed bool, generation uint64) {
+	settleOf := func() (timer clock.Timer, armed bool, generation uint64) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settle, pair.taskA.isSettleTimerArmed(state.settle), state.roomGeneration
