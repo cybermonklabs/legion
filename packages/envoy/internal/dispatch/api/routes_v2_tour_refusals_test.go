@@ -150,6 +150,7 @@ var tourRefusals = map[string][]tourRefusal{
 		{Name: "a spec that is no Proof document", Change: refusalBody("spec", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
 		{Name: "a spec whose ask breaks its content rule", Change: refusalBody("spec", tourAskBlockBroken), Code: apicode.InvalidAskBlock},
 		{Name: "a spec whose check breaks a rule of a check CI proves", Change: refusalBody("spec", tourCICheckBroken), Code: apicode.InvalidCICheck},
+		{Name: "a token that names another project, into a private project it does not name", Change: refusalCreateInAPrivateProject, Code: apicode.NotFound},
 	},
 	"POST /api/v2/issues/{key}/artifacts": {
 		{Name: "content that is no Proof document", Change: refusalBody("content", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
@@ -338,6 +339,28 @@ func refusalAnotherSession(t *testing.T, tour *routeTour, request tourRequest) t
 	tour.brokerTokens.Says(token, personScopedTokenAnswer(caller.jkt))
 	request.As = tourCaller{Token: token, Broker: caller}
 	request.Query = withQueryValue(request.Query, "session", "session-tour-another")
+	return request
+}
+
+// refusalCreateInAPrivateProject is a tourRefusal's change that makes the project its step's
+// create names private, owned by alice, and sends the create on a broker token that names one
+// other project of the tour's own (liveNamedToken, its project replaced). #4682's rule refuses it
+// as a project that does not exist, the 404 NOT_FOUND of pgx.ErrNoRows (issue_create.go,
+// projectVisibility), which /api/v1 answers too; force keeps the near-copy gate out of the way.
+func refusalCreateInAPrivateProject(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+	t.Helper()
+	body := maps.Clone(request.Body.(map[string]any))
+	body["force"] = true
+	request.Body = body
+	seedExec(t, tour.database, "the step's project made private", `
+		update projects set owner = 'alice', visibility = 'private' where key = $1
+	`, body["project"])
+	caller := newBrokerCaller(t)
+	token := "a-tour-token-naming-another-project-" + uuid.NewString()
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{tour.project(t)}
+	tour.brokerTokens.Says(token, answer)
+	request.As = tourCaller{Token: token, Broker: caller}
 	return request
 }
 
