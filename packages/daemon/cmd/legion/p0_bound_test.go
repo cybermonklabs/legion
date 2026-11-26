@@ -79,6 +79,7 @@ func p0BoundChanges(t *testing.T, st *store.Store) int {
 // and the cap (C4); `clear-p0-bound` returns to legion.yaml's. A set that names both a number and
 // none, or neither, and one with no reason are usage errors that reach nothing.
 func TestP0BoundCommands(t *testing.T) {
+	t.Parallel()
 	d := newP0BoundCommandDaemon(t)
 	reach := []string{"--operator-token-file", d.tokenFile}
 

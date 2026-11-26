@@ -128,9 +128,9 @@ func (s *Postgres) IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys
 //
 // The chain is walked in the database, in one query whatever its depth, because its callers walk
 // it under the one fact lock every fact takes (intake.ApplyFact): a read per step would cost a
-// round trip per level on every fact of every consumer. The walk carries only the key and the
-// parent, and the records are read once at the end; `union` is what ends it, since a chain that
-// loops back on itself derives nothing new on its second turn.
+// round trip per level on every pass (the pass rule on admit's Admission.Apply). The walk carries
+// only the key and the parent, and the records are read once at the end; `union` is what ends it,
+// since a chain that loops back on itself derives nothing new on its second turn.
 func (s *Postgres) AncestorsOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error) {
 	if len(keys) == 0 {
 		return []Issue{}, nil
@@ -178,11 +178,12 @@ func queryIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]I
 
 // SlottedIssues is the record of each issue of project that holds an admission slot, in slot order
 // (index, then issue), in one read: what admission judges when it releases the slots a fact has
-// finished with (admit's releaseSlots), on every fact and under the one fact lock. The slots table
-// is shared by every project's daemon, so another project's slot is left out here rather than by
-// the caller, and no issue of another project, and no issue holding no slot, is read at all. It
-// selects issueColumns itself, so it reads every column scanIssue scans: the slots join is a
-// derived table whose columns are renamed, so no column of issueColumns is ambiguous.
+// finished with (admit's releaseSlots), on every pass (the pass rule on admit's Admission.Apply)
+// and under the one fact lock. The slots table is shared by every project's daemon, so another
+// project's slot is left out here rather than by the caller, and no issue of another project, and
+// no issue holding no slot, is read at all. It selects issueColumns itself, so it reads every
+// column scanIssue scans: the slots join is a derived table whose columns are renamed, so no
+// column of issueColumns is ambiguous.
 func (s *Postgres) SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
 	rows, err := tx.Query(ctx, `select `+issueColumns+` from issues
 		join (select index, issue from slots) slot (slot_index, slot_issue) on slot.slot_issue = issues.key
@@ -330,9 +331,11 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 // one. The write is the caller's own transaction, so the movement commits with the fact that
 // made it or with neither.
 func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error {
-	if _, err := tx.Exec(ctx, "update issues set moved_at = $2 where key = $1 and moved_at <= $2", key, at); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set moved_at = $2 where key = $1 and moved_at <= $2", key, at)
+	if err != nil {
 		return fmt.Errorf("mark issue %s moved at %s: %w", key, at, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -350,9 +353,11 @@ func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at
 // transaction, so the mark commits with the notice it was written for or with neither: a stall
 // told to nobody is a stall the next pass tells.
 func (s *Postgres) MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error {
-	if _, err := tx.Exec(ctx, "update issues set tree_stalled_told_at = $2 where key = $1", root, at); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set tree_stalled_told_at = $2 where key = $1", root, at)
+	if err != nil {
 		return fmt.Errorf("mark the tree of %s told stalled at %s: %w", root, at, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -640,7 +645,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	if !phase.EntryRaisedAt.IsZero() {
 		raisedAt = phase.EntryRaisedAt
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
+	tag, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		on conflict (issue, role) do update set claim = excluded.claim,
@@ -660,6 +665,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -1597,15 +1603,17 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // into one the new name already holds, that row names the moved row's issue
 // (RenameIssueRepository).
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
-	if _, err := tx.Exec(ctx, `with cleared as (
+	tag, err := tx.Exec(ctx, `with cleared as (
 			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
 		select distinct on (repo, number) repo, number, issue, head_updated_at, $2::timestamptz from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,
 			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
-		key, now); err != nil {
+		key, now)
+	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
+	noteRowsWritten(ctx, tag)
 	for _, statement := range []string{
 		// An open pull request is kept across a new generation, but the last one's reading of it is
 		// not: its checks settlement is of a head nobody has judged since, and the
@@ -1666,9 +1674,11 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// nothing for the next run: the news stays owed to that run, which its own start tells.
 		"delete from design_news_told where " + where,
 	} {
-		if _, err := tx.Exec(ctx, statement, key); err != nil {
+		tag, err := tx.Exec(ctx, statement, key)
+		if err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
+		noteRowsWritten(ctx, tag)
 	}
 	return s.clearGates(ctx, tx, where, key, describe, now)
 }
@@ -1694,6 +1704,9 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if len(emptied) > 0 {
+		noteRecordWrite(ctx)
 	}
 	slices.Sort(emptied)
 	for _, issue := range slices.Compact(emptied) {
@@ -2017,6 +2030,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -2055,7 +2069,7 @@ func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error
 	if ask.Decline != nil {
 		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
 	}
-	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
+	tag, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
 		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
@@ -2068,9 +2082,11 @@ func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
 		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
-		declined, nullableText(note), nullableText(words)); err != nil {
+		declined, nullableText(note), nullableText(words))
+	if err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -2100,7 +2116,7 @@ func (s *Postgres) RootAsks(ctx context.Context, tx pgx.Tx, issues []string) (ma
 func (s *Postgres) StartHandout(ctx context.Context, tx pgx.Tx, issue string) error {
 	// A root recorded before the catch-up cursor existed gets one at its first handout from this
 	// release (caught_up_seq 0, read from the handout), since this release took in everything up to it.
-	if _, err := tx.Exec(ctx, `update issues i set declared_seq = null, declared_at = null, caught_up_seq = coalesce(i.caught_up_seq, 0),
+	tag, err := tx.Exec(ctx, `update issues i set declared_seq = null, declared_at = null, caught_up_seq = coalesce(i.caught_up_seq, 0),
 		handout_seq = greatest(i.handout_seq, i.last_dispatch_seq,
 		coalesce(i.awaiting_since_seq, 0),
 		coalesce((select c.claim_seq from dispatch_claims c where c.key = i.key), 0),
@@ -2109,16 +2125,20 @@ func (s *Postgres) StartHandout(ctx context.Context, tx pgx.Tx, issue string) er
 		-- newest review the record holds of any of them, and a scalar subquery of several rows
 		-- would refuse the handout instead.
 		coalesce((select max(greatest(coalesce(g.approved_seq, 0), coalesce(g.told_changes_seq, 0))) from design_gates g where g.issue = i.key), 0))
-		where i.key = $1`, issue); err != nil {
+		where i.key = $1`, issue)
+	if err != nil {
 		return fmt.Errorf("start a handout to %s: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string) error {
-	if _, err := tx.Exec(ctx, `update issues set caught_up_seq = 0 where key = $1`, issue); err != nil {
+	tag, err := tx.Exec(ctx, `update issues set caught_up_seq = 0 where key = $1`, issue)
+	if err != nil {
 		return fmt.Errorf("restart the catch-up cursor of %s: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -2311,29 +2331,35 @@ func (s *Postgres) Declare(ctx context.Context, tx pgx.Tx, issue string, mark Ev
 	}
 	// The time is the newest hand-back's: an older one keeps the newer's, and the same hand-back
 	// read again keeps the time it already had when this read gives none.
-	if _, err := tx.Exec(ctx, `update issues set declared_seq = greatest(coalesce(declared_seq, $2), $2),
+	tag, err := tx.Exec(ctx, `update issues set declared_seq = greatest(coalesce(declared_seq, $2), $2),
 		declared_at = case when declared_seq is null or $2 > declared_seq then $3::timestamptz
 			when $2 = declared_seq then coalesce($3::timestamptz, declared_at) else declared_at end
-		where key = $1`, issue, mark.Seq, at); err != nil {
+		where key = $1`, issue, mark.Seq, at)
+	if err != nil {
 		return fmt.Errorf("declare a hand-back of %s at %d: %w", issue, mark.Seq, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) TakeInThrough(ctx context.Context, tx pgx.Tx, issue string, seq int64) error {
-	if _, err := tx.Exec(ctx, `update issues set handout_seq = greatest(handout_seq, $2),
+	tag, err := tx.Exec(ctx, `update issues set handout_seq = greatest(handout_seq, $2),
 		declared_at = case when declared_seq <= $2 then null else declared_at end,
 		declared_seq = case when declared_seq <= $2 then null else declared_seq end
-		where key = $1`, issue, seq); err != nil {
+		where key = $1`, issue, seq)
+	if err != nil {
 		return fmt.Errorf("take in the hand-backs of %s through %d: %w", issue, seq, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) ClearDeclared(ctx context.Context, tx pgx.Tx, issue string) error {
-	if _, err := tx.Exec(ctx, `update issues set declared_seq = null, declared_at = null where key = $1`, issue); err != nil {
+	tag, err := tx.Exec(ctx, `update issues set declared_seq = null, declared_at = null where key = $1`, issue)
+	if err != nil {
 		return fmt.Errorf("clear the hand-back of %s: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -2352,9 +2378,11 @@ func (s *Postgres) SetCaughtUp(ctx context.Context, tx pgx.Tx, issue string, seq
 	if seq < 0 {
 		return fmt.Errorf("set the catch-up cursor of %s: sequence %d is negative", issue, seq)
 	}
-	if _, err := tx.Exec(ctx, `update issues set caught_up_seq = greatest(coalesce(caught_up_seq, 0), $2) where key = $1`, issue, seq); err != nil {
+	tag, err := tx.Exec(ctx, `update issues set caught_up_seq = greatest(coalesce(caught_up_seq, 0), $2) where key = $1`, issue, seq)
+	if err != nil {
 		return fmt.Errorf("set the catch-up cursor of %s at %d: %w", issue, seq, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -2387,19 +2415,22 @@ func (s *Postgres) Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error) {
 }
 
 func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
-	_, err := tx.Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, $2, $3)
+	tag, err := tx.Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, $2, $3)
 		on conflict (issue) do update set index = excluded.index, admitted_at = excluded.admitted_at`,
 		slot.Issue, slot.Index, slot.AdmittedAt)
 	if err != nil {
 		return fmt.Errorf("put slot for %s: %w", slot.Issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
-	if _, err := tx.Exec(ctx, "delete from slots where issue = $1", issue); err != nil {
+	tag, err := tx.Exec(ctx, "delete from slots where issue = $1", issue)
+	if err != nil {
 		return fmt.Errorf("release slot for %s: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -2408,25 +2439,30 @@ func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) err
 // away without the mark nor mark an issue that kept its row. An issue holding no row is marked
 // by neither, which is the truth about it — nothing released it for a wait.
 func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
-	_, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue)
+	tag, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue)
 		update issues set released_for_wait_at = $2 from released where issues.key = released.issue`, issue, at)
 	if err != nil {
 		return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error {
-	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where key = $1", issue); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where key = $1", issue)
+	if err != nil {
 		return fmt.Errorf("clear the release of %s's slot for what it waits on: %w", issue, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
-	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where tree = $1 and released_for_wait_at is not null", tree); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where tree = $1 and released_for_wait_at is not null", tree)
+	if err != nil {
 		return nil, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
 	}
+	noteRowsWritten(ctx, tag)
 	rows, err := tx.Query(ctx, `with released as (delete from slots using issues
 		where slots.issue = issues.key and issues.tree = $1 returning slots.issue, slots.index)
 		select issue from released order by index, issue`, tree)
@@ -2437,6 +2473,9 @@ func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string)
 	if err != nil {
 		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
+	if len(released) > 0 {
+		noteRecordWrite(ctx)
+	}
 	return released, nil
 }
 
@@ -2444,16 +2483,20 @@ func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string)
 // nowhere, so a copy of the root read before either never writes it back. A key with no record
 // matches no row and writes nothing.
 func (s *Postgres) OweMembers(ctx context.Context, tx pgx.Tx, key string) error {
-	if _, err := tx.Exec(ctx, "update issues set members_owed = true where key = $1", key); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set members_owed = true where key = $1", key)
+	if err != nil {
 		return fmt.Errorf("owe the members of %s their return: %w", key, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
 func (s *Postgres) ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) error {
-	if _, err := tx.Exec(ctx, "update issues set members_owed = false where key = $1", key); err != nil {
+	tag, err := tx.Exec(ctx, "update issues set members_owed = false where key = $1", key)
+	if err != nil {
 		return fmt.Errorf("clear the return owed to the members of %s: %w", key, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

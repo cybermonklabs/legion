@@ -70,7 +70,7 @@ A free slot or a full cap is no reason to take, label, admit or park an issue: a
 
 A slot is one issue the daemon started, a root or a child.
 Free slots are `admission.cap`, less the holders of `admission.active` that are not P0 (its length less `admission.p0Holders`), less each issue of `admission.waiting` that is not P0 in neither `admission.active` nor `admission.blocked`: a P0 issue takes no slot of the cap.
-A returned issue goes before an unstarted one of its priority whatever their ranks, by design ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
+The line is ordered by Dispatch priority first; within one priority a returned issue goes before an unstarted one whatever their ranks, by design ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
 The lists, what makes an issue P0, and the `admission.held` words: `skill://legion-controller/references/admission.md`.
 
 Every move to `todo` you make is one of these:

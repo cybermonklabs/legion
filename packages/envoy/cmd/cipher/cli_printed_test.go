@@ -66,6 +66,7 @@ func runIn(args ...string) (stdout, stderr string, code int) {
 // usage and exits 2, as before. A flag given no value is still named as Go names it, and values
 // that parse still parse (the controls).
 func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useBareEnvironment, t.Setenv at cli_printed_test.go:43); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-flagvalue-5e0b32"
 	for _, row := range []struct {
 		name string
@@ -122,6 +123,7 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 // usage a parse failure prints name the variable beside the flag, never its value. A default
 // that is the program's own constant still prints as it is (the control).
 func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at cli_printed_test.go:139); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-helpdir-80c4f1"
 	for _, row := range []struct {
 		args []string
@@ -148,6 +150,7 @@ func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
 // is refused naming the variable and the rule it broke, never its value, by a use command and by
 // `identity --source` alike, exit 2; a duration still bounds the wait (the control).
 func TestEnrollWaitRefusalNamesTheRuleNotTheValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at cli_printed_test.go:166); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-enrollwait-6a2d90"
 	for _, row := range []struct {
 		name, wait string
@@ -185,6 +188,7 @@ const wantUnexpectedArgument = "unexpected argument (not printed: an argument th
 // without quoting it: an argument a form does not take is where a credential pasted in the wrong
 // place lands. Each form run without it goes on past the check (the control).
 func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at cli_printed_test.go:205); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-positional-4e7a19"
 	for _, form := range []struct {
 		args []string
@@ -224,6 +228,7 @@ func TestAnUnexpectedArgumentIsNotPrinted(t *testing.T) {
 // file as a line of its own reads as a key up to its first '='. A line whose key the file takes is
 // still read (the control).
 func TestASettingsFileKeyItDoesNotTakeIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.unsetenv, t.Setenv at config_test.go:38); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.writeClientConfig, clientConfig set at config_test.go:31).
 	const secret = "eyJhbGciOiJSUzI1NiJ9.hunter2pw-settingsline-0b6c33"
 	for _, line := range []string{secret + "==", secret + "=x"} {
 		t.Run(line, func(t *testing.T) {
@@ -252,6 +257,7 @@ func TestASettingsFileKeyItDoesNotTakeIsNotPrinted(t *testing.T) {
 // is where a credential pasted in the wrong place lands. An id that can be in a path goes on to the
 // call (the control).
 func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at cli_printed_test.go:283); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw/pathid-91de07"
 	for _, row := range []struct {
 		args []string
@@ -302,6 +308,7 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 // not have naming the forms it has, never the argument, which is where a credential pasted in the
 // wrong place lands. A group given no form still says one is required (the control).
 func TestAnUnknownFormIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useBareEnvironment, t.Setenv at cli_printed_test.go:43); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-form-2a5c70"
 	for _, row := range []struct{ group, forms string }{
 		{"machine", "login, login-status, list, revoke"},
@@ -344,6 +351,7 @@ func useUnreachableBroker(t *testing.T, url string) {
 // wrong place lands. A call whose path holds no typed id still prints its URL whole (the control),
 // and the failure still classifies as it did (errors.Is).
 func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useUnreachableBroker, t.Setenv at cli_printed_test.go:341); it signals the test process or changes its signal handling (main.runIn, main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.useUnreachableBroker, main.useBareEnvironment, passwdHome set at cli_printed_test.go:51).
 	const secret = "hunter2pw-typedid-60b1e4"
 	forms := []struct {
 		args  []string

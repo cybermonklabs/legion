@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
@@ -294,11 +296,10 @@ func TestAStateReadFollowsNoRedirect(t *testing.T) {
 // is the transport's reason without the URL net/http's *url.Error carries or the host and port
 // its *net.OpError names.
 func TestAFailedCallNamesNoAddress(t *testing.T) {
-	// A port nothing listens on: the dial fails, which is the failure a daemon that is down
-	// gives, and the one whose text names the address.
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := strings.TrimPrefix(closed.URL, "http://")
-	closed.Close()
+	// A port that refuses every dial: the dial fails, which is the failure a daemon that is down
+	// gives, and the one whose text names the address. The test holds the port until it ends; a
+	// closed server's port is any process's to take, and one that takes it answers.
+	address := testport.Refused(t)
 
 	_, _, err := New("http://" + address).State(t.Context())
 	if !errors.Is(err, ErrUnavailable) {

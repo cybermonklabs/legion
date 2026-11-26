@@ -566,11 +566,11 @@ func (ControllerTick) namedIssue() (string, bool) { return "", false }
 // (admit.Admission.convergeEntries).
 //
 // It carries nothing, because the difference it closes is one the record already holds and the
-// handler reads the whole project. What it is for is the running: an admission pass runs on a
-// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
-// the outbox fenced out — would otherwise leave a role behind its entry until something else
-// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
-// record a transition is in the middle of writing.
+// handler reads the whole project. What it is for is the running: an admission pass runs on the
+// facts its rule names (admit.Admission.Apply), and a daemon with none arriving — a quiet
+// project, a transition whose own start row the outbox fenced out — would otherwise leave a role
+// behind its entry until something else happened. Going through ApplyFact takes the one lock
+// every fact takes, so the sweep reads no record a transition is in the middle of writing.
 type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
@@ -578,14 +578,14 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
-// pass: the pause held every promotion, and the pass runs now rather than at the next fact or
-// tick. Admission promotes on it as on every fact that is not a Dispatch issue
-// (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
-// release leaves free wakes the controller as any fact's pass does
-// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
-// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
-// of that capacity.
+// pass: the pause held every promotion, and the pass runs now rather than at the next pass the
+// rule of admit.Admission.Apply runs, which names this fact among those that run it whatever they
+// wrote; the workflow engine and the blockers mirror do nothing for it. Unlike the controller's
+// tick, which queues a tick notice, it queues none: a slot its pass's own release leaves free
+// wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and nothing
+// else. The rows a re-admission freed while the pause held (admit's releaseTreeSlots) wake
+// nothing; the resume's notice tells the controller of that capacity. Where the pass fails, the
+// next pass the rule runs promotes the line, and any other fact that writes nothing runs none.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -596,14 +596,14 @@ func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
 // P0BoundSet is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
 // C3), applied as a synthetic fact by the P0 bound routes (api's changeP0Bound) and never decoded
-// from an event. Mode is what it does: store.P0BoundSet sets the bound to Bound, at least 1, which
-// the route refused anything else against; store.P0BoundUnbounded sets it to none, whatever
-// legion.yaml says; and store.P0BoundCleared returns the project to legion.yaml's
+// from an event. Mode is what it does: store.P0BoundSet sets the bound to Bound, from 1 to
+// 2147483647, which the route refused anything else against; store.P0BoundUnbounded sets it to
+// none, whatever legion.yaml says; and store.P0BoundCleared returns the project to legion.yaml's
 // admission_p0_bound. By is who changed it, in a pause's actor shape, Reason why, and At when.
-// Admission is its one handler: it appends the change (store.RecordP0BoundChangeTx) and then makes
-// the pass every fact that is not a Dispatch issue makes, in the same transaction, so the bound is
-// in force from that pass on (admit.Admission.applyFact). The workflow engine and the blockers
-// mirror do nothing for it.
+// Admission is its one handler: it appends the change (store.RecordP0BoundChangeTx) and then runs
+// the admission pass whatever it wrote, in the same transaction, so the bound is in force from
+// that pass on (admit.Admission.applyFact). The workflow engine and the blockers mirror do nothing
+// for it.
 type P0BoundSet struct {
 	Mode   store.P0BoundMode
 	Bound  int
@@ -1603,9 +1603,11 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
-// takes it as every other fact, so a root whose wait was held because its architect had not yet
-// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission's
+// pass rule (admit.Admission.Apply) runs the pass on it whatever it wrote, since it stands for the
+// confirmation the supervisor wrote outside the fact, so a root whose wait was held because its
+// architect had not yet taken its task is decided here rather than at the next tick (workflow's
+// ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
