@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"html"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -843,6 +844,121 @@ func TestRenderKeepsTheBlocksOfATightListItem(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A loose list is written with one blank line between two of its items, as Markdown writes it,
+// wherever the list stands, and each blank line carries its containers' prefix without the space
+// after it. In a quote the browser editor's parser reads a list an item ends in, or an item ending
+// in a footnote definition, spread only after two blank lines, so two are written where they
+// spread it and none where nothing needs them; none are written after an empty item either, where
+// goldmark would end the item around the list at a blank line. Each rendering reads back in Go and
+// in the browser editor's engine as the tree it was rendered from, every list and item with the
+// spread it had, and a write of it is not refused.
+func TestRenderWritesOneBlankLineBetweenTheItemsOfALooseList(t *testing.T) {
+	const callout = `:::callout{#c1 kind="note" title="T"}`
+	rows := []struct {
+		name, markdown, want string
+		// lists and items are every list's and every list item's spread, in document order, as
+		// the rendering reads back (readCodeAndSpread).
+		lists, items []bool
+	}{
+		{name: "a bullet list", markdown: "- a\n\n- b\n\n- c\n", want: "- a\n\n- b\n\n- c\n",
+			lists: []bool{true}, items: []bool{false, false, false}},
+		{name: "a bullet list spread by one blank line", markdown: "- a\n- b\n\n- c\n", want: "- a\n\n- b\n\n- c\n",
+			lists: []bool{true}, items: []bool{false, false, false}},
+		{name: "an ordered list", markdown: "1. a\n\n2. b\n", want: "1. a\n\n2. b\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list nested in an item", markdown: "- x\n  - a\n\n  - b\n", want: "- x\n  - a\n\n  - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		{name: "a list in a typed block", markdown: callout + "\n- a\n\n- b\n:::\n", want: callout + "\n- a\n\n- b\n:::\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list in a quote", markdown: "> - a\n>\n> - b\n", want: "> - a\n>\n> - b\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list in a typed block in a quote", markdown: "> " + callout + "\n> - a\n>\n> - b\n> :::\n", want: "> " + callout + "\n> - a\n>\n> - b\n> :::\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		// In a footnote definition the blank line spreads the item before it, and the list stays
+		// tight, as the browser editor reads it.
+		{name: "a list in a footnote definition", markdown: "Text[^f].\n\n[^f]: - a\n\n    - b\n", want: "Text[^f].\n\n[^f]: - a\n\n    - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		{name: "a list in a footnote definition in a quote", markdown: "> Text[^f].\n>\n> [^f]: - a\n>\n>     - b\n", want: "> Text[^f].\n>\n> [^f]: - a\n>\n>     - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		// In a quote the blank lines after an item ending in a list are that list's, and the
+		// browser editor's parser reads it spread only after two.
+		{name: "in a quote, after an item ending in a list two blank lines spread", markdown: "> - a\n>   - n\n>\n>\n> - b\n", want: "> - a\n>   - n\n>\n>\n> - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		{name: "in a quote and a footnote definition, after an item ending in a list two blank lines spread", markdown: "> Text[^f].\n>\n> [^f]: - a\n>       - n\n>\n>\n>     - b\n", want: "> Text[^f].\n>\n> [^f]: - a\n>       - n\n>\n>\n>     - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		// A list its own blank line spreads needs none after the item it ends.
+		{name: "in a quote, after an item ending in a list its own lines spread", markdown: "> - a\n>   - b\n>\n>   - c\n> - z\n", want: "> - a\n>   - b\n>\n>   - c\n> - z\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false}},
+		// In a quote the blank lines after an item ending in a footnote definition are the
+		// definition's: two spread an item none of its own lines spreads, and one spreads nothing
+		// and is not written.
+		{name: "in a quote, after an item holding only a footnote definition that two blank lines spread", markdown: "> - [^d]: d\n>\n>\n> - b\n", want: "> - [^d]: d\n>\n>\n> - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		{name: "in a quote, after an item ending in a footnote definition that one blank line does not spread", markdown: "> - a\n>   [^d]: d\n>\n> - b\n", want: "> - a\n>   [^d]: d\n> - b\n",
+			lists: []bool{false}, items: []bool{false, false}},
+		// Goldmark ends the item around the list at a blank line after an empty item, so none is
+		// written there, and one after another item spreads the list.
+		{name: "after an empty item in a nested list", markdown: "- x\n  - a\n\n  - \n  - b\n\n  - c\n", want: "- x\n  - a\n\n  - \n  - b\n\n  - c\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false, false}},
+		{name: "after an empty item in a nested list in a quote", markdown: "> - x\n>   - a\n>\n>   - \n>   - b\n>\n>   - c\n", want: "> - x\n>   - a\n>\n>   - \n>   - b\n>\n>   - c\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false, false}},
+	}
+	// An empty item is written as its marker alone, whose space ends the line.
+	emptyItem := regexp.MustCompile(`^[> ]*(?:[-*+]|[0-9]+[.)]) $`)
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			doc, err := Parse(row.markdown)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", row.markdown, err)
+			}
+			rendered := mustRender(t, doc)
+			if rendered != row.want {
+				t.Errorf("Render(Parse(%q)) = %q, want %q", row.markdown, rendered, row.want)
+			}
+			for number, line := range strings.Split(rendered, "\n") {
+				if strings.HasSuffix(line, " ") && !emptyItem.MatchString(line) {
+					t.Errorf("line %d of the rendering %q ends in a space: %q", number+1, rendered, line)
+				}
+			}
+			back, err := Parse(row.want)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", row.want, err)
+			}
+			if !back.Equal(doc) {
+				got, _ := back.JSON()
+				want, _ := doc.JSON()
+				t.Errorf("%q reads back as %s, want %s", row.want, got, want)
+			}
+			if got := readCodeAndSpread(back); !slices.Equal(got.lists, row.lists) || !slices.Equal(got.items, row.items) {
+				t.Errorf("%q reads back with lists spread %v and items spread %v, want %v and %v", row.want, got.lists, got.items, row.lists, row.items)
+			}
+			if err := RefuseMisreadDocument(back); err != nil {
+				t.Errorf("a write of %q is refused: %v", row.want, err)
+			}
+		})
+	}
+	t.Run("the engine", func(t *testing.T) {
+		wants := make([]string, 0, len(rows))
+		for _, row := range rows {
+			wants = append(wants, row.want)
+		}
+		readings := engineReadings(t, wants)
+		for index, row := range rows {
+			t.Run(row.name, func(t *testing.T) {
+				doc, err := Parse(row.want)
+				if err != nil {
+					t.Fatalf("Parse(%q): %v", row.want, err)
+				}
+				if engine := readings[index]; engine == nil || !engine.Equal(doc) {
+					got, _ := engine.JSON()
+					want, _ := doc.JSON()
+					t.Errorf("the engine reads %q as %s, and Go as %s", row.want, got, want)
+				}
+			})
+		}
+	})
 }
 
 // A footnote reference reads as one only when its label is defined, so text shaped like one - `[^1]`
