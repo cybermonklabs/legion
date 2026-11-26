@@ -675,6 +675,21 @@ Those three are named rather than cited by line: a citation into this file moves
 with every comment added above it, and one entry's line number took four values in
 two rounds that way.
 
+## dispatch_browser: The list of the texts an upload refuses for the text alone,
+
+The list of the texts an upload refuses for the text alone, which
+`packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` reads, from the new URL
+`packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile` holds: that
+spec runs each row of the list in each combination it runs, so a change to the
+list changes the spec's rows. This entry alone selects the list for this job:
+the `*dispatch_server` anchor this filter takes holds
+'packages/envoy/internal/dispatch/api/*', which matches the files of that
+directory and none of its testdata/ directory, and no other pattern of this
+filter matches the list. Measured with ci_filter_coverage.changes_filters and
+workflow_paths.PathsFilter under some-with-excludes, the quantifier the changes
+job reads this file under: this filter covers the list with the entry and not
+without it.
+
 ## dispatch_browser: What stood here was the file store's own image declaration
 
 What stood here was the file store's own image declaration and the
