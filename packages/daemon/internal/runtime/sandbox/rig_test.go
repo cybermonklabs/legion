@@ -570,6 +570,9 @@ type rig struct {
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
+	// cacheDial, when set, is the runtime's cacheDial, installed before the runtime starts
+	// (withCacheDial).
+	cacheDial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 type rigOption func(*rig, *Options)
@@ -594,6 +597,15 @@ func withWaitsToTheDeadline() rigOption {
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
+
+// withCacheDial has the runtime open its cache health reads through dial, installed before the
+// runtime starts. start runs the gh refresher, whose every tick (gitHubRefreshInterval, a minute)
+// reads the caches' health through r.cacheDial on a goroutine of its own, so a test that set the
+// field once newRig had returned wrote it with no ordering against that read: a data race, which
+// the race detector reports in any run that lasts past the first tick.
+func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
+	return func(g *rig, _ *Options) { g.cacheDial = dial }
+}
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
@@ -847,6 +859,9 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		r, err := configure(opts)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if g.cacheDial != nil {
+			r.cacheDial = g.cacheDial
 		}
 		if err := r.start(ctx, g.clients); err != nil {
 			t.Fatal(err)

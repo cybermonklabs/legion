@@ -520,8 +520,8 @@ func TestEnsureRepositoryCacheWaitsForTheStreamsToEndBeforeReplacingAPod(t *test
 	t.Cleanup(served.Close)
 	live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
 	live.Status.PodIP = "10.0.0.5"
-	g := newRig(t, []k8sruntime.Object{reserveCacheCPU(t, cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), "7"), live})
-	g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial
+	g := newRig(t, []k8sruntime.Object{reserveCacheCPU(t, cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), "7"), live},
+		withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial))
 	g.clearActions()
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
 		t.Fatalf("EnsureRepositoryCache: %v", err)
@@ -1227,11 +1227,11 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
 		}
 		logs := &logBuffer{}
-		g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), live}, withLog(logs),
-			withOptions(func(o *Options) { o.Pod.ServiceAccount = otherAccount }))
+		options := []rigOption{withLog(logs), withOptions(func(o *Options) { o.Pod.ServiceAccount = otherAccount })}
 		if routes != nil {
-			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+			options = append(options, withCacheDial((&podNetwork{routes: routes}).dial))
 		}
+		g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), live}, options...)
 		g.clearActions()
 		return g, logs
 	}
@@ -1508,8 +1508,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 			}
 			return []ghrepo.Repository{cacheRepo}
 		}
-	}))
-	g.r.cacheDial = network.dial
+	}), withCacheDial(network.dial))
 	for _, repo := range []ghrepo.Repository{cacheRepo, gadgets} {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatal(err)
@@ -1649,9 +1648,8 @@ func readyCache(t *testing.T, g *rig, podIP string) string {
 func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 	t.Parallel()
 	served, credentials := healthServer(t, cacheRepo.String())
-	g := newRig(t, nil)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
-	g.r.cacheDial = network.dial
+	g := newRig(t, nil, withCacheDial(network.dial))
 	name := readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)
@@ -1680,8 +1678,7 @@ func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 func TestAStrangerAtTheCachePodsAddressGetsNoCredential(t *testing.T) {
 	t.Parallel()
 	stranger, credentials := healthServer(t, "acme/gadgets")
-	g := newRig(t, nil)
-	g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial
+	g := newRig(t, nil, withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial))
 	readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)
