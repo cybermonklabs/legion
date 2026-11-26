@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `DispatchEvent` carries `artifact.indexed` (`ArtifactIndexedEventPayload {artifact_ids}`, read
+  by `ArtifactIndexedEventPayloadSchema`): the block-index reconciliation indexed documents of the
+  issue whose version writes left their block index to it. `artifact_ids` names each document
+  whose owed index the pass cleared, sorted. The event is quiet. `DISPATCH_EVENT_TYPES` lists it,
+  so envoy's generated `DispatchEventTypes` lists it once regenerated.
+time: 2026-11-25T18:44:50Z
+custom:
+    Issue: INFRA-1253

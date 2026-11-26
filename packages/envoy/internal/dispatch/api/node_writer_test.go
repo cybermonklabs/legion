@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -57,9 +56,10 @@ const (
 // nodeWriterRig is one issue of an issue tree Legion runs, as TestSpecWriteRefusesAWorkerOnEveryRoute
 // builds one (specWriterServer.rig): CORE-1, a root a person filed with the label legion, born
 // converted, its spec holding a criterion and two requirements under it (nodeWriterSpec), its
-// Verification document two checks, c1 serving r1 and c2 serving r2, and a constraint a person
-// wrote; then the daemon of CORE published its role holders on it, an architect session and a
-// worker session that holds the implementer role, which marks the project.
+// Verification document four checks, c1 and c3 serving r1 and c2 and c4 serving r2, none holding a
+// result, and a constraint a person wrote; then the daemon of CORE published its role holders on
+// it, an architect session and a worker session that holds the implementer role, which marks the
+// project.
 type nodeWriterRig struct {
 	handler  http.Handler
 	database *store.Store
@@ -102,7 +102,9 @@ func newNodeWriterRig(t *testing.T) *nodeWriterRig {
 	}
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		nodeWriterCheckBlock("c1", "r1", nodeWriterStrongControl, "The route names its writer.")+"\n"+
-			nodeWriterCheckBlock("c2", "r2", nodeWriterStrongControl, "A refused route stores nothing."))
+			nodeWriterCheckBlock("c2", "r2", nodeWriterStrongControl, "A refused route stores nothing.")+"\n"+
+			nodeWriterCheckBlock("c3", "r1", nodeWriterStrongControl, "A route answers a refusal alone.")+"\n"+
+			nodeWriterCheckBlock("c4", "r2", nodeWriterStrongControl, "A refusal names the writer's role."))
 	constraint := created201[constraintRead](t, "rig: a person writes a constraint", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/issues/"+issue.Key+"/constraints", map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"}, "alice"))
 	rig := &nodeWriterRig{
@@ -156,6 +158,31 @@ func (rig *nodeWriterRig) send(t *testing.T, as nodeWriterAs, method, path strin
 	return sessionRequest(t, rig.handler, method, path, named)
 }
 
+// caller is as's calls of the node routes that take an If-Match, as a nodeCaller sends them: on the
+// shared token, naming its session as the actor, or on the person's token, naming the session
+// acting for her.
+func (rig *nodeWriterRig) caller(t *testing.T, as nodeWriterAs) nodeCaller {
+	t.Helper()
+	return func(method, path string, body any, header http.Header) *httptest.ResponseRecorder {
+		named := map[string]any{}
+		if members, ok := body.(map[string]any); ok {
+			maps.Copy(named, members)
+		}
+		header = header.Clone()
+		if header == nil {
+			header = http.Header{}
+		}
+		if as.token != "" {
+			named["actor"] = map[string]any{"kind": "session", "id": "ses-acting-for-alice"}
+			header.Set("Authorization", "Bearer "+as.token)
+		} else {
+			named["actor"] = map[string]any{"kind": "session", "id": as.session}
+			header.Set("Authorization", "Bearer agent-token")
+		}
+		return serveNodeRequest(t, rig.handler, method, path, named, header)
+	}
+}
+
 // nodeWriterCounts is what a refused write leaves as it found it: the store's graph_tuples rows,
 // of which the issue's are a part, the issue's artifact_versions rows and the issue's events.
 type nodeWriterCounts struct {
@@ -181,13 +208,42 @@ type nodeWrite struct {
 	send        func(t *testing.T) *httptest.ResponseRecorder
 }
 
-// writes are as's writes of a requirement, criterion or check node, each on a node of its own:
-// overtaken on the requirement requirement through the state route, a constrained_by out of it to
-// the rig's constraint through the pointer route, and a new criterion, criterion, through an edit
-// of the issue's tree artifact.
-func (rig *nodeWriterRig) writes(as nodeWriterAs, requirement, criterion string) []nodeWrite {
-	address := rig.spec.address(requirement)
+// nodeWriterTargets are the nodes of the rig one writer writes, each its own: the requirement it
+// overtakes through the state route and constrains through the pointer route, the id of the
+// criterion it adds, the check it moves and the requirement it moves that check under, and the
+// check it deletes.
+type nodeWriterTargets struct {
+	requirement, criterion string
+	moved, under           string
+	deleted                string
+}
+
+// writes are as's five writes of a requirement, criterion or check node, each on a node of its own:
+// a check moved under the other requirement through PATCH /api/v1/issues/{key}/nodes/{id}, with the
+// If-Match of the check's placement_seq; a check a person wrote that holds no result deleted
+// through DELETE of the same route, with that If-Match and the expected_count a person's dry run
+// answers; overtaken on a requirement through the state route; a constrained_by out of it to the
+// rig's constraint through the pointer route; and a new criterion through an edit of the issue's
+// tree artifact. The moves and the deletes come first, so a requirement the writer overtakes
+// afterwards is no parent a move was refused under.
+func (rig *nodeWriterRig) writes(as nodeWriterAs, targets nodeWriterTargets) []nodeWrite {
+	address := rig.spec.address(targets.requirement)
+	moved, under, deleted := rig.verification.address(targets.moved), rig.spec.address(targets.under), rig.verification.address(targets.deleted)
 	return []nodeWrite{{
+		route: "PATCH /api/v1/issues/{key}/nodes/{id}", node: "check " + moved + " under requirement " + under,
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			_, tag := placementOf(t, rig.database, refs.BlockNodeKind, moved)
+			return patchNodeAs(rig.caller(t, as), rig.issue, moved, tag, map[string]any{"parent": under})
+		},
+	}, {
+		route: "DELETE /api/v1/issues/{key}/nodes/{id}", node: "check " + deleted,
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			count := deletedCount(t, "the person's dry run of the delete of "+deleted,
+				deleteNodeAs(personCaller(t, rig.handler, "alice"), rig.issue, deleted, true, -1, ""))
+			_, tag := placementOf(t, rig.database, refs.BlockNodeKind, deleted)
+			return deleteNodeAs(rig.caller(t, as), rig.issue, deleted, false, count, tag)
+		},
+	}, {
 		route: "POST /api/v1/issues/{key}/nodes/{id}/state", node: "requirement " + address,
 		send: func(t *testing.T) *httptest.ResponseRecorder {
 			return rig.send(t, as, http.MethodPost, "/api/v1/issues/"+rig.issue+nodePath(address, "state"),
@@ -200,18 +256,13 @@ func (rig *nodeWriterRig) writes(as nodeWriterAs, requirement, criterion string)
 				map[string]any{"kind": graphstore.TupleConstrainedBy, "action": pointerAppend, "to": rig.constraint})
 		},
 	}, {
-		route: "POST /api/v1/artifacts/{id}/edits", node: "criterion " + rig.tree.address(criterion),
+		route: "POST /api/v1/artifacts/{id}/edits", node: "criterion " + rig.tree.address(targets.criterion),
 		send: func(t *testing.T) *httptest.ResponseRecorder {
 			return rig.send(t, as, http.MethodPost, "/api/v1/artifacts/"+rig.tree.id+"/edits", map[string]any{"ops": []map[string]any{{
-				"op": "insert", "after": "end", "markdown": ":::criterion{#" + criterion + "}\nI want " + as.name + "'s criterion read.\n:::\n",
+				"op": "insert", "after": "end", "markdown": ":::criterion{#" + targets.criterion + "}\nI want " + as.name + "'s criterion read.\n:::\n",
 			}}})
 		},
 	}}
-	// The fourth such write, a check moved under the other requirement through
-	// POST /api/v1/issues/{key}/nodes/{id}/parent, is added here by whichever of this test and the
-	// parent route lands second: a write of the check c2 under r1 for the worker, refused as these
-	// are, and of its own check under another requirement for the architect and the person, each
-	// accepted.
 }
 
 // requireApproved waits until version 1 of the document id holds the version_renders row of the
@@ -327,36 +378,34 @@ func (rig *nodeWriterRig) requireAgreed(t *testing.T, query string, record docs.
 }
 
 // TestOnlyAPersonOrAnArchitectWritesASpecNode: on an issue Legion runs, born converted, whose spec
-// holds a criterion and two requirements under it, whose Verification document holds two checks
-// serving them, and which holds a constraint (newNodeWriterRig), the worker's writes of a
-// requirement, criterion or check node - overtaken on a requirement through the state route, a
-// constrained_by out of a requirement through the pointer route, and a new criterion through an
-// edit of the issue's tree artifact - are each refused 403 DOCUMENT_WRITER_NOT_ARCHITECT, the
-// store's graph_tuples and the issue's artifact_versions and events counted the same before and
-// after each, else printing `<route> let worker <session> write <node>`. The architect's and the
-// person's same writes, each on a node of its own, are each taken, else printing `<route> refused
-// <writer>`. The worker still writes what is no such node: a constraint of its own, overtaken on it
-// through the state route, and a paragraph in the tree artifact.
+// holds a criterion and two requirements under it, whose Verification document holds four checks
+// serving them, and which holds a constraint (newNodeWriterRig), the worker's five writes of a
+// requirement, criterion or check node - a check moved under the other requirement through PATCH
+// /api/v1/issues/{key}/nodes/{id} with the If-Match of its placement_seq, a check a person wrote that
+// holds no result deleted through DELETE of that route with that If-Match and the expected_count its
+// dry run answers, overtaken on a requirement through the state route, a constrained_by out of a
+// requirement through the pointer route, and a new criterion through an edit of the issue's tree
+// artifact - are each refused 403 DOCUMENT_WRITER_NOT_ARCHITECT, R28's writer check coming before
+// R32's on both node routes, the store's graph_tuples and the issue's artifact_versions and events
+// counted the same before and after each, else printing `<route> let worker <session> write <node>`.
+// The architect's and the person's same five writes, each on a node of its own, are each taken, else
+// printing `<route> refused <writer>`. The worker still writes what is no such node: a constraint of
+// its own, overtaken on it through the state route, and a paragraph in the tree artifact.
 //
 // A person approves version 1 of the spec and of the Verification document, each the version of
 // its query the issue's create and the upload stated, once the pass that stated it has recorded its
-// render, before any of those writes. After them a person moves r2 under her own criterion, and
-// weakens c1's negative control through the edit route. The tree read at ?view=spec&v=1 and
-// ?view=verification&v=1 then answers the nodes of each query's record at the store revision
+// render, before any of those writes. After them a person moves r2 under her own criterion through
+// PATCH, and weakens c1's negative control through the edit route. The tree read at ?view=spec&v=1
+// and ?view=verification&v=1 then answers the nodes of each query's record at the store revision
 // version 1 read (docs.ReadQueryRecord), in its order, each record digesting to its approval's
 // content_sha256 and the head's to another digest (requireAgreed).
-//
-// The parent route's write, the fourth such write, joins writes when that route lands, and the
-// move of r2 below goes through it then; until it does, the move is the part_of the route appends
-// and the retraction of the old one, appended straight into the store as the route would append
-// them.
 func TestOnlyAPersonOrAnArchitectWritesASpecNode(t *testing.T) {
 	rig := newNodeWriterRig(t)
 	specPin := rig.requireApproved(t, rig.spec.id)
 	verificationPin := rig.requireApproved(t, rig.verification.id)
 	rig.quiet(t)
 
-	for _, write := range rig.writes(rig.worker, "r1", "kw") {
+	for _, write := range rig.writes(rig.worker, nodeWriterTargets{requirement: "r1", criterion: "kw", moved: "c2", under: "r1", deleted: "c3"}) {
 		before := rig.counts(t)
 		response := write.send(t)
 		rig.quiet(t)
@@ -372,13 +421,29 @@ func TestOnlyAPersonOrAnArchitectWritesASpecNode(t *testing.T) {
 		t.Logf("%s refuses worker %s its write of %s: %s", write.route, rig.worker.session, write.node, refusal.Error)
 	}
 	for _, writer := range []struct {
-		as                     nodeWriterAs
-		requirement, criterion string
-	}{{rig.architect, "r2", "ka"}, {rig.person, "r1", "kp"}} {
-		for _, write := range rig.writes(writer.as, writer.requirement, writer.criterion) {
+		as      nodeWriterAs
+		targets nodeWriterTargets
+	}{
+		{rig.architect, nodeWriterTargets{requirement: "r2", criterion: "ka", moved: "c1", under: "r2", deleted: "c3"}},
+		{rig.person, nodeWriterTargets{requirement: "r1", criterion: "kp", moved: "c2", under: "r1", deleted: "c4"}},
+	} {
+		for _, write := range rig.writes(writer.as, writer.targets) {
 			if response := write.send(t); response.Code != http.StatusOK {
 				t.Errorf("%s refused %s: status=%d body=%s", write.route, writer.as.name, response.Code, clippedBody(response))
 			}
+			rig.quiet(t)
+		}
+	}
+	for _, taken := range []struct{ check, parent string }{{"c1", "r2"}, {"c2", "r1"}} {
+		check, parent := rig.verification.address(taken.check), rig.spec.address(taken.parent)
+		if held, _ := placementOf(t, rig.database, refs.BlockNodeKind, check); held.ToID != parent {
+			t.Errorf("the move of %s under %s left it under %s %s", check, parent, held.ToKind, held.ToID)
+		}
+	}
+	for _, deleted := range []string{"c3", "c4"} {
+		check := rig.verification.address(deleted)
+		if state := nodeStateOf(t, rig.database, refs.BlockNodeKind, check); state != graphstore.StateGone {
+			t.Errorf("the delete of %s left its node %s, want gone", check, state)
 		}
 	}
 	rig.quiet(t)
@@ -406,19 +471,14 @@ func TestOnlyAPersonOrAnArchitectWritesASpecNode(t *testing.T) {
 	}
 	rig.quiet(t)
 
-	// The person moves r2 under her criterion, as the parent route will (above), and weakens c1.
+	// The person moves r2 under her criterion through PATCH, and weakens c1.
 	r2, k1, kp := rig.spec.address("r2"), rig.spec.address("k1"), rig.tree.address("kp")
 	testwait.Eventually(t, "the person's criterion "+kp+" to be a node of the store", func() bool {
 		_, held, err := graphstore.ReadNode(context.Background(), rig.database.Pool, refs.BlockNodeKind, kp)
 		return err == nil && held
 	})
-	moved := []graphstore.Tuple{
-		{FromKind: refs.BlockNodeKind, FromID: r2, Kind: graphstore.TuplePartOf, ToKind: refs.BlockNodeKind, ToID: kp,
-			At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true},
-		{FromKind: refs.BlockNodeKind, FromID: r2, Kind: graphstore.TuplePartOf, ToKind: refs.BlockNodeKind, ToID: k1,
-			At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: false},
-	}
-	(&digestRig{database: rig.database}).state(t, moved...)
+	_, tag := placementOf(t, rig.database, refs.BlockNodeKind, r2)
+	succeeded(t, "the person moves "+r2+" under her criterion "+kp, patchNode(t, rig.handler, rig.issue, r2, tag, map[string]any{"parent": kp}, "alice"))
 	succeeded(t, "the person weakens c1's negative control", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/artifacts/"+rig.verification.id+"/edits", map[string]any{"ops": []map[string]any{{
 			"op": "retype", "block": "c1", "type": graphstore.BlockTypeCheck, "attributes": nodeWriterCheckAttributes("r1", nodeWriterWeakControl),

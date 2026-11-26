@@ -1,4 +1,4 @@
-import type { CheckBlock } from "../../../api/types";
+import type { CheckBlock, RequirementCoverage } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
@@ -24,8 +24,13 @@ import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../t
  *   against another commit than its check compares with, a withdrawn one, or a check Dispatch
  *   could not read. The checks' own states say which of those it is, in the words
  *   `NODE_STATE_WORDS.check` declares.
- * - **Covered.** How many statements carry a check. It is covered and never proven or met: a
- *   statement that has a check is not a statement that is true (R17, R22).
+ * - **Covered.** How many of the issue's statements carry a check. It is covered and never proven
+ *   or met: a statement that has a check is not a statement that is true (R17, R22). It is the
+ *   coverage read's count (`issueCovered`), which answers every statement of the issue's spec,
+ *   and not a count of the statements the view draws: the view read answers its nodes a page at
+ *   a time, and the server ends a page at a bound of bytes as well as of nodes, so the statements
+ *   on its first page move with every node written before the cut - a check an issue under this
+ *   one adds under the first statement pushes the last one onto the next page.
  *
  * How one check stands is `tree-drafts.ts`'s `checkStanding`, the page's one reading of it:
  * each of its results read against the commit the server names for that check, the basis it
@@ -88,8 +93,6 @@ export interface VerificationReading {
   /** The one commit the page names for the issue's results, or `undefined` where no result
    *  that stands names one. */
   readonly commit?: string;
-  /** How many of the statements carry a check (R17's covered count). */
-  readonly covered: number;
   /** The checks the filter draws that serve no statement of the issue: a `serves` naming
    *  nothing places the check under the issue (`tree-drafts.ts`), and the filter draws it as a
    *  row of its own, so the body draws it too rather than dropping a node the filter kept. */
@@ -133,7 +136,7 @@ export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
 
 /**
  * The reading the body draws: the one commit, each statement with its checks and their latest
- * results, how each statement stands, and how many carry a check.
+ * results, and how each statement stands.
  *
  * `view` is the tree the Verification filter left (`presets.ts`'s `presetView`): its top rows
  * are the statements the filter draws as context, each with the checks that serve it under it
@@ -157,11 +160,32 @@ export function verificationReading({
   });
   return {
     ...(commit === undefined ? {} : { commit }),
-    covered: statements.filter((statement) => carriesCheck(statement.node, statement.checks))
-      .length,
     loose: view.children.filter(isCheck).map(read),
     others: view.children.filter((node) => !isStatement(node) && !isCheck(node)),
     statements,
+  };
+}
+
+/** How many of the issue's statements carry a check, out of how many it has (R17's covered
+ *  count). */
+export interface IssueCovered {
+  readonly covered: number;
+  readonly total: number;
+}
+
+/**
+ * The issue's covered count, from the coverage read alone (`GET /api/v1/issues/{key}/coverage`):
+ * every `requirement` block of the issue's spec is one of its rows (`requirements`), and one is
+ * covered where a check of the issue or of an issue under it serves it (`checks`). No page of the
+ * view read cuts that read, so the count is the same on every read of the same issue, whichever
+ * of its statements the view has loaded.
+ */
+export function issueCovered(
+  requirements: readonly Pick<RequirementCoverage, "checks">[]
+): IssueCovered {
+  return {
+    covered: requirements.filter((requirement) => requirement.checks > 0).length,
+    total: requirements.length,
   };
 }
 

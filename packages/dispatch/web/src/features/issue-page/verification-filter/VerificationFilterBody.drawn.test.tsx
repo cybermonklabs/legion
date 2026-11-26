@@ -23,6 +23,7 @@ import type {
   IssueCheckResults,
   IssueCoverage,
   IssueDetails,
+  RequirementCoverage,
 } from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -30,7 +31,12 @@ import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/ref
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  issueDetails,
+  SPEC_DOCUMENT,
+  specRef,
+} from "../decisions-filter/decisions-fixtures";
 import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
@@ -54,11 +60,11 @@ import {
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { drawStage, REFUSED, stubReads } from "../slots/stage-fixtures";
+import { drawStage, inDocument, REFUSED, stubReads, treeOf } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
-import { treeContext } from "../tree-drafts";
-import { treeAnswer } from "../tree-read/tree-fixtures";
-import type { TreeAnswer } from "../tree-read/tree-read";
+import { blockNodeId, treeContext } from "../tree-drafts";
+import { pagedAnswer, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -75,6 +81,7 @@ import {
   node,
   OTHER_COMMIT,
   result,
+  SPEC_SLUG,
   statementNode,
   VERIFICATION_SLUG,
   verificationView,
@@ -100,17 +107,19 @@ beforeAll(async () => {
 /** What a case gives the body beside its statements and its checks: the words the reader typed
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
- *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
- *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
- *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
- *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
- *  (`published`), which is what it publishes for the issue's statements where a case gives
- *  nothing else (`publishedStatements`). */
+ *  the coverage read's rows (`requirements`), which are the rows of the statements the case
+ *  draws where it gives none (`coverageOf`), the view with no query where a case builds it
+ *  itself (`whole`), which is otherwise built as the slot builds it, whether the body is drawn
+ *  inside the stage the page draws a view in (`staged`), which moves the focus where a failed
+ *  read's line leaves with it or the view's tree itself takes it (`ViewStage`), and what the page
+ *  publishes of its batched names read (`published`), which is what it publishes for the issue's
+ *  statements where a case gives nothing else (`publishedStatements`). */
 interface DrawOptions {
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
+  readonly requirements?: readonly RequirementCoverage[];
   readonly staged?: boolean;
   readonly whole?: TreeNode;
 }
@@ -121,6 +130,28 @@ function statementsOf(root: TreeNode): TreeNode[] {
     ...(root.statement === true && root.reference !== undefined ? [root] : []),
     ...root.children.flatMap(statementsOf),
   ];
+}
+
+/** The coverage read's rows for `statements`, as the server answers them for an issue whose every
+ *  statement the case draws: one row for each statement, with the checks the case gave it - its
+ *  count of checks where it carries one (`TreeNode.counts`), else the checks drawn under it. */
+function coverageOf(statements: readonly TreeNode[]): RequirementCoverage[] {
+  const rows = new Map<string, RequirementCoverage>();
+  for (const statement of statements) {
+    const ref = statement.reference;
+    if (ref === undefined || rows.has(ref)) continue;
+    rows.set(ref, {
+      block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
+      checks:
+        statement.counts?.checks ??
+        statement.children.filter((child) => child.type === "check").length,
+      gaps: [],
+      plan_tasks: 0,
+      ref,
+      text: statement.text,
+    });
+  }
+  return [...rows.values()];
 }
 
 /** What the page publishes for `statements`: what its batched read names them by, by the page's
@@ -163,6 +194,7 @@ function bodyOf(
     published: givenPublished,
     query = "",
     reads = { state: "answered" },
+    requirements: givenRequirements,
     staged = false,
     whole: given,
   }: DrawOptions = {},
@@ -174,6 +206,7 @@ function bodyOf(
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
   const published = givenPublished ?? publishedStatements(statementsOf(issue));
+  const requirements = givenRequirements ?? coverageOf(statementsOf(issue));
   const slot = (
     <NoTooltips>
       <Publisher published={published} />
@@ -183,6 +216,7 @@ function bodyOf(
         namesLine={NO_FAILED_READS}
         published={published}
         reads={reads}
+        requirements={requirements}
         view={view.root}
         whole={whole}
       />
@@ -2583,6 +2617,208 @@ test("a check under two statements names the other by its words with no mark of 
   }
 });
 
+// A check drawn from the Verification view's own tree names the other statement it serves by that
+// statement's line. The outline's read holds the issue alone and the names read answers nothing,
+// so the view read alone holds the second statement's words: the view names the statement by them
+// (`PresetView.readings`) and the slot publishes that reading to the names store
+// (`slots/view-readings.ts`). The check's row under the first statement draws "Also under" with
+// the second statement's words, and neither an empty chip nor the statement's address.
+test("a row drawn from a view's own tree names its other parent by that parent's line", async () => {
+  const stubs = stubReads();
+  const base = issueDetails();
+  const verification = artifact("artifact-verification", VERIFICATION_SLUG);
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), verification],
+    verification_artifact_id: verification.id,
+  };
+  const firstWords = "The page draws the check.";
+  const secondWords = "The second statement.";
+  // The view read: the two statements as its context, and the check, its query, under the first
+  // and serving both.
+  const viewAnswer = treeOf(
+    [
+      treeNode("r1", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 0),
+        role: "context",
+        text: firstWords,
+      }),
+      treeNode("r2", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 1),
+        role: "context",
+        text: secondWords,
+      }),
+      treeNode("c1", "check", "r1", { ...inDocument(verification), role: "query" }),
+    ],
+    [treeTuple("serves", "c1", "r1"), treeTuple("serves", "c1", "r2")]
+  );
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view === undefined) return treeAnswer([treeNode(ISSUE_KEY, "issue", null)]);
+    return asked.view === "verification" ? viewAnswer : Promise.withResolvers<never>().promise;
+  });
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [
+      { block_id: "r1", checks: 1, gaps: [], plan_tasks: 0, ref: specRef("r1"), text: firstWords },
+      { block_id: "r2", checks: 1, gaps: [], plan_tasks: 0, ref: specRef("r2"), text: secondWords },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [check({ block_id: "c1" })],
+    issue: ISSUE_KEY,
+    verification_artifact_id: verification.id,
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
+  const view = drawStage("", { issue, preset: "verification" });
+  try {
+    const row = `[data-verification-card][data-node-id="${blockNodeId(SPEC_SLUG, "r1")}"] [data-verification-check][data-node-id="${blockNodeId(VERIFICATION_SLUG, "c1")}"]`;
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(row),
+        "the view drew no row of the check under the first statement"
+      ).not.toBeNull()
+    );
+    const chips = `${row} [data-node-trail] [data-node-chip]`;
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll(chips)].map((chip) => chip.textContent),
+        "the check's row under the first statement does not name the second by its line"
+      ).toEqual([secondWords])
+    );
+    expect(view.container.querySelector(`${row} [data-node-trail]`)?.textContent).toBe(
+      `${CONTROL_LABELS.also_under} ${secondWords}`
+    );
+    // The names read was never asked for the second statement, so its line is the view's own.
+    expect(names.mock.calls.flat(2)).not.toContain(specRef("r2"));
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The summary counts the issue's statements from the coverage read, which answers every statement
+// of the issue's spec, and never the statements of the view read's loaded pages. The server ends
+// a page of the view at a bound of bytes as well as of nodes, so a node written before the cut
+// moves it: here the first load's first page holds fourteen of the issue's sixteen statements,
+// and a re-read's, once a check of an issue under this one is placed under the first statement,
+// holds thirteen. The coverage read answers the same sixteen both times, and so does the summary.
+// What the chips count is the statements loaded, so each count carries "+" while the view read
+// names a next page (R15).
+test("the summary counts the issue's statements from the coverage read, whatever page of the view is loaded", async () => {
+  const stubs = stubReads();
+  const base = issueDetails();
+  const verification = artifact("artifact-verification", VERIFICATION_SLUG);
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), verification],
+    verification_artifact_id: verification.id,
+  };
+  const ids = Array.from({ length: 16 }, (_unused, at) => at + 1);
+  // A statement of the spec, as the view read answers it: context, under the issue.
+  const statement = (at: number): TreeAnswerNode =>
+    treeNode(`r${at}`, "requirement", ISSUE_KEY, {
+      ...inDocument(SPEC_DOCUMENT, at),
+      role: "context",
+      text: `Statement ${at}.`,
+    });
+  // The check of the Verification document that serves it, the view's query.
+  const checkOf = (at: number): TreeAnswerNode =>
+    treeNode(`c${at}`, "check", `r${at}`, { ...inDocument(verification, at), role: "query" });
+  // A check of CORE-3, an issue under this one, that serves the first statement: the read places
+  // it under that statement, as context.
+  const elsewhere = treeNode("c-under", "check", "r1", {
+    document: { artifact_id: "artifact-core-3", position: 0, slug: VERIFICATION_SLUG },
+    issue: "CORE-3",
+    role: "context",
+  });
+  // The view read's first page: the first `statements` statements, the checks of the first
+  // `checks` of them, `under` after the first statement's check, and the cursor of the next page.
+  const firstPage = (
+    statements: number,
+    checks: number,
+    under: readonly TreeAnswerNode[],
+    cursor: string
+  ): TreeAnswer =>
+    pagedAnswer(
+      treeAnswer(
+        ids
+          .slice(0, statements)
+          .flatMap((at) => [
+            statement(at),
+            ...(at <= checks ? [checkOf(at)] : []),
+            ...(at === 1 ? under : []),
+          ]),
+        [
+          ...ids.slice(0, checks).map((at) => treeTuple("serves", `c${at}`, `r${at}`)),
+          ...under.map((node) => treeTuple("serves", node.block_id ?? node.id, "r1")),
+        ]
+      ),
+      cursor,
+      2 * ids.length - statements - checks
+    );
+  const firstLoad = firstPage(14, 13, [], "the page from c14");
+  const reRead = firstPage(13, 13, [elsewhere], "the page from r14");
+  let answer = firstLoad;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view === undefined) return treeAnswer([treeNode(ISSUE_KEY, "issue", null)]);
+    return asked.view === "verification" ? answer : Promise.withResolvers<never>().promise;
+  });
+  // The one coverage answer: every statement of the issue, each served by its check.
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: ids.map((at) => ({
+      block_id: `r${at}`,
+      checks: 1,
+      gaps: [],
+      plan_tasks: 0,
+      ref: specRef(`r${at}`),
+      text: `Statement ${at}.`,
+    })),
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: ids.map((at) => check({ block_id: `c${at}`, pass_stands: { answer: "no" } })),
+    issue: ISSUE_KEY,
+    verification_artifact_id: verification.id,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = drawStage("", { client, issue, preset: "verification" });
+  const cards = () => view.container.querySelectorAll("[data-verification-card]");
+  const chips = (count: number) => [
+    `${VERIFICATION_WORDS.all} ${count}+`,
+    `${VERIFICATION_WORDS.states.met} 0+`,
+    `${VERIFICATION_WORDS.states.not_met} 0+`,
+    `${VERIFICATION_WORDS.states.unknown} ${count}+`,
+  ];
+  try {
+    await waitFor(() => expect(cards(), "the first load drew no statement").toHaveLength(14));
+    const [first] = textsOf(view, "[data-verification-covered]");
+    expect(textsOf(view, "[data-verification-chip]")).toEqual(chips(14));
+
+    answer = reRead;
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: viewKey(ISSUE_KEY, "verification") });
+    });
+    await waitFor(() => expect(cards(), "the re-read did not land").toHaveLength(13));
+    expect(
+      textsOf(view, "[data-verification-covered]"),
+      "the summary counts other statements after a re-read than at the first load"
+    ).toEqual([first]);
+    expect(first).toBe(`16 ${VERIFICATION_WORDS.of} 16 ${VERIFICATION_WORDS.covered}`);
+    expect(textsOf(view, "[data-verification-chip]")).toEqual(chips(13));
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** Lays every element out `height` px tall until the answer is called, as
  *  `NodeRow.drawn.test.tsx` lays a row out: no DOM of a unit test lays anything out, and a
  *  statement's cut reads the words' own boxes (`CutWords`, through `NodeRow.tsx`'s
@@ -2593,7 +2829,7 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {

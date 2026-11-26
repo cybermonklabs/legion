@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
+import { issueAskThreadsQuery } from "../../../api/queries";
 import type { Comment, CommentWithTrees, IssueDetails } from "../../../api/types";
 import { standsFailed } from "../../refs/reference-target";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
@@ -8,7 +9,7 @@ import { type ChangeComment, decisionNodeChanges, deletedPostIds } from "../deci
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { outlineQuery, type TreeAnswer, treeRead, viewQuery } from "../tree-read/tree-read";
-import { issueAskThreadsQuery, issueCommentsQuery } from "../useIssueTree";
+import { issueCommentsQuery } from "../useIssueTree";
 import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./decisions-parts";
 
 /**

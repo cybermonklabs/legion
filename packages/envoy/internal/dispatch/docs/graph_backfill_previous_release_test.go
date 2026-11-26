@@ -475,9 +475,21 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // tuple it appends keeps its arm. No statement marks another document, writes another comment or
 // moves the revision fence, and with the span and markMade as they stood the statements give the
 // digest above.
+//
+// It moved an eighth time, from 5fe827ac4c3788c61e635b0282b137dfe061098aa58959e401ebe93e8d1fea57,
+// when the head write came to read a moved block's documents by keyed probes (e99affc0b56): the
+// head-rows statement refs.CommentWrite.Queue sends (graphstore.QueueHeads, HeadRowsSQL) reads the
+// room's tree artifact by its primary key for the block's address and then that address's own
+// in_document tuples, each behind an offset 0, where it joined the artifact to the tuples in one
+// step. Both read the same tuples of the same address and answer moved where they name more than
+// one document, so the statement writes the head rows it wrote before, and it still writes
+// issue_head_nodes alone: it marks no document, writes no other comment and moves no revision
+// fence, and no other marking statement changed with it. A list item's own block (0ecbefee586)
+// changed none of these statements: it changes the blocks a pass writes, not the documents a
+// build marks.
 var markingStatementDigests = map[int]string{
 	1: "2d31bf086bf3f1960b792517ad5744f180da731f220cb4c48a838b2bf8a03700",
-	2: "5fe827ac4c3788c61e635b0282b137dfe061098aa58959e401ebe93e8d1fea57",
+	2: "ddb5ee21b02841d516fb6a4fe4e24141d5fa2df018409136583bb379777fdc60",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

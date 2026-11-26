@@ -12,13 +12,11 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// citationProjections are the census's kinds of the citations of a block, a moved one among them
-// (projections). It holds none.
-var citationProjections []projection
+// The ask's structured block pointer is the projection of asked_on.
+var citationProjections = []projection{askBlockProjection}
 
-// citationBackfills are the backfill's passes over the citations of a block (backfillPasses). It
-// holds none.
-var citationBackfills []backfillPass
+// Run after the ask pass to supply the tuple for asks the previous release marked.
+var citationBackfills = []backfillPass{oneKind(backfillAskedOn)}
 
 // UnresolvedCitation is one block citation whose address resolves to no node: the node whose text
 // cites - a document (its uuid), an ask, a comment or a message, as danglingRead names it - and the

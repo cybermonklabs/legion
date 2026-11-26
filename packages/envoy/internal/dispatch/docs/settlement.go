@@ -286,6 +286,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -893,22 +896,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// An issue room versions each of its documents on its own (roomFragments): a version of each
 	// document whose fragment reads differently from that document's latest version, the tree
 	// artifact's own fragment among them, settledVersion being the tree's. Every rendering the
-	// settlement would store as a version reads back first, and one that does not leaves it writing
-	// no version (readsBack, holdUnreadableRoom).
+	// settlement would store as a version reads back first (readsBack), and one that does not
+	// writes no version of its own document, while in an issue room every other document whose
+	// rendering reads back writes its version (holdUnreadableFragments). refused says one did not.
 	var fragments []roomFragment
+	refused := false
 	if len(st.layout) > 0 {
 		if fragments, err = st.roomFragments(ctx, contentChanged); err != nil {
 			return settleDone, st.abandon(err)
 		}
-		st.holdUnreadableRoom(fragments)
+		refused = st.holdUnreadableFragments(fragments)
 		versioning = slices.ContainsFunc(fragments, func(fragment roomFragment) bool { return fragment.changed })
 		if fragments[0].changed {
 			settledVersion = fragments[0].latest.number + 1
 		}
-	} else if versioning && st.readsBack(room, markdown) {
+	} else if versioning && !st.readsBack(room, markdown) {
+		versioning, refused = false, true
+	} else if versioning {
 		settledVersion++
-	} else {
-		versioning = false
 	}
 	// The chain the version events name, read once for every version this settlement writes and
 	// before the write phase runs any of them. A settlement that writes no version names none.
@@ -925,6 +930,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// to lock, its events locking only this document's owner and owner row. The pending authors
 	// stay unless this settlement's version lists them (deleted below): a settlement that writes no
 	// version lists no one.
+	//
+	// A settlement one of whose renderings did not read back (refused) has not settled what it
+	// read: the document that rendering is of writes no version, so the row stays, with its latest
+	// edit source, and the document stays owed. The row is the room's, so in an issue room every
+	// document of the room keeps it, and the next settlement settles the whole room again, which
+	// writes no version of a document whose markdown is unchanged; the resumption arms that
+	// settlement where no edit does (RunSettlementResumption).
 	//
 	// The row's latest edit source goes with it, and the settlement after a reopen still names it:
 	// before a closed issue's document settled, the row stood through the closed period, and that
@@ -946,12 +958,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
 	}
-	if st.issueClosed && kept == nil && st.savedNothing(versioning) {
+	switch {
+	case refused:
+		// The row stays, and the document with it owed.
+	case st.issueClosed && kept == nil && st.savedNothing(versioning):
 		if err := clearSettlementPendingRow(ctx, tx, room); err != nil {
 			return settleDone, st.abandon(err)
 		}
-	} else if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
-		return settleDone, st.abandon(err)
+	default:
+		if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
 	// The version a repair, an invalid block or a retraction names is the one its block's document
 	// stands at once this settlement commits: the document's own, or, in an issue room, the
@@ -969,17 +986,23 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// this settlement read are stated in the name the version itself carries (versionActor), at
 	// one time (stateCopiesAndReadability).
 	at := time.Now().UTC()
+	// written is the version of each document the pass over the versions this settlement writes
+	// covers, which the ties of the asks it opened record (writeOpenedAskTies, below); nil where it
+	// writes none.
+	var written refs.Versions
 	if versioning && len(st.layout) > 0 {
 		var keptEditor *model.Actor
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
-		if writeErr := st.commitRoomVersions(ctx, fragments, keptEditor); writeErr != nil {
+		versions, writeErr := st.commitRoomVersions(ctx, fragments, keptEditor, refused)
+		if writeErr != nil {
 			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(writeErr)
 		}
+		written = versions
 		// The copies and the readability, once the room's blocks are planned, under the last
 		// version event the room's versions appended, right after it.
 		if err := st.stateCopiesAndReadability(ctx, at, graphstore.LatestEvent); err != nil {
@@ -1021,6 +1044,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			}
 			return settleDone, st.abandon(writeErr)
 		}
+		written = refs.OneVersion(room, result.version.Number, result.version.CreatedAt)
 		// The version lists the pending authors this settlement read, so its commit deletes them.
 		if err := deleteCapturedPendingAuthors(ctx, tx, room, st.credit.capture); err != nil {
 			return settleDone, st.abandon(err)
@@ -1058,18 +1082,27 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			return settleDone, st.abandon(err)
 		}
 	}
-	// An ask this settlement opened has its row and node only in this write phase, so a version
-	// written before them stated none of its block's shaped ties; a settlement that writes a
-	// version states them in that version's index, and one that writes none writes them here,
-	// after the rows, before the ask.opened that names the targets they moved is appended.
-	if !versioning {
-		// An issue room's ties record each block's own document's latest version.
-		versions, documents := refs.OneVersion(room, settledVersion, st.latest.CreatedAt), map[string]string(nil)
+	// An ask this settlement opened has its row and node only in this write phase, so the index of
+	// the version this settlement writes, which reads the asks table, states none of its block's
+	// shaped ties, and nor did the index of a version written before. They are written here, after
+	// the rows and after that version's index, whether or not this settlement writes a version,
+	// before the ask.opened that names the targets they moved is appended. An issue room any of
+	// whose fragments was refused leaves them for its next index pass, as it leaves its index.
+	if !(refused && len(st.layout) > 0) {
+		// An issue room's ties record each block's own document's version: the one this
+		// settlement wrote of it (written), else its latest.
+		versions, documents := written, map[string]string(nil)
+		if versions == nil {
+			versions = refs.OneVersion(room, settledVersion, st.latest.CreatedAt)
+		}
 		if len(st.layout) > 0 {
-			versions, documents = refs.Versions{}, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)
-			for _, fragment := range fragments {
-				if fragment.latest.number > 0 {
-					versions[fragment.document] = refs.Version{Number: fragment.latest.number, At: fragment.latest.at}
+			documents = st.layout.blockDocuments(room, st.versioned, st.versionedCounts)
+			if written == nil {
+				versions = refs.Versions{}
+				for _, fragment := range fragments {
+					if fragment.latest.number > 0 {
+						versions[fragment.document] = refs.Version{Number: fragment.latest.number, At: fragment.latest.at}
+					}
 				}
 			}
 		}
@@ -1098,8 +1131,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// byte of the spec. Such a version is no part of this transaction: its write phase marks the
 	// issue's queries owed last, after the events and the tuples it appends (queueSettledQueryMark),
 	// and the drain writes the versions once the settlement has committed (DrainOwedQueries).
+	// This also covers a settlement that opens an ask without versioning its fragment: the ask's
+	// node changes the decisions query even if that settlement writes no Markdown version.
 	marked := false
-	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
+	if len(st.layout) > 0 && st.owner.IssueKey != nil {
 		if err := st.queueSettledQueryMark(ctx, *st.owner.IssueKey, caused, &marked); err != nil {
 			return settleDone, st.abandon(err)
 		}
@@ -1196,12 +1231,13 @@ func (st *settlement) queueSettledQueryMark(ctx context.Context, issueKey string
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
 // readRoomVersions reads it: its number, 0 for a document that holds none, its markdown and its
-// row's created_at, with the document's name, which its version event carries.
+// row's created_at, the room update cursor it covers, and the document's name.
 type roomVersion struct {
 	number   int
 	markdown string
 	at       time.Time
 	name     string
+	cursor   int64
 }
 
 // readRoomVersions reads, in one statement through q, the latest markdown version of each of
@@ -1210,11 +1246,12 @@ type roomVersion struct {
 // the issue-tree plan), and a block of the room records a version of its own document.
 func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
+		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at),
+		       a.name, coalesce(v.doc_update_version, 0)
 		from unnest($1::uuid[]) with ordinality as d (id, position)
 		join artifacts a on a.id = d.id
 		left join lateral (
-			select number, markdown, created_at from artifact_versions
+			select number, markdown, created_at, doc_update_version from artifact_versions
 			where artifact_id = d.id and markdown is not null
 			order by number desc limit 1
 		) v on true
@@ -1224,7 +1261,7 @@ func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roo
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (roomVersion, error) {
 		var version roomVersion
-		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name)
+		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name, &version.cursor)
 		return version, err
 	})
 	if err != nil {
@@ -1267,6 +1304,7 @@ func latestRoomVersions(ctx context.Context, tx pgx.Tx, documents []string) ([]r
 		}
 		if pending, queued := ledger.latest[id]; queued {
 			versions[index].number, versions[index].markdown, versions[index].at = pending.version.Number, pending.markdown, pending.version.CreatedAt
+			versions[index].cursor = pending.docUpdateVersion
 		}
 	}
 	return versions, nil
@@ -1285,13 +1323,12 @@ type roomFragment struct {
 	changed  bool
 }
 
-// roomFragments parts the room's tree this settlement versions (versioned, over the room's
-// layout) into its fragments, each rendered as a version of its own document, and marks changed
-// each whose rendering differs from that document's latest version where the room's content
-// changed since the tree artifact's latest version (contentChanged): a settlement of an issue
-// room writes one version of each document whose fragment it changed, and no version of the room
-// as a whole (T12a of this branch's plan). A retired document is in no room's layout
-// (roomLayoutSQL), so no fragment of it is versioned.
+// roomFragments renders each fragment as a version of its document. Only a fragment that
+// differs from its latest version can take a new version. contentChanged says whether updates
+// changed the room's text since the tree artifact's latest version. When that version is more
+// recent than another fragment's, the other fragment can still owe edits, even with no content
+// updates since the tree's version. Check those fragments against their own version's cursor.
+// Retired documents are not in the layout (roomLayoutSQL).
 func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([]roomFragment, error) {
 	documents := st.layout.documents(st.room)
 	parts := st.layout.parts(st.versioned, st.versionedCounts)
@@ -1308,9 +1345,19 @@ func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([
 		if err != nil {
 			return nil, err
 		}
+		changed := false
+		if latest[index].number == 0 || markdown != latest[index].markdown {
+			changed = contentChanged
+			if !changed && latest[index].cursor < st.latest.docUpdateVersion {
+				changed, err = contentChangedSinceVersion(ctx, st.tx, st.room, latest[index].cursor)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
 		fragments[index] = roomFragment{
 			document: document, tree: parts[index], markdown: markdown, offsets: offsets, latest: latest[index],
-			changed: contentChanged && (latest[index].number == 0 || markdown != latest[index].markdown),
+			changed: changed,
 		}
 	}
 	return fragments, nil
@@ -1374,8 +1421,8 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 
 // commitRoomVersions writes, in the settlement's transaction, one version of each document of the
 // issue room whose fragment changed (fragments), every such fragment's rendering having read back
-// (holdUnreadableRoom), each through writeVersionTx with the version's own approval move, anchors
-// and edit notice, then indexes the room once under its tree artifact
+// (holdUnreadableFragments), each through writeVersionTx with the version's own approval move,
+// anchors and edit notice, then indexes the room once under its tree artifact
 // (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end in the
 // room's order with its blocks' ranges (fragmentsText), at the version of each fragment's document
 // - the one just written, or its latest - so each block records its own document's version and the
@@ -1383,6 +1430,13 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // fence); then carries each version's approval once that pass has stated it, its writes before the
 // versions' artifact.version events (R14), a restore's behind a row of the approval's digest
 // (carryRestored).
+//
+// If a fragment did not read back (refused), the room's index would label live blocks with a
+// version that does not hold them. Leave the index owed instead. The new version rows keep the
+// marks their insert triggers set and take no render time until a pass can index the whole room.
+// The pass does not state any blocks, but the readable versions still take their nodes and
+// events, and their approvals can carry.
+//
 // Each version's node follows the pass's block nodes, and each
 // version's artifact.version event names its own document and causes what the pass stated of
 // that document's blocks, with the version's node, stamping the links its blocks inserted at that
@@ -1400,7 +1454,7 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // credited with a document whose fragment no update of theirs changed. Its commit deletes the
 // pending authors it lists; those of a document it writes no version of stay for that document's
 // next version.
-func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, keptEditor *model.Actor) error {
+func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, keptEditor *model.Actor, refused bool) (refs.Versions, error) {
 	s, room, tx := st.service, st.room, st.tx
 	// versions is the version of each document the room's pass covers, and inserted those of them
 	// this settlement writes, whose nodes it writes after the pass.
@@ -1421,10 +1475,9 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		}
 		actor := st.credit.documentActor(fragment.document)
 		// Written with no deferral mark (versionWrite.deferLarge unset), and indexed by the room's
-		// one pass below (indexRoom), whatever the room's size: that pass is one of the passes that
-		// close a room left owed its block index (indexOwedRoom's case), and claimCopies
-		// (stateCopiesAndReadability) then reads the nodes of the room's ask blocks from the block
-		// index as the pass leaves it, passing over a block with no node.
+		// one pass below (indexRoom), whatever the room's size, unless a fragment is held back.
+		// claimCopies (stateCopiesAndReadability) reads the ask blocks from the index as the pass
+		// leaves it, passing over a block with no node.
 		result, err := s.writeVersionTx(ctx, tx, fragment.document,
 			renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, actor, &versionWrite{
 				authors:          st.credit.documents[fragment.document],
@@ -1435,23 +1488,30 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 				roomIndexed:      true,
 			})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		versions[fragment.document] = refs.Version{Number: result.version.Number, At: result.version.CreatedAt}
 		inserted[fragment.document] = versions[fragment.document]
 		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
 		listed[fragment.document] = st.credit.listed[fragment.document]
 	}
-	markdowns := make([]string, len(fragments))
-	offsets := make([][]pmdoc.BlockOffset, len(fragments))
-	for index, fragment := range fragments {
-		markdowns[index], offsets[index] = fragment.markdown, fragment.offsets
+	var index roomIndex
+	var err error
+	if !refused {
+		markdowns := make([]string, len(fragments))
+		offsets := make([][]pmdoc.BlockOffset, len(fragments))
+		for at, fragment := range fragments {
+			markdowns[at], offsets[at] = fragment.markdown, fragment.offsets
+		}
+		markdown, laid := fragmentsText(markdowns, offsets)
+		index, err = s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(laid, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+			st.versioned, &st.reconciliation.sources)
+		if err != nil {
+			return nil, err
+		}
 	}
-	markdown, laid := fragmentsText(markdowns, offsets)
-	index, err := s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(laid, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
-		st.versioned, &st.reconciliation.sources)
-	if err != nil {
-		return err
+	if index.facts == nil {
+		index.facts = make(map[string]graphstore.Uncaused, len(writes))
 	}
 	// Each version's approval carry runs once the room's pass has stated it, its writes before the
 	// artifact.version events below (R14): the review it inserts pins the digest of the version's
@@ -1459,31 +1519,34 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 	// repins it to the record (fillOwedDigests); a carry to a version that restores the approved
 	// text writes behind a row of the approval's digest the write phase holds to the version's
 	// record (carryRestored). Each version's move ran in its write, before the pass, so an open
-	// request names the version by now. A closed issue's version carries nothing.
+	// request names the version by now. A closed issue's version carries nothing. The record case
+	// weighs each version by the facts of the room's whole pass (roomPassRecord): a block written
+	// into one document's fragment can move another document's query.
 	if !st.issueClosed {
+		record := roomPassRecord(index)
 		for _, write := range writes {
 			document, version, fragment := write.fragment.document, write.result.version, write.fragment
 			if err := s.carryApproval(ctx, tx, document, version,
-				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx)); err != nil {
-				return err
+				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, record, eventSink(ctx)); err != nil {
+				return nil, err
 			}
 		}
 	}
 	for _, write := range writes {
 		node, err := WriteVersionNode(ctx, tx, write.result.owner, write.result.version.Number, write.actor, write.result.version.CreatedAt)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		index.facts[write.fragment.document] = graphstore.Joined(index.facts[write.fragment.document], node)
 	}
 	// Each version lists the pending authors this settlement read of its document, so its commit
 	// deletes them.
 	if err := deleteRoomPendingAuthors(ctx, tx, listed); err != nil {
-		return err
+		return nil, err
 	}
 	if s.afterSettleVersionWrite != nil {
 		if err := s.afterSettleVersionWrite(room); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// Each version opens or moves its own document's edit notice, as a document's settlement does
@@ -1492,10 +1555,10 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		document := write.fragment.document
 		if st.issueClosed {
 			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, document); err != nil {
-				return err
+				return nil, err
 			}
 		} else if err := s.recordEditNotice(ctx, tx, document, write.result.version.Number, st.credit.documents[document], st.credit.documentLatest(document)); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// The events each document's facts and stamps take: a written document's own artifact.version,
@@ -1508,14 +1571,16 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		events[write.fragment.document] = graphstore.LatestEvent
 		order = append(order, write.fragment.document)
 	}
-	for _, document := range slices.Sorted(maps.Keys(versions)) {
-		if _, own := events[document]; own {
-			continue
+	if !refused {
+		for _, document := range slices.Sorted(maps.Keys(versions)) {
+			if _, own := events[document]; own {
+				continue
+			}
+			if events[document], err = versionEventID(ctx, tx, st.owner, document, versions[document].Number); err != nil {
+				return nil, err
+			}
+			order = append(order, document)
 		}
-		if events[document], err = versionEventID(ctx, tx, st.owner, document, versions[document].Number); err != nil {
-			return err
-		}
-		order = append(order, document)
 	}
 	facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, order))
 	// The pass's facts are appended after the version events of its own writes, so a pass that
@@ -1554,16 +1619,18 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			}
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
-		if err := write(ctx, tx, func(b *store.WriteBatch) error {
-			stampVersionEvent(b, room, document, versions[document].Number, versions[document].At, graphstore.LatestEvent)
-			return nil
-		}); err != nil {
-			return err
+		if !refused {
+			if err := write(ctx, tx, func(b *store.WriteBatch) error {
+				stampVersionEvent(b, room, document, versions[document].Number, versions[document].At, graphstore.LatestEvent)
+				return nil
+			}); err != nil {
+				return nil, err
+			}
 		}
 		if err := causeRoomFacts(ctx, tx, room, facts, events, []string{document}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, document := range order[len(writes):] {
@@ -1571,7 +1638,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			stampVersionEvent(b, room, document, versions[document].Number, versions[document].At, events[document])
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var rest []string
@@ -1580,7 +1647,10 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			rest = append(rest, document)
 		}
 	}
-	return causeRoomFacts(ctx, tx, room, facts, events, rest)
+	if err := causeRoomFacts(ctx, tx, room, facts, events, rest); err != nil {
+		return nil, err
+	}
+	return versions, nil
 }
 
 // settledEditNotice is what a settlement's version does to the document's edit notice, under the

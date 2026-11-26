@@ -1231,11 +1231,14 @@ func (s *server) storeArtifact(
 		// does (docs.carryApproval): when its text is the approved text again, or when every
 		// difference from it is a carry case - the readings of its decisions and answered asks, and
 		// the server-owned ask attributes an upload drops - and its ask blocks agree with
-		// their nodes. It runs where the route's other document work runs, so the open approval
-		// request and the ask rows it reads are as this transaction's own queued writes leave
-		// them, its own writes join the queue, and its events reach the ledger beside the move's.
+		// their nodes, or when its record is the approved one by the facts its bytes stated: its
+		// block index's and its version's node (docs.StatedWhole, the record case). It runs where
+		// the route's other document work runs, so the open approval request and the ask rows it
+		// reads are as this transaction's own queued writes leave them, its own writes join the
+		// queue, and its events reach the ledger beside the move's.
 		if err := docs.CarryUploadedApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack,
+			docs.StatedWhole(indexedBlocks, documentNode), s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return

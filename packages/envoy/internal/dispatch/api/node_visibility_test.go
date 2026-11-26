@@ -908,8 +908,9 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		})
 		markdown.WriteString(passage)
 	}
-	// The windows of those blocks, written by the one writer of a document's windows, and
-	// embedded near the query: the private block's window is the meaning body's candidate.
+	// The windows of those blocks, written by the one writer of a document's windows under the
+	// owner key it reads, the room's tree artifact (documentWindowOwner), and embedded near the
+	// query: the private block's window is the meaning body's candidate.
 	windows, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the document's windows: %v", err)
@@ -921,7 +922,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	if err := windows.Commit(ctx); err != nil {
 		t.Fatalf("commit the document's windows: %v", err)
 	}
-	embedWindowsAs(t, database, embedder, "document_block", fixture.specID, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "document_block", documentWindowOwner(t, database, fixture.specID), angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
 	if !private {
 		return fixture
@@ -1045,10 +1046,13 @@ func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) 
 		t.Fatalf("commit the reservation of the paragraph's node: %v", err)
 	}
 	windowOwedOwners(t, deps)
-	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+	// The room's tree artifact keys the spec's windows (documentWindowOwner), and the spec is the
+	// one document of the room holding a block, so every window under the tree is its.
+	owner := documentWindowOwner(t, database, issue.PrimaryArtifactID)
+	if windows := windowTexts(t, database, "document_block", owner); len(windows) != 1 {
 		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
 	}
-	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "document_block", owner, angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
 
 	hitOf := func(login string) string {

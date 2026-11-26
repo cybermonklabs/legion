@@ -311,6 +311,16 @@ function readPageRows({ alsoUnder, faces, focused }: PageRead): PageRow[] {
     for (const part of copy.querySelectorAll(left)) part.remove();
     return text(copy);
   };
+  // An answer's words, each paragraph the page draws apart from the next by a blank line, since
+  // the text of two paragraphs drawn as blocks runs together; where no paragraph is drawn, the
+  // text as it stands.
+  const paragraphsOf = (element: Element | null): string | null => {
+    if (element === null) return null;
+    const paragraphs = [...element.querySelectorAll("p")];
+    return paragraphs.length === 0
+      ? element.textContent
+      : paragraphs.map((paragraph) => paragraph.textContent ?? "").join("\n\n");
+  };
   // The body of a row the focus left stays drawn until another row takes it, so what a row
   // draws on its line is read outside its body.
   const outsideBody = (row: Element, selector: string): Element[] =>
@@ -353,7 +363,7 @@ function readPageRows({ alsoUnder, faces, focused }: PageRead): PageRow[] {
               choices: [...answer.querySelectorAll("[data-answer-choice]")].map(
                 (choice) => text(choice) ?? ""
               ),
-              text: answer.querySelector("[data-answer-text]")?.textContent ?? null,
+              text: paragraphsOf(answer.querySelector("[data-answer-text]")),
             },
       author: text(
         body?.querySelector(":scope > [data-node-author], :scope > [data-node-author-title]")

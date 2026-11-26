@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -374,7 +375,14 @@ func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
 // the census refuses on it, until a quiet tick restates it or closes its mark
 // (renderStepTreeMismatch), and the reconciliation's pass that states an uploaded version first
 // carries the upload's carry to it, naming the version the person approved
-// (renderStepCarryOfACarry).
+// (renderStepCarryOfACarry). A render leaves out the blocks its reader may not see, at their own
+// offsets (renderStepHidden), and a stored version the blocks it held that its reader may not see,
+// placed by what it held of them (renderStepHiddenHistory). A version of 2,001 list items,
+// deferred to the reconciliation, renders its stored bytes and is deferred until its pass gives it
+// its time and its digest and carries the approval taken before it (renderStepDeferred); and the
+// reconciliation, run while a browser's
+// paragraph is committed and not classified, states and marks nothing of the document's or of the
+// issue room's version it reads as live ahead (renderStepRaceOfADocument, renderStepRaceOfARoom).
 func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -464,6 +472,8 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		{"a re-parent after the version moves no byte of a render", renderStepParent},
 		{"a re-order after the version leaves the version's text ranks as they stood", renderStepRanks},
 		{"an in_document retracted after the version leaves the node in it", renderStepRetraction},
+		{"a render leaves out the blocks its reader may not see, at their own offsets", renderStepHidden},
+		{"a stored version leaves out the blocks its reader may not see, placed by what that version held of them", renderStepHiddenHistory},
 		{"two renders of the version at two times read one byte string, and the head is the renderer at now", renderStepTwoTimes},
 		{"the digest of a version with a row is its record's, and of one without its stored markdown's", renderStepDigests},
 		{"the census reads the converted issues' texts both ways and the unconverted issue's rows as a class", func(t *testing.T, rig *renderRig) {
@@ -484,6 +494,15 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		}},
 		{"the pass that states an uploaded version first carries the carry to it, naming the version the person approved", func(t *testing.T, rig *renderRig) {
 			renderStepCarryOfACarry(t, rig, service)
+		}},
+		{"a deferred version renders its stored bytes until the reconciliation states it, which gives it its time and its digest and carries the approval taken before", func(t *testing.T, rig *renderRig) {
+			renderStepDeferred(t, rig, service)
+		}},
+		{"the reconciliation reads an update its document's room has not stored as live ahead and marks no row", func(t *testing.T, rig *renderRig) {
+			renderStepRaceOfADocument(t, rig, service, server.URL)
+		}},
+		{"the reconciliation reads an update an issue room has not stored as live ahead and marks no row", func(t *testing.T, rig *renderRig) {
+			renderStepRaceOfARoom(t, rig, service, server.URL)
 		}},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
@@ -600,6 +619,393 @@ func renderStepRetraction(t *testing.T, rig *renderRig) {
 	rig.requireVersionFromTree(t, "after the closing paragraph's in_document was retracted", renderFirst)
 	rig.requireHead(t, "after the closing paragraph's in_document was retracted",
 		joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1Edited, renderBox))
+}
+
+// hide reserves the blocks ids of DOC-2's room for bob: it writes the node of each as bob's
+// author-only node. No writer of this build can: the store refuses a node reserved for its author
+// of a kind the read registry does not admit (graphstore.CheckVisibilityAdmitted), and a block of
+// a document is such a kind until a release admits it, so the case plants the rows as that
+// release's own writer will leave them.
+func (r *renderRig) hide(t *testing.T, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := r.database.Pool.Exec(context.Background(), `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			values ('block', $1, 'block', 'author', 'live', '{}'::jsonb, now(), '{"kind":"user","id":"bob"}', 0)
+			on conflict (kind, id) do update set visibility = 'author', made_by = excluded.made_by`, r.address(id)); err != nil {
+			t.Fatalf("reserve block %s of DOC-2's room for bob: %v", id, err)
+		}
+	}
+}
+
+// show deletes the nodes hide wrote, so no later step reads them.
+func (r *renderRig) show(t *testing.T, ids ...string) {
+	t.Helper()
+	addresses := make([]string, len(ids))
+	for index, id := range ids {
+		addresses[index] = r.address(id)
+	}
+	if _, err := r.database.Pool.Exec(context.Background(), `delete from graph_nodes where kind = 'block' and id = any($1)`, addresses); err != nil {
+		t.Fatalf("delete the nodes of %v: %v", ids, err)
+	}
+}
+
+// A render leaves out what its reader may not see (INFRA-1950's R1), and says nothing of it.
+// Version 3, written from the tree, is read as each reader with a block of its text reserved for
+// bob (hide): a top-level block, a block inside another's text, the block that holds that one, and
+// two together. Alice, carol and a credential that proves no author read the version as if the
+// block did not exist: a top-level block prints nowhere, with its text children inside its bytes,
+// and a nested one is cut out of the text that holds it at its own offsets, and no other byte
+// moves. Bob, whose block it is, and the server's own read, which the census of the versions
+// makes, read every byte, so the census reads no difference at the version. The head is cut the
+// same way.
+func renderStepHidden(t *testing.T, rig *renderRig) {
+	ctx := context.Background()
+	pool := rig.database.Pool
+	carol := model.Actor{Kind: "user", ID: "carol"}
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	withoutInner := strings.Replace(renderBox, renderInner, "", 1)
+	for _, hidden := range []struct {
+		what string
+		ids  []string
+		want string
+	}{
+		{"a top-level criterion", []string{"k2"}, joinRenderings(renderMemo, renderK1, renderR2, renderR1, renderBox, renderP1)},
+		{"the callout inside the box", []string{"inner"}, joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1, withoutInner, renderP1)},
+		{"the box, and so the callout inside it", []string{"box"}, joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1, renderP1)},
+		{"a criterion and the callout inside the box", []string{"k2", "inner"}, joinRenderings(renderMemo, renderK1, renderR2, renderR1, withoutInner, renderP1)},
+	} {
+		rig.hide(t, hidden.ids...)
+		for _, reader := range []struct {
+			name string
+			who  model.Actor
+			want string
+		}{
+			{"alice", renderWho, hidden.want}, {"carol", carol, hidden.want},
+			{"a credential that proves no author", model.Actor{}, hidden.want},
+			{"bob, whose blocks they are", bob, renderFirst}, {"the server", model.ServerReader, renderFirst},
+		} {
+			got, err := RenderVersion(ctx, pool, reader.who, rig.room.spec, 3)
+			if err != nil {
+				t.Fatalf("render version 3 of %s for %s with %s reserved for bob: %v", rig.spec, reader.name, hidden.what, err)
+			}
+			if got.Source != RenderedFromTree || got.Markdown != reader.want {
+				t.Errorf("version 3 of %s renders %q from %s for %s with %s reserved for bob, want %q from the tree: first differing byte %d",
+					rig.spec, got.Markdown, got.Source, reader.name, hidden.what, reader.want, firstDifference(got.Markdown, reader.want))
+			}
+		}
+		rig.show(t, hidden.ids...)
+	}
+
+	// The head, as alice, with the criterion reserved; and the census, which reads as the server,
+	// reads no difference at the version.
+	rig.hide(t, "k2")
+	head, err := RenderAt(ctx, pool, renderWho, rig.room.spec, rig.now(t))
+	if err != nil {
+		t.Fatalf("render the head of %s for alice with k2 reserved for bob: %v", rig.spec, err)
+	}
+	if want := joinRenderings(renderMemo, renderK1, renderR2, renderR1Edited, renderBox); head.Markdown != want {
+		t.Errorf("the head of %s renders %q for alice with k2 reserved for bob, want %q", rig.spec, head.Markdown, want)
+	}
+	if cause := differenceAt(rig.readRenderCensus(t), "version "+rig.spec+"@v3"); cause != "" {
+		t.Errorf("the census reads a difference at version %s@v3 with k2 reserved for bob: %s, want the server's read to see every block", rig.spec, cause)
+	}
+	rig.show(t, "k2")
+}
+
+// renderStepHiddenHistory: a version that answers its stored bytes leaves out each block it held
+// that its reader may not see, placed by what that version held of the block - the newest row of
+// the record of block texts (document_block_texts) at or before the version - whatever the
+// document's index holds now. In one transaction, rolled back at its end so no later step reads
+// its rows, it writes by SQL, as the release before this one stores them, the spec of DOC-8, an
+// issue that has not converted, with five versions: version 1 holds the paragraphs u1 and u2;
+// version 2 changes u2's words; version 3 removes u2; version 4, which no pass indexed, holds u1
+// alone; version 5 holds u1 and two paragraphs of one text, u4 and u5. The index's rows are those
+// of version 5, so they hold no row of u2, and the row of u4 holds other words than u2 ever held.
+// The nodes of u2 and u4 are reserved for bob, as hide reserves one (no writer of this build can
+// write such a node). Alice and a credential that proves no author read version 1 and version 2
+// with u2's bytes of that version left out and every other byte kept - the paragraph a later
+// version changed and then removed, which the index no longer holds - and version 3, which holds
+// no hidden block, whole. Version 4 is refused (ErrHiddenNotPlaced): no pass indexed it, so the
+// record says nothing of the blocks it held, while it records hidden blocks of the document; and
+// so is version 5, which holds two paragraphs of u4's words, which the record cannot tell apart.
+// Bob and the server read every version whole.
+func renderStepHiddenHistory(t *testing.T, rig *renderRig) {
+	ctx := context.Background()
+	tx, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction of DOC-8: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	const first, second, changed, fourth = "First words.", "Second words.", "Second words, changed.", "Fourth words."
+	stored := []string{
+		joinRenderings(first, second), joinRenderings(first, changed), joinRenderings(first),
+		joinRenderings(first), joinRenderings(first, fourth, fourth),
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('DOC-8', 'DOC', 8, 'A history with a hidden block', '{"kind":"user","id":"alice"}', 'X')`); err != nil {
+		t.Fatalf("write DOC-8: %v", err)
+	}
+	var spec, ref string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('DOC-8', 'DOC', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key`).Scan(&spec, &ref); err != nil {
+		t.Fatalf("write the spec of DOC-8: %v", err)
+	}
+	for index, markdown := range stored {
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]')`, spec, index+1, markdown); err != nil {
+			t.Fatalf("write version %d of %s: %v", index+1, ref, err)
+		}
+	}
+	for _, text := range []struct {
+		block   string
+		version int
+		text    *string
+	}{
+		{"u1", 1, new(first)}, {"u2", 1, new(second)}, {"u2", 2, new(changed)}, {"u2", 3, nil},
+		{"u4", 5, new(fourth)}, {"u5", 5, new(fourth)},
+	} {
+		if _, err := tx.Exec(ctx, `insert into document_block_texts (artifact_id, block_id, version, text) values ($1, $2, $3, $4)`,
+			spec, text.block, text.version, text.text); err != nil {
+			t.Fatalf("record block %s of %s at version %d: %v", text.block, ref, text.version, err)
+		}
+	}
+	for _, version := range []int{1, 2, 3, 5} {
+		if _, err := tx.Exec(ctx, `insert into document_indexed_versions (artifact_id, version) values ($1, $2)`, spec, version); err != nil {
+			t.Fatalf("record version %d of %s indexed: %v", version, ref, err)
+		}
+	}
+	for _, node := range []struct {
+		block, visibility, state, author string
+		row                              bool
+	}{
+		{"u1", "project", "live", "alice", true}, {"u2", "author", "gone", "bob", false},
+		{"u4", "author", "live", "bob", true}, {"u5", "project", "live", "alice", true},
+	} {
+		address := ref + "#" + node.block
+		if _, err := tx.Exec(ctx, `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ('block', $1, 'block', $2, $3, now(), jsonb_build_object('kind', 'user', 'id', $4::text), 0)`,
+			address, node.visibility, node.state, node.author); err != nil {
+			t.Fatalf("write the node of %s: %v", address, err)
+		}
+		if !node.row {
+			continue
+		}
+		text := first
+		if node.block != "u1" {
+			text = fourth
+		}
+		version := 5
+		if node.block == "u1" {
+			version = 1
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
+			values ($1, $2, $3, 'paragraph', $4, $5, $6, now(), 'block', $3)`, spec, node.block, address, renderSum(text), text, version); err != nil {
+			t.Fatalf("write the index's row of %s: %v", address, err)
+		}
+	}
+
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	cut := []string{strings.Replace(stored[0], second, "", 1), strings.Replace(stored[1], changed, "", 1), stored[2]}
+	for number := 1; number <= len(stored); number++ {
+		for _, reader := range []struct {
+			name string
+			who  model.Actor
+			sees bool
+		}{
+			{"alice", renderWho, false}, {"a credential that proves no author", model.Actor{}, false},
+			{"bob, whose blocks they are", bob, true}, {"the server", model.ServerReader, true},
+		} {
+			got, err := RenderVersion(ctx, tx, reader.who, spec, number)
+			switch {
+			case !reader.sees && number > len(cut):
+				if !errors.Is(err, ErrHiddenNotPlaced) {
+					t.Errorf("version %d of %s renders %q (%v) for %s, want the refusal of a version whose hidden block it cannot place", number, ref, got.Markdown, err, reader.name)
+				}
+				continue
+			case err != nil:
+				t.Fatalf("render version %d of %s for %s: %v", number, ref, reader.name, err)
+			}
+			want := stored[number-1]
+			if !reader.sees {
+				want = cut[number-1]
+			}
+			if got.Source != StoredBytes || got.Markdown != want {
+				t.Errorf("version %d of %s renders %q from %s for %s, want %q from %s: first differing byte %d",
+					number, ref, got.Markdown, got.Source, reader.name, want, StoredBytes, firstDifference(got.Markdown, want))
+			}
+		}
+	}
+}
+
+// memberOf is a member of a document held in memory: its id, the id of its text parent ("" for
+// the document), its text rank ("" for none) and its text.
+type memberOf struct{ id, parent, rank, text string }
+
+// holdMembers is the members of the document DOC-X/spec of specs, each addressed under DOC-X's
+// tree, and what each states as RenderAt reads it (refs.TreeFactsOf): its text, its text_rank where
+// it holds one, and its text_parent.
+func holdMembers(specs ...memberOf) ([]refs.Target, map[refs.Target]refs.TreeFacts) {
+	const tree = "DOC-X/tree#"
+	members := make([]refs.Target, 0, len(specs))
+	facts := make(map[refs.Target]refs.TreeFacts, len(specs))
+	for _, spec := range specs {
+		member := refs.Target{Kind: refs.BlockNodeKind, ID: tree + spec.id}
+		parent := refs.Target{Kind: graphstore.KindArtifact, ID: "DOC-X/spec"}
+		if spec.parent != "" {
+			parent = refs.Target{Kind: refs.BlockNodeKind, ID: tree + spec.parent}
+		}
+		values := map[string]string{graphstore.AttributeText: spec.text}
+		if spec.rank != "" {
+			values[refs.AttributeTextRank] = spec.rank
+		}
+		members = append(members, member)
+		facts[member] = refs.TreeFacts{Values: values, Relations: []refs.TreeRelation{{Kind: refs.TupleTextParent, To: parent}}}
+	}
+	return members, facts
+}
+
+// hiddenOf is the members ids of DOC-X/spec name, as hiddenNodes answers them.
+func hiddenOf(ids ...string) map[refs.Target]struct{} {
+	hidden := make(map[refs.Target]struct{}, len(ids))
+	for _, id := range ids {
+		hidden[refs.Target{Kind: refs.BlockNodeKind, ID: "DOC-X/tree#" + id}] = struct{}{}
+	}
+	return hidden
+}
+
+// TestLeaveOutHiddenCutsOnlyTheHiddenBytesOfEveryTextAroundIt: a render that leaves out a hidden
+// member (memberTree.leaveOut) cuts it out of every text that holds it, three levels up, at its
+// own offsets in the document's rendering, and no other byte. It takes the one of two equal texts
+// that is the hidden member's, by the order of their text ranks; it drops a hidden top-level block
+// with the text children inside it; it cuts a hidden paragraph whose words the callout holding it
+// also writes in its opening line, and one whose words stand in an earlier block of that callout
+// that is no member, and leaves those words where they stand. It refuses (ErrHiddenNotPlaced) a
+// hidden member that lies in no place of its parent's text, one whose words another block of its
+// parent that is no member also holds, and one under a member that holds no text_rank, rather than
+// print bytes it cannot prove it left out.
+func TestLeaveOutHiddenCutsOnlyTheHiddenBytesOfEveryTextAroundIt(t *testing.T) {
+	const same, deep, top = "Same words.", "Deep words.", "Top words."
+	l2 := ":::callout{#l2 kind=\"note\" title=\"\"}\nL2 opens.\n\n" + deep + "\n\nL2 closes.\n:::"
+	l1 := "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n" + same + "\n\nMiddle.\n\n" + same + "\n\n" + l2 + "\n\nL1 closes.\n::::"
+	gone := ":::callout{#gone kind=\"note\" title=\"\"}\nA hidden block.\n\nIts child.\n:::"
+	c1 := ":::callout{#c1 kind=\"note\" title=\"Risks\"}\nRisks\n:::"
+	c2 := ":::callout{#c2 kind=\"note\" title=\"\"}\nWe list the Risks here.\n\nRisks\n:::"
+	specs := []memberOf{
+		{"l1", "", "a", l1}, {"l1-open", "l1", "a", "L1 opens."}, {"s1", "l1", "c", same}, {"mid", "l1", "d", "Middle."},
+		{"s2", "l1", "e", same}, {"l2", "l1", "g", l2}, {"l2-open", "l2", "a", "L2 opens."}, {"l3", "l2", "c", deep},
+		{"l2-close", "l2", "e", "L2 closes."}, {"l1-close", "l1", "i", "L1 closes."},
+		{"top", "", "b", top},
+		{"gone", "", "c", gone}, {"gone-open", "gone", "a", "A hidden block."}, {"gonekid", "gone", "c", "Its child."},
+		{"c1", "", "d", c1}, {"risks1", "c1", "a", "Risks"},
+		// The paragraph "We list the Risks here." is no member of c2: a block that holds no
+		// text_rank, as a pass leaves a block whose address no key of the store fits.
+		{"c2", "", "e", c2}, {"risks2", "c2", "c", "Risks"},
+	}
+	base := []string{l1, top, gone, c1, c2}
+	with := func(index int, text string) []string {
+		texts := slices.Clone(base)
+		texts[index] = text
+		return texts
+	}
+	for _, test := range []struct {
+		what   string
+		hidden []string
+		want   []string
+	}{
+		{"the block three levels down", []string{"l3"}, with(0, strings.Replace(l1, deep, "", 1))},
+		{"the second of two equal texts", []string{"s2"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n"+same+"\n\nMiddle.\n\n\n\n"+l2+"\n\nL1 closes.\n::::")},
+		{"the first of two equal texts", []string{"s1"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n\n\nMiddle.\n\n"+same+"\n\n"+l2+"\n\nL1 closes.\n::::")},
+		{"the first of two equal texts and the block three levels down", []string{"s1", "l3"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n\n\nMiddle.\n\n"+same+"\n\n"+strings.Replace(l2, deep, "", 1)+"\n\nL1 closes.\n::::")},
+		{"a callout inside another", []string{"l2"}, with(0, strings.Replace(l1, l2, "", 1))},
+		{"a top-level block with its text children", []string{"gone"}, []string{l1, top, c1, c2}},
+		{"the text child of a top-level block", []string{"gonekid"}, with(2, strings.Replace(gone, "Its child.", "", 1))},
+		{"a paragraph whose words its callout's opening line writes", []string{"risks1"},
+			with(3, ":::callout{#c1 kind=\"note\" title=\"Risks\"}\n\n:::")},
+		{"a paragraph whose words an earlier block that is no member holds", []string{"risks2"},
+			with(4, ":::callout{#c2 kind=\"note\" title=\"\"}\nWe list the Risks here.\n\n\n:::")},
+	} {
+		members, facts := holdMembers(specs...)
+		got, err := readMemberTree("DOC-X/spec", members, facts, true).leaveOut(hiddenOf(test.hidden...))
+		if err != nil {
+			t.Errorf("hiding %s: %v", test.what, err)
+			continue
+		}
+		var texts []string
+		for _, child := range got {
+			texts = append(texts, child.text)
+		}
+		if !slices.Equal(texts, test.want) {
+			t.Errorf("hiding %s leaves the top-level texts %q, want %q", test.what, texts, test.want)
+		}
+	}
+
+	for _, refused := range []struct {
+		what   string
+		specs  []memberOf
+		hidden string
+	}{
+		{"a block that lies in no place of its parent's text", append(slices.Clone(specs), memberOf{"lost", "l1", "k", "Not in the text."}), "lost"},
+		{"a paragraph whose words a block before it that is no member also holds", []memberOf{
+			{"dup", "", "a", ":::callout{#dup kind=\"note\" title=\"\"}\nRisks\n\nRisks\n:::"}, {"risks", "dup", "c", "Risks"},
+		}, "risks"},
+		{"a paragraph under a member that holds no text_rank", []memberOf{
+			{"outer", "", "a", "::::callout{#outer kind=\"note\" title=\"\"}\nOuter.\n\n:::callout{#wrap kind=\"note\" title=\"\"}\nWrapped.\n:::\n::::"},
+			{"wrap", "outer", "", ":::callout{#wrap kind=\"note\" title=\"\"}\nWrapped.\n:::"}, {"wrapped", "wrap", "a", "Wrapped."},
+		}, "wrapped"},
+	} {
+		members, facts := holdMembers(refused.specs...)
+		got, err := readMemberTree("DOC-X/spec", members, facts, true).leaveOut(hiddenOf(refused.hidden))
+		if !errors.Is(err, ErrHiddenNotPlaced) {
+			t.Errorf("hiding %s answers %+v (%v), want the refusal of a block whose bytes it cannot leave out", refused.what, got, err)
+		}
+	}
+}
+
+// TestADecisionsEntryLeavesOutTheReadingItsReaderMayNotSee: an entry of a decisions rendering is a
+// decision's whole text, its readings included, and a reading the reader may not see is cut out of
+// it at the reading's own offsets in its document's rendering (memberTree.withoutHiddenIn, which
+// renderDecisions calls through entriesWithoutHidden), every other byte kept; a paragraph the
+// reader may not see inside a reading is cut out of the reading's entry and out of the decision's
+// alike.
+func TestADecisionsEntryLeavesOutTheReadingItsReaderMayNotSee(t *testing.T) {
+	const words, reads = "We ship.", "The agent reads it as shipping."
+	reading := ":::reading{#g1}\n" + reads + "\n:::"
+	decision := "::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n" + reading + "\n::::"
+	members, facts := holdMembers(
+		memberOf{"d1", "", "a", decision}, memberOf{"d1-words", "d1", "a", words},
+		memberOf{"g1", "d1", "c", reading}, memberOf{"g1-words", "g1", "a", reads},
+		memberOf{"after", "", "b", "After the decision."},
+	)
+	tree := readMemberTree("DOC-X/spec", members, facts, true)
+	back, err := readBackRendering(joinTexts(tree.top))
+	if err != nil {
+		t.Fatalf("read back the document of the decision: %v", err)
+	}
+	for _, test := range []struct {
+		what, entry, words string
+		hidden             string
+		want               string
+	}{
+		{"the decision's reading", "d1", decision, "g1", "::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n\n::::"},
+		{"the reading's words, out of the decision", "d1", decision, "g1-words",
+			"::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n:::reading{#g1}\n\n:::\n::::"},
+		{"the reading's words, out of the reading", "g1", reading, "g1-words", ":::reading{#g1}\n\n:::"},
+	} {
+		got, err := tree.withoutHiddenIn(back, "DOC-X/tree#"+test.entry, test.words, hiddenOf(test.hidden))
+		if err != nil || got != test.want {
+			t.Errorf("hiding %s, the entry of %s reads %q (%v), want %q", test.what, test.entry, got, err, test.want)
+		}
+	}
 }
 
 func renderStepTwoTimes(t *testing.T, rig *renderRig) {
@@ -1120,16 +1526,20 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 
 // TestTheDecisionsQueryTakesItsNodes: over a walk holding an answered ask's node with a reading
 // under it, the block that shows that ask in the spec, an ask nobody has answered with a reading
-// under its block, a decision with a reading under it, and a requirement, the decisions query takes
-// each ask's own node, the decision, the reading under the decision and the reading under the
-// answered ask's node, and nothing else: neither block of an ask nor the reading in the ask nobody
-// has answered, which is no reading yet. Its record is built by that rule, as every query's is
+// under its block, a decision with a reading under it, a requirement, and a request for a
+// document's approval with a reading under its node, the decisions query takes each question's own
+// node, the decision, the reading under the decision and the reading under the answered question's
+// node, and nothing else: neither block of an ask, nor the reading in the ask nobody has answered,
+// which is no reading yet, nor the approval request, an ask of the issue's conversation whose row
+// holds another kind (the walk's read of the conversation answers each ask's, refs.ExcerptedNode's
+// AskKind), nor the reading under it. Its record is built by that rule, as every query's is
 // (queryDefinitions; R14 gives the decisions query definition_version 1, and each of its versions
 // holds its record's digest, R15).
 func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
 	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
 	open := refs.Target{Kind: graphstore.KindAsk, ID: "6e2a7b4f-1d5c-4a8f-8c2b-3d4e5f6a7b8c"}
+	approval := refs.Target{Kind: graphstore.KindAsk, ID: "7f3b8c5a-2e6d-4b9a-9d3c-4e5f6a7b8c9d"}
 	openBlock := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#a2"}
 	decision := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#d1"}
 	nodes := []TreeNode{
@@ -1143,8 +1553,15 @@ func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 		{Kind: open.Kind, ID: open.ID, Parent: issue, Type: graphstore.SupertagAsk},
 		{Kind: openBlock.Kind, ID: openBlock.ID, Parent: issue, Type: graphstore.SupertagAsk},
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g3", Parent: openBlock, Type: refs.ReadingSupertag},
+		{Kind: approval.Kind, ID: approval.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g4", Parent: approval, Type: refs.ReadingSupertag},
 	}
-	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, index: map[refs.Target]int{}}
+	conversation := map[refs.Target]refs.ExcerptedNode{
+		ask:      {AskKind: questionAsk},
+		open:     {AskKind: questionAsk},
+		approval: {AskKind: "approval"},
+	}
+	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, Conversation: conversation, index: map[refs.Target]int{}}
 	for index, node := range nodes {
 		tree.index[node.target()] = index
 	}
@@ -1155,7 +1572,7 @@ func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 	}
 	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address(), nodes[5].Address(), nodes[7].Address()}
 	if !defined || !slices.Equal(addresses, want) {
-		t.Errorf("the decisions query takes %v (defined %t), want %v: each ask's own node, the decision, the reading under it and the reading under the answered ask",
+		t.Errorf("the decisions query takes %v (defined %t), want %v: each question's own node, the decision, the reading under it and the reading under the answered question",
 			addresses, defined, want)
 	}
 	if _, built := queryDefinitions[graphstore.QueryDecisions]; !built {

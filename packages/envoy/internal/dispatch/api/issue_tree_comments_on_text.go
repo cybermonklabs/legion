@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -465,7 +466,10 @@ const commentAnchorsStatement = `
 	where c.id = any($1::uuid[]) and (c.anchor is not null or c.node_anchor is not null)`
 
 // queueCommentAnchors queues into batch the read of the anchor of each of comments that holds one
-// (commentAnchorsStatement), each as commentAnchorOf answers it, into anchors.
+// (commentAnchorsStatement), each as commentAnchorOf answers it, into anchors; and after it the
+// climb from the block of each orphaned document anchor among them at the read's cut
+// (anchorContainersStatement), which gives such an anchor its container (anchorContainers). A
+// batch answers its statements in their order, so the climb's rows find the anchors read.
 func (b *issueTreeBuilder) queueCommentAnchors(batch *pgx.Batch, comments []string) {
 	b.anchors = map[string]*model.IssueTreeAnchor{}
 	if len(comments) == 0 {
@@ -487,6 +491,102 @@ func (b *issueTreeBuilder) queueCommentAnchors(batch *pgx.Batch, comments []stri
 		}
 		return rows.Err()
 	})
+	seq, at := treeCutBounds(b.cut)
+	batch.Queue(anchorContainersStatement, comments, pmdoc.MaxTreeDepth, seq, at, refs.VisibilityArg(b.who)).Query(b.anchorContainers)
+}
+
+// anchorContainerCut bounds the tuples anchorContainersStatement reads to the read's cut: at a seq
+// up to $3 and, where $4 is not null, at a time up to $4 (treeCutBounds).
+const anchorContainerCut = `t.seq <= $3 and ($4::timestamptz is null or t.at <= $4)`
+
+// anchorContainerValue is a lateral's body reading, at the read's cut (anchorContainerCut), the
+// value of attribute out of the block climb.id, as the walk of the tree reads a node's value at a
+// cut (refs.TreeCut): the newest tuple of that attribute by its time and then its seq, held where
+// it asserts and null where it retracts, its first line alone where opening says so.
+func anchorContainerValue(attribute string, opening bool) string {
+	held := `t.to_id`
+	if opening {
+		held = `split_part(t.to_id, chr(10), 1)`
+	}
+	return `select case when t.asserted then ` + held + ` end as held
+		from graph_tuples t
+		where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = climb.id and t.kind = '` + attribute + `'
+		  and t.to_kind = '` + graphstore.KindValue + `' and ` + anchorContainerCut + `
+		order by t.at desc, t.seq desc
+		limit 1`
+}
+
+// anchorContainersStatement climbs, at the read's cut (anchorContainerCut), from the block that
+// the orphaned document anchor of each comment $1 names (graphstore.AnchorBlockAddressSQL) up that
+// block's part_of chain, as the walk of the tree reads a node's part_of at a cut (refs.TreeCut): of
+// each block's part_of tuples, the newest to each far end by its time and then its seq, kept while
+// it asserts, and of those the newest; the climb goes on while that names a block, at most $2
+// links (pmdoc.MaxTreeDepth, the deepest a block stands in its document). It reads the chain in the
+// store, so whatever the read answers - a view leaves the prose of a role document out - the chain
+// is the block's own. Each row is a comment and a block of its climb, the anchor's block first,
+// with that block's row's supertag and the first line of its text value at the cut, which say its
+// type (refs.TreeNodeType); whether its state value at the cut is gone; and whether the reader $5
+// may see it, the block kind's predicate over its row (refs.VisibleKindRow), true where the store
+// holds no row of it, as the registry reads such a node. A comment's rows come in its climb's order.
+var anchorContainersStatement = `
+	with recursive climb (comment, id, depth) as (
+		select c.id::text, anchored.id, 0
+		from comments c
+		cross join lateral (select ` + graphstore.AnchorBlockAddressSQL("c") + ` as id) anchored
+		where c.id = any($1::uuid[]) and coalesce((c.anchor->>'orphaned')::boolean, false) and anchored.id is not null
+		union all
+		select climb.comment, placed.to_id, climb.depth + 1
+		from climb
+		cross join lateral (
+			select held.to_kind, held.to_id from (
+				select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
+				from graph_tuples t
+				where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = climb.id and t.kind = '` + graphstore.TuplePartOf + `'
+				  and t.to_kind <> '` + graphstore.KindValue + `' and ` + anchorContainerCut + `
+				order by t.to_kind, t.to_id, t.at desc, t.seq desc
+			) held
+			where held.asserted
+			order by held.at desc, held.seq desc
+			limit 1
+		) placed
+		where placed.to_kind = '` + refs.BlockNodeKind + `' and climb.depth < $2
+	)
+	select climb.comment, climb.id, coalesce(node.supertag, ''), coalesce(opening.held, ''),
+	       state.held is not distinct from '` + graphstore.StateGone + `',
+	       coalesce(` + refs.VisibleKindRow(refs.BlockNodeKind, "node", "$5") + `, true)
+	from climb
+	left join lateral (` + anchorContainerValue(graphstore.AttributeText, true) + `) opening on true
+	left join lateral (` + anchorContainerValue(graphstore.AttributeState, false) + `) state on true
+	left join graph_nodes node on node.kind = '` + refs.BlockNodeKind + `' and node.id = climb.id
+	order by climb.comment, climb.depth`
+
+// anchorContainers gives each orphaned document anchor of anchors its container
+// (model.IssueTreeAnchor's ContainerNodeID) off the rows of its climb (anchorContainersStatement):
+// the first block of the climb that is a typed block at the read's cut, by the type the walk takes
+// it by (refs.TreeNodeType), where no block of the climb up to it is gone there and the reader may
+// see it. An anchor whose climb meets a gone block first, or whose nearest typed block the reader
+// may not see, or whose climb holds no typed block, has none, and no block farther up stands in.
+func (b *issueTreeBuilder) anchorContainers(rows pgx.Rows) error {
+	settled := map[string]bool{}
+	for rows.Next() {
+		var comment, block, supertag, opening string
+		var gone, seen bool
+		if err := rows.Scan(&comment, &block, &supertag, &opening, &gone, &seen); err != nil {
+			return fmt.Errorf("read a block above the anchor of a comment of %s: %w", b.key, err)
+		}
+		if settled[comment] {
+			continue
+		}
+		typed := pmdoc.IsTypedBlock(refs.TreeNodeType(refs.BlockNodeKind, supertag, opening))
+		settled[comment] = gone || typed
+		if anchor := b.anchors[comment]; anchor != nil && typed && !gone && seen {
+			anchor.ContainerNodeID = block
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the blocks above the anchors of the comments of %s: %w", b.key, err)
+	}
+	return nil
 }
 
 // storedNodeAnchor is a comment's node anchor as comments.node_anchor stores it (R31): the store

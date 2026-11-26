@@ -29,18 +29,13 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { decisionBlockId, decisionDocumentId } from "../issue-page/decision-review";
-import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PlainText } from "../refs/plain-text";
-import {
-  buildIssuePath,
-  documentItemPath,
-  parseDispatchReference,
-  referenceHref,
-} from "../refs/routes";
+import { buildIssuePath, parseDispatchReference, referenceHref } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { entryTextSource } from "./decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "./decision-heading";
 import {
   isPlainTitleBlock,
@@ -56,7 +51,7 @@ import {
 } from "./decision-text";
 
 /** A decision as the cards below draw one (`entryDecision`): its name, the block it is, the asks
- *  it answers and the spec nodes it shaped beside the entry's own words, sum and standing, and the
+ *  it answers and the nodes it shaped beside the entry's own words, sum and standing, and the
  *  entry itself, which its heading is read from (`useDecisionHeadingWords`). */
 type DrawnDecision = Pick<
   DecisionEntry,
@@ -239,14 +234,6 @@ function nodePath(ref: string): string | undefined {
   return route === undefined ? undefined : referenceHref(route);
 }
 
-/** The path that opens the issue's spec at `blockId`: through the spec's own document route when
- *  the issue's artifacts are loaded, as every in-app block link is built. */
-function specBlockPath(issueKey: string, spec: Artifact | undefined, blockId: string): string {
-  return spec === undefined
-    ? `${buildIssuePath({ key: issueKey, kind: "spec" })}${blockFragment(blockId)}`
-    : documentItemPath(spec, { blockID: blockId, id: blockId, kind: "comment" });
-}
-
 function Section({
   children,
   empty,
@@ -271,43 +258,37 @@ function Section({
   );
 }
 
-function ShapedLinks({
-  issueKey,
-  links,
-  spec,
-}: {
-  issueKey: string;
-  links: readonly DecisionLink[] | null;
-  spec: Artifact | undefined;
-}): ReactNode {
-  const shaped = (links ?? []).filter((link) => link.to.block_id !== undefined);
+/** The nodes a decision shaped, each linked where its own address names it - a block of the spec,
+ *  or of another document of the issue, such as a plan's task (`decisionread` answers a `shaped`
+ *  target in any document of the issue) - never the spec at another document's block id. A target
+ *  whose address opens no page of this dashboard, or that names no block, draws nothing. */
+function ShapedLinks({ links }: { links: readonly DecisionLink[] | null }): ReactNode {
+  const shaped = (links ?? []).flatMap((link) => {
+    const blockId = link.to.block_id;
+    const path = link.to.ref === undefined ? undefined : nodePath(link.to.ref);
+    return blockId === undefined || path === undefined ? [] : [{ blockId, link, path }];
+  });
   if (shaped.length === 0) {
     return null;
   }
   return (
     <div className="space-y-1">
-      <p className={`text-xs ${textMutedOnSurface}`}>Shaped in the spec:</p>
+      <p className={`text-xs ${textMutedOnSurface}`}>Shaped:</p>
       <ul className="space-y-1 text-sm">
-        {shaped.map((link) => {
-          const blockId = link.to.block_id ?? "";
-          return (
-            <li key={`${link.from_block}:${blockId}`}>
-              {/* The link names the spec block by its id, in the panel's own words, as the
-                  characters they are. The decisions read sends no text of the block a link
-                  points to (`refs.BlockLinks` resolves each end as a graph node, which carries
-                  its text only on a reference read), so there is no stored text here to draw. */}
-              <Link
-                className={`${linkText} ${linkHoverText}`}
-                to={specBlockPath(issueKey, spec, blockId)}
-              >
-                {`Block ${blockId}`}
-              </Link>
-              {link.stale ? (
-                <span className={`ml-2 text-xs ${textMutedOnSurface}`}>out of date</span>
-              ) : null}
-            </li>
-          );
-        })}
+        {shaped.map(({ blockId, link, path }) => (
+          <li key={`${link.from_block}:${link.to.ref}`}>
+            {/* The link names the block by its id, in the panel's own words, as the characters
+                they are. The decisions read sends no text of the block a link points to
+                (`refs.BlockLinks` resolves each end as a graph node, which carries its text only
+                on a reference read), so there is no stored text here to draw. */}
+            <Link className={`${linkText} ${linkHoverText}`} to={path}>
+              {`Block ${blockId}`}
+            </Link>
+            {link.stale ? (
+              <span className={`ml-2 text-xs ${textMutedOnSurface}`}>out of date</span>
+            ) : null}
+          </li>
+        ))}
       </ul>
     </div>
   );
@@ -409,20 +390,21 @@ function DecisionCard({
   decision,
   documentId,
   issueKey,
-  spec,
 }: {
   actions?: ReactNode;
   /** The blocks of this decision's text, with a plain naming block marked, read by the caller
    *  that also quotes the first of them its text holds (`entryBlocks`). */
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
-  /** The document the decision is written in, the one its node stands in, which its `#id`s name
-   *  a question block of; undefined for an ask on the issue itself. */
+  /** The document the decision's block is written in (`decisionDocumentId`): what a Keep and a
+   *  Change are written against, and the record an agent's decision's words are, whose `#id`s
+   *  name a question block of it. An ask's words are the ask's own record (`entryTextSource`).
+   *  Undefined where the read names no document and the address names no block of a document
+   *  the issue read lists: an ask, and a block of a document not listed yet. */
   documentId: string | undefined;
   issueKey: string;
-  spec: Artifact | undefined;
 }): ReactNode {
-  const source = textSourceOf("artifact", documentId, issueKey);
+  const source = entryTextSource(decision.entry, documentId, issueKey);
   // The name links the node that holds the decision, which is not always the spec.
   const path = nodePath(decision.ref);
   // The heading's plain words word its link (the reading list's `decision-heading-words`); the
@@ -490,7 +472,7 @@ function DecisionCard({
           The ask it answers
         </Link>
       ))}
-      <ShapedLinks issueKey={issueKey} links={decision.links} spec={spec} />
+      <ShapedLinks links={decision.links} />
       {actions}
     </li>
   );
@@ -502,14 +484,12 @@ function WaitingDecision({
   documentId,
   isClosed,
   issueKey,
-  spec,
 }: {
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
   documentId: string | undefined;
   isClosed: boolean;
   issueKey: string;
-  spec: Artifact | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
@@ -523,7 +503,7 @@ function WaitingDecision({
   // and a form's name hold no markup (the reading list's `decision-heading-words`).
   const { reads, words: name } = useDecisionHeadingWords(
     decision.entry,
-    textSourceOf("artifact", documentId, issueKey)
+    entryTextSource(decision.entry, documentId, issueKey)
   );
   const keep = useKeyedWrite({
     inline: true,
@@ -613,7 +593,6 @@ function WaitingDecision({
       decision={decision}
       documentId={documentId}
       issueKey={issueKey}
-      spec={spec}
     />
   );
 }
@@ -642,8 +621,8 @@ function OpenQuestion({ entry, issueKey }: { entry: DecisionEntry; issueKey: str
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  the entries of `GET /api/v1/issues/{key}/decisions`. Each decision links the node that holds
- *  it and the spec blocks it shaped. */
+ *  the nodes of `GET /api/v1/issues/{key}/tree?view=decisions`. Each decision links the node
+ *  that holds it and the nodes it shaped. */
 export function DecisionsPanel({
   artifacts,
   isClosed,
@@ -661,17 +640,16 @@ export function DecisionsPanel({
   // body it already drew. The three lists below are this one reading filtered, never three
   // readings of it. An ask is a decision once a person answered it; an open one is a question,
   // and a declined one decided nothing. Each is written in the document the read names for it,
-  // or, where it names none, the one its own address names a block of (`decisionDocumentId`).
+  // or, where it names none, the one its own address names a block of (`decisionDocumentId`);
+  // an ask's words are the ask's own record (`entryTextSource`).
   const rows = useMemo(() => {
     const documents = { artifacts, key: issueKey, primary_artifact_id: spec?.id ?? "" };
     return (view.data?.entries ?? [])
       .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
       .map((entry) => {
         const decision = entryDecision(entry);
-        // A decision a server of the release before answered names no document of its own
-        // (`withEntries`): its address is its section's heading block in the decisions document.
-        // kept for one release: compat-objects
-        const documentId = entry.document?.artifact_id ?? decisionDocumentId(documents, entry);
+        // A decision for which the view names no document can still name a block by its address.
+        const documentId = decisionDocumentId(documents, entry);
         return { blocks: entryBlocks(entry, decision), decision, documentId };
       });
   }, [artifacts, issueKey, spec?.id, view.data?.entries]);
@@ -715,7 +693,6 @@ export function DecisionsPanel({
             isClosed={isClosed}
             issueKey={issueKey}
             key={decision.ref}
-            spec={spec}
           />
         ))}
       </Section>
@@ -727,7 +704,6 @@ export function DecisionsPanel({
             documentId={documentId}
             issueKey={issueKey}
             key={decision.ref}
-            spec={spec}
           />
         ))}
       </Section>
@@ -739,7 +715,6 @@ export function DecisionsPanel({
             documentId={documentId}
             issueKey={issueKey}
             key={decision.ref}
-            spec={spec}
           />
         ))}
       </Section>

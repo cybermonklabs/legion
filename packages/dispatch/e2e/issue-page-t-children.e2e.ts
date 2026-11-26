@@ -4,11 +4,7 @@
 import type { Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import {
-  CONTROL_LABELS,
-  PRESET_NAMES,
-  type Preset,
-} from "../web/src/features/issue-page/page-words";
+import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import {
   claimIssue,
   createAsk,
@@ -22,7 +18,7 @@ import { planDocument, specDocument, verificationDocument } from "./issue-layout
 import { gotoIssue, issueRead, phase } from "./issue-page";
 import { DESKTOP, expectOpeningLanded, PHONE } from "./issue-page-g";
 import { childEntry, childRow, childRows, childrenSection, childrenToggle } from "./issue-page-i";
-import { firstRowOutOfPlace, openOutline, ROW_MS } from "./issue-page-t-rows";
+import { firstRowOutOfPlace, openOutline, PAGE_VIEWS, ROW_MS } from "./issue-page-t-rows";
 import { owedUnless, treeReadGate } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -39,16 +35,6 @@ const CHILDREN = 23;
 
 /** How many children the section lists before its control lists the rest (spec R14). */
 const CHILDREN_PAGE = 20;
-
-/** The views that draw the section, in the view row's order (spec R14). */
-const SECTION_VIEWS = [
-  "conversation",
-  "spec",
-  "verification",
-  "plan",
-  "decisions",
-  "graph",
-] as const satisfies readonly Preset[];
 
 /** What `seedChildren` wrote. */
 interface ChildrenSeed {
@@ -142,7 +128,7 @@ test("the children are a section above the outline, 20 at a time @phone", async 
     owedUnless(await treeReadGate(page, seeded.key));
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);
-      for (const view of SECTION_VIEWS) {
+      for (const view of PAGE_VIEWS) {
         const where = `in ${PRESET_NAMES[view]} at ${size.width} px`;
         const traffic = watchApiRequests(page);
         await gotoIssue(page, presetPath(seeded.key, view));
@@ -197,7 +183,7 @@ test("the children are a section above the outline, 20 at a time @phone", async 
       await expect(childRow(page, key), `the outline draws ${key} other than once`).toHaveCount(1);
     }
     await expect(childRows(page), "the outline draws a child other than its own").toHaveCount(
-      opened.rows.filter((row) => row.kind.type === "child_issue").length
+      seeded.children.length
     );
     expect(
       firstRowOutOfPlace("in Conversation", opened.rows, opened),

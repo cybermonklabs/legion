@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"regexp"
 	"slices"
@@ -27,6 +28,71 @@ const placementSpec = ":::criterion{#k1}\nI want the urgent asks first.\n:::\n\n
 // that written order.
 func servingNode(typ, id string, targets ...string) string {
 	return ":::" + typ + "{#" + id + " serves=\"" + strings.Join(targets, " ") + "\"}\nIt proves what it serves.\n:::\n"
+}
+
+// servingNodeUnder is servingNode as a document reads once a move put its node under parent: its
+// parent attribute names parent, the dispatch:// address of a block, beside its serves pointer.
+func servingNodeUnder(typ, id, parent string, targets ...string) string {
+	return ":::" + typ + "{#" + id + " serves=\"" + strings.Join(targets, " ") + "\" parent=\"" + parent + "\"}\nIt proves what it serves.\n:::\n"
+}
+
+// splitPlacementTuples is tuples' serves tuples and their part_of tuples, each in order, and no
+// other.
+func splitPlacementTuples(tuples []graphstore.Tuple) (serves, partOf []graphstore.Tuple) {
+	for _, tuple := range tuples {
+		switch tuple.Kind {
+		case "serves":
+			serves = append(serves, tuple)
+		case graphstore.TuplePartOf:
+			partOf = append(partOf, tuple)
+		}
+	}
+	return serves, partOf
+}
+
+// requirementsServed is how many nodes of type typ - checks, or plan tasks - the coverage read of
+// CORE-1 (over the tuples, as T16a reads it) lists under each of the requirements r1 to r4.
+func requirementsServed(t *testing.T, handler http.Handler, typ string) map[string]int {
+	t.Helper()
+	coverage := readCoverage(t, handler, "CORE-1")
+	served := map[string]int{}
+	for _, id := range []string{"r1", "r2", "r3", "r4"} {
+		requirement := coverageOf(t, coverage, id)
+		if typ == planTaskBlockType {
+			served[id] = requirement.PlanTasks
+		} else {
+			served[id] = requirement.Checks
+		}
+	}
+	return served
+}
+
+// requireServed fails unless the coverage read of CORE-1 lists, under each requirement r1 to r4, the
+// number of nodes of type typ that base holds, and one more under each requirement of under: the
+// node whose serves a test moved or retargeted, which the read lists under the requirements it
+// serves whatever parent it stands under.
+func requireServed(t *testing.T, handler http.Handler, what, typ string, base map[string]int, under ...string) {
+	t.Helper()
+	for id, count := range requirementsServed(t, handler, typ) {
+		want := base[id]
+		if slices.Contains(under, id) {
+			want++
+		}
+		if count != want {
+			t.Errorf("%s: the coverage read lists %d %s node(s) under %s, want %d (%d before the node, one more where it serves)", what, count, typ, id, want, base[id])
+		}
+	}
+}
+
+// moveNodeUnder moves the node address of CORE-1 under parent as alice, through PATCH
+// /api/v1/issues/{key}/nodes/{id} with the If-Match of the node's placement_seq, and fails unless
+// the move is taken.
+func moveNodeUnder(t *testing.T, handler http.Handler, database *store.Store, what, address, parent string) {
+	t.Helper()
+	_, tag := placementOf(t, database, refs.BlockNodeKind, address)
+	if response := patchNode(t, handler, "CORE-1", address, tag, map[string]any{"parent": parent}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s", what, parent, response.Code, response.Body.String())
+	}
 }
 
 // placementSeq is the last sequence the tuple log holds.
@@ -176,17 +242,26 @@ func requirementsSpec(ids []string) string {
 	return spec.String()
 }
 
-// c-placement-and-coverage, its placement half (T7 of the issue-tree plan; T18 adds the
-// move through its route and the coverage reads through T16a's): placement and coverage are two
+// c-placement-and-coverage, its placement half (T7 of the issue-tree plan), with T18's move
+// through its route and the coverage reads through T16a's: placement and coverage are two
 // relations. One check serves three requirements and keeps one place: one node, one id, one
 // part_of to the first requirement of the pointer's written order that is a node of its own issue,
-// one rank, and three serves tuples. A retarget appends one serves tuple and one retraction and
-// writes no part_of: the check stays under the parent its first write gave it, a requirement it
-// no longer serves, and reads back with both facts stated. A plan node, which carries the same
-// pointer, does the same. A check and a plan node of a child issue that serve the parent's
-// requirement alone hang from the child issue, never under that requirement. And this issue's own
-// Verification document, indexed into a child of a done parent, places c-tree-census under
-// r-one-tree, the first of its six serves targets that is a node of its own issue.
+// one rank, and three serves tuples. The two change apart. A move through PATCH appends one part_of
+// tuple and one retraction and writes no serves tuple: the node is stored under the requirement it
+// moved to, still serves its three, and the coverage read still lists it under each of them. A
+// retarget appends one serves tuple and one retraction and writes no part_of, whichever target it
+// drops: a first retarget that keeps the node's parent among its targets leaves the node under the
+// parent its move gave it, and a second that takes the parent out of them leaves it there too, so
+// the node's parent is a requirement it no longer serves and it reads back with both facts stated,
+// its part_of and its placement as the move wrote them and its serves as the retarget wrote them,
+// with no read moving it back; each retarget's text names that parent, as a document reads once a
+// move put it there, and the coverage read lists the node under what it serves alone. A plan node,
+// which carries the same pointer, does the same. A check and a plan node of a child issue that
+// serve the parent's requirement alone hang from the child issue, never under that requirement. A
+// requirement moved from one criterion to another through PATCH changes its place alone, and the
+// store census reads zero after it. And this issue's own Verification document, indexed into a
+// child of a done parent, places c-tree-census under r-one-tree, the first of its six serves
+// targets that is a node of its own issue.
 func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -208,11 +283,12 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	// and rows, so its row projects its parent requirement by its block id; checks.md plays no role,
 	// so it is a room of its own, whose ref_key keys its blocks' nodes, and its row names no block id
 	// of its parent (R5 of this branch's spec).
-	for _, node := range []struct{ what, upload, typ, id, address, parent string }{
-		{"the check", "checks.md", "check", "c1", "CORE-1/checks-md#c1", ""},
-		{"the plan node", "plan.md", "plan_task", "t1", core.address("t1"), "r1"},
+	for _, node := range []struct{ what, upload, typ, id, address, parent, movedParent string }{
+		{"the check", "checks.md", "check", "c1", "CORE-1/checks-md#c1", "", ""},
+		{"the plan node", "plan.md", "plan_task", "t1", core.address("t1"), "r1", "r3"},
 	} {
 		address := node.address
+		base := requirementsServed(t, handler, node.typ)
 		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNode(node.typ, node.id, ref("r1"), ref("r2"), ref("r3")))
 		if nodes := blockNodesNamed(t, database, node.id); nodes != 1 {
 			t.Errorf("%s serving three requirements is %d node(s), want one with one id", node.what, nodes)
@@ -222,32 +298,83 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 			t.Errorf("%s holds %d rank(s), want one", node.what, ranks)
 		}
 		requireServes(t, database, node.what, address, spec("r1"), spec("r2"), spec("r3"))
+		requireServed(t, handler, node.what, node.typ, base, "r1", "r2", "r3")
 
-		// The retarget: serves moves from r1 to r4, and the part_of stays where it is.
+		// The move: PATCH puts the node under r3, a requirement it serves, which is not the first
+		// target of its pointer once the pointer is retargeted below. One part_of is appended and
+		// one retracted, no serves tuple is written, the node holds the placement the move stores,
+		// and the coverage read, which reads serves alone, lists it under the same three.
 		mark := placementSeq(t, database)
-		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNode(node.typ, node.id, ref("r2"), ref("r3"), ref("r4")))
-		var serves, partOf []graphstore.Tuple
-		for _, tuple := range placementTuplesSince(t, database, address, mark) {
-			switch tuple.Kind {
-			case "serves":
-				serves = append(serves, tuple)
-			case graphstore.TuplePartOf:
-				partOf = append(partOf, tuple)
-			}
+		moveNodeUnder(t, handler, database, node.what, address, spec("r3"))
+		serves, partOf := splitPlacementTuples(placementTuplesSince(t, database, address, mark))
+		if len(serves) != 0 {
+			t.Errorf("the move of %s wrote the serves tuples %+v, want none: a move changes the place and leaves the coverage standing", node.what, serves)
 		}
+		appended := slices.IndexFunc(partOf, func(tuple graphstore.Tuple) bool { return tuple.Asserted && tuple.ToID == spec("r3") })
+		retracted := slices.IndexFunc(partOf, func(tuple graphstore.Tuple) bool { return !tuple.Asserted && tuple.ToID == spec("r1") })
+		if len(partOf) != 2 || appended < 0 || retracted < 0 {
+			t.Errorf("the move of %s under r3 wrote the part_of tuples %+v, want one appended to r3 and one retraction of r1", node.what, partOf)
+		}
+		requirePlaced(t, database, node.what+" after its move", address, refs.BlockNodeKind, spec("r3"), node.movedParent, refs.PlacementStored)
+		requireServes(t, database, node.what+" after its move", address, spec("r1"), spec("r2"), spec("r3"))
+		requireServed(t, handler, node.what+" after its move", node.typ, base, "r1", "r2", "r3")
+
+		// The retarget: serves moves from r1 to r4, and the part_of stays where the move put it. The
+		// text is the document a client reads after the move and edits, so it names r3 as its parent,
+		// as the move wrote it.
+		mark = placementSeq(t, database)
+		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNodeUnder(node.typ, node.id, ref("r3"), ref("r2"), ref("r3"), ref("r4")))
+		serves, partOf = splitPlacementTuples(placementTuplesSince(t, database, address, mark))
 		if len(partOf) != 0 {
 			t.Errorf("the retarget of %s wrote the part_of tuples %+v, want none: a retarget moves no node", node.what, partOf)
 		}
-		appended := slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return tuple.Asserted && tuple.ToID == spec("r4") })
-		retracted := slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return !tuple.Asserted && tuple.ToID == spec("r1") })
+		appended = slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return tuple.Asserted && tuple.ToID == spec("r4") })
+		retracted = slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return !tuple.Asserted && tuple.ToID == spec("r1") })
 		if len(serves) != 2 || appended < 0 || retracted < 0 {
 			t.Errorf("the retarget of %s wrote the serves tuples %+v, want one appended to r4 and one retraction of r1", node.what, serves)
 		}
-		// Both facts read back: the parent it was first given, a requirement it no longer serves,
-		// and the three it serves now. No read moves it back.
-		requirePlaced(t, database, node.what+" after its retarget", address, refs.BlockNodeKind, spec("r1"), node.parent, refs.PlacementAuthored)
+		// Both facts read back: the parent its move gave it, a requirement it still serves, and the
+		// three it serves now. No read moves it back, and the coverage read drops r1 and gains r4.
+		requirePlaced(t, database, node.what+" after its retarget", address, refs.BlockNodeKind, spec("r3"), node.movedParent, refs.PlacementStored)
 		requireServes(t, database, node.what+" after its retarget", address, spec("r2"), spec("r3"), spec("r4"))
+		requireServed(t, handler, node.what+" after its retarget", node.typ, base, "r2", "r3", "r4")
+
+		// The retarget off the parent: serves moves from r3, the node's parent, to r1, so the node
+		// serves r1, r2 and r4 and stands under r3, a requirement it no longer serves. The text still
+		// names r3 as its parent. One serves tuple is appended and one retracted, no part_of is
+		// written, the node keeps the part_of and the placement its move wrote, and the coverage read
+		// lists it under r1, r2 and r4 and not under r3, its parent.
+		mark = placementSeq(t, database)
+		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNodeUnder(node.typ, node.id, ref("r3"), ref("r1"), ref("r2"), ref("r4")))
+		serves, partOf = splitPlacementTuples(placementTuplesSince(t, database, address, mark))
+		if len(partOf) != 0 {
+			t.Errorf("the retarget of %s off its parent r3 wrote the part_of tuples %+v, want none: a retarget moves no node, whatever target it drops", node.what, partOf)
+		}
+		appended = slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return tuple.Asserted && tuple.ToID == spec("r1") })
+		retracted = slices.IndexFunc(serves, func(tuple graphstore.Tuple) bool { return !tuple.Asserted && tuple.ToID == spec("r3") })
+		if len(serves) != 2 || appended < 0 || retracted < 0 {
+			t.Errorf("the retarget of %s off its parent r3 wrote the serves tuples %+v, want one appended to r1 and one retraction of r3", node.what, serves)
+		}
+		// Both facts read back: the parent r3, a requirement the node no longer serves, and the three
+		// it serves now. No read moves it back under one of them.
+		requirePlaced(t, database, node.what+" after its retarget off its parent", address, refs.BlockNodeKind, spec("r3"), node.movedParent, refs.PlacementStored)
+		requireServes(t, database, node.what+" after its retarget off its parent", address, spec("r1"), spec("r2"), spec("r4"))
+		requireServed(t, handler, node.what+" after its retarget off its parent", node.typ, base, "r1", "r2", "r4")
 	}
+
+	// A requirement moves from one criterion to another through PATCH, in the one room of CORE-1: r4
+	// leaves k2 for k1. Its place changes and nothing it serves or is served by: its serves still
+	// names k2, the coverage read lists the same checks and plan tasks under it, and the store
+	// census, which reads every kind over the whole store, reads zero.
+	before := coverageOf(t, readCoverage(t, handler, "CORE-1"), "r4")
+	moveNodeUnder(t, handler, database, "requirement r4", spec("r4"), spec("k1"))
+	requirePlaced(t, database, "requirement r4 after its move", spec("r4"), refs.BlockNodeKind, spec("k1"), "k1", refs.PlacementStored)
+	requireServes(t, database, "requirement r4 after its move", spec("r4"), spec("k2"))
+	if after := coverageOf(t, readCoverage(t, handler, "CORE-1"), "r4"); after.Checks != before.Checks || after.PlanTasks != before.PlanTasks {
+		t.Errorf("the move of r4 left the coverage read listing %d check(s) and %d plan task(s) under it, want the %d and %d it listed before: a move changes no coverage",
+			after.Checks, after.PlanTasks, before.Checks, before.PlanTasks)
+	}
+	requireStoreCensusZero(t, database, "after the move of the requirement r4 from the criterion k2 to k1")
 
 	// A child's check and plan node serving the parent's first requirement alone serve no
 	// requirement of their own issue, so each hangs from the child issue.

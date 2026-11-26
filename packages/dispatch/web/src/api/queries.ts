@@ -149,6 +149,17 @@ export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
  *  of `TREE_FILTERS`, so that list holds every filter. */
 export type TreeFilter = (typeof TREE_FILTERS)[number];
 
+/** Whether the issue is a view on its ancestor's spec: the issue its tree read's `view_of` names
+ *  (`GET /api/v1/issues/{key}/tree?view=spec`), or null where it is none. Each document of the
+ *  issue is edited under the schema this answer gives (`editorBlockSchema`), and its admission
+ *  waits for it (`ProofDocument.tsx`). Only `view_of` is kept, since the page draws nothing else
+ *  of that read. */
+export const issueViewOfQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "view-of"],
+    queryFn: async () => (await api.getIssueTree(key, { view: "spec" })).view_of,
+  });
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,
@@ -196,6 +207,35 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** The issue's asks as the margin, a document's ask blocks and the feed's ask rules read and
+ *  refresh them: every ask, open or closed (`listIssueAsks` with `all`), under `["asks", key]`.
+ *  The issue page's outline reads them with each ask's thread instead (`issueAskThreadsQuery`).
+ *  One definition, so a view that observes the same read takes the key from here and cannot
+ *  drift from it; such a view adds how it is kept fresh (`EVENT_FRESH`). It is here, beside the
+ *  issue's other reads, and not beside the
+ *  tree (`issue-page/useIssueTree.ts`), because a document's ask blocks read it on today's pages
+ *  too (`doc/ProofDocument.tsx`, which the Inbox's reading pane loads), and those pages load
+ *  nothing of the issue page's model or its words (INFRA-1196 decisions 31 and 512;
+ *  `__tests__/entry-closure.test.ts`). */
+export const issueAsksQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key],
+    queryFn: () => api.listIssueAsks(key, "all"),
+  });
+
+/** The outline's one asks read (R5): `GET /api/v1/issues/{key}/asks?thread=1`, every ask, open
+ *  or closed, with its thread - the options and their descriptions, the answer and each ask's
+ *  answers, rewordings and replies, which the ask row and the facts of a focused ask draw - under
+ *  a key of its own beneath the plain read's (`["asks", key, "thread"]`), the one today's
+ *  Conversation tab reads the same request by, so every rule that refreshes the issue's asks
+ *  reaches it. Each reader of the outline's asks takes it from here, with how it is kept fresh
+ *  (`EVENT_FRESH`). */
+export const issueAskThreadsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key, "thread"],
+    queryFn: () => api.listIssueAskThreads(key, "all"),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own

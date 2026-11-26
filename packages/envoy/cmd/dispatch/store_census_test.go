@@ -87,6 +87,7 @@ const censusSigningKey = "store-census-signing-key"
 var censusKinds = []string{
 	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
 	"person", "session", "role", "page", "artifact", "version", "artifact_reference", "node_search",
+	"document_search_node",
 }
 
 // censusUnseededKinds are the census's kinds this run writes no row of, which a store may hold

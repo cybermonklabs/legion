@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -267,48 +265,40 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 	return entries, nil
 }
 
-// askNodeAnswer is what an ask's node holds of its answer: its answer state (answer_state), and
-// for an answer who gave it (the answered_by relation's person), when (answered_at), the options
-// chosen (selected) and the words (answer), each "" or nil where the node holds none. planned is
-// whether it is what a change the reading transaction plans leaves on the node
-// (plannedAskNodeAnswer), which the transaction may not have written to the node or the row yet.
+// askNodeAnswer is what an ask's node holds of its answer (asks.NodeAnswer), as askNodeAnswers
+// reads it. planned is whether it is what a change the reading transaction plans leaves on the
+// node (plannedAskNodeAnswer), which the transaction may not have written to the node or the row
+// yet.
 type askNodeAnswer struct {
-	state, answeredBy, answeredAt string
-	selected                      []string
-	answer                        *string
+	asks.NodeAnswer
 	// kept for one release: catch-up
 	planned bool
 }
 
-// askNodeAnswerKinds are the tuples of an ask's node askNodeAnswers reads.
-var askNodeAnswerKinds = []string{
-	graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected,
-	graphstore.TupleAnsweredAt, graphstore.TupleAnsweredBy,
-}
+// askNodeFactsRead reads, for each ask $1 names, the facts of its node that state its answer
+// (asks.NodeFacts) and that stand, as the id, the kind and the far end of each.
+var askNodeFactsRead = `
+	select k.id, f.kind, f.to_id
+	from unnest($1::text[]) k (id)
+	cross join lateral (` + asks.NodeFacts("k") + `) f
+	where f.asserted
+`
 
 // askNodeAnswers reads, in tx, what the node of each ask ids names holds of its answer, by ask
-// id, from the node's tuples as they stand now (graphstore.CurrentTupleRead), as the Decisions
-// read's entries read them (api's decisionEntriesRead). An ask whose node holds no answer_state -
-// one a process of the release before wrote, before the decisions step states it - is absent, and
-// reads open (textAskOf), as an entry does. An ask whose answer state the ledger that queues tx's
-// writes has planned a change of (Ledger.PlanSettle) - a reopen's restore, planned before the
-// reopen writes its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) - reads as that change
-// leaves its node (plannedAskNodeAnswer): a block written in the same transaction shows the node
-// as the commit leaves it.
+// id, from the node's tuples as they stand now (asks.NodeFacts), each decoded as every ask read
+// decodes it (asks.NodeAnswer.Read), so a value that does not parse fails the read here as it
+// fails the Decisions read's. An ask whose node holds no answer_state - one a process of the
+// release before wrote, before the decisions step states it - is absent, and reads open
+// (textAskOf), as an entry does. An ask whose answer state the ledger that queues tx's writes has
+// planned a change of (Ledger.PlanSettle) - a reopen's restore, planned before the reopen writes
+// its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) - reads as that change leaves its node
+// (plannedAskNodeAnswer): a block written in the same transaction shows the node as the commit
+// leaves it.
 func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askNodeAnswer, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `
-		select k.id, f.kind, f.to_id
-		from unnest($1::text[]) k (id)
-		cross join lateral (`+graphstore.CurrentTupleRead(
-		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = k.id and t.kind = any($2::text[])`)+`
-		) f
-		where f.asserted
-	`, ids, askNodeAnswerKinds)
+	rows, err := tx.Query(ctx, askNodeFactsRead, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the answers of the document's asks off their nodes: %w", err)
 	}
@@ -324,19 +314,8 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 			answer = &askNodeAnswer{}
 			held[id] = answer
 		}
-		switch kind {
-		case graphstore.TupleAnswerState:
-			answer.state = value
-		case graphstore.TupleAnswer:
-			answer.answer = &value
-		case graphstore.TupleSelected:
-			if err := json.Unmarshal([]byte(value), &answer.selected); err != nil {
-				return nil, fmt.Errorf("the node of ask %s holds selected %q, which is no list of labels: %w", id, value, err)
-			}
-		case graphstore.TupleAnsweredAt:
-			answer.answeredAt = value
-		case graphstore.TupleAnsweredBy:
-			answer.answeredBy = value
+		if _, err := answer.Read(kind, value); err != nil {
+			return nil, fmt.Errorf("read the node of ask %s: %w", id, err)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -344,7 +323,7 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 	}
 	answers := make(map[string]askNodeAnswer, len(held))
 	for id, answer := range held {
-		if answer.state != "" {
+		if answer.State != nil {
 			answers[id] = *answer
 		}
 	}
@@ -363,14 +342,15 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // state, and for an answer the person, the time, the options and the words it states on the node
 // (asks' answerFacts).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
-	held := askNodeAnswer{state: ask.State}
+	state := ask.State
+	held := askNodeAnswer{NodeAnswer: asks.NodeAnswer{State: &state}}
 	// kept for one release: catch-up
 	held.planned = true
 	if ask.Answer != nil {
-		held.answeredBy = asks.AnswererOf(*ask.Answer)
-		held.answeredAt = asks.AnsweredAtValue(ask.Answer.At)
-		held.selected = append([]string{}, ask.Answer.Selected...)
-		held.answer = ask.Answer.Text
+		answeredBy, answeredAt := asks.AnswererOf(*ask.Answer), ask.Answer.At.UTC()
+		held.AnsweredBy, held.AnsweredAt = &answeredBy, &answeredAt
+		held.Selected = append([]string{}, ask.Answer.Selected...)
+		held.Answer = ask.Answer.Text
 	}
 	return held
 }
@@ -381,17 +361,22 @@ func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
 // the state, open where the node holds none; who answered, when, the options chosen (never a nil
 // list) and the words, for an answered ask; and for a copy, the source ask and its document.
 func textAskOf(blockID string, answer askNodeAnswer, source, copied string) model.TextAsk {
-	entry := model.TextAsk{BlockID: blockID, State: answer.state}
-	if entry.State == "" {
-		entry.State = asks.StateOpen
+	entry := model.TextAsk{BlockID: blockID, State: asks.StateOpen}
+	if answer.State != nil {
+		entry.State = *answer.State
 	}
 	if copied != "" {
 		entry.CopiedFrom, entry.CopiedFromDocument = source, copied
 	}
 	if entry.State == asks.StateAnswered {
-		selected := append([]string{}, answer.selected...)
-		entry.AnsweredBy, entry.AnsweredAt = answer.answeredBy, answer.answeredAt
-		entry.Selected, entry.Answer = &selected, answer.answer
+		selected := append([]string{}, answer.Selected...)
+		if answer.AnsweredBy != nil {
+			entry.AnsweredBy = *answer.AnsweredBy
+		}
+		if answer.AnsweredAt != nil {
+			entry.AnsweredAt = asks.AnsweredAtValue(*answer.AnsweredAt)
+		}
+		entry.Selected, entry.Answer = &selected, answer.Answer
 	}
 	return entry
 }

@@ -255,17 +255,16 @@ func writeRowsBeforeTheStore(t *testing.T, ctx context.Context, pool *store.Pool
 // too): a backfill that wrote nothing would leave graph_nodes and graph_tuples as the migrations
 // alone left them, and this test would prove nothing about a store it filled.
 //
-// This build's backfill stands in for the released one, and it also writes the head projection,
-// whose tables (headMigration) come after every type migration this test applies: a released
-// backfill writes none of them. So the run has the head migration applied just before it and
-// undone just after, from the migration's own files, and the runner then meets that migration as
-// pending with the rest.
+// This build's backfill stands in for the released one, and it also reads and writes what
+// migrations numbered above backfillVersion create (backfillMigrations): a released backfill
+// touches none of it. So the run has those migrations applied just before it and undone just
+// after, from the migrations' own files, and the runner then meets each as pending with the rest.
 func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
-	execHeadMigration(t, ctx, database.Pool, "up")
+	execBackfillMigrations(t, ctx, database.Pool, "up")
 	var out strings.Builder
 	report, err := graphcensus.Backfill(ctx, database, &out)
-	execHeadMigration(t, ctx, database.Pool, "down")
+	execBackfillMigrations(t, ctx, database.Pool, "down")
 	t.Logf("backfill-graph-store:\n%s", out.String())
 	if err != nil {
 		t.Fatalf("backfill-graph-store: %v", err)
@@ -282,20 +281,45 @@ func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Fatalf("the backfill reported no comment kind: %+v", report.Kinds)
 }
 
-// headMigration is the store's migration that creates the head projection's tables and their
-// triggers, by its file stem.
-const headMigration = "20261123180100_issue_tree_head"
+// backfillMigrations are the store's migrations numbered above backfillVersion that create what
+// this build's backfill reads or writes, by their file stems, in the order the runner applies them:
+// the head projection's tables and their triggers, which the head write of each pass that writes
+// the store, and the head fill, write (20261123180100_issue_tree_head); the source of a carried
+// review, which the pass over carried reviews reads and writes (20261125120000_issue_tree_review_carries);
+// the comment a reply answers, a column of the head rows every head write writes
+// (20261125120200_issue_tree_reply_parent); a comment's node anchor, which the anchor pass reads
+// (20261125140000_issue_tree_comment_node_anchor); and the search row of a block node, which the
+// search pass reads and the head write of a block writes (20261125160000_issue_tree_node_search).
+// Each creates new tables with their indexes, functions and triggers, adds a nullable column to
+// comments, or trades a column of a table this list creates for another, and writes no row of
+// graph_nodes or graph_tuples; its down file drops what its up file added. No other migration
+// above backfillVersion creates a table, a column or a function a pass reads.
+var backfillMigrations = []string{
+	"20261123180100_issue_tree_head",
+	"20261125120000_issue_tree_review_carries",
+	"20261125120200_issue_tree_reply_parent",
+	"20261125140000_issue_tree_comment_node_anchor",
+	"20261125160000_issue_tree_node_search",
+}
 
-// execHeadMigration runs the head migration's .up.sql or .down.sql (direction), read from disk
-// (storeMigrationsDir), whole over pool, as the runner would run it.
-func execHeadMigration(t *testing.T, ctx context.Context, pool *store.Pool, direction string) {
+// execBackfillMigrations runs the .up.sql of each of backfillMigrations in their order, or for
+// "down" the .down.sql of each in the reverse order, as the rollback scripts are run, so
+// 20261125120200's puts back the column it dropped before 20261123180100's drops the table. Each
+// file is read from disk (storeMigrationsDir) and run whole over pool, as the runner would run it.
+func execBackfillMigrations(t *testing.T, ctx context.Context, pool *store.Pool, direction string) {
 	t.Helper()
-	sql, err := os.ReadFile(storeMigrationsDir + "/migrations/" + headMigration + "." + direction + ".sql")
-	if err != nil {
-		t.Fatalf("read the head migration's %s file: %v", direction, err)
+	stems := slices.Clone(backfillMigrations)
+	if direction == "down" {
+		slices.Reverse(stems)
 	}
-	if _, err := pool.Exec(ctx, string(sql)); err != nil {
-		t.Fatalf("run the head migration's %s file: %v", direction, err)
+	for _, stem := range stems {
+		sql, err := os.ReadFile(storeMigrationsDir + "/migrations/" + stem + "." + direction + ".sql")
+		if err != nil {
+			t.Fatalf("read the %s file of %s: %v", direction, stem, err)
+		}
+		if _, err := pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("run the %s file of %s: %v", direction, stem, err)
+		}
 	}
 }
 

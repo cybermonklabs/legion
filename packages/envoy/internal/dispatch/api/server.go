@@ -674,6 +674,8 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// relatedReadHolds delays the next graph or text read on this process when a test arms it.
+	relatedReadHolds relatedReadHolds
 	// newIssueOverride is what the new-issue test hook last set
 	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every

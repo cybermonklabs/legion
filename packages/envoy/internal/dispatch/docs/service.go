@@ -2830,11 +2830,12 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // documentRemoved is documentRemovedChannel's handler, on its room-sync lane (roomSync.handlers):
 // the document artifactID was removed, in a transaction of any process - this one's or another's
 // - whose commit announced it (AnnounceDocumentRemoved). It is what the same lane's pass after a
-// LISTEN calls too, for each room whose row it reads gone (recheckRemovedRooms). The row has
-// gone, so a room of it here is a room over nothing: its next append would meet a foreign key
-// that no longer resolves, and a settlement would commit against a row that is not there. The
+// LISTEN calls too, for each room whose row it reads gone or retired (recheckRemovedRooms). The
+// row has gone, so a room of it here is a room over nothing: its next append would meet a foreign
+// key that no longer resolves, and a settlement would commit against a row that is not there. The
 // room is closed, through the same eviction the removing process runs over its own room after
-// the commit (api.removeArtifact).
+// the commit (api.removeArtifact). A retirement announces itself the same way (RetireDocument):
+// its row stays, and a room of it would take typing no version holds, so that room is closed too.
 //
 // A process holding no room of the document has nothing to close, which is read first
 // (residentLoadedRooms reads residence the same way): every process hears this, the removing
@@ -2896,31 +2897,35 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 	}
 }
 
-// residentArtifactsStatement reads which of the documents in $1 still have an artifacts row. It
-// reads no kind: a row whose kind changed is no removal, and only a row that has gone is one
+// residentArtifactsStatement reads which of the documents in $1 still have an artifacts row that
+// is not retired. It reads no kind: a row whose kind changed is no removal, and only a row that
+// has gone, or one a retirement marked (artifacts.retired_at, RetireDocument), is one
 // (recheckRemovedRooms). $1 holds the resident rooms' own names, which are canonical uuids
 // because the admission refuses a socket whose room is spelled any other way (ServeHTTP): every
 // element is cast to uuid here, and one Postgres could not read as a uuid would error the whole
 // statement, taking the answer for every other room with it.
-const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[])`
+const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[]) and retired_at is null`
 
-// recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal notified
-// while the hub had no connection reached nobody, and nothing says it again - the announcement
-// is sent once, and the row it named has gone, so no later read of that document brings it
-// back. This reads the rows of the rooms this process holds, in one statement, and every room
-// the answer leaves out is a document that has gone: it is closed through the lane's own
-// handler (documentRemoved), which reads residence again and logs only a close that failed.
-// A close that succeeds writes no line at all (Evict, evictRoom, forgetEvicted write none), so
-// a room this pass took is a room that left nothing in the log to find. A room left open over a
-// deleted row takes a person's typing that no append can store, the doc_updates foreign key
-// refusing it.
+// recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal or a
+// retirement notified while the hub had no connection reached nobody, and nothing says it again -
+// the announcement is sent once (AnnounceDocumentRemoved), and neither a row that has gone nor a
+// retired one is read by any later write of that document. This reads the rows of the rooms this
+// process holds, in one statement, and every room the answer leaves out is a document that has
+// gone or is retired: it is closed through the lane's own handler (documentRemoved), which reads
+// residence again and logs only a close that failed. A close that succeeds writes no line at all
+// (Evict, evictRoom, forgetEvicted write none), so a room this pass took is a room that left
+// nothing in the log to find. A room left open over a deleted row takes a person's typing that no
+// append can store, the doc_updates foreign key refusing it; one left open over a retired
+// document takes typing that settlement stores and writes no version of, and nothing tells the
+// person.
 //
-// The catch-up's sweep after the same LISTEN closes such a room too, where the room holds
-// stored updates: the removal took them with the document, so the room stands above the head
-// of an empty history, which reads as a history replaced under it (roomCatchUps.sweep,
-// storedHistoryReplaced). Whichever pass reads the room first closes it. This one closes it
-// for what it is, and it is the only one that closes a room holding nothing stored, which
-// stands at that empty history's head and reads as current.
+// The catch-up's sweep after the same LISTEN closes a removed document's room too, where the room
+// holds stored updates: the removal took them with the document, so the room stands above the
+// head of an empty history, which reads as a history replaced under it (roomCatchUps.sweep,
+// storedHistoryReplaced). Whichever pass reads the room first closes it. This one closes it for
+// what it is, and it is the only one that closes a room holding nothing stored, which stands at
+// that empty history's head and reads as current, and the room of a retired document, whose
+// stored history stays.
 func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	rooms := s.residentLoadedRooms()
 	if len(rooms) == 0 {
@@ -2941,7 +2946,7 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	}
 	// The usual answer holds every room asked for and builds nothing to read itself by: id is
 	// the artifacts primary key and each room is asked about once, so a row count that matches
-	// is every document still there.
+	// is every document still there and not retired.
 	if len(held) == len(rooms) {
 		return
 	}

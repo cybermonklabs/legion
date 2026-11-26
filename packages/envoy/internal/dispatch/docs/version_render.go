@@ -69,8 +69,17 @@ type Rendering struct {
 // renders it by the query's answer as of at (renderDecisions), the function its version write
 // stores the bytes of (R15).
 //
-// who is the reader the render answers; the render leaves out no node for a reader, so every
-// reader reads one rendering.
+// who is the reader the render answers, and the render is as if each node who may not see did not
+// exist (a node reserved for its author, INFRA-1950's R1: refs.VisibleNode): a hidden member prints
+// nowhere, neither as a top-level text child nor inside the text of the member that holds it,
+// whose text loses the hidden member's bytes at the member's own offsets in the rendering
+// (memberTree.leaveOut); and the decisions query's answer leaves out the entry of a node who may
+// not see, and cuts a hidden block out of the entry that holds it the same way. A render that
+// cannot place a hidden member's bytes is refused (ErrHiddenNotPlaced) rather than printed with
+// them. A node's visibility never changes after its write, so the render as of any time reads it
+// as it stands. The server's own read (model.ServerReader), which compares a version with its
+// render, writes the bytes of a version and carries an approval to it, sees every node, as the
+// server sees the store (R14).
 func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string, at time.Time) (Rendering, error) {
 	var refKey, issueKey string
 	var decisions bool
@@ -80,7 +89,7 @@ func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	}
 	cut := refs.TreeCut{At: at, Dated: true}
 	if decisions {
-		rendered, err := renderDecisions(ctx, q, issueKey, cut)
+		rendered, err := renderDecisions(ctx, q, who, issueKey, cut)
 		if err != nil {
 			return Rendering{}, err
 		}
@@ -94,41 +103,20 @@ func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	if err != nil {
 		return Rendering{}, fmt.Errorf("read the blocks of %s to render: %w", refKey, err)
 	}
-	type textChild struct{ rank, address, text string }
-	children := make([]textChild, 0, len(members))
-	for _, member := range members {
-		held := facts[member]
-		text, written := held.Values[graphstore.AttributeText]
-		rank, ranked := held.Values[refs.AttributeTextRank]
-		if !written || !ranked || held.Values[graphstore.AttributeState] == graphstore.StateGone {
-			continue
+	tree := readMemberTree(refKey, members, facts, !readsAsServer(who))
+	children := tree.top
+	if !readsAsServer(who) {
+		hidden, err := hiddenNodes(ctx, q, who, tree.printed())
+		if err != nil {
+			return Rendering{}, err
 		}
-		if slices.ContainsFunc(held.Relations, func(relation refs.TreeRelation) bool {
-			return relation.Kind == refs.TupleTextParent && relation.To.Kind == graphstore.KindArtifact && relation.To.ID == refKey
-		}) {
-			children = append(children, textChild{rank: rank, address: member.ID, text: text})
+		if len(hidden) > 0 {
+			if children, err = tree.leaveOut(hidden); err != nil {
+				return Rendering{}, fmt.Errorf("leave out the blocks of %s that the reader may not see: %w", refKey, err)
+			}
 		}
 	}
-	if len(children) == 0 {
-		return Rendering{Source: RenderedFromTree}, nil
-	}
-	slices.SortFunc(children, func(a, b textChild) int {
-		return cmp.Or(strings.Compare(a.rank, b.rank), strings.Compare(a.address, b.address))
-	})
-	length := 2*len(children) - 1
-	for _, child := range children {
-		length += len(child.text)
-	}
-	var rendered strings.Builder
-	rendered.Grow(length)
-	for index, child := range children {
-		if index > 0 {
-			rendered.WriteString("\n\n")
-		}
-		rendered.WriteString(child.text)
-	}
-	rendered.WriteByte('\n')
-	return Rendering{Markdown: rendered.String(), Source: RenderedFromTree}, nil
+	return Rendering{Markdown: joinTexts(children), Source: RenderedFromTree}, nil
 }
 
 // renderDecisions is the readable rendering of the answer of the decisions query of the issue
@@ -140,8 +128,10 @@ func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string
 // an ask by its question, as the conversation's loader answers it (refs.ConversationNodes). The
 // entries are joined by one blank line and the last line ends; an answer that takes no node
 // renders as no bytes. The version write and the renderer both call it: the drain's at the cut it
-// records on the version's row (planRevisions), the renderer as of that row's time (RenderAt).
-func renderDecisions(ctx context.Context, q Queryer, issueKey string, cut refs.TreeCut) (string, error) {
+// records on the version's row (planRevisions), the renderer as of that row's time (RenderAt). An
+// entry of a node who, the reader, may not see is left out, and a block who may not see inside an
+// entry is cut out of it (entriesWithoutHidden); the server's own read leaves out nothing.
+func renderDecisions(ctx context.Context, q Queryer, who model.Actor, issueKey string, cut refs.TreeCut) (string, error) {
 	tree, err := WalkIssueTree(ctx, q, issueKey, cut)
 	if err != nil {
 		return "", err
@@ -163,9 +153,35 @@ func renderDecisions(ctx context.Context, q Queryer, issueKey string, cut refs.T
 	slices.SortStableFunc(nodes, func(a, b TreeNode) int {
 		return cmp.Or(a.MadeAt.Compare(b.MadeAt), strings.Compare(a.Address(), b.Address()))
 	})
+	var hidden map[refs.Target]struct{}
+	var cutWords map[refs.Target]string
+	if !readsAsServer(who) {
+		targets := make([]refs.Target, len(nodes))
+		for index, node := range nodes {
+			targets[index] = node.target()
+		}
+		if hidden, err = hiddenNodes(ctx, q, who, targets); err != nil {
+			return "", err
+		}
+		printed := make([]TreeNode, 0, len(nodes))
+		for _, node := range nodes {
+			if _, hide := hidden[node.target()]; !hide && node.Kind != graphstore.KindAsk {
+				printed = append(printed, node)
+			}
+		}
+		if cutWords, err = entriesWithoutHidden(ctx, q, who, printed, facts, tree.Cut); err != nil {
+			return "", fmt.Errorf("leave out the blocks of the decisions of %s that the reader may not see: %w", issueKey, err)
+		}
+	}
 	entries := make([]string, 0, len(nodes))
 	for _, node := range nodes {
+		if _, hide := hidden[node.target()]; hide {
+			continue
+		}
 		words := facts[node.target()].Values[graphstore.AttributeText]
+		if trimmed, held := cutWords[node.target()]; held {
+			words = trimmed
+		}
 		if node.Kind == graphstore.KindAsk {
 			words = ""
 			if loaded := tree.Conversation[node.target()]; loaded.Excerpt != nil {
@@ -238,8 +254,11 @@ const versionRenderStatement = `
 
 // RenderVersion is version number of the document artifactID as every read of it answers it: with
 // a version_renders row, RenderAt as of the row's time; without one, the version's stored markdown
-// byte for byte as StoredBytes, and NoBytes, with an empty Markdown, where that markdown is null. A
-// version the document does not hold is pgx.ErrNoRows.
+// byte for byte as StoredBytes, and NoBytes, with an empty Markdown, where that markdown is null.
+// For a reader other than the server's own, the stored bytes leave out the bytes of each block the
+// version held that the reader may not see, placed by what that version held of it, and keep the
+// rest byte for byte (withoutHiddenBlocks); a version whose hidden block cannot be placed answers
+// ErrHiddenNotPlaced and no bytes. A version the document does not hold is pgx.ErrNoRows.
 func RenderVersion(ctx context.Context, q Queryer, who model.Actor, artifactID string, number int) (Rendering, error) {
 	var at *time.Time
 	var empty bool
@@ -253,7 +272,662 @@ func RenderVersion(ctx context.Context, q Queryer, who model.Actor, artifactID s
 	case empty:
 		return Rendering{Source: NoBytes}, nil
 	}
-	return Rendering{Markdown: *markdown, Source: StoredBytes}, nil
+	stored, err := withoutHiddenBlocks(ctx, q, who, artifactID, number, *markdown)
+	if err != nil {
+		return Rendering{}, err
+	}
+	return Rendering{Markdown: stored, Source: StoredBytes}, nil
+}
+
+// readsAsServer says whether who is the server's own reader (model.ServerReader), which sees every
+// node: the read the server makes for itself to compare a version with its render, to write the
+// bytes of a version or to carry an approval to it, and never one made for a person, a session or
+// a workload.
+func readsAsServer(who model.Actor) bool { return who.Viewer == model.ServerViewer }
+
+// textChild is a member of a document that holds a text value and a text_rank: its address, its
+// rank and its text.
+type textChild struct{ rank, address, text string }
+
+// byTextRank orders members by increasing text_rank, compared byte for byte, a tie, which no pass
+// writes, by the lower address.
+func byTextRank(a, b textChild) int {
+	return cmp.Or(strings.Compare(a.rank, b.rank), strings.Compare(a.address, b.address))
+}
+
+// joinTexts is the rendering of a document whose text children are children, in that order: their
+// texts joined by one blank line and the last line ended, and no bytes at all for none.
+func joinTexts(children []textChild) string {
+	if len(children) == 0 {
+		return ""
+	}
+	length := 2*len(children) - 1
+	for _, child := range children {
+		length += len(child.text)
+	}
+	var rendered strings.Builder
+	rendered.Grow(length)
+	for index, child := range children {
+		if index > 0 {
+			rendered.WriteString("\n\n")
+		}
+		rendered.WriteString(child.text)
+	}
+	rendered.WriteByte('\n')
+	return rendered.String()
+}
+
+// hiddenNodesStatement is the position of each node whose kind is in $1 and whose id is in $2, as
+// unnest numbers them from 1, that the acting credential $3 (refs.VisibilityArg) may not see: the
+// registry's one predicate, which holds a node the store has no row for visible.
+var hiddenNodesStatement = `
+	select node.position
+	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
+	where not ` + refs.VisibleNode(`node.kind`, `node.id`, `$3`)
+
+// hiddenNodes is those of nodes that who may not see, in one read, and nil where who is the
+// server's own reader or none is hidden.
+func hiddenNodes(ctx context.Context, q Queryer, who model.Actor, nodes []refs.Target) (map[refs.Target]struct{}, error) {
+	if len(nodes) == 0 || readsAsServer(who) {
+		return nil, nil
+	}
+	kinds, ids := make([]string, len(nodes)), make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index] = node.Kind, node.ID
+	}
+	rows, err := q.Query(ctx, hiddenNodesStatement, kinds, ids, refs.VisibilityArg(who))
+	if err != nil {
+		return nil, fmt.Errorf("read which of %d nodes the reader may not see: %w", len(nodes), err)
+	}
+	positions, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("read which of %d nodes the reader may not see: %w", len(nodes), err)
+	}
+	var hidden map[refs.Target]struct{}
+	for _, position := range positions {
+		if hidden == nil {
+			hidden = make(map[refs.Target]struct{}, len(positions))
+		}
+		hidden[nodes[position-1]] = struct{}{}
+	}
+	return hidden, nil
+}
+
+// hides says whether the block whose address is address is one of hidden.
+func hides(hidden map[refs.Target]struct{}, address string) bool {
+	_, hide := hidden[refs.Target{Kind: refs.BlockNodeKind, ID: address}]
+	return hide
+}
+
+// ErrHiddenNotPlaced refuses a read whose text holds a block its reader may not see that the read
+// cannot place: a block it finds at no offset of the text that holds it, or at one another block
+// of the same words could stand at, or a version whose record says nothing of the blocks it held.
+// Such a read answers no bytes rather than bytes that may hold the hidden block's. The version
+// routes answer it 404 NOT_FOUND, as a node the caller may not see answers (api's
+// writeHandlerError).
+var ErrHiddenNotPlaced = errors.New("docs: a block the reader may not see cannot be placed in the text that holds it, so its bytes cannot be left out")
+
+// memberTree is a document's members at a render's cut as the render reads them: the document's
+// text children (top) and each member's text children (under), each a member that holds a text
+// value and a text_rank and no state gone at the cut, by text_rank; and the text parent of every
+// member whose text_parent names a block (parentOf), printed or not, which says in whose text a
+// member's bytes lie.
+type memberTree struct {
+	top      []textChild
+	under    map[string][]textChild
+	parentOf map[string]string
+}
+
+// readMemberTree is the member tree of the document refKey from its members and what each states
+// at the render's cut (refs.TreeFactsOf). Without nested it reads the document's text children
+// alone, which is all a render that leaves nothing out prints.
+func readMemberTree(refKey string, members []refs.Target, facts map[refs.Target]refs.TreeFacts, nested bool) memberTree {
+	tree := memberTree{top: make([]textChild, 0, len(members))}
+	if nested {
+		tree.under, tree.parentOf = make(map[string][]textChild), make(map[string]string)
+	}
+	for _, member := range members {
+		held := facts[member]
+		var parent refs.Target
+		// A node's relations come by kind, then by the far end's kind, so a text parent that is
+		// the document's node (an artifact) comes before one that is a block.
+		for _, relation := range held.Relations {
+			if relation.Kind == refs.TupleTextParent {
+				parent = relation.To
+				break
+			}
+		}
+		if nested && parent.Kind == refs.BlockNodeKind {
+			tree.parentOf[member.ID] = parent.ID
+		}
+		text, written := held.Values[graphstore.AttributeText]
+		rank, ranked := held.Values[refs.AttributeTextRank]
+		if !written || !ranked || held.Values[graphstore.AttributeState] == graphstore.StateGone {
+			continue
+		}
+		child := textChild{rank: rank, address: member.ID, text: text}
+		switch {
+		case parent.Kind == graphstore.KindArtifact && parent.ID == refKey:
+			tree.top = append(tree.top, child)
+		case nested && parent.Kind == refs.BlockNodeKind:
+			tree.under[parent.ID] = append(tree.under[parent.ID], child)
+		}
+	}
+	slices.SortFunc(tree.top, byTextRank)
+	for _, kids := range tree.under {
+		slices.SortFunc(kids, byTextRank)
+	}
+	return tree
+}
+
+// printed is each member the tree prints, at the top or inside another member's text.
+func (m memberTree) printed() []refs.Target {
+	targets := make([]refs.Target, 0, len(m.top)+len(m.parentOf))
+	for _, child := range m.top {
+		targets = append(targets, refs.Target{Kind: refs.BlockNodeKind, ID: child.address})
+	}
+	for _, kids := range m.under {
+		for _, kid := range kids {
+			targets = append(targets, refs.Target{Kind: refs.BlockNodeKind, ID: kid.address})
+		}
+	}
+	return targets
+}
+
+// holding is each member that holds a member of hidden in its text, at any depth.
+func (m memberTree) holding(hidden map[refs.Target]struct{}) map[string]struct{} {
+	dirty := make(map[string]struct{})
+	for node := range hidden {
+		for up, held := m.parentOf[node.ID]; held; up, held = m.parentOf[up] {
+			if _, seen := dirty[up]; seen {
+				break
+			}
+			dirty[up] = struct{}{}
+		}
+	}
+	return dirty
+}
+
+// leaveOut is the tree's text children as if each block of hidden did not exist. A hidden child is
+// dropped, with the text children inside its bytes. A child that holds a hidden member keeps its
+// text with the hidden member's bytes cut out at that member's own offsets: the document's
+// rendering, the children joined, is read back into its blocks (readBackRendering), the child is
+// its block, and each member inside it is placed at its block (cutsUnder). Every other byte stays.
+// A hidden member it cannot place, or whose bytes would stay in a printed child, refuses the
+// render (ErrHiddenNotPlaced).
+func (m memberTree) leaveOut(hidden map[refs.Target]struct{}) ([]textChild, error) {
+	dirty := m.holding(hidden)
+	cut := make(map[string]struct{})
+	kept := make([]textChild, 0, len(m.top))
+	var back readBack
+	read := false
+	start := 0
+	for _, child := range m.top {
+		from := start
+		start += len(child.text) + len("\n\n")
+		if hides(hidden, child.address) {
+			cut[child.address] = struct{}{}
+			continue
+		}
+		if _, holds := dirty[child.address]; !holds {
+			kept = append(kept, child)
+			continue
+		}
+		if !read {
+			var err error
+			if back, err = readBackRendering(joinTexts(m.top)); err != nil {
+				return nil, err
+			}
+			read = true
+		}
+		root := back.spanning(from, from+len(child.text))
+		if root < 0 {
+			return nil, fmt.Errorf("%w: no block of the document's rendering is %s", ErrHiddenNotPlaced, child.address)
+		}
+		spans, err := m.cutsUnder(back, root, child.address, hidden, dirty, cut)
+		if err != nil {
+			return nil, err
+		}
+		child.text = cutSpans(child.text, from, spans)
+		kept = append(kept, child)
+	}
+	if err := m.leftIn(hidden, cut, ""); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// withoutHiddenIn is words, the text of the member address of the document whose rendering read
+// back is back, with each member of hidden inside it cut out at its own offsets (cutsUnder): the
+// member is the typed block of its id, a decision or a reading, whose bytes are words. A hidden
+// member it cannot place, or whose bytes would stay in words, refuses (ErrHiddenNotPlaced).
+func (m memberTree) withoutHiddenIn(back readBack, address, words string, hidden map[refs.Target]struct{}) (string, error) {
+	root := back.typed(blockIDOf(address))
+	if root < 0 || back.markdown[back.blocks[root].From:back.blocks[root].To] != words {
+		return "", fmt.Errorf("%w: the rendering of its document holds no block %s of its words", ErrHiddenNotPlaced, address)
+	}
+	cut := make(map[string]struct{})
+	spans, err := m.cutsUnder(back, root, address, hidden, m.holding(hidden), cut)
+	if err != nil {
+		return "", err
+	}
+	if err := m.leftIn(hidden, cut, address); err != nil {
+		return "", err
+	}
+	return cutSpans(words, back.blocks[root].From, spans), nil
+}
+
+// cutsUnder is the spans of back that leave out each member of hidden inside the member address,
+// whose block in back is root, and records in cut each hidden member it leaves out. Each text child
+// of the member (under), in text_rank order, stands at the first block inside root, at or after
+// the end of the child placed before it, that holds its text, a typed child at the block of its
+// own id: so a child's words in the member's opening line, or inside a block that is no member,
+// are never taken for it. A hidden child leaves out its block; a child that holds a hidden member
+// (dirty) is cut the same way inside its own block. A hidden or holding child that stands at no
+// block, a typed one at a block that is not the first of its id (the one the block index makes a
+// node of), or an untyped one where another untyped block of its words inside root could be it
+// too - a block no child stands at, and inside no child's block - is refused (ErrHiddenNotPlaced):
+// its bytes cannot be told apart.
+func (m memberTree) cutsUnder(back readBack, root int, address string, hidden map[refs.Target]struct{}, dirty map[string]struct{}, cut map[string]struct{}) ([]span, error) {
+	kids := m.under[address]
+	at := make([]int, len(kids))
+	cursor, scan := back.blocks[root].From, root+1
+	for index, kid := range kids {
+		at[index] = -1
+		id := blockIDOf(kid.address)
+		for block := scan; block < len(back.blocks) && back.inside(block, root); block++ {
+			offset := back.blocks[block]
+			if offset.From < cursor || back.markdown[offset.From:offset.To] != kid.text {
+				continue
+			}
+			if pmdoc.IsTypedBlock(offset.Type) && offset.ID != id {
+				continue
+			}
+			at[index], cursor, scan = block, offset.To, block+1
+			break
+		}
+	}
+	placed := func(block int) bool {
+		for _, other := range at {
+			if other >= 0 && (other == block || back.inside(block, other)) {
+				return true
+			}
+		}
+		return false
+	}
+	var spans []span
+	for index, kid := range kids {
+		hide := hides(hidden, kid.address)
+		_, holds := dirty[kid.address]
+		if !hide && !holds {
+			continue
+		}
+		block := at[index]
+		if block < 0 {
+			return nil, fmt.Errorf("%w: the text of %s holds no block of the words of %s", ErrHiddenNotPlaced, address, kid.address)
+		}
+		offset := back.blocks[block]
+		if pmdoc.IsTypedBlock(offset.Type) {
+			if back.typed(offset.ID) != block {
+				return nil, fmt.Errorf("%w: %s is not the first block of its id in its document", ErrHiddenNotPlaced, kid.address)
+			}
+		} else {
+			for other := root + 1; other < len(back.blocks) && back.inside(other, root); other++ {
+				candidate := back.blocks[other]
+				if other != block && !pmdoc.IsTypedBlock(candidate.Type) && back.markdown[candidate.From:candidate.To] == kid.text && !placed(other) {
+					return nil, fmt.Errorf("%w: the text of %s holds two blocks of the words of %s", ErrHiddenNotPlaced, address, kid.address)
+				}
+			}
+		}
+		if hide {
+			spans = append(spans, span{from: offset.From, to: offset.To})
+			cut[kid.address] = struct{}{}
+			continue
+		}
+		inner, err := m.cutsUnder(back, block, kid.address, hidden, dirty, cut)
+		if err != nil {
+			return nil, err
+		}
+		spans = append(spans, inner...)
+	}
+	return spans, nil
+}
+
+// leftIn refuses (ErrHiddenNotPlaced) where the bytes of a member of hidden stay in the text of
+// root, a member's address, or in the document's printed text where root is "": a hidden member
+// none of whose text parents up to root was left out (cut), whose text parents reach root, or a
+// printed text child of the document. A member whose text parents reach no printed text lies in no
+// printed byte.
+func (m memberTree) leftIn(hidden map[refs.Target]struct{}, cut map[string]struct{}, root string) error {
+	printed := func(address string) bool {
+		return slices.ContainsFunc(m.top, func(child textChild) bool { return child.address == address })
+	}
+	for node := range hidden {
+		at := node.ID
+		for steps := 0; steps <= len(m.parentOf); steps++ {
+			if _, left := cut[at]; left {
+				break
+			}
+			if at == root {
+				return fmt.Errorf("%w: %s stays in the text of %s", ErrHiddenNotPlaced, node.ID, root)
+			}
+			parent, held := m.parentOf[at]
+			if !held {
+				if root == "" && printed(at) {
+					return fmt.Errorf("%w: %s stays in the text of %s", ErrHiddenNotPlaced, node.ID, at)
+				}
+				break
+			}
+			at = parent
+		}
+	}
+	return nil
+}
+
+// blockIDOf is the block id the address of a block node names, `<ref_key>#<block id>`.
+func blockIDOf(address string) string {
+	_, id, _ := strings.Cut(address, "#")
+	return id
+}
+
+// readBack is a rendering read back into its blocks: the markdown, each block's range in it as the
+// renderer records it (pmdoc.ParseRendering, documentMarkdownWithOffsets), in document order, each
+// parent before its children, and beside each block the index of the block that holds it, -1 at
+// the top, placed as refs' blockParents places a version's blocks.
+type readBack struct {
+	markdown string
+	blocks   []pmdoc.BlockOffset
+	parents  []int
+}
+
+// errNotItsOwnRendering refuses to cut a text by offsets that index another text: one the renderer
+// does not read back and write again byte for byte.
+var errNotItsOwnRendering = fmt.Errorf("%w: the text does not read back as its own rendering, so its blocks' offsets are not known", ErrHiddenNotPlaced)
+
+// readBackRendering is markdown read back into its blocks, refused (errNotItsOwnRendering) where it
+// does not render back as its own bytes.
+func readBackRendering(markdown string) (readBack, error) {
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return readBack{}, fmt.Errorf("%w: %w", errNotItsOwnRendering, err)
+	}
+	rendered, blocks, err := documentMarkdownWithOffsets(tree)
+	if err != nil {
+		return readBack{}, fmt.Errorf("%w: %w", errNotItsOwnRendering, err)
+	}
+	if rendered != markdown {
+		return readBack{}, errNotItsOwnRendering
+	}
+	parents := make([]int, len(blocks))
+	stack := make([]int, 0, 8)
+	for index, block := range blocks {
+		for len(stack) > 0 && blocks[stack[len(stack)-1]].To <= block.From {
+			stack = stack[:len(stack)-1]
+		}
+		parents[index] = -1
+		if len(stack) > 0 {
+			parents[index] = stack[len(stack)-1]
+		}
+		stack = append(stack, index)
+	}
+	return readBack{markdown: markdown, blocks: blocks, parents: parents}, nil
+}
+
+// inside reports whether block index stands inside block root.
+func (r readBack) inside(index, root int) bool {
+	for at := r.parents[index]; at >= 0; at = r.parents[at] {
+		if at == root {
+			return true
+		}
+	}
+	return false
+}
+
+// spanning is the outermost block whose range runs from from to to, -1 where none does.
+func (r readBack) spanning(from, to int) int {
+	for index, block := range r.blocks {
+		if block.From == from && block.To == to {
+			return index
+		}
+	}
+	return -1
+}
+
+// typed is the first typed block of the rendering whose id is id, -1 where none is: a typed block
+// writes its id into its opening line, and the first block of an id is the one the block index
+// makes a node of (refs.PlanBlocks).
+func (r readBack) typed(id string) int {
+	for index, block := range r.blocks {
+		if pmdoc.IsTypedBlock(block.Type) && block.ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+// span is a range of a rendering's bytes a cut leaves out.
+type span struct{ from, to int }
+
+// cutSpans is text, the bytes of a rendering from offset at on, with the bytes of each of spans,
+// ranges of that rendering, left out; a span inside another is left out with it.
+func cutSpans(text string, at int, spans []span) string {
+	if len(spans) == 0 {
+		return text
+	}
+	slices.SortFunc(spans, func(a, b span) int { return cmp.Compare(a.from, b.from) })
+	var out strings.Builder
+	out.Grow(len(text))
+	copied := 0
+	for _, each := range spans {
+		from, to := each.from-at, each.to-at
+		if to <= copied {
+			continue
+		}
+		from = max(from, copied)
+		out.WriteString(text[copied:from])
+		copied = to
+	}
+	out.WriteString(text[copied:])
+	return out.String()
+}
+
+// entriesWithoutHidden is the words of each of entries, the blocks a decisions rendering prints by
+// their text value (facts), whose text holds a block who may not see, with each such block cut
+// out (memberTree.withoutHiddenIn): for each document the entries stand in (their in_document), it
+// reads the document's members at cut and which of them who may not see, and only where one is
+// hidden their facts and the document's rendering. It answers only the entries it cut.
+func entriesWithoutHidden(ctx context.Context, q Queryer, who model.Actor, entries []TreeNode, facts map[refs.Target]refs.TreeFacts, cut refs.TreeCut) (map[refs.Target]string, error) {
+	byDocument := make(map[string][]TreeNode)
+	var documents []string
+	for _, node := range entries {
+		for _, relation := range facts[node.target()].Relations {
+			if relation.Kind != refs.TupleInDocument || relation.To.Kind != graphstore.KindArtifact {
+				continue
+			}
+			if _, seen := byDocument[relation.To.ID]; !seen {
+				documents = append(documents, relation.To.ID)
+			}
+			byDocument[relation.To.ID] = append(byDocument[relation.To.ID], node)
+			break
+		}
+	}
+	var cutWords map[refs.Target]string
+	for _, document := range documents {
+		members, err := refs.TreeMembers(ctx, q, document, cut)
+		if err != nil {
+			return nil, err
+		}
+		hidden, err := hiddenNodes(ctx, q, who, members)
+		if err != nil {
+			return nil, err
+		}
+		if len(hidden) == 0 {
+			continue
+		}
+		held, err := refs.TreeFactsOf(ctx, q, members, cut)
+		if err != nil {
+			return nil, fmt.Errorf("read the blocks of %s to leave out those the reader may not see: %w", document, err)
+		}
+		tree := readMemberTree(document, members, held, true)
+		dirty := tree.holding(hidden)
+		var back readBack
+		read := false
+		for _, node := range byDocument[document] {
+			if _, holds := dirty[node.ID]; !holds {
+				continue
+			}
+			if !read {
+				if back, err = readBackRendering(joinTexts(tree.top)); err != nil {
+					return nil, fmt.Errorf("read back %s: %w", document, err)
+				}
+				read = true
+			}
+			words, err := tree.withoutHiddenIn(back, node.ID, facts[node.target()].Values[graphstore.AttributeText], hidden)
+			if err != nil {
+				return nil, err
+			}
+			if cutWords == nil {
+				cutWords = make(map[refs.Target]string)
+			}
+			cutWords[node.target()] = words
+		}
+	}
+	return cutWords, nil
+}
+
+// hiddenVersionBlocksStatement is, of version $2 of the document $1, whether a block-aware pass
+// indexed it (document_indexed_versions), and each block of the document's record of block texts
+// whose node the acting credential $3 may not see, with its text at that version: the newest row
+// at or before it, null where that row records the block deleted. The record is the
+// document_block_texts rows under the document and, for a document of an issue room, under the
+// room's tree artifact at the document's own version numbers, of the blocks the document holds
+// (refs' blockTextOwners, refs.RoomBlockDocumentSQL), and a block's node is its address under the
+// key its newest row stands under. A block of a version that indexed is answered only where that
+// version held it; of a version no pass indexed the record says nothing, so every hidden block it
+// records is answered, whatever version its rows are at. It answers one row with no block where
+// none is hidden.
+var hiddenVersionBlocksStatement = `
+	with version as (
+		select exists (select 1 from document_indexed_versions where artifact_id = $1::uuid and version = $2) as indexed
+	), held as (
+		select distinct on (t.block_id) t.block_id, t.text, owner.ref_key
+		from artifacts owner
+		join document_block_texts t on t.artifact_id = owner.id
+		cross join version
+		where owner.id = any(array[$1::uuid, ` + refs.DocumentRoomSQL(`$1::uuid`) + `])
+		  and (owner.id = $1::uuid or ` + refs.RoomBlockDocumentSQL(`owner.id`, `t.block_id`) + ` = $1::uuid)
+		  and (t.version <= $2 or not version.indexed)
+		order by t.block_id, t.version desc
+	)
+	select version.indexed, held.block_id, held.text
+	from version
+	left join held on (held.text is not null or not version.indexed)
+		and not ` + refs.VisibleKind(refs.BlockNodeKind, `held.ref_key || '#' || held.block_id`, `$3`)
+
+// heldBlock is a block a version held, as the record of block texts has it: its id and its text at
+// the version.
+type heldBlock struct{ id, text string }
+
+// withoutHiddenBlocks is stored, the stored markdown of version number of the document artifactID,
+// with the bytes of each block that version held whose node who may not see left out, at that
+// block's offsets in stored, and every other byte as it stands. What the version held of each
+// block is the record of block texts at that version (hiddenVersionBlocksStatement), whatever the
+// document's index holds now, so a block a later version changed or removed is placed by its text
+// in this one (placeHeldBlocks). It is stored itself where who is the server's own reader or the
+// version held no hidden block. A version no pass indexed, whose record says nothing of the blocks
+// it held, while the document records a hidden block, and a hidden block it cannot place, refuse
+// the read (ErrHiddenNotPlaced).
+func withoutHiddenBlocks(ctx context.Context, q Queryer, who model.Actor, artifactID string, number int, stored string) (string, error) {
+	if readsAsServer(who) {
+		return stored, nil
+	}
+	rows, err := q.Query(ctx, hiddenVersionBlocksStatement, artifactID, number, refs.VisibilityArg(who))
+	if err != nil {
+		return "", fmt.Errorf("read the blocks of version %d of %s the reader may not see: %w", number, artifactID, err)
+	}
+	var indexed bool
+	var hidden []heldBlock
+	for rows.Next() {
+		var id, text *string
+		if err := rows.Scan(&indexed, &id, &text); err != nil {
+			rows.Close()
+			return "", fmt.Errorf("read the blocks of version %d of %s the reader may not see: %w", number, artifactID, err)
+		}
+		if id == nil {
+			continue
+		}
+		block := heldBlock{id: *id}
+		if text != nil {
+			block.text = *text
+		}
+		hidden = append(hidden, block)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read the blocks of version %d of %s the reader may not see: %w", number, artifactID, err)
+	}
+	if len(hidden) == 0 {
+		return stored, nil
+	}
+	if !indexed {
+		return "", fmt.Errorf("%w: no pass indexed version %d of %s, so the record says nothing of which of its blocks the reader may not see", ErrHiddenNotPlaced, number, artifactID)
+	}
+	back, err := readBackRendering(stored)
+	if err != nil {
+		return "", fmt.Errorf("version %d of %s: %w", number, artifactID, err)
+	}
+	spans, err := placeHeldBlocks(back, hidden)
+	if err != nil {
+		return "", fmt.Errorf("version %d of %s: %w", number, artifactID, err)
+	}
+	return cutSpans(stored, 0, spans), nil
+}
+
+// placeHeldBlocks is the spans of back, a version's stored markdown read back, that leave out each
+// of held, a block the version held, with its text at that version: a typed block at the block of
+// its id, which must hold that text; an untyped one at the one range of back's untyped blocks that
+// holds its text. The record keeps no block's place in its version, so an untyped block whose text
+// several ranges hold cannot be told from the other blocks of those words: it is placed only where
+// every such range lies inside a span already left out, which takes its bytes whichever block it
+// is. A block it cannot place so, and one whose text no block holds, are refused
+// (ErrHiddenNotPlaced).
+func placeHeldBlocks(back readBack, held []heldBlock) ([]span, error) {
+	var spans []span
+	var unplaced [][]span
+	for _, block := range held {
+		if at := back.typed(block.id); at >= 0 {
+			offset := back.blocks[at]
+			if back.markdown[offset.From:offset.To] != block.text {
+				return nil, fmt.Errorf("%w: the block %s of the version holds other words than the record of it", ErrHiddenNotPlaced, block.id)
+			}
+			spans = append(spans, span{from: offset.From, to: offset.To})
+			continue
+		}
+		var ranges []span
+		for _, offset := range back.blocks {
+			if pmdoc.IsTypedBlock(offset.Type) || back.markdown[offset.From:offset.To] != block.text {
+				continue
+			}
+			if each := (span{from: offset.From, to: offset.To}); !slices.Contains(ranges, each) {
+				ranges = append(ranges, each)
+			}
+		}
+		switch len(ranges) {
+		case 0:
+			return nil, fmt.Errorf("%w: no block of the version holds the words the record gives the block %s", ErrHiddenNotPlaced, block.id)
+		case 1:
+			spans = append(spans, ranges[0])
+		default:
+			unplaced = append(unplaced, ranges)
+		}
+	}
+	for _, ranges := range unplaced {
+		for _, each := range ranges {
+			if !slices.ContainsFunc(spans, func(left span) bool { return left.from <= each.from && each.to <= left.to }) {
+				return nil, fmt.Errorf("%w: more than one block of the version holds the words of a block the reader may not see", ErrHiddenNotPlaced)
+			}
+		}
+	}
+	return spans, nil
 }
 
 // errVersionRenderCut refuses a version_renders row of a record read at a render's cut, which
@@ -868,9 +1542,13 @@ func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int
 
 // owedDigestsStatement is each version of a document of the issue $1 whose record digest is owed
 // (version_renders.digest_owed), by document and number: its document and number, the cut its row
-// records, the query of its document's node, whose record covers it, and its stored markdown.
+// records, the query of its document's node, whose record covers it, its stored markdown, and the
+// record digest the version before it holds, the one a record carry to it stood on (recordUnmoved:
+// it carries only where that row holds the approval's pin, and nothing writes a filled digest
+// again).
 var owedDigestsStatement = `
-	select r.artifact_id::text, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `', coalesce(v.markdown, '')
+	select r.artifact_id::text, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `', coalesce(v.markdown, ''),
+	       (select p.record_sha256 from version_renders p where p.artifact_id = r.artifact_id and p.number = r.number - 1)
 	from artifacts a
 	join version_renders r on r.artifact_id = a.id and r.digest_owed
 	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
@@ -879,14 +1557,15 @@ var owedDigestsStatement = `
 	order by r.artifact_id, r.number`
 
 // owedCarriesStatement is each carried review of version $2 of the document $1 whose row of
-// artifact_review_carries holds no record digest yet: the carry the version's own write queued in
-// its batch (R14), which pinned the digest of the version's stored markdown.
+// artifact_review_carries holds no record digest yet, with its reason: the carry the version's own
+// write queued in its batch (R14), which pinned the digest of the version's stored markdown. It
+// orders no rows: the fill repins the reviews it answers as one set (queueFilledDigest,
+// `review_id = any(...)`), so no review of them comes before another.
 const owedCarriesStatement = `
-	select c.review_id::text
+	select c.review_id::text, coalesce(r.reason, '')
 	from artifact_reviews r
 	join artifact_review_carries c on c.review_id = r.id
-	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null
-	order by c.review_id`
+	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null`
 
 // lostDigestsStatement lists the issues a version of whose documents still owes its record digest
 // though the write that left it owed has committed - a fill a request lost to a failure or a stop
@@ -900,14 +1579,43 @@ const lostDigestsStatement = `
 
 // owedDigest is one version whose record digest is owed, as owedDigestsStatement reads it, with
 // the record the fill read at its row's cut and the carried reviews of its write's batch the fill
-// repins.
+// repins; stood is the record digest of the version before it.
 type owedDigest struct {
 	version  statedVersion
 	cut      refs.TreeCut
 	query    string
 	markdown string
+	stood    *string
 	record   QueryRecord
 	carries  []string
+}
+
+// owedCarry is one carried review owedCarriesStatement reads: its id and its reason.
+type owedCarry struct{ review, reason string }
+
+// repinnedCarries is the id of each of carries, the carried reviews of version's write's batch,
+// that the fill repins to version's record digest: every one but a record carry (IsRecordCarry)
+// whose version digests otherwise than the version before it, the digest its approval stood on
+// (recordUnmoved). Each such carry is logged as an error naming the document, the version and the
+// two digests, and stays unpinned, so every gate reads its approval stale. The write's rule decided
+// that carry in its read phase and must never be wrong; this is the backstop that holds it to its
+// claim.
+func repinnedCarries(version owedDigest, carries []owedCarry) []string {
+	repinned := make([]string, 0, len(carries))
+	for _, carry := range carries {
+		if IsRecordCarry(carry.reason) && (version.stood == nil || *version.stood != version.record.Digest) {
+			stood := ""
+			if version.stood != nil {
+				stood = *version.stood
+			}
+			slog.Error("dispatch: a record carry's version does not digest to the record its approval stood on, so its carried review stays unpinned and the approval reads stale",
+				"artifact", version.version.artifactID, "version", version.version.number, "review", carry.review,
+				"digest", version.record.Digest, "approved_digest", stood)
+			continue
+		}
+		repinned = append(repinned, carry.review)
+	}
+	return repinned
 }
 
 // readOwedDigests reads, through tx, each version of a document of the issue issueKey whose record
@@ -919,7 +1627,7 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 	}
 	owed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedDigest, error) {
 		var version owedDigest
-		err := row.Scan(&version.version.artifactID, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query, &version.markdown)
+		err := row.Scan(&version.version.artifactID, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query, &version.markdown, &version.stood)
 		return version, err
 	})
 	if err != nil {
@@ -936,7 +1644,12 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 // none of which gives the transaction an id. Its one batch then records each record's digest on
 // its version's row, clearing digest_owed, and repins each such carried review to it on its own row
 // of artifact_review_carries, with no event and no second review row (R14): the review's
-// content_sha256 cannot move, since the update trigger of artifact_reviews refuses it. A person's
+// content_sha256 cannot move, since the update trigger of artifact_reviews refuses it. A record
+// carry (IsRecordCarry) is repinned only where the record's digest is the one its approval stood
+// on, the version before it's (owedDigest.stood); where it is not, the write's rule was wrong
+// (recordUnmoved), and the carry stays unpinned (repinnedCarries), so every gate reads the
+// approval stale - its content_sha256 is the stored markdown's digest, and the version's is the
+// record's. That is a backstop that must never fire. A person's
 // approval of such a version given between the write's COMMIT and the fill is no carry: the fill
 // carries it at that version (carryApprovalBeforeFill), after the rows, so the carried review's
 // insert trigger pins the record's digest, and that carry appends its artifact.approved after the
@@ -972,9 +1685,15 @@ func (s *Service) fillOwedDigests(ctx context.Context, issueKey string) ([]model
 		if err != nil {
 			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
 		}
-		if version.carries, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		carries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedCarry, error) {
+			var carry owedCarry
+			err := row.Scan(&carry.review, &carry.reason)
+			return carry, err
+		})
+		if err != nil {
 			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
 		}
+		version.carries = repinnedCarries(*version, carries)
 	}
 	ctx, ledger := queueWrites(ctx, tx)
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
@@ -1054,7 +1773,10 @@ func (s *Service) HoldFills(hold func(issueKey string)) {
 // logged, and its digests stay owed for the block-index tick (fillLostDigests); the write stands
 // committed either way. A caller still holding a pooled connection fills nothing, since the fill's
 // transaction would be a second connection taken while it holds one (store.HoldsPooledConnection),
-// and the tick fills those digests too.
+// and the tick fills those digests too. Its caller holds no room's writer slot either: the fill
+// waits for the issue's owner lock, which another writer of the issue takes before it waits for
+// that slot (joinLiveWrite), and Postgres cannot see a wait on a slot to break the cycle. So a
+// write publishes its rooms' writes first (Ledger.Commit), and a settlement frees its slots first.
 func (s *Service) fillOwed(ctx context.Context, issues []string) []model.Event {
 	if len(issues) == 0 || store.HoldsPooledConnection(ctx) {
 		return nil
@@ -1174,7 +1896,10 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []st
 		if newest == nil || newest.State != "approved" || newest.Version != number {
 			continue
 		}
-		rendered, err := RenderVersion(ctx, tx, model.Actor{}, id, number)
+		if err := refuseSecondCarry(ctx, tx, id); err != nil {
+			return nil, err
+		}
+		rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
 		if err != nil {
 			return nil, err
 		}
@@ -1199,8 +1924,9 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []st
 // the repair's restate): the write phase of ledger, the pass's (runQueue), which writes the row of
 // each version the pass stated and marks each it found mismatched; then, in tx and after those
 // rows, the carry of R14 to each version whose row took its time from it (carryFirstStated); then
-// beforeCommit, where it is given, and the commit, after which it publishes the events the carry
-// appended.
+// beforeCommit, where it is given, and the commit, after which it publishes the events the pass
+// appended - the artifact.indexed of a pass that cleared an owed index (queueIndexedEvent) - and
+// then those the carry appended, in the order they were appended.
 func (s *Service) commitPass(ctx context.Context, tx pgx.Tx, ledger *Ledger, beforeCommit func() error) error {
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return err
@@ -1217,7 +1943,7 @@ func (s *Service) commitPass(ctx context.Context, tx pgx.Tx, ledger *Ledger, bef
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	for _, event := range carried {
+	for _, event := range slices.Concat(ledger.events, carried) {
 		s.events.Publish(event)
 	}
 	return nil
@@ -1369,6 +2095,9 @@ func (s *Service) repairDocumentMismatch(ctx context.Context, marked markedVersi
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return err
+	}
 	queued, ledger := queueWrites(ctx, tx)
 	owner, _, err := lockArtifactOwner(queued, tx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1522,6 +2251,9 @@ func (s *Service) repairRoomMismatch(ctx context.Context, marked markedVersion, 
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return err
+	}
 	queued, ledger := queueWrites(ctx, tx)
 	owner, _, err := lockArtifactOwner(queued, tx, room)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1691,13 +2423,19 @@ func renameBlockIDs(tree *pmdoc.Node, renamed map[string]string) {
 // which its room's fragments hold, and its decisions query node, which no room holds - where the
 // issue has converted, an issue_trees row holding its tree, and nothing for any other issue: each
 // one's id, the query of its node, its name, its newest version's number and markdown with the
-// digest that version's version_renders row records, null where it holds no row or holds none yet,
-// whether that row owes its digest, and whether the document's block index stands at that version:
-// its document_block_versions row at that number, holding no mark of this build's
-// (store_owed_at). They come in id order.
+// digest and render time that version's version_renders row records, null where it holds no row or
+// holds none yet, whether that row owes its digest, whether the document's block index stands at
+// that version: its document_block_versions row at that number, holding no mark of this build's
+// (store_owed_at), which of its two rows of the whole-grammar re-index queue stand
+// (refs_grammar_owed, by their primary key): its own text's, kind artifact, and its scope's, and
+// whether its artifact rows of the live reference forms queues stand. They come in id order.
 var revisedDocumentsStatement = `
-	select d.id::text, n.attributes->>'` + graphstore.AttributeQuery + `', d.name, v.number, coalesce(v.markdown, ''), r.record_sha256,
-	       coalesce(r.digest_owed, false), coalesce(b.version = v.number and b.store_owed_at is null, false)
+	select d.id::text, n.attributes->>'` + graphstore.AttributeQuery + `', d.name, v.number, coalesce(v.markdown, ''), r.record_sha256, r.at,
+	       coalesce(r.digest_owed, false), coalesce(b.version = v.number and b.store_owed_at is null, false),
+	       exists (select 1 from refs_grammar_owed o where o.kind = 'artifact' and o.id = d.id),
+	       exists (select 1 from refs_grammar_owed o where o.kind = 'scope' and o.id = d.id),
+	       exists (select 1 from refs_forms_owed o where o.kind = 'artifact' and o.id = d.id),
+	       exists (select 1 from refs_decisions_forms_owed o where o.kind = 'artifact' and o.id = d.id)
 	from issue_trees t
 	join artifacts d on d.issue_key = t.issue_key and d.kind = 'doc' and d.retired_at is null
 	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = d.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
@@ -1734,14 +2472,19 @@ func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 
 // queryDocument is one query document of a converted issue as revisedDocumentsStatement reads it:
 // its id, the query whose record covers it, its name, its newest version's number and markdown
-// with the digest that version's version_renders row records, whether that row owes it, and
-// whether its block index stands at that version.
+// with the digest and render time that version's version_renders row records, whether that row
+// owes it, whether its block index stands at that version, and whether the re-index queues hold
+// its own text's row (textQueued), its scope's (scopeQueued), and each live forms row before the
+// drain writes anything.
 type queryDocument struct {
-	id, query, name, markdown string
-	number                    int
-	digest                    *string
-	owed                      bool
-	indexed                   bool
+	id, query, name, markdown            string
+	number                               int
+	digest                               *string
+	renderedAt                           *time.Time
+	owed                                 bool
+	indexed                              bool
+	textQueued, scopeQueued, formsQueued bool
+	decisionsFormsQueued                 bool
 }
 
 // queryRevision is a version a query document is owed (planRevisions): the document as its newest
@@ -1769,8 +2512,15 @@ type queryRevision struct {
 // may not hold it (a deferred pass), and the pass that states it records its digest, or it is no
 // query version this build's version write made (madeQueryVersion), which no row ever covers and
 // which answers its stored bytes for good. A document whose record digests to its newest version's
-// digest and whose render is that version's markdown is left too. Each other one is owed a version
-// whose markdown is the render. It writes nothing.
+// digest and whose rendering did not move since that version is left too: where the cut's render
+// differs from that version's stored markdown, it compares the cut's render with the render as of
+// that version's own row's time (document.renderedAt), so a version whose render already differed
+// from its stored bytes - a document holding a top-level block whose id is past
+// text.MaxBlockIDBytes, which is no node of the store and prints in no member's text (R1, R15) -
+// is not rewritten as a lossy version when nothing in the tree moved; and when its record alone
+// moved, the version the drain writes of a room document keeps the stored bytes of the version
+// before it so its block index stands. Each other one is owed a version whose markdown is the
+// render. It writes nothing.
 func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevision, error) {
 	rows, err := tx.Query(ctx, revisedDocumentsStatement, issueKey)
 	if err != nil {
@@ -1780,7 +2530,8 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 	owed := false
 	for rows.Next() {
 		var document queryDocument
-		if err := rows.Scan(&document.id, &document.query, &document.name, &document.number, &document.markdown, &document.digest, &document.owed, &document.indexed); err != nil {
+		if err := rows.Scan(&document.id, &document.query, &document.name, &document.number, &document.markdown, &document.digest, &document.renderedAt, &document.owed, &document.indexed,
+			&document.textQueued, &document.scopeQueued, &document.formsQueued, &document.decisionsFormsQueued); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 		}
@@ -1809,13 +2560,27 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 		if err != nil {
 			return nil, err
 		}
-		rendering, err := RenderAt(ctx, tx, model.Actor{}, document.id, cut.At)
+		rendering, err := RenderAt(ctx, tx, model.ServerReader, document.id, cut.At)
 		if err != nil {
 			return nil, err
 		}
-		if record.Digest != *document.digest || rendering.Markdown != document.markdown {
-			revisions = append(revisions, queryRevision{document: document, markdown: rendering.Markdown, record: record})
+		recordMoved := record.Digest != *document.digest
+		renderMoved := rendering.Markdown != document.markdown
+		if renderMoved && document.renderedAt != nil {
+			previous, err := RenderAt(ctx, tx, model.ServerReader, document.id, *document.renderedAt)
+			if err != nil {
+				return nil, err
+			}
+			renderMoved = rendering.Markdown != previous.Markdown
 		}
+		if !recordMoved && !renderMoved {
+			continue
+		}
+		markdown := rendering.Markdown
+		if !renderMoved && document.query != graphstore.QueryDecisions {
+			markdown = document.markdown
+		}
+		revisions = append(revisions, queryRevision{document: document, markdown: markdown, record: record})
 	}
 	return revisions, nil
 }
@@ -1824,11 +2589,14 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 // whose markdown is the render (queueVersionInsert), its version node (WriteVersionNode, whose owner
 // names the query and its definition_version, ReadVersionOwner) and its version_renders row holding
 // the record's digest and the cut's time and seq, as a pass records them (QueueVersionRender), so
-// the census reads it as every rendered version, and never as deferred. A version that stores the
-// bytes of the version before it, where the document's block index stood at that version, stands
-// the index at the new version in the same write (queueRevisionStand). Each write is queued on the
-// drain's ledger (drainQueryMark, write), which sends them all in its write phase. It records each
-// version's row and its node's facts on its revision, for the drain to cause.
+// the census reads it as every rendered version, and never as deferred. A version no block pass is
+// owed stands the index at the new version in the same write (queueRevisionStand): a version of the
+// issue's decisions query node, whatever its bytes, and a version of any other query document that
+// stores the bytes of the version before it, where the document's block index stood at that
+// version. The same write puts the document's rows of the re-index queue back as they stood before
+// the version's insert (restoreReindexQueue). Each write is queued on the drain's ledger
+// (drainQueryMark, write), which sends them all in its write phase. It records each version's row
+// and its node's facts on its revision, for the drain to cause.
 func (s *Service) writeRevisions(ctx context.Context, tx pgx.Tx, revisions []queryRevision, writer model.Actor) error {
 	for index := range revisions {
 		revised := &revisions[index]
@@ -1846,13 +2614,15 @@ func (s *Service) writeRevisions(ctx context.Context, tx pgx.Tx, revisions []que
 			return err
 		}
 		record := revised.record
-		stands := revised.document.indexed && revised.markdown == revised.document.markdown
+		stands := revised.document.query == graphstore.QueryDecisions ||
+			revised.document.indexed && revised.markdown == revised.document.markdown
 		if err := write(ctx, tx, func(b *store.WriteBatch) error {
 			if err := QueueVersionRender(b, id, version.Number, record); err != nil {
 				return err
 			}
 			if stands {
 				queueRevisionStand(b, id, version.Number, s.markingRule)
+				restoreReindexQueue(b, revised.document)
 			}
 			return nil
 		}); err != nil {
@@ -1864,15 +2634,25 @@ func (s *Service) writeRevisions(ctx context.Context, tx pgx.Tx, revisions []que
 }
 
 // queueRevisionStand queues on b the stand of the block index of the document artifactID at
-// version number, a version that stores the bytes of the version before it, whose block index
-// stood at that version (writeRevisions): the revision fence's own statement
-// (refs.RevisionFenceStatement) at the marking rule rule, as the index pass of one document stands
-// its row (refs' BlockIndexing.queueStand). The version's insert, queued before it, owes the
-// document its index (document_block_versions_owe, migration 0122), and the fence admits a stand
-// over that owed row. The blocks the version before stood at are the new version's, byte for
-// byte, so no pass is owed it, and the coverage read lists no document owed for it (api's
-// owedDocumentsStatement) and still draws each missing check. A version whose rendering moved stays
-// owed for the reconciliation. A stand the fence refuses fails the write, as the pass's does.
+// version number, a version the drain wrote that no block pass is owed (writeRevisions): the
+// revision fence's own statement (refs.RevisionFenceStatement) at the marking rule rule, as the
+// index pass of one document stands its row (refs' BlockIndexing.queueStand). The version's insert,
+// queued before it, owes the document its index (document_block_versions_owe, migration 0122), and
+// the fence admits a stand over that owed row. Two kinds of version are owed no pass. One stores
+// the bytes of the version before it, whose block index stood at that version: its blocks are that
+// version's, byte for byte. The other is any version of an issue's decisions query node: the node
+// holds no fragment of a room and no block, no block pass states its versions and the tree holds no
+// member of it (R15), and its version 1 is indexed as the empty document in the create's own write
+// (api's queueDecisionsFirstVersion). Its bytes move with every ask, decision and reading the query
+// takes, and a write that moves them and marks no query owed, as an ask's create does, leaves them
+// to the issue's next drain, a recorded result's say, whose version of the query then stores other
+// bytes than the version before it, which may itself still owe its index. Either way the coverage
+// read lists no document owed for it (api's owedDocumentsStatement) and still draws each missing
+// check, and, once the re-index queue stands as it did before the insert (restoreReindexQueue), the
+// block-index tick has nothing of it to do. A version of a document of an issue room whose
+// rendering moved, or whose block index did not stand at the version before, stays owed for the
+// reconciliation, which indexes the room. A stand the fence refuses fails the write, as the pass's
+// does.
 func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int) {
 	b.Queue(fmt.Sprintf("stand the blocks of %s indexed at version %d", artifactID, number),
 		refs.RevisionFenceStatement, artifactID, number, rule).QueryRow(func(row pgx.Row) error {
@@ -1880,15 +2660,133 @@ func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int
 		if err := row.Scan(nil); !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		return fmt.Errorf("the revision fence refused the stand of the blocks of %s at version %d, which stores the bytes of the version before it",
+		return fmt.Errorf("the revision fence refused the stand of the blocks of %s at version %d, which the drain wrote and no block pass is owed",
 			artifactID, number)
+	})
+}
+
+// restoreReindexQueue queues on b, after the stand of a version the drain wrote that no block pass
+// is owed (queueRevisionStand), the delete of the re-index queue rows that the version's insert
+// made for document.
+//
+// A decisions query node holds no fragment of a room and no block, and no source's text belongs
+// to it (R15). queueSettleDecisionsQueryQueues clears all its re-index debt, even if it stood
+// before the version insert.
+//
+// For every other query document, only the rows of refs_grammar_owed and refs_forms_owed that the
+// version's insert made and that did not stand before it are deleted: of the two rows every
+// version insert owes refs_grammar_owed (trigger artifact_versions_refs_grammar_owed, function
+// refs_grammar_owe_version, migrations 20261103205037 and 20261103205041), its own text's, kind
+// artifact, and its scope's, and the one row it owes refs_forms_owed (trigger
+// artifact_versions_refs_forms_owed, function refs_forms_owe_version, migrations 20261117025900
+// and 20261117025904), kind artifact. revisedDocumentsStatement read which of them stood, in the
+// drain's read phase (queryDocument's textQueued, scopeQueued and formsQueued). A row that stood
+// is left: the insert's trigger only moved its enqueued_at, and it is still owed for the reason it
+// was owed (for refs_forms_owed, a real debt of an older build's write).
+// Deleting an insert-only forms row fires the Decisions relay (migration 20261126040100).
+// In a separate statement, remove the live row it made only if no live row already stood. The
+// relay does not update a standing row. Nothing here owes or settles the Decisions seed queue.
+//
+// Left in either queue, a row the insert made owes the document its block index again at the next
+// tick, after the stand: the block-index tick's text pass drains refs_grammar_owed's artifact row
+// by owing the document an index (reindexOwedText, drainOwedDocument, oweDocumentIndex), and the
+// scope row does the same where the document's own text writes a `#id` (reindexScope); the forms
+// drain (RunRefsFormsReconciliation, drainFormsRoomDocument) drains refs_forms_owed's artifact row
+// by owing the document a block index (oweDocumentIndex) and running its room's pass. The coverage
+// read then lists the document owed and draws no gap until that pass commits. None of those rows is
+// owed any work here. A version that stores the bytes of the version before it, whose index stood,
+// holds the text this build already read with the whole grammar and its reference forms at that
+// version - or, where an older build wrote that version, still holds its own standing row in the
+// queue - and the same question blocks, so its scope's `#id`s resolve as they did. A version of
+// the decisions query holds no block, no member and no reference the index reads (R15; api's
+// queueDecisionsFirstVersion indexes its version 1 handed no text), and no source's text belongs
+// to it; left in refs_forms_owed, its artifact row would likewise draw a forms pass that reads no
+// text of it.
+//
+// The read is still true when the batch runs, because every writer that can add a row of one of
+// these documents holds the issue's owner lock, which the drain holds from its read phase to its
+// COMMIT (drainMark). The rows of a document are inserted by four trigger families alone. The two
+// version-insert triggers (refs_grammar_owe_version and refs_forms_owe_version) fire in a version
+// write, and every version write of an issue's document holds that issue's owner lock first
+// (lockArtifactOwner; the conversion takes it with store.LockOwner, and so does the drain). The
+// delete triggers on refs and block_refs that owe refs_forms_owed (migrations 20261117025906 and
+// 20261117025907) fire only in an index pass or document removal under the document owner's lock
+// (or in refs.RebuildAll's orphan sweep, which deletes only rows of gone documents). The asks'
+// scope triggers (refs_grammar_owe_ask_scope, migration 20261103205039) name the document an ask's
+// block is on, new or old: an ask block of a converted issue names the issue's room, its tree
+// artifact (createAskBlock, the conversion's moveAsks), which is no query document, so no new block
+// names one of these documents; the old block names one in the conversion's moveAsks, under the
+// issue's owner lock, and the decisions step points an ask at the spec (issueRestore.moveRows)
+// under the spec's owner lock, which is the issue's. No ask names the decisions query, which holds
+// no block. The ticks' passes and refs.RebuildAll delete rows with no owner lock; a row one of them
+// deletes between the read and the batch is inserted again by the version's own trigger and left
+// standing, which costs the document one pass and loses nothing, and a settle of theirs guarded by
+// the enqueued_at it listed finds the time the trigger moved and deletes nothing.
+func restoreReindexQueue(b *store.WriteBatch, document queryDocument) {
+	if document.query == graphstore.QueryDecisions {
+		queueSettleDecisionsQueryQueues(b, document.id)
+		return
+	}
+	kinds := make([]string, 0, 2)
+	if !document.textQueued {
+		kinds = append(kinds, "artifact")
+	}
+	if !document.scopeQueued {
+		kinds = append(kinds, "scope")
+	}
+	switch {
+	case len(kinds) > 0 && !document.formsQueued:
+		b.Queue(fmt.Sprintf("put the re-index queues of %s back as they stood before its version", document.id), `
+			with grammar as (delete from refs_grammar_owed where id = $1::uuid and kind = any($2::text[]))
+			delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id, kinds)
+	case len(kinds) > 0:
+		b.Queue(fmt.Sprintf("put the re-index queue of %s back as it stood before its version", document.id),
+			`delete from refs_grammar_owed where id = $1::uuid and kind = any($2::text[])`, document.id, kinds)
+	case !document.formsQueued:
+		b.Queue(fmt.Sprintf("put the forms re-index queue of %s back as it stood before its version", document.id),
+			`delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id)
+	}
+	if !document.formsQueued && !document.decisionsFormsQueued {
+		b.Queue(fmt.Sprintf("clear the Decisions forms debt relayed by restoring %s's queue", document.id),
+			`delete from refs_decisions_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id)
+	}
+}
+
+// settleDecisionsQueryQueuesStatement clears the grammar and older forms queue rows of a
+// Decisions query node. Its second statement also removes the live and seed Decisions forms
+// rows, including any row the first statement relayed. The query node holds no indexable text.
+const settleDecisionsQueryQueuesStatement = `
+	with grammar as (delete from refs_grammar_owed where id = $1::uuid and kind in ('artifact', 'scope'))
+	delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`
+
+const settleDecisionsQueryFormsStatement = `
+	with seed as (delete from refs_decisions_forms_seed_owed where id = $1::uuid and kind = 'artifact')
+	delete from refs_decisions_forms_owed where id = $1::uuid and kind = 'artifact'`
+
+// queueSettleDecisionsQueryQueues queues on b the delete of every re-index queue row naming the
+// decisions query node artifactID (settleDecisionsQueryQueuesStatement), after its version insert
+// (restoreReindexQueue, SettleDecisionsQueryQueues).
+func queueSettleDecisionsQueryQueues(b *store.WriteBatch, artifactID string) {
+	b.Queue(fmt.Sprintf("clear the re-index queues of the decisions query %s", artifactID),
+		settleDecisionsQueryQueuesStatement, artifactID)
+	b.Queue(fmt.Sprintf("clear the Decisions forms queues of the decisions query %s", artifactID),
+		settleDecisionsQueryFormsStatement, artifactID)
+}
+
+// SettleDecisionsQueryQueues clears all re-index rows naming the Decisions query node. Its first
+// version's writers (queueDecisionsFirstVersion and writeDecisionsQuery) call it after indexing
+// version 1, which leaves the scope row the version insert's trigger made.
+func SettleDecisionsQueryQueues(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		queueSettleDecisionsQueryQueues(b, artifactID)
+		return nil
 	})
 }
 
 // versionRenderAt renders the document artifactID as of at for the census of the rendered
 // versions: RenderAt's markdown, as the server reads the store.
 func versionRenderAt(ctx context.Context, q graphstore.Queryer, artifactID string, at time.Time) (string, error) {
-	rendering, err := RenderAt(ctx, q, model.Actor{}, artifactID, at)
+	rendering, err := RenderAt(ctx, q, model.ServerReader, artifactID, at)
 	return rendering.Markdown, err
 }
 

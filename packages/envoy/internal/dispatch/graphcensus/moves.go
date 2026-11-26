@@ -62,19 +62,12 @@ func owesBlockIndex(artifact string) string {
 }
 
 // answeredAsk is true of the asks row k whose node states it answered now: the newest answer_state
-// tuple of the ask's node holds answered and asserts. The node holds the answer and the row is its
-// projection (graphstore's TupleAnswerState, asks.Settle), so a row a writer of the release before
-// answered counts once the step's backfill has stated its node, as docs' countDecisionStepOwed
-// reads the same answer. The read takes graph_tuples_values, keyed by the node and the kind. The
+// value of the ask's node holds answered and asserts, read as every read of an answer reads it
+// (asks.NodeValueOf). The node holds the answer and the row is its projection (graphstore's
+// TupleAnswerState, asks.Settle), so a row a writer of the release before answered counts once the
+// step's backfill has stated its node, as docs' countDecisionStepOwed reads the same answer. The
 // restore's finder reads it (restoreWorkRead), and so does the store census through that finder.
-var answeredAsk = `exists (
-		select 1 from (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = '` + graphstore.KindAsk + `' and t.from_id = k.id::text
-			  and t.kind = '` + graphstore.TupleAnswerState + `' and t.to_kind = '` + graphstore.KindValue + `'
-			order by t.seq desc limit 1
-		) newest
-		where newest.asserted and newest.to_id = '` + asks.StateAnswered + `')`
+var answeredAsk = asks.NodeValueOf("k", graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `'`
 
 // RemovedByAPerson is true of the asks row k whose node's newest removed_by tuple asserts
 // (graphstore.TupleRemovedBy): a person took its block out of the document its row names, which

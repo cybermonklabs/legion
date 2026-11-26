@@ -175,9 +175,11 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	}
 }
 
-// A block[] attribute's targets name built-in blocks the link graph holds: each type the block list
-// (RenderWithBlockOffsets, which GET /api/v1/artifacts/{id}/blocks lists) holds for the corpus is
-// one, and a list item or a table's row or cell, which it never holds, is not.
+// A block[] attribute's targets name built-in blocks the link graph holds. Each type the block list
+// (RenderWithBlockOffsets, which GET /api/v1/artifacts/{id}/blocks lists) holds for the corpus is a
+// target, except a list item. The block list holds a list item, so the block index gives it a node
+// and a move can nest a block under it. A list item has no words of its own, so no pointer names
+// it. A table's row or cell is no target either, and the block list never holds one.
 func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/corpus/*.md")
@@ -204,17 +206,24 @@ func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"paragraph", "heading", "table", "bullet_list", "code_block"} {
+	for _, want := range []string{"paragraph", "heading", "table", "bullet_list", "list_item", "code_block"} {
 		if !listed[want] {
 			t.Fatalf("the corpus's block lists hold no %s: %v", want, listed)
 		}
 	}
 	for nodeType := range listed {
+		// A list item is the one built-in type the block list holds that is no target.
+		if nodeType == "list_item" {
+			continue
+		}
 		if !builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("the block list holds %s, which a block[] attribute cannot target", nodeType)
 		}
 	}
-	for _, nodeType := range []string{"list_item", "table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
+	if builtInBlockNode(active.Load().schema, "list_item") {
+		t.Errorf("a block[] attribute can target list_item, which has no words of its own")
+	}
+	for _, nodeType := range []string{"table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
 		if builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("a block[] attribute can target %s, which no block list holds", nodeType)
 		}

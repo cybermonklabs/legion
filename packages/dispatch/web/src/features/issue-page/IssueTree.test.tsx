@@ -36,7 +36,12 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
-import { conversationTreeKey, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  conversationTreeKey,
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+} from "../../api/queries";
 import type {
   Artifact,
   Comment,
@@ -115,7 +120,6 @@ import {
   type TreeAnswerNode,
   type TreeTuple,
 } from "./tree-read/tree-read";
-import { issueAskThreadsQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
@@ -1251,6 +1255,66 @@ test("f steps through a row's chips, links and then the controls no key presses"
   }
 });
 
+// A row holds its margin - the kind's tag, the author, the time - ahead of its words in the DOM,
+// so that on a phone the margin floats beside the words' first line (`NodeRow.tsx`), and `f`
+// steps through the row in the order it reads: the links its words hold, then the kind's link,
+// then the controls no key presses. Taken in the DOM's order, the kind's link would come first.
+test("f steps through a row's controls in its reading order: the words' links before the kind's link", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-7",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the flag",
+  });
+  const root = node({
+    children: [
+      // A statement of the spec, whose reference names its block, so its kind's tag is a link
+      // to it in Spec (`presetNodePath`).
+      node({
+        id: "spec#b-r1",
+        reference: `dispatch://${KEY}/spec#b-r1`,
+        statement: true,
+        text: "Ship it as dispatch://CORE-7 says.",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  /** Presses `f` and says what it left the focus on: a link of the words by its words, the kind's
+   *  link as "the kind", and any other control by its words. */
+  const stop = async (): Promise<string | null | undefined> => {
+    await user.keyboard("f");
+    const on = document.activeElement;
+    if (on?.matches("[data-node-tag-link]") === true) return "the kind";
+    return on?.closest("[data-node-words]") === null
+      ? on?.textContent
+      : `words: ${on?.textContent}`;
+  };
+  try {
+    const { container } = renderPageTree(root, "alice").view;
+    await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+    await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
+    const tag = container.querySelector("[data-node-margin] a[data-node-tag-link]");
+    const words = container.querySelector("[data-node-words]");
+    expect(
+      tag !== null &&
+        words !== null &&
+        (tag.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      "the row does not hold its kind's link ahead of its words in the DOM"
+    ).toBe(true);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+    expect(await stop()).toBe("the kind");
+    expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+  } finally {
+    summary.mockRestore();
+  }
+});
+
 // Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
 // already holds the focus through the chip: the row's own placing, which runs as a row takes the
 // focus, does not run. A reader who scrolled the row off the screen from there is brought back
@@ -1282,7 +1346,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
   // off: 400 px above the window's top. Every other box, and that one before, is empty.
   let scrolledOff = false;
   const off = { bottom: -360, top: -400 };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return scrolledOff && this.matches('[data-node-row][data-node-id="comment-1"]')
@@ -2159,7 +2223,7 @@ test("the row the reader is editing in places nothing of its own as it grows", a
   // The statement's row 100 px down and 40 px tall, whole on the screen, until it grows to three
   // windows' height, its foot far below the window's.
   let grown = false;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === "spec#b-r1"
@@ -2442,7 +2506,7 @@ function pageAroundEditingRow(layout: RowLayout): EditingPage {
     const cap = Number.parseFloat(box.style.maxHeight);
     return new DOMRect(0, layout.stands, 800, Number.isNaN(cap) ? layout.drawn : cap);
   };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const held = this.matches("[data-node-row]")
@@ -6008,7 +6072,7 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   let tall = 2 * window.innerHeight;
   // The row given the tall box: the row `.` zooms into, then the row `,` takes the focus to.
   let tallRow = "comment-1";
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     if (this.matches("p") && this.querySelector("[data-crumb]") !== null) {
@@ -6131,7 +6195,7 @@ test(", from the row . zoomed into brings that row on screen and holds it there 
   // The one row given a box: how tall it is, and where it stands down the page. Every other row
   // is given none, which reads as whole on screen.
   let given = { height: 40, id: "comment-2", top: 300 };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === given.id
@@ -6215,7 +6279,7 @@ test(", from a row under the zoom's root places the root's row alone, not the ro
   // Where each row given a box stands down the page, 40 px tall; a row given none reads as whole
   // on screen.
   let tops: Readonly<Record<string, number>> = {};
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const top = this.matches("[data-node-row]") ? tops[this.dataset.nodeId ?? ""] : undefined;
@@ -6271,7 +6335,7 @@ test("a press on a crumb zooms out with the focus left on the row the reader is 
   // until a press has started. Every other element is given no box, which reads as whole on
   // screen.
   let top: number | undefined;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const row = this.closest<HTMLElement>("[data-node-row]");
@@ -6367,7 +6431,7 @@ test("a press on a crumb keeps the row the reader is on drawn and focused where 
   // undefined until a press has started. Every other element is given no box, which reads as
   // whole on screen.
   let placed: { readonly id: string; readonly top: number } | undefined;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const row = this.closest<HTMLElement>("[data-node-row]");
@@ -6510,7 +6574,7 @@ test("z holds the focused row on screen as the page grows, with the focus on a c
   // The second row 300 px down and whole on screen, until the bodies drawn above it push it below
   // the window's foot.
   let top = 300;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches("[data-node-row]") && this.dataset.nodeId === "comment-2"
@@ -7658,7 +7722,7 @@ test("the first row the page opens on scrolls nothing, and the first j places th
   // box is empty.
   const tall = 2 * window.innerHeight;
   const second = { bottom: 100 + tall + 40, top: 100 + tall };
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const id = this.matches("[data-node-row]") ? this.dataset.nodeId : undefined;
@@ -8011,6 +8075,111 @@ test("the reader folds a node by its control, Left or o, unfolds it by the contr
   await waitFor(() => expect(rowsFor(container, "reply-1")).toHaveLength(1));
   expect(rowsFor(container, "reply-2")).toHaveLength(1);
   expect(focusedRow(container)).toBe("comment-1");
+  view.unmount();
+});
+
+/** An issue whose one check serves seven statements, built under each as `issue-tree.ts` builds a
+ *  check that serves several: seven rows of one node, each holding the check's four results and
+ *  the note under each, eight nodes. */
+function checkServingSeven(): TreeNode {
+  const check = (): TreeNode =>
+    node({
+      children: Array.from({ length: 4 }, (_, at) =>
+        node({
+          children: [node({ id: `note-${at + 1}`, type: "callout" })],
+          held: 1,
+          id: `result-${at + 1}`,
+          type: "result",
+        })
+      ),
+      held: 8,
+      id: "verification-md#b-c1",
+      state: "passed",
+      type: "check",
+    });
+  return node({
+    children: Array.from({ length: 7 }, (_, at) =>
+      node({
+        children: [check()],
+        held: 9,
+        id: `spec#b-r${at + 1}`,
+        statement: true,
+        type: "requirement",
+      })
+    ),
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// R6, R11: a node is folded only where the reader folds it, and a fold is the reader's act on one
+// row. A check that serves seven statements is drawn under each, seven rows of one node: a press
+// on one row's fold control folds that row alone, its count says how many rows it hides, and the
+// press that unfolds it adds exactly that many. Left, Right and `o` on one row do the same to that
+// row alone: a fold is kept by the row's place, not by its node, so the other six rows stay as
+// they were.
+test("a press on the fold control of one of the seven rows of a check that serves seven statements folds that row alone", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(checkServingSeven());
+  const { container } = view;
+  const checks = () => rowsFor(container, "verification-md#b-c1");
+  const expanded = () => checks().map((row) => row.getAttribute("aria-expanded"));
+  const control = () => checks()[3]?.querySelector<HTMLElement>("button[data-node-bullet]");
+  await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+  expect(checks()).toHaveLength(7);
+
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "the press on one row's fold control folded other rows of the check").toEqual([
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+    "true",
+    "true",
+  ]);
+  const count = checks()[3]?.querySelector("[data-node-count]")?.textContent ?? "";
+  expect(count).toBe(`8 ${CONTROL_LABELS.folded_rows}`);
+  const before = container.querySelectorAll("[data-node-row]").length;
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(
+    container.querySelectorAll("[data-node-row]").length - before,
+    "the unfolding press added other than the rows the folded row counted"
+  ).toBe(Number.parseInt(count, 10));
+
+  // Left, Right and `o` on one row of the check fold and unfold that row alone.
+  const sixth = checks()[5];
+  await act(async () => sixth?.focus());
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "Left on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(expanded(), "Right on one row of the check unfolded other rows of it").not.toContain(
+    "false"
+  );
+  await user.keyboard("o");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "o on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
   view.unmount();
 });
 
@@ -11804,7 +11973,7 @@ test("a comment's row drawn after the reader acted since following its address m
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const comments = spyOn(api, "listComments");
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches('[data-node-row][data-node-id="reply-b"]')

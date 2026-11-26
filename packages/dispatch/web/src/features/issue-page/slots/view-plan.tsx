@@ -18,7 +18,7 @@ import { useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
-import { usePublishViewParents } from "./view-parents";
+import { usePublishViewReadings } from "./view-readings";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -146,9 +146,10 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
-  // The other statements a step serves are named by the page's names, which the whole plan's view
-  // names where only its own tree holds them (`PresetView.parents`).
-  usePublishViewParents(whole.parents);
+  // The steps a step needs, the statement it stands under and the others it serves are named by
+  // the page's names, which the whole plan's view names where only its own tree holds them
+  // (`PresetView.readings`).
+  usePublishViewReadings(whole.readings);
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
   // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the

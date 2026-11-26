@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -79,8 +81,9 @@ func namedVersionWithItsEvent(t *testing.T, service *Service, issue, artifactID,
 // uploadWithItsEvent writes markdown over artifactID, a document of issue, as api's storeArtifact
 // writes an upload over a document: the text's replacement with the token of the version it
 // replaces (ReplaceText), the version (Ledger.QueueVersion), its index (IndexDocumentReferences), its
-// node (WriteVersionNode), the upload's carry (CarryUploadedApproval) and then the version's event
-// with what the write stated, in one transaction joined to the service. It answers the version.
+// node (WriteVersionNode), the upload's carry (CarryUploadedApproval, weighing the facts the index
+// and the node stated) and then the version's event with what the write stated, in one transaction
+// joined to the service. It answers the version.
 func uploadWithItsEvent(t *testing.T, service *Service, issue, artifactID, markdown string) int {
 	t.Helper()
 	ctx := context.Background()
@@ -117,7 +120,7 @@ func uploadWithItsEvent(t *testing.T, service *Service, issue, artifactID, markd
 	if err != nil {
 		t.Fatalf("write the node of the upload's version of %s: %v", artifactID, err)
 	}
-	if err := CarryUploadedApproval(joined, tx, service.events, artifactID, version.Number, stored, nil, service.serverURL); err != nil {
+	if err := CarryUploadedApproval(joined, tx, service.events, artifactID, version.Number, stored, nil, StatedWhole(stated, node), service.serverURL); err != nil {
 		t.Fatalf("carry the approval of %s to the upload's version: %v", artifactID, err)
 	}
 	if err := queueVersionEvent(joined, service, issue, artifactID, version, graphstore.Joined(stated, node), alice); err != nil {
@@ -277,11 +280,16 @@ func recordResult(t *testing.T, database *store.Store, service *Service, room is
 // each: readings, a named version whose one change from the approved version is the agent's
 // reading under a decision (writeVersionTx's carry); answer, bob's answer to an ask block, which
 // settlement writes as a version whose block shows the answer (the settlement's carry); upload,
-// an upload whose one change is that reading (CarryUploadedApproval); and result, a result
+// an upload whose one change is that reading (CarryUploadedApproval); result, a result
 // recorded on a check, whose drain writes a Verification version that differs from the approved
-// one by the appended result alone (carryAppendedResults). Each row reads the carry written - a
-// carried review with its row of artifact_review_carries - and its artifact.approved before the
-// version's artifact.version, in event id and in seq.
+// one by the appended result alone (carryAppendedResults); record, a version whose record digest
+// equals the approved one, as a paragraph moved in the text before a requirement makes it, which
+// the settlement of a peer's move writes (the record case, recordUnmoved); and drain, a version the
+// drain writes whose rendering alone moved, its record digest the approved one (the drain's record
+// case, knownRecord). Each row reads the carry written - a carried review with its row of
+// artifact_review_carries - and its artifact.approved before the version's artifact.version, in
+// event id and in seq; the two record rows read the carry's reason and the version it names, and
+// the version's digest, the approved one's.
 func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
 	t.Parallel()
 	t.Run("readings", func(t *testing.T) {
@@ -360,6 +368,32 @@ func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
 			t.Fatalf("the drain of the result wrote version %d of DOC-4's Verification document, want %d", number, approved+1)
 		}
 		requireApprovalFirst(t, "result", readCarriedOrder(t, database, "the result carry", room.verification, number))
+	})
+	t.Run("record", func(t *testing.T) {
+		written := approvedRecordRoom(t, 5)
+		written.settleSpecEdit(t, context.Background(), moveParagraphBeforeRequirement)
+		number := newestVersionNumber(t, written.database, written.room.spec)
+		if number != written.approved+1 {
+			t.Fatalf("the settlement of the paragraph's move wrote version %d of DOC-5's spec, want %d", number, written.approved+1)
+		}
+		if count := carriedReviewCount(t, written.database, written.room.spec, number); count != 1 {
+			t.Fatalf("version %d of DOC-5's spec holds %d carried reviews, want the record carry alone", number, count)
+		}
+		requireRecordCarry(t, written.database, "record", written.room.spec, written.approved, number)
+	})
+	t.Run("drain", func(t *testing.T) {
+		written := approvedRecordRoom(t, 6)
+		criterion, requirement := blockAddressByText(t, written.database, ":::criterion{#k1}"), blockAddressByText(t, written.database, ":::requirement{#r1}")
+		statePlacedParagraph(t, written, rank.Between(textRankOf(t, written.database, criterion), textRankOf(t, written.database, requirement)))
+		written.service.DrainOwedQueries(context.Background(), written.room.issue)
+		number := newestVersionNumber(t, written.database, written.room.spec)
+		if number != written.approved+1 {
+			t.Fatalf("the drain of the paragraph's text_rank wrote version %d of DOC-6's spec, want %d: its rendering moved", number, written.approved+1)
+		}
+		if stored := storedVersionMarkdown(t, written.database, written.room.spec, number); strings.Index(stored, recordParagraph) > strings.Index(stored, "An urgent ask") {
+			t.Fatalf("the drain's version %d of DOC-6's spec reads\n%s\nwant the paragraph before the requirement", number, stored)
+		}
+		requireRecordCarry(t, written.database, "drain", written.room.spec, written.approved, number)
 	})
 }
 

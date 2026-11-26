@@ -1,6 +1,7 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -10,7 +11,7 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
-import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot

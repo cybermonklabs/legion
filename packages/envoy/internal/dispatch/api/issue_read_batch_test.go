@@ -154,6 +154,15 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err := pool.QueryRow(ctx, issueBlocksStatement, issue.Key).Scan(&blocks); err != nil {
 		t.Fatalf("read the issues it blocks: %v", err)
 	}
+	queryRows, err := pool.Query(ctx, issueQueriesStatement, issue.Key)
+	if err != nil {
+		t.Fatalf("query the queries: %v", err)
+	}
+	queries, err := scanIssueQueries(queryRows, issue.Key)
+	queryRows.Close()
+	if err != nil {
+		t.Fatalf("load the queries: %v", err)
+	}
 	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
@@ -194,6 +203,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 		Blocks:            blocks,
 		Progress:          progress,
 		CommentCount:      comments,
+		Queries:           queries,
 		Artifacts:         artifactReads(artifacts, nil),
 		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,

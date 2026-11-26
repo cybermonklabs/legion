@@ -38,8 +38,19 @@ var deferralPaths = []deferralPath{
 }
 
 // itemsUnderTheBoundWithItsWrites is a list that keeps the spec under the bound with every version
-// the test writes: 1,950 items is 1,951 blocks, and the writes add a few dozen at most.
-const itemsUnderTheBoundWithItsWrites = 1_950
+// the test writes. The bound counts the blocks the render records (pmdoc.RenderWithBlockOffsets),
+// and a list of n items is 2n+1 of them - the list, each item and each item's paragraph - so the
+// spec of 970 items is 1,946 blocks with its heading and its four paragraphs, and six of the seven
+// writes add a paragraph each, well inside deferralWritesSlack (requireRoomForTheWrites).
+const itemsUnderTheBoundWithItsWrites = 970
+
+// deferralWritesSlack is the room under the bound the spec under it keeps for the blocks the test's
+// writes add to it: a few dozen.
+const deferralWritesSlack = 40
+
+// deferralBound is docs' deferBlockIndexBlocks: a version of more blocks than this leaves its
+// blocks to the block-index reconciliation.
+const deferralBound = 2_000
 
 // deferralSpec is the spec the test writes versions of: a list past the bound where above, else one
 // that stays under it, and a paragraph for each anchor and the suggestion the writes quote.
@@ -55,6 +66,24 @@ func deferralSpec(above bool) string {
 	}
 	spec.WriteString(deferralList(items, "end"))
 	return spec.String()
+}
+
+// requireRoomForTheWrites fails t unless spec, its blocks counted as the render records them - the
+// offsets whose number docs' version writes hold to the bound - keeps deferralWritesSlack blocks
+// under the bound, so each write of the rows under it writes a version its own write indexes.
+func requireRoomForTheWrites(t *testing.T, spec string) {
+	t.Helper()
+	tree, err := pmdoc.Parse(spec)
+	if err != nil {
+		t.Fatalf("the spec under the bound does not parse: %v", err)
+	}
+	_, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render the spec under the bound: %v", err)
+	}
+	if blocks := len(offsets); blocks+deferralWritesSlack > deferralBound {
+		t.Fatalf("the spec under the bound holds %d blocks as the render records them, so with the %d its writes may add it passes the bound of %d blocks a write indexes in its own request: the rows under the bound would write deferred versions", blocks, deferralWritesSlack, deferralBound)
+	}
 }
 
 // deferralDocument is the spec of one issue on one path, on one side of the bound, whose versions
@@ -76,6 +105,10 @@ type deferralDocument struct {
 // until its spec is indexed, so each write starts from an indexed document.
 func newDeferralDocument(t *testing.T, path deferralPath, above bool) *deferralDocument {
 	t.Helper()
+	spec := deferralSpec(above)
+	if !above {
+		requireRoomForTheWrites(t, spec)
+	}
 	d := &deferralDocument{above: above}
 	d.handler, d.database, d.deps = newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true,
 		persistence: func(database *store.Store) docs.VersionedStore {
@@ -84,7 +117,7 @@ func newDeferralDocument(t *testing.T, path deferralPath, above bool) *deferralD
 		}})
 	d.documents = d.deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, d.handler, "DEFER")
-	issue := createDigestIssue(t, d.handler, d.database, "DEFER", "The version writes of "+path.name, deferralSpec(above), !path.room)
+	issue := createDigestIssue(t, d.handler, d.database, "DEFER", "The version writes of "+path.name, spec, !path.room)
 	d.issueKey, d.spec = issue.Key, issue.PrimaryArtifactID
 	reconcileUntilNothingOwed(t, d.handler, d.deps, d.issueKey)
 	requireIndexedAt(t, d.database, d.spec, 1)
@@ -251,7 +284,11 @@ func (d *deferralDocument) anchoredWrites(t *testing.T) {
 // take the edit back out, so the anchored comment's pin writes the approved text again and carries
 // her approval to it: the version is deferred, so no pass of the pin's transaction records its
 // version_renders row, and the review the carry writes pins the sha256 of the version's stored
-// markdown. It fails t unless that review holds that digest.
+// markdown. It fails t unless that review - the first review of the version by the order their
+// events committed - holds that digest. The reconciliation that states the version afterwards
+// carries again where its text is the approved text (R14: the newest review is an approval of that
+// same version), and that second review pins the record's digest, whose own check is
+// TestTheTreeRendersAPostCutoverVersionFromItsTuples.
 func (d *deferralDocument) carriedPin(t *testing.T) {
 	t.Helper()
 	approval := reviewDocument(t, d.handler, d.spec, "alice", "approved", "")
@@ -276,7 +313,8 @@ func (d *deferralDocument) carriedPin(t *testing.T) {
 	want := hex.EncodeToString(sum[:])
 	var digest *string
 	if err := d.database.Pool.QueryRow(context.Background(), `
-		select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'`,
+		select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+		order by event_seq asc nulls last, created_at asc, id asc limit 1`,
 		d.spec, pinned).Scan(&digest); err != nil {
 		t.Fatalf("read the review the pin's carry wrote to version %d: %v", pinned, err)
 	}

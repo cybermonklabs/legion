@@ -80,11 +80,13 @@ func storeCensusOf(t *testing.T, databaseURL, when string) (int, string) {
 // block_ref kind's, which holds no decision's shaped - and the census has no empty kind to
 // refuse. `census --store` then
 // prints one line for each of the eight kinds, each with rows and nodes or tuples and no difference
-// in either direction, the store-only lines for copied_from and moved_to, and exits 0. One shaped
+// in either direction, the store-only lines for copied_from and moved_to, and the issue's head rows
+// (issue_head_node) with no difference, and exits 0. One shaped
 // tuple of the decision is then moved by SQL from the second requirement to the third, which no
 // row of block_refs names: with both sides still counting three, the census names the row of the
 // second that no tuple states and the tuple into the third that no row projects, and nothing of
-// the first, and exits 1.
+// the first. The decision's head row still names the second: the move writes no head row and takes
+// no mark away, so the census names that row too (issue_head_node), and exits 1.
 func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
@@ -160,6 +162,7 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 			requireCensusLine(t, printed, name, true)
 		}
 	}
+	requireCensusLine(t, printed, "issue_head_node", true)
 	for _, line := range []string{
 		"census: store-only kind=copied_from tuples=1 unresolved=0 left_out=0\n",
 		"census: store-only kind=moved_to tuples=0 unresolved=0 left_out=0\n",
@@ -181,6 +184,12 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	// the tree's ref_key (refs.DocumentRoomSQL), and so are the far ends the decision's pointers
 	// resolve to. choices.md plays no role, so it is a room of its own and its blocks' nodes are
 	// keyed by its own ref_key (R5 of this branch's spec).
+	// The issue's head row of the decision (issue_head_nodes) holds its relations as its writer
+	// wrote them, so it still names r2: the update writes no head row, and an update of
+	// graph_tuples fires no head mark trigger (graph_tuples_head_marks runs on an insert or a
+	// delete, as the store only appends tuples), so the issue stays marked and the census kind
+	// issue_head_node holds that row to the tuples, which now state r3 (R8: it compares each whole
+	// row of each marked issue with the tuples).
 	var room string
 	if err := database.Pool.QueryRow(ctx, `
 		select tree.ref_key from artifacts document join artifacts tree on tree.id = `+refs.DocumentRoomSQL("document.id")+`
@@ -201,12 +210,14 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 		t.Fatalf("census --store once a shaped tuple reaches the wrong node exited %d, want 1", code)
 	}
 	requireCensusLine(t, printed, refs.TupleShaped, false)
+	requireCensusLine(t, printed, "issue_head_node", false)
 	for _, want := range []string{
 		"census: store kind=shaped tuples=3 rows=3 table=block_refs rows_without_a_tuple=1 tuples_without_a_row=1 ",
 		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + node("r2") + ": a row no tuple states\n",
 		"census: store kind=shaped difference at block:" + decision + " shaped -> block:" + node("r3") + ": a tuple no row projects\n",
 		"census: store kind=shaped_edge difference at block:" + decision + " shaped -> block:" + node("r3") + ": a tuple no row projects\n",
-		"census: store REFUSED (3 difference(s))\n",
+		"census: store kind=issue_head_node difference at issue " + issue + " " + refs.BlockNodeKind + " " + decision + ": the row and the store disagree\n",
+		"census: store REFUSED (4 difference(s))\n",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("census --store once a shaped tuple reaches the wrong node printed no line holding %q", want)

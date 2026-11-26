@@ -652,13 +652,21 @@ func TestACreateRacingItsParentsCloseIsRefusedEitherWay(t *testing.T) {
 	})
 }
 
-// awaitNoSettlementOwed waits until no document of the database owes a settlement, so a test that
-// then holds an issue's row holds it against the write it sends, not against a settlement.
+// awaitNoSettlementOwed waits until no document of the database owes a settlement and no
+// settlement's post-commit fill (version_renders.digest_owed) or query drain (issue_query_marks)
+// is still standing: commitSettlement clears doc_settlements_pending and inserts those marks in
+// the same transaction before running fillOwed and DrainOwedQueries in the settlement goroutine,
+// so waiting on all three ensures no settlement's follow-up write is still in flight when a test
+// snapshots the project or holds an issue's row.
 func awaitNoSettlementOwed(t *testing.T, database *store.Store) {
 	t.Helper()
-	testwait.Eventually(t, "every document to settle", func() bool {
+	testwait.Eventually(t, "every document to settle and drain its queries", func() bool {
 		var owed bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists (select 1 from doc_settlements_pending)`).Scan(&owed); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), `
+			select exists (select 1 from doc_settlements_pending)
+			    or exists (select 1 from version_renders where digest_owed)
+			    or exists (select 1 from issue_query_marks)
+		`).Scan(&owed); err != nil {
 			t.Fatalf("read the settlements owed: %v", err)
 		}
 		return !owed
