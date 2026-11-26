@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/pullrequest.go b/packages/daemon/internal/workflow/pullrequest.go
+index aff8eb1fda71..473475eeda6e 100644
+--- a/packages/daemon/internal/workflow/pullrequest.go
++++ b/packages/daemon/internal/workflow/pullrequest.go
+@@ -494,6 +494,9 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
+ 	if !lingers {
+ 		return e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+ 	}
++	if lingers {
++		return nil
++	}
+ 	w, err := e.walk(ctx, tx, issue)
+ 	if err != nil {
+ 		return err

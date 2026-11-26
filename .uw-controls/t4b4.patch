@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/resume.go b/packages/daemon/internal/workflow/resume.go
+index 5825dc47f583..9446028e9482 100644
+--- a/packages/daemon/internal/workflow/resume.go
++++ b/packages/daemon/internal/workflow/resume.go
+@@ -290,7 +290,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
+ 				return err
+ 			}
+ 		}
+-		if err := e.closeMerged(ctx, tx, *issue, pr); err != nil {
++		if err := error(nil); err != nil {
+ 			return err
+ 		}
+ 		e.logOnCommit(ctx, "workflow: the boot takes the merge of an issue whose pull request merged before the upgrade", "issue", issue.Key,

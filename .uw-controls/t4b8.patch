@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_root.go b/packages/daemon/internal/workflow/close_root.go
+index 86aa458f7140..0cbf7c6d252f 100644
+--- a/packages/daemon/internal/workflow/close_root.go
++++ b/packages/daemon/internal/workflow/close_root.go
+@@ -44,7 +44,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
+ 	if !claim.IsTreeRoot(root.Key, root.Tree) {
+ 		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s. close_root ends a tree root.", root.Key, root.Tree)+" "+record.EndChildRule), nil
+ 	}
+-	if root.Merge.Merged() {
++	if false && root.Merge.Merged() {
+ 		return refused("CLOSE_AFTER_MERGE", fmt.Sprintf("Pull request #%d of %s merged, so %s closes by the checks of its goal. "+
+ 			"Withdraw each defect you judge moot with its reason, then ask a person, whose done closes it. "+
+ 			"A check you judge wrong goes into a new version of the Verification document that a person approves.",

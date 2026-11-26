@@ -1,0 +1,11 @@
+diff --git a/packages/daemon/internal/workflow/status_repair.go b/packages/daemon/internal/workflow/status_repair.go
+index ef42a2979f89..b526620a7733 100644
+--- a/packages/daemon/internal/workflow/status_repair.go
++++ b/packages/daemon/internal/workflow/status_repair.go
+@@ -146,5 +146,5 @@ func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result
+ 	if err := e.correctStatuses(ctx, tx, issues, running, "tick"); err != nil {
+ 		return intake.Result{}, err
+ 	}
+-	return intake.Result{}, e.judgeEachVerifying(ctx, tx, issues)
++	return intake.Result{}, nil
+ }

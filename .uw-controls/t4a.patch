@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/table.go b/packages/daemon/internal/workflow/table.go
+index 46a59fe4b461..c1e81e2ac4ed 100644
+--- a/packages/daemon/internal/workflow/table.go
++++ b/packages/daemon/internal/workflow/table.go
+@@ -129,7 +129,7 @@ func TableOf(line []phase.Phase) []Row {
+ 	// verifying, on no slot and with no role, until the judge finds that the checks of its goal
+ 	// passed (judgeClose), which closes it out of verifying.
+ 	rows = append(rows,
+-		Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: closeWaitsNot, To: phase.Done,
++		Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
+ 			Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
+ 		Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: closeWaits, To: phase.Verifying,
+ 			Effects: []EffectKind{EffectNotice}},

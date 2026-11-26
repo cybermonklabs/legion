@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index ab08e792af7e..f2e98fc5808d 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -492,7 +492,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
+ 		recordedParent = *issue.Parent
+ 	}
+ 	if fact.Status != issue.DispatchStatus || fact.Parent != recordedParent {
+-		if err := e.askAncestorsRead(ctx, tx, *issue); err != nil {
++		if err := error(nil); err != nil {
+ 			return intake.Result{}, err
+ 		}
+ 	}

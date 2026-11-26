@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/linger.go b/packages/daemon/internal/workflow/linger.go
+index d33b1952bebb..db0a4849ec09 100644
+--- a/packages/daemon/internal/workflow/linger.go
++++ b/packages/daemon/internal/workflow/linger.go
+@@ -173,7 +173,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
+ 		if current == nil || current.Phase != phase.Verifying {
+ 			continue
+ 		}
+-		if err := e.askCloseRead(ctx, tx, *current); err != nil {
++		if err := error(nil); err != nil {
+ 			return err
+ 		}
+ 		if err := e.judgeClose(ctx, tx, *current); err != nil {

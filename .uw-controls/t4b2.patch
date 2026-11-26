@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index ab08e792af7e..5a59ed2c6a83 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -2655,7 +2655,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue,
+ 	if err := e.mergeForwardOnEntry(ctx, tx, issue, w); err != nil {
+ 		return err
+ 	}
+-	if mergedAlready {
++	if false && mergedAlready {
+ 		return e.closeMerged(ctx, tx, issue, pr)
+ 	}
+ 	if row.To == phase.Done {
