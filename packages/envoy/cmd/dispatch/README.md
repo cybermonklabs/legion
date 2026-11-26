@@ -1353,6 +1353,9 @@ Postgres is the only channel between the rooms (`docs/room_sync.go`), so the mes
   its issue closes or reopens, the room fails and its eviction closes it (`failRoom`), or the process shuts down with an editor connected to the room.
   No other close disconnects a browser.
   After a close, the browser reconnects and syncs a reloaded room.
+  One refusal closes a socket and leaves its room open: an update that holds a document of an issue's room as that document's own room held it before the document moved into the room (`oldRoomDocument`).
+  A browser that held the old room keeps its Yjs document and reconnects with it, and applied, that document would be written a second time, under the tree artifact's own fragment.
+  Nothing of the update is applied, and the page's next socket, on a document read from the room, is taken.
 
 - **Appends from a room that is behind.**
   A browser's edit is accepted: it is stored at the head, and the room's cursor takes it in when the catch-up fills the gap.
