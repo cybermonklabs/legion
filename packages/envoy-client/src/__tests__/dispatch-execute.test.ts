@@ -9016,6 +9016,115 @@ describe("executeDispatchTool", () => {
     ).toHaveLength(2);
   });
 
+  // A reading, a retraction's reason and a check's words are text that a role or a person wrote,
+  // and each can hold many lines: an e2e run's log quoted whole holds lines that start `- ` and
+  // `  - `, as a check line and a result line do. Each line of such a text after its first is
+  // indented past both, so a reader who splits the output on those prefixes finds the check and its
+  // results alone, and a blank line of the text does not end the check's block.
+  test("dispatch_results indents every line of a quoted text, so none reads as a check line or a result line", async () => {
+    const recorded = threeResults.checks[0];
+    const e2eLog = [
+      "== read-compares",
+      "- attribution (before_merge). Compared with nothing: the issue has no pull request and no branch to compare with. A pass stands: no.",
+      `  - pass by tester at ${headCommit}. That commit is none of the compared commits.`,
+      "",
+      "ok read-compares",
+    ].join("\n");
+    const check = {
+      ...recorded,
+      text: "Run the e2e script and read:\n- every case passes;\n- the run's last line says PASS.",
+      results: [
+        {
+          ...recorded.results[1],
+          observed: e2eLog,
+          retracted: {
+            reason: "The run read a stale build:\n- its first line names the old commit.",
+            actor: { kind: "user", id: "alice" },
+            created_at: "2026-11-10T12:00:00Z",
+          },
+        },
+      ],
+    };
+    const ciCheck = {
+      ...check,
+      block_id: "k5",
+      ref: "dispatch://DSP-42/artifact/verification-md#b-k5",
+      ci_check: "e2e",
+      pass_stands: { answer: "yes", roles: ["ci"] },
+      ci: {
+        run: "e2e",
+        state: "pass",
+        case: "success",
+        detail: `CI run e2e concluded success at ${headCommit}, the head of owner/repo#3530.`,
+        line: `- Check k5 (before_merge): pass at ${headCommit}, from CI run e2e.`,
+      },
+      results: [
+        { ...recorded.results[2], id: "ci-run:9002", role: "ci", run: "e2e", observed: e2eLog },
+      ],
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [check, ciCheck],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const lines = read.text.split("\n");
+    expect(lines.filter((line) => line.startsWith("- ")).map((line) => line.slice(0, 18))).toEqual([
+      "- k1 (before_merge",
+      "- k5 (before_merge",
+    ]);
+    expect(lines.filter((line) => line.startsWith("  - "))).toEqual([
+      `  - pass by reviewer at ${headCommit}. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:45:00Z. Result res-2.`,
+    ]);
+    expect(read.text.split("\n\n")).toHaveLength(3);
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        `- k1 (before_merge). Compared with the head of pull request #3530 at ${headCommit} (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.`,
+        "  The check's words: Run the e2e script and read:",
+        "    - every case passes;",
+        "    - the run's last line says PASS.",
+        `  - pass by reviewer at ${headCommit}. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:45:00Z. Result res-2.`,
+        "    Retracted by user alice at 2026-11-10T12:00:00Z. The reason: The run read a stale build:",
+        "      - its first line names the old commit.",
+        "    Reading: == read-compares",
+        "      - attribution (before_merge). Compared with nothing: the issue has no pull request and no branch to compare with. A pass stands: no.",
+        `        - pass by tester at ${headCommit}. That commit is none of the compared commits.`,
+        "      ",
+        "      ok read-compares",
+        "",
+        `- k5 (before_merge): pass at ${headCommit} by ci (CI run e2e, success), that commit is the head of pull request #3530. Run the e2e script and read:`,
+        "    - every case passes;",
+        "    - the run's last line says PASS.",
+        "  A pass stands: yes, from ci.",
+        `  Pull request line: - Check k5 (before_merge): pass at ${headCommit}, from CI run e2e.`,
+        "  Reading: == read-compares",
+        "    - attribution (before_merge). Compared with nothing: the issue has no pull request and no branch to compare with. A pass stands: no.",
+        `      - pass by tester at ${headCommit}. That commit is none of the compared commits.`,
+        "    ",
+        "    ok read-compares",
+      ].join("\n")
+    );
+  });
+
   test("dispatch_results --at asks the route about that one commit", async () => {
     const asked: string[] = [];
 
@@ -9423,8 +9532,8 @@ describe("executeDispatchTool", () => {
         "  A pass stands: yes, from ci.",
         "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
         "  Reading: conclusion: success",
-        "All checks passed",
-        "https://github.com/owner/repo/actions/runs/7/job/9001",
+        "    All checks passed",
+        "    https://github.com/owner/repo/actions/runs/7/job/9001",
         "",
         "- k6 (before_merge): no result: CI run e2e is in_progress at 1111111111111111111111111111111111111111, the head of owner/repo#3530, and has not concluded. The e2e job passes at the head.",
         "  A pass stands: no.",

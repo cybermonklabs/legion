@@ -183,20 +183,30 @@ function passStandsText(pass: CheckPassStands | undefined): string {
   return "A pass stands: not known";
 }
 
+/** Text a role or a person wrote (a reading, a retraction's reason, a check's words) on a line that
+ *  starts at `indent`. Each of its lines after the first starts two spaces further in, and four
+ *  spaces in at least. A check line starts `- ` and a result line `  - `, and such a text can hold
+ *  either, as an e2e run's log quoted whole does: indented, none of its lines reads as one, and a
+ *  blank line of it does not end the check's block, which a blank line does. */
+function quoted(text: string, indent: string): string {
+  const continued = `${indent}  `.length < 4 ? "    " : `${indent}  `;
+  return text.replaceAll("\n", `\n${continued}`);
+}
+
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
  *  whose result stands at none of the compared commits, and leaves every other reading whole: the
  *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
- *  stands. */
+ *  stands. Every line of the reading is indented (`quoted`). */
 function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
   const observed = result.observed;
   if (observed === "") return [`${indent}The role recorded no reading.`];
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
     return [
-      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
+      `${indent}Reading: ${quoted(observed.slice(0, BRIEF_READING_CHARACTERS), indent)}… (result ${result.id})`,
     ];
   }
-  return [`${indent}Reading: ${observed}`];
+  return [`${indent}Reading: ${quoted(observed, indent)}`];
 }
 
 /** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
@@ -208,7 +218,7 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
   const retracted = result.retracted;
   if (retracted !== undefined) {
     lines.push(
-      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
+      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${quoted(retracted.reason, "    ")}`
     );
   }
   return [...lines, ...readingLines(result, brief)];
@@ -228,14 +238,14 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   const derived = check.results?.[0];
   if (derived === undefined) {
     return [
-      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
+      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${quoted(check.text, "")}`,
       passStandsLine,
       pullRequestLine,
     ];
   }
   const stands = commitStandsText(derived.commit_stands);
   return [
-    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
+    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${quoted(check.text, "")}`,
     passStandsLine,
     pullRequestLine,
     ...readingLines(derived, brief, "  "),
@@ -262,7 +272,7 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
     ...(check.issues_not_known ?? []).map(
       (entry) => `  Not known yet: whether pull request #${entry.number} is this issue's.`
     ),
-    `  The check's words: ${check.text}`,
+    `  The check's words: ${quoted(check.text, "  ")}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
       : results.flatMap((result) => resultLines(check, result, brief))),
