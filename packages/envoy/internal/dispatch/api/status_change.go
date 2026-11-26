@@ -391,19 +391,20 @@ func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bo
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
 // new parent in one store.LockOwners call. Under them, where the request's credential names one
 // project, writer.callerProject, it first asks access.CredentialCovers about the issue the call
-// names: an issue of a private project that the credential does not name, and an issue no row
-// holds, are 403 PROJECT_SCOPE, the answer of the route's pre-handler check for an issue that does
-// not exist. Then it loads the issue the call names and decides expected_sequence (409
-// ISSUE_CHANGED), then the closed-issue gate as the PATCH has it (409 ISSUE_CLOSED), and reads the
-// plan again. Where the credential names one project, it asks access.CredentialCovers about each
-// other issue that the cascade walks, and leaves out of the plan each step whose issue is in a
-// private project that the credential does not name, and each step whose issue the cascade
-// reaches only through such an issue: a descendant below it, or an ancestor above it
-// (statusChangeRead.leftOut). Then it checks the whole plan (refuseIssueWritePlan). A plan whose
-// issues moved between the two reads, so that it needs a lock the transaction does not hold,
-// starts over with what the second read found, as lockPatchOwnersAndParent does, and a plan that
-// moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back
-// before the first step, and each step takes its own locks in its own transaction.
+// names: an issue of a private project that the credential does not name, and an issue whose row
+// is gone since the plain read, are 403 PROJECT_SCOPE, the answer of the route's pre-handler check
+// for an issue that does not exist. Then it loads the issue the call names and decides
+// expected_sequence (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has it (409
+// ISSUE_CLOSED), and reads the plan again. Where the credential names one project, it asks
+// access.CredentialCovers about each other issue that the cascade walks, and leaves out of the
+// plan each step whose issue is in a private project that the credential does not name, and each
+// step whose issue the cascade reaches only through such an issue: a descendant below it, or an
+// ancestor above it (statusChangeRead.leftOut). Then it checks the whole plan
+// (refuseIssueWritePlan). A plan whose issues moved between the two reads, so that it needs a lock
+// the transaction does not hold, starts over with what the second read found, as
+// lockPatchOwnersAndParent does, and a plan that moves at every attempt is 409 PARENT_CONTENDED
+// with nothing applied. The transaction rolls back before the first step, and each step takes its
+// own locks in its own transaction.
 //
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
@@ -458,7 +459,7 @@ func (s *server) planStatusChangeUnderLocks(
 	// closed-issue gate and a dry run's plan each tell something about the issue, so its scope is
 	// decided here, under the locks and before any of them. An issue of a private project that the
 	// credential does not name gets the answer that the pre-handler check gives an issue that does
-	// not exist, and so does an issue no row holds.
+	// not exist, and so does an issue whose row is gone since the plain read.
 	callerProject := writer.callerProject
 	var credential access.Credential
 	if callerProject != "" {

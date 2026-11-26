@@ -61,14 +61,20 @@ func (rig *privateProjectRig) cascadeAbove(t *testing.T, name string) (cascadeFa
 	return cascadeFamily{own, secret, far}, titles
 }
 
-// cascadeStatus is the status of the issue key as a person reads it.
-func (rig *privateProjectRig) cascadeStatus(t *testing.T, key string) string {
+// cascadeIssue is the issue key as a person reads it.
+func (rig *privateProjectRig) cascadeIssue(t *testing.T, key string) model.Issue {
 	t.Helper()
 	read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
 	if read.Code != http.StatusOK {
 		t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
 	}
-	return decodeBody[model.Issue](t, read).Status
+	return decodeBody[model.Issue](t, read)
+}
+
+// cascadeStatus is the status of the issue key as a person reads it.
+func (rig *privateProjectRig) cascadeStatus(t *testing.T, key string) string {
+	t.Helper()
+	return rig.cascadeIssue(t, key).Status
 }
 
 // cascadeChanged is the keys of the entries that a status change's answer lists as changed.
@@ -255,26 +261,16 @@ func TestAScopedIncludeParentStopsAtAPrivateParent(t *testing.T) {
 func TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne(t *testing.T) {
 	t.Parallel()
 	rig := newPrivateProjectRig(t, testServerOptions{})
-	openTitle := "Open issue whose project turned private"
-	fencedTitle := "Fenced issue whose project turned private"
-	closedTitle := "Closed issue whose project turned private"
-	open := rig.issue(t, privateTestProject, openTitle, nil)
-	fenced := rig.issue(t, privateTestProject, fencedTitle, nil)
-	closed := rig.issue(t, privateTestProject, closedTitle, nil)
+	open := rig.issue(t, privateTestProject, "Open issue whose project turned private", nil)
+	fenced := rig.issue(t, privateTestProject, "Fenced issue whose project turned private", nil)
+	closed := rig.issue(t, privateTestProject, "Closed issue whose project turned private", nil)
 	if moved := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+closed, map[string]any{"status": "done"}); moved.Code != http.StatusOK {
 		t.Fatalf("close %s: status=%d body=%s", closed, moved.Code, moved.Body.String())
 	}
-	readIssue := func(key string) model.Issue {
-		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
-		if read.Code != http.StatusOK {
-			t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
-		}
-		return decodeBody[model.Issue](t, read)
-	}
-	if readIssue(closed).ClosedAt == nil {
+	if rig.cascadeIssue(t, closed).ClosedAt == nil {
 		t.Fatalf("%s has no closed_at after moving to done", closed)
 	}
-	staleSeq := readIssue(fenced).LastSeq + 100
+	staleSeq := rig.cascadeIssue(t, fenced).LastSeq + 100
 	rig.makePrivate(t)
 
 	direct := rig.served.decideBrokerToken(rig.served.changeIssueStatus)
@@ -295,34 +291,26 @@ func TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne(t *testing.T) 
 	}
 
 	for _, tc := range []struct {
-		name  string
-		key   string
-		title string
-		body  map[string]any
+		name string
+		key  string
+		body map[string]any
 	}{
-		{"open issue", open, openTitle, map[string]any{"status": "in_progress"}},
-		{"stale expected_sequence", fenced, fencedTitle, map[string]any{"status": "in_progress", "expected_sequence": staleSeq}},
-		{"closed issue", closed, closedTitle, map[string]any{"status": "done"}},
+		{"open issue", open, map[string]any{"status": "in_progress"}},
+		{"stale expected_sequence", fenced, map[string]any{"status": "in_progress", "expected_sequence": staleSeq}},
+		{"closed issue", closed, map[string]any{"status": "done"}},
 	} {
 		for _, call := range []struct {
 			name    string
 			members map[string]any
 		}{{"call", nil}, {"dry run", map[string]any{"dry_run": true}}} {
 			t.Run(tc.name+"/"+call.name, func(t *testing.T) {
-				before := rig.written(t, tc.key)
-				got := sendDirect(scopedToken, tc.key, withMembers(tc.body, call.members))
-				if after := rig.written(t, tc.key); after != before {
-					t.Errorf("the refused write changed %s to %s, want nothing written", before, after)
-				}
-				body := got.Body.String()
-				if got.Code != absent.Code || body != absent.Body.String() {
-					t.Errorf("direct status change answered %d %s, want %d %s", got.Code, body, absent.Code, absent.Body.String())
-				}
-				for _, hidden := range []string{tc.key, tc.title} {
-					if strings.Contains(body, hidden) {
-						t.Errorf("direct status change names %q: %s", hidden, body)
-					}
-				}
+				// absent names no key (checked above) and holds no title, so an answer equal to it
+				// names nothing of the private issue.
+				rig.refusedAsMissing(t, []string{tc.key}, http.StatusForbidden, codeProjectScope, tc.key, missingIssue,
+					func() *httptest.ResponseRecorder {
+						return sendDirect(scopedToken, tc.key, withMembers(tc.body, call.members))
+					},
+					func() *httptest.ResponseRecorder { return absent })
 			})
 		}
 	}
