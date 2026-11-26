@@ -40,16 +40,19 @@
 # `envoy-dispatch restore-answered-asks --project SEED`, and the census again, which must list
 # list none. For each restored ask it reads, at this head: the same ask id, its answer and answerer
 # character for character as captured; its block in the spec's `## Decisions` part, in answer-time
-# order, the pointer line gone; that block's question and options character for character as the
-# captured row, and no answer in its markdown (the stored version's); for the main shape its old
-# block id and no moved_to tuple naming it, and for the second shape one moved_to tuple from its
-# old address to its new one; one current shaped tuple from the ask's node to each spec node
-# captured from its section's links, and no other; and no copied_from on its block. It reads every
-# ask block of each version the restore wrote - the versions its line of each issue names
-# (spec_version, decisions_version) and counts (other_versions), as the artifact.version events
-# the step appends in its own name name them - in both shapes, and each holds the form R10 keeps,
-# each value equal to its ask's node as the store states it: `state` where the ask is answered or
-# resolved and none where it is open, `answered_by` and `answered_at` where it is answered, and
+# order - which is not the order of their blocks, since the capture reads q-left-format answered
+# before q-left-store, whose block stood above it - the pointer line gone; that block's question
+# and options character for character as the captured row, and no answer in its markdown (the
+# stored version's); for the main shape its old block id and no moved_to tuple naming it, and for
+# the second shape one moved_to tuple from its old address to its new one; one current shaped tuple
+# from the ask's node to each spec node captured from its section's links, and no other; and no
+# copied_from on its block. It reads every ask block of each version the restore wrote - the
+# versions its line of each issue names (spec_version, decisions_version) and counts
+# (other_versions), as the artifact.version events the step appends in its own name name them,
+# every such event after the restore started read with no limit and held to as many as the lines
+# count - in both shapes, and each holds the form R10 keeps, each value equal to its ask's node as
+# the store states it: `state` where the ask is answered or resolved and none where it is open,
+# `answered_by` and `answered_at` where it is answered, and
 # `copied_from` and `copied_from_document` on a copy of an ask of another document; a block that
 # has no ask row and is no copy of an ask holds none of the eight server-owned attributes; and no
 # block holds `selected`, `answer` or `invalid`. A block that differs fails the run, which prints
@@ -493,16 +496,16 @@ kept_form() {
   pass "$section" "the $blocks ask blocks of version $number of $document, $what, each hold the form R10 keeps, each value its ask's node's"
 }
 
-# step_events SECTION MARKER ISSUE LIMIT: the artifact.version events the decisions step appended
-# in its own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), the
-# first LIMIT of them ("all" for every one), `document number` one a line, oldest first, in
-# $work/step-events.
+# step_events SECTION MARKER ISSUE: every artifact.version event the decisions step appended in its
+# own name (docs.DecisionStepActor) after event MARKER, of ISSUE ("" for every issue), `document
+# number` one a line, oldest first, in $work/step-events. It reads them all, with no limit, so a
+# version the step wrote and no line of it reports is read too.
 step_events() {
   env -u PGHOSTADDR psql "$database_url" -XAtq -F ' ' -c "
     select e.payload->>'artifact_id', e.payload->'version'->>'number' from events e
     where e.id > $2 and ('$3' = '' or e.issue_key = '$3') and e.type = 'artifact.version'
       and e.actor->>'kind' = 'system' and e.actor->>'id' = 'dispatch-decisions-step'
-    order by e.id limit $4" >"$work/step-events" 2>"$work/psql" ||
+    order by e.id" >"$work/step-events" 2>"$work/psql" ||
     fail "$1" "read the versions the decisions step wrote after event $2" "psql: $(<"$work/psql")"
 }
 
@@ -510,25 +513,29 @@ step_events() {
 # $work/NAME.out, wrote, `document number` one a line, into $work/NAME.versions. Its line of each
 # issue names the version it wrote of the spec (spec_version) and of the decisions document
 # (decisions_version), 0 for none, and counts the versions it wrote of the issue's other documents
-# (other_versions). It writes them in the issue's one transaction, each with its artifact.version
-# event in its own name, so the first of those events of the issue after event MARKER, as many as
-# the line counts, are its versions: they must hold the spec's and the decisions document's under
-# the numbers the line names, and they name the other documents.
+# (other_versions). It writes each with its artifact.version event in its own name, and nothing
+# else writes in that name while the step is held, so every such event of the issue after event
+# MARKER, read once the command has ended and with no limit, is one of its versions: there must be
+# as many as the line counts, none for an issue whose line counts none, and they must hold the
+# spec's and the decisions document's under the numbers the line names, and name the other
+# documents. Every such event of any issue after MARKER must then be one the lines count, so a
+# version of an issue no line names fails too. The caller reads each version's ask blocks after.
 step_versions() {
-  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec
+  local section="$1" name="$2" marker="$3" line issue spec_version decisions_version others count spec reported=0
   : >"$work/$name.versions"
   while IFS= read -r line <&3; do
     [[ "$line" =~ \ issue=([^ ]+)\ .*\ spec_version=([0-9]+)\ decisions_version=([0-9]+)\ other_versions=([0-9]+)\  ]] ||
       fail "$section" "the line of $name names the versions it wrote" "$line"
     issue="${BASH_REMATCH[1]}" spec_version="${BASH_REMATCH[2]}" decisions_version="${BASH_REMATCH[3]}" others="${BASH_REMATCH[4]}"
     count=$(((spec_version > 0) + (decisions_version > 0) + others))
+    step_events "$section" "$marker" "$issue"
+    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
+      fail "$section" "the step appended an artifact.version event for each of the $count versions $name reports of $issue, and no other" \
+        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
     [[ "$count" -gt 0 ]] || continue
-    step_events "$section" "$marker" "$issue" "$count"
+    reported=$((reported + count))
     query "$section" "read the spec of $issue" "select id from artifacts where issue_key = '$issue' and is_primary and kind = 'doc'"
     spec="$answer"
-    [[ "$(wc -l <"$work/step-events")" == "$count" ]] ||
-      fail "$section" "the step appended the artifact.version event of each of the $count versions $name wrote of $issue" \
-        "it appended $(wc -l <"$work/step-events") after event $marker: $(tr '\n' ';' <"$work/step-events")"
     [[ "$spec_version" == 0 ]] || grep -qx -- "$spec $spec_version" "$work/step-events" ||
       fail "$section" "the versions $name wrote of $issue hold version $spec_version of its spec $spec" "$(tr '\n' ';' <"$work/step-events")"
     [[ "$decisions_version" == 0 ]] ||
@@ -538,6 +545,10 @@ step_versions() {
     printf '%s: the versions %s wrote of %s (document number): %s\n' "$section" "$name" "$issue" "$(tr '\n' ';' <"$work/step-events")"
     cat "$work/step-events" >>"$work/$name.versions"
   done 3< <(grep -E '^[a-z-]+: issue=[^ ]+ restored=' "$work/$name.out")
+  step_events "$section" "$marker" ""
+  [[ "$(wc -l <"$work/step-events")" == "$reported" ]] ||
+    fail "$section" "every artifact.version event the step appended after event $marker is one of the $reported versions the lines of $name report" \
+      "it appended $(wc -l <"$work/step-events"): $(tr '\n' ';' <"$work/step-events")"
 }
 
 # moved_to_rows ADDRESS: every moved_to tuple from the block node ADDRESS, one `to_id|asserted`
@@ -668,6 +679,19 @@ for key in "${restored[@]}" ask_kept; do
     "$work/capture/ask.$key.json" >/dev/null || fail capture "$key is answered" "$(body)"
 done
 pass capture "captured the id, question, options, answer and answerer of ${#restored[@]} restored asks"
+
+# The person answered q-left-format before q-left-store, whose block stood above it in the spec, so
+# the answer-time order the main section reads below is not the order of the asks' blocks, and a
+# restore that wrote them in their blocks' order fails it.
+left_format_at="$(jq -r '.answer.at' "$work/capture/ask.ask_left_format.json")"
+left_store_at="$(jq -r '.answer.at' "$work/capture/ask.ask_left_store.json")"
+readonly left_format_at left_store_at
+query capture "compare the answer times of ask_left_format and ask_left_store" \
+  "select ('$left_format_at'::timestamptz < '$left_store_at'::timestamptz)::text"
+[[ "$answer" == true ]] ||
+  fail capture "the person answered q-left-format before q-left-store, the reverse of their blocks' order" \
+    "q-left-format at $left_format_at, q-left-store at $left_store_at"
+pass capture "the person answered q-left-format ($left_format_at) before q-left-store ($left_store_at), the reverse of their blocks' order in the spec"
 
 # The spec blocks the base's Decisions read links each ask's section to.
 for issue in "$issue_a" "$issue_b"; do
@@ -1469,7 +1493,7 @@ pass agent "the answered q-printed, which version $drop_version dropped as a ses
 # Every ask block of each version the step wrote on its ticks - the restore of q-printed and the
 # conversion of the issue of PERSON among them - holds the form R10 keeps, as those of the versions
 # the restore by hand wrote do.
-step_events tick "$before_ticks" "" all
+step_events tick "$before_ticks" ""
 cp "$work/step-events" "$work/tick.versions"
 [[ -s "$work/tick.versions" ]] ||
   fail tick "the step wrote a version on its ticks" "no artifact.version event in its name after event $before_ticks"
