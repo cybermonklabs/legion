@@ -73,6 +73,8 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261123224717_members_owed.up.sql
 //   - 20261124033010_plan_earlier_givers.up.sql
 //   - 20261125000600_production_check_failed_looks.up.sql
+//   - 20261125023041_idle_release_declines_told_pod.up.sql
+//   - 20261125023100_pod_replacements.up.sql
 //   - 20261125163328_message_wake_pacing.up.sql
 //
 // internal/textcheck's TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to the
