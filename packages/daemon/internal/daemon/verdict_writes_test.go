@@ -162,7 +162,8 @@ type fakeWrite struct {
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
 // head lists them, and none at all where compareStatus is set, which GitHub's answer to the compare
 // then is (502 where it fails the request, 404 or 422 where it cannot serve that compare), with the
-// headers compareHeader names (a rate limit's); the branch pull request 86 merges into (base86,
+// headers compareHeader names (a rate limit's) and compareBody as its body where that is set; the
+// branch pull request 86 merges into (base86,
 // main where it is ""), whose tip holds the first parentCommits commits of history, so a compare
 // with that branch lists only the commits after them while a compare with main lists them all; any
 // other pull request named in pulls, whose reads it counts in pullReads; and the open pull requests
@@ -183,6 +184,7 @@ type verdictGitHub struct {
 	messages      map[string]string
 	compareStatus int
 	compareHeader http.Header
+	compareBody   string
 	pullsStatus   int
 	runs          []fakeRun
 	statuses      []fakeStatus
@@ -313,7 +315,11 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				for key, values := range g.compareHeader {
 					w.Header()[key] = values
 				}
-				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus)), g.compareStatus)
+				message := fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus))
+				if g.compareBody != "" {
+					message = g.compareBody
+				}
+				http.Error(w, message, g.compareStatus)
 				return
 			case !ranged || base != "main" && base != base86 || !reached:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -1826,6 +1832,9 @@ const (
 	wantNoReaderTitle   = "legion-verdict: failure (a commit with no reader)"
 	wantNoReaderOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, and no agent of the task read these commits of the change"
 	wantUnreadOpening   = "Each check reads yes and every testing and review step of the task's plan passed at this head, but the daemon could not read every commit of the change"
+	// wantUnansweredOpening is the opening at the bound of sweeps GitHub gave no answer on, which is
+	// no answer that the change cannot be read.
+	wantUnansweredOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, but GitHub gave no answer to the daemon's read of the change's commits on 3 of the writers' sweeps in a row, so no commit has a reader yet. This is no answer about the change, not an answer that it cannot be read: the next read GitHub answers decides this head again."
 )
 
 // noReader fails the test unless the one legion-verdict run on head concludes failure with the
@@ -2270,7 +2279,7 @@ func TestLegionVerdictNoAnswerOnTheBoundsSweepsInARowIsFailure(t *testing.T) {
 	rig.nothingWrittenOn(t, "group-86")
 	rig.swept(t)
 	at("failure", fmt.Sprintf("after %d sweeps with no answer", noAnswerSweeps))
-	rig.noReader(t, "code", wantUnreadOpening)
+	rig.noReader(t, "code", wantUnansweredOpening)
 	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
 	grouped()
 	groupConcluded(t, rig.github, rig.pool, "group-86", "failure")
@@ -2328,6 +2337,13 @@ func TestLegionVerdictEachClassOfReadOfTheChange(t *testing.T) {
 		{"a 429 to the compare", func(g *verdictGitHub, _ *atomic.Bool) { g.compareStatus = http.StatusTooManyRequests }, false},
 		{"a rate-limited 422 to the compare", func(g *verdictGitHub, _ *atomic.Bool) {
 			g.compareStatus, g.compareHeader = http.StatusUnprocessableEntity, limited
+		}, false},
+		{"a 422 to the compare with a Retry-After", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus, g.compareHeader = http.StatusUnprocessableEntity, http.Header{"Retry-After": {"60"}}
+		}, false},
+		{"a 422 to the compare naming GitHub's secondary rate limit", func(g *verdictGitHub, _ *atomic.Bool) {
+			g.compareStatus = http.StatusUnprocessableEntity
+			g.compareBody = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
 		}, false},
 		{"a read token not minted", func(_ *verdictGitHub, mint *atomic.Bool) { mint.Store(true) }, false},
 		{"a 404 to the pull requests at the head, with no base recorded", func(g *verdictGitHub, _ *atomic.Bool) { g.pullsStatus = http.StatusNotFound }, true},
@@ -2393,6 +2409,33 @@ func TestLegionVerdictTheSweepWritesOverAForeignSuccessWhileNoDecisionStands(t *
 	}
 }
 
+// R19's status half while no decision stands: the writers' sweep sets a status of the daemon's own
+// over the newest legion-verdict status of the App's bot that its record does not hold, at failure
+// where the daemon wrote nothing at the head, as it writes over a run. Here GitHub gives no answer to
+// the read of code's change from the owner's acceptance on.
+func TestLegionVerdictTheSweepWritesOverAForeignStatusWhileNoDecisionStands(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
+	rig.github.mu.Lock()
+	rig.github.compareStatus = http.StatusBadGateway
+	rig.github.mu.Unlock()
+	rig.apply(t, rig.signOff(t))
+	rig.written(t)
+	rig.foreign(nil, []fakeStatus{{ID: 600, Head: "code", Context: verdict.CheckName, State: "success", Creator: verdictAppLogin}})
+	rig.swept(t)
+	rig.github.mu.Lock()
+	statuses := slices.Clone(rig.github.statuses)
+	rig.github.mu.Unlock()
+	if len(statuses) != 2 || statuses[1].State != "failure" || statuses[1].Context != verdict.CheckName {
+		t.Fatalf("statuses on code = %+v, want a newer legion-verdict status of the daemon's own at failure over status 600", statuses)
+	}
+	if over := statusesOver(t, rig.pool, "code"); !slices.Equal(over, []int64{600}) {
+		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600", over)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on code = %+v, want none: no decision stands", runs)
+	}
+}
+
 // R19 on a merge group's commit while no decision stands: the writers' sweep writes over another
 // token's run of the App on the group of a pull request whose head GitHub gives no answer for, with
 // failure where the daemon wrote nothing on that group, and makes no run of its own there; before
@@ -2438,6 +2481,47 @@ func TestLegionVerdictARecordedRunAnotherTokenTurnedIsCorrectedWhileNoDecisionSt
 	rig.swept(t)
 	if again := rig.soleRun(t, "code", "failure"); again.ID != run.ID {
 		t.Fatalf("the run at code is %+v, want run %d turned back to failure, the daemon's newest write there", again, run.ID)
+	}
+}
+
+// R4 while no decision stands: the writers' sweep writes success over a head only where the store's
+// newest write there is success and GitHub shows every run the store holds at success too, never
+// from the store alone. Here the owner's acceptance writes success at code, the reviewer's commit
+// then has no reader, and the fact's write turns run 1001 to failure and records it. Where that
+// newest row is lost, as a lost insert or a point-in-time restore loses it, the store's newest is the
+// success; GitHub then gives no answer to the read of the change, and one sweep must leave run 1001
+// at failure. The row kept is the control.
+func TestLegionVerdictNoStaleSuccessIsWrittenWhileNoDecisionStands(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lost bool
+	}{
+		{"the store holds the failure", false},
+		{"the store lost the failure", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit, openCapture)
+			run := rig.acceptedAndWritten(t)
+			rig.github.mu.Lock()
+			rig.github.messages["code"] = commitOf(captureReviewerSession)
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			rig.noReader(t, "code", wantNoReaderOpening, "code")
+			if tc.lost {
+				inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+					_, err := tx.Exec(ctx, `delete from verdict_writes where id = (select max(id) from verdict_writes where head = 'code')`)
+					return err
+				})
+			}
+			rig.github.mu.Lock()
+			rig.github.compareStatus = http.StatusBadGateway
+			rig.github.mu.Unlock()
+			rig.swept(t)
+			if again := rig.soleRun(t, "code", "failure"); again.ID != run.ID {
+				t.Fatalf("the run at code is %+v, want run %d left at failure: no success stands from the store alone", again, run.ID)
+			}
+		})
 	}
 }
 
@@ -2543,7 +2627,60 @@ func TestLegionVerdictTheNoAnswerCountIsOnePerHeadPerSweep(t *testing.T) {
 	warned(0, "a person's request for changes and approval")
 	rig.swept(t)
 	warned(1, fmt.Sprintf("%d sweeps", noAnswerSweeps))
-	rig.noReader(t, "code", wantUnreadOpening)
+	rig.noReader(t, "code", wantUnansweredOpening)
+}
+
+// Any read of a head's change that GitHub answers starts the head's count of sweeps with no answer
+// again, whichever write made it: a fact's write of another pull request at the head, which decides
+// CAPTURE-1's pull request 86 there too (atHead), and a merge group's write of pull request 86. So
+// after two sweeps with no answer, such an answer, and GitHub's silence again, the bound's third
+// sweep from the answer warns, and not the first.
+func TestLegionVerdictAnAnsweredReadOfTheHeadStartsTheCountAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer func(*testing.T, *sweepRig)
+	}{
+		{"a fact of the outside pull request at the head", func(t *testing.T, rig *sweepRig) {
+			review := outsideReview(1, "a-writer", "approved")
+			review.CommitID, review.HeadSHA = "code", "code"
+			rig.review(t, review)
+		}},
+		{"a merge group's write", func(t *testing.T, rig *sweepRig) {
+			rig.w.queueMergeGroupWrite(widgets, 86, "group-86", false)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode,
+				openCapture, sweptPull{number: 90, ref: "feature/faster-builds", head: "code"})
+			rig.apply(t, intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "code"})
+			rig.acceptedAndWritten(t)
+			answers := func(status int) {
+				rig.github.mu.Lock()
+				rig.github.compareStatus = status
+				rig.github.mu.Unlock()
+			}
+			warned := func(want int, after string) {
+				t.Helper()
+				if lines := loggedMessages(t, rig.logs.String(), noAnswerLine); len(lines) != want {
+					t.Fatalf("%q lines after %s = %v, want %d", noAnswerLine, after, lines, want)
+				}
+			}
+			answers(http.StatusBadGateway)
+			for range noAnswerSweeps - 1 {
+				rig.swept(t)
+			}
+			answers(0)
+			tc.answer(t, rig)
+			rig.written(t)
+			answers(http.StatusBadGateway)
+			for range noAnswerSweeps - 1 {
+				rig.swept(t)
+			}
+			warned(0, fmt.Sprintf("an answer and %d sweeps with no answer", noAnswerSweeps-1))
+			rig.swept(t)
+			warned(1, fmt.Sprintf("an answer and %d sweeps with no answer", noAnswerSweeps))
+		})
+	}
 }
 
 // A head the writers' sweep no longer lists, as when its pull request closed or moved on, keeps no
@@ -2655,7 +2792,7 @@ func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
 		}
 		rig.nothingWrittenOn(t, "code")
 		rig.swept(t)
-		rig.noReader(t, "code", wantUnreadOpening)
+		rig.noReader(t, "code", wantUnansweredOpening)
 		answered(t, rig)
 	})
 }

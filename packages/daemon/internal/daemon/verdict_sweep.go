@@ -124,10 +124,11 @@ func (w *workflowRuntime) sweepVerdicts(ctx context.Context, boot bool) {
 // review of that head. It then queues for the writer a write on each open head, that may put the
 // daemon's own conclusion over another writer's run or status (overForeign): the writer decides the
 // head from the record, creates the run a lost or failed write left unwritten, turns each run of the
-// App there to the head's conclusion, and writes that conclusion - failure where none stands - over
-// each status of the one App its record does not hold. A legion/<KEY> head of another project's
-// issue is swept too, as a head no verdict stands at (spec R4, R19). A head the list shows no
-// other open pull request at is written alone, with no read of the pull requests at its commit
+// App there to the head's conclusion, and writes that conclusion - failure where none stands, and
+// while no decision stands the conclusion undecidedOver gives - over each status of the one App its
+// record does not hold. A legion/<KEY> head of another project's issue is swept too, as a head no
+// verdict stands at (spec R4, R19). A head the list shows no other open pull request at is written
+// alone, with no read of the pull requests at its commit
 // (atHead). Once the list is read, the writer numbers the pass and forgets the count of sweeps with
 // no answer of every head of the repository the list does not hold (sweepBegun), so a head counts
 // once a pass and a head that closed or moved on keeps no count in memory. Last, it reads the merge

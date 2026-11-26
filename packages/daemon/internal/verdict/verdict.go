@@ -57,7 +57,7 @@ const (
 	// passed, GitHub gave no answer at all to the read of the change's commits (Inputs.Unanswered),
 	// and no refusal stands. It is never written as a conclusion: the daemon's run written before
 	// stands until a read is answered, and a head the writers' sweeps find so on their bound's
-	// passes in a row is decided as one whose change cannot be read (ChangeUnread).
+	// passes in a row is failure for GitHub's silence (ChangeUnanswered).
 	Undecided Conclusion = "undecided"
 )
 
@@ -96,10 +96,15 @@ const (
 	// each), a plan with no testing step and no review step among them, whose commits no agent reads.
 	NoReader Reason = "a commit with no reader"
 	// ChangeUnread is a head where GitHub answered that the daemon cannot read every commit of the
-	// change (Inputs.Unread), so no commit has a reader, or where the writers' sweeps found no
-	// answer at all on their bound's passes in a row. One read with no answer is no such answer,
+	// change (Inputs.Unread), so no commit has a reader. One read with no answer is no such answer,
 	// and decides nothing yet (Undecided).
 	ChangeUnread Reason = "change unread"
+	// ChangeUnanswered is a head where the writers' sweeps found GitHub giving no answer at all to
+	// the read of the change's commits on their bound's passes in a row, so no commit has a reader
+	// yet. Decide never gives it, since it gives Undecided for one read with no answer; the daemon's
+	// writer gives it at its bound, so the run says GitHub gave no answer, which the next answered
+	// read decides again, rather than that the commits cannot be read.
+	ChangeUnanswered Reason = "change unanswered"
 )
 
 // Step is one step of the task's plan on a Legion head, as the writer reads it at Inputs.Head: its
@@ -161,7 +166,7 @@ type Inputs struct {
 	// Unread is whether GitHub answered that the daemon cannot read every commit of the change, so
 	// no commit has a reader. Unanswered is whether GitHub gave no answer at all to the read, which
 	// decides nothing yet (Undecided). The two stay apart: no answer is no answer that the commits
-	// cannot be read, until the writer's bound on no answer (ChangeUnread).
+	// cannot be read, even at the writer's bound on no answer (ChangeUnanswered).
 	Unread, Unanswered bool
 	// CIReviewer is the bot login the repository's entry names as its ci_reviewer, "" for none.
 	CIReviewer string
