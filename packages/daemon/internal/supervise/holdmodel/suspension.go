@@ -85,7 +85,7 @@ func (d *decision) intend(r Row, e Event, displaced bool) {
 	}
 	i := Intent{h.By, h.Pause, reasons(r), displaced}
 	i.Causes |= r.Intent.Causes
-	if r.waiting() || r.Task.Conf != 0 {
+	if r.unresolved() {
 		take(&r)
 	}
 	invalidate(&r)
@@ -98,6 +98,9 @@ func (d *decision) stop() {
 	i := r.Intent
 	if !d.StopOwed && d.W.Proc {
 		d.add(RuntimeStop, 0, 0)
+		if i.Pause != 0 && i.Pause != d.W.Pause {
+			d.H.Bad |= Ended // the oracle: no runtime stop runs for a pause that has ended
+		}
 		if d.W.Refuses && !i.Displaced {
 			d.StopRetry = true
 			d.crash = d.fault(CrashAfterRuntime)
@@ -152,6 +155,37 @@ func (d *decision) finish() {
 		d.stop()
 	}
 }
+
+// dropEnded is D1's second step and E's rule: a hold, or a pre-stop intent, of
+// a pause that has ended is dropped before anything can stop the claim for it.
+// It runs at the start of every decision, a repair's and a drain's included,
+// and at a restart (endedPause). A runtime stop that already landed (StopOwed)
+// is recorded as it was asked. It reports whether it wrote.
+func (d *decision) dropEnded() bool {
+	r := d.M
+	if !d.endedPause(&r) {
+		return false
+	}
+	d.write(ClaimWrite, r, Event{K: KPauseEnds})
+	return true
+}
+func (d *decision) endedPause(r *Row) bool {
+	p := r.Hold.Pause
+	if r.Intent.By != 0 {
+		p = r.Intent.Pause
+	}
+	if d.keepEnded || d.StopOwed || !r.live() || p == 0 || p == d.W.Pause {
+		return false
+	}
+	displaced := r.Intent.By != 0 && r.Intent.Displaced
+	r.Hold, r.Intent = Hold{}, Intent{}
+	if displaced {
+		// The process is gone or must be replaced, and no hold stops the claim
+		// any more: it is relaunched as a let-go with no hold is (leave).
+		d.relaunch(r)
+	}
+	return true
+}
 func (d *decision) leave(e Event) {
 	r := d.M
 	if e.K == KDeath {
@@ -175,10 +209,17 @@ func (d *decision) leave(e Event) {
 		d.intend(r, e, e.K == KStale || e.K == KDeath)
 		return
 	}
-	if r.waiting() || r.Task.Conf != 0 {
-		take(&r)
+	d.relaunch(&r)
+	d.write(ClaimWrite, r, e)
+}
+
+// relaunch is a let-go with no hold: the task goes back unread and a new
+// process replaces the old one.
+func (d *decision) relaunch(r *Row) {
+	if r.unresolved() {
+		take(r)
 	}
-	invalidate(&r)
+	invalidate(r)
 	r.Phase, r.Work = PhLaunch, WkNone
 	r.Relaunch, r.Wake = false, false
 	d.Prepared, d.Sending = 0, 0
@@ -186,7 +227,11 @@ func (d *decision) leave(e Event) {
 	d.W.Inc++
 	d.W.Proc = true
 	d.add(RuntimeReplace, 0, 0)
-	d.write(ClaimWrite, r, e)
+}
+
+// carriesRequest is whether an accepted event names the request it answers.
+func carriesRequest(e Event) bool {
+	return e.K == KResult || e.K == KRefusal || e.K == KOutcome
 }
 func (d *decision) restart(dead bool) {
 	defer func() {
@@ -194,9 +239,8 @@ func (d *decision) restart(dead bool) {
 			d.finish()
 		}
 	}()
-	l := d.S.Task.L
-	if d.S != d.P.Want && l != 0 && (d.P.Kind == EvidenceWrite || d.P.Kind == RetirementWrite) {
-		d.H.Lost[l] = Unapplied
+	if c := d.P.Cause; d.S != d.P.Want && d.S.Task.L != 0 && (d.P.Kind == EvidenceWrite || d.P.Kind == RetirementWrite) && carriesRequest(c) {
+		d.H.Lost[d.W.Requests[c.R].Root] = Unapplied
 	}
 	d.W.Attached = false
 	d.Prepared, d.Sending = 0, 0
@@ -205,8 +249,16 @@ func (d *decision) restart(dead bool) {
 	d.P = Pending{}
 	d.Deferred = Event{}
 	d.StopRetry, d.StopOwed = false, false
+	// The old daemon's send goroutines died with it: none of their callbacks
+	// reaches the new daemon, or the shim's record of the request (M8).
+	for k := uint8(0); k < d.W.Alloc; k++ {
+		d.W.Requests[k].Returned = true
+	}
 	d.M = d.S
-	if d.S.Phase == PhFailed {
+	if d.load != nil {
+		d.M = d.load(d.M)
+	}
+	if !d.S.live() {
 		d.W.Fatal = Event{}
 	}
 	if dead {
@@ -214,22 +266,35 @@ func (d *decision) restart(dead bool) {
 		d.W.Agent, d.W.Dedupe, d.W.N = 0, 0, 0
 		d.W.Backlog = [3]Event{}
 	}
+	// The oracle's own reading of D10's doubt, from the stored row alone.
+	if s, l := d.S, d.S.Task.L; l != 0 && d.W.Proc && s.live() && (s.Task.Conf != 0 || s.outstanding() || s.Task.Unknown) {
+		d.H.Recovering |= 1 << l
+	}
 	if d.W.Fatal.K != 0 {
 		// Redeliver on the first decision (including KDrain). This also
 		// permits store-down and a second restart before the retry.
 		return
 	}
-	if d.M.Intent.By != 0 {
-		if d.W.Proc && !d.M.Intent.Displaced {
-			d.StopRetry = true
-		} else {
-			// A refused replacement and an absent process both relinquish
-			// ownership. Neither permits a second runtime stop on restore.
-			d.StopOwed = true
-		}
+	r := d.M
+	// M7: the intent is committed, and whether its runtime stop landed is the
+	// runtime's to say. With the process gone it landed, or none was needed,
+	// so only the stop's write is owed, whatever has happened to the pause.
+	if r.Intent.By != 0 && !d.W.Proc {
+		d.StopOwed = true
 		return
 	}
-	r := d.M
+	// The hold lives in memory only (supervise/suspend.go): whoever holds a
+	// request asks again after a restart, and a pause that has ended asks
+	// nothing, since askBootStops asks only for the open pause. The model keeps
+	// the stored hold for the holders that ask again and drops it for a pause
+	// that has ended.
+	d.endedPause(&r)
+	if r.Intent.By != 0 {
+		// M7: a process that is still there has not stopped, displaced or
+		// not, so its stop is asked again.
+		d.StopRetry = true
+		return
+	}
 	if !r.live() {
 		return
 	}
@@ -240,22 +305,27 @@ func (d *decision) restart(dead bool) {
 		}
 		return
 	}
-	if r.Task.L != 0 && (r.Task.Conf != 0 || r.outstanding() || r.Task.Unknown) {
-		if !d.W.Proc {
+	doubt := r.Task.L != 0 && (r.Task.Conf != 0 || r.outstanding() || r.Task.Unknown)
+	switch {
+	case !d.W.Proc:
+		// RT3: no process is left to answer, so the task goes back unread, and
+		// the claim, which has no process, launches.
+		if doubt {
 			invalidate(&r)
 			take(&r)
-			r.Phase, r.Work = PhLaunch, WkNone
-		} else {
-			d.Restored = true
-			d.H.Recovering |= 1 << l
-			r.TurnBy = 0
-			if r.RecoverBy == 0 {
-				r.RecoverBy = after(d.Now, 10)
-			}
-			if r.Hold.By != 0 && r.Hold.Answer == 0 {
-				r.Hold.Answer = r.RecoverBy
-			}
 		}
+		r.Phase, r.Work = PhLaunch, WkNone
+	case doubt:
+		d.Restored = true
+		r.TurnBy = 0
+		if r.RecoverBy == 0 {
+			r.RecoverBy = after(d.Now, 10)
+		}
+		if r.Hold.By != 0 && r.Hold.Answer == 0 {
+			r.Hold.Answer = r.RecoverBy
+		}
+	}
+	if r != d.M {
 		d.write(ClaimWrite, r, Event{K: KRestart})
 	}
 }

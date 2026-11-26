@@ -28,7 +28,7 @@ type Effect struct {
 	Request uint8
 }
 type Effects struct {
-	List      [16]Effect
+	List      [24]Effect
 	N, Writes uint8
 	Cut       bool
 }
@@ -40,7 +40,12 @@ type decision struct {
 	Effects
 	input Event
 	crash bool
-	store func(Write, Row) Row // nil for the specified store; test variants substitute one write
+	// Test variants substitute one door; nil is the specified one. store sees
+	// the deciding state and one write; load sees the row a restart reads;
+	// keepEnded keeps a hold whose pause has ended (the defect Ended names).
+	store     func(State, Write, Row) Row
+	load      func(Row) Row
+	keepEnded bool
 }
 
 func (d *decision) fault(f uint8) bool { return d.input.Fault == f && d.input.At == d.Writes }
@@ -59,7 +64,9 @@ func (d *decision) write(w Write, r Row, cause Event) bool {
 	if !r.waiting() {
 		r.Hold.Answer = 0
 	}
-	if r.Hold.By != 0 && !r.waiting() && r.Hold.Deadline == 0 && r.Hold.Watch == 0 {
+	// A hold whose stop is under way (a committed intent) has had its bound:
+	// the stop's own retries end it (D13), so no new bound is armed.
+	if r.Hold.By != 0 && r.Intent.By == 0 && !r.waiting() && r.Hold.Deadline == 0 && r.Hold.Watch == 0 {
 		r.Hold.Watch = after(d.Now, 10)
 	}
 	cause.Fault, cause.At = 0, 0
@@ -87,12 +94,19 @@ func (d *decision) flush() bool {
 	}
 	prev := d.S
 	d.S = p.Want
+	// afterResume (daemon/pause.go): the stop's transaction reads the pause
+	// when it commits, and a stop that commits after its pause ended owes the
+	// launch, whatever the decision computed while the pause was open.
+	if q := d.S.LastStop.Pause; p.Kind == StopWrite && q != 0 && d.W.Pause == 0 && d.S.Stops[q] == 1 {
+		d.S.Stops[q] = 2
+	}
 	if d.store != nil {
-		d.S = d.store(p.Kind, d.S)
+		d.S = d.store(d.State, p.Kind, d.S)
 	}
 	d.add(Commit, p.Kind, 0)
-	d.observeCommit(prev, p)
+	// The oracles read the history as it stood before this commit.
 	d.H.Bad |= checkCommit(d.State, prev, p)
+	d.observeCommit(prev, p)
 	if d.fault(CrashAfterCommit) {
 		d.crash = true
 		return false
@@ -149,8 +163,9 @@ func (d *decision) observeCommit(prev Row, p Pending) {
 	last := d.H.LastRoot[l]
 	if last == 0 {
 		// A legacy row or a registered-but-never-written request has no
-		// admission to classify. The recovery deadline still releases it.
-		if p.Cause.K == KTimerRecov || !d.W.Proc || p.Kind == IntentWrite {
+		// admission to classify, and nothing to tell twice: the take-back
+		// that leaves no answer to come ends the doubt, whatever caused it.
+		if !r.waiting() {
 			d.H.Recovering &^= 1 << l
 		}
 		return
@@ -162,9 +177,11 @@ func (d *decision) observeCommit(prev Row, p Pending) {
 	case !d.W.Proc || p.Cause.K == KDeath || p.Cause.K == KRestart && r.Phase == PhLaunch:
 		why = NoProcess
 	case p.Cause.K == KTimerRecov || p.Kind == IntentWrite && prev.Hold.due() != 0 && prev.Hold.due() <= d.Now:
+		// The last forward's own answer decides why it never came: a loss of
+		// another forward's answer never certifies this one.
 		why = Expired
-		if d.H.Lost[l] != Original {
-			why = d.H.Lost[l]
+		if d.H.Lost[k] != Original {
+			why = d.H.Lost[k]
 		} else if q.Written && prev.Att[k].Stage == AtLost {
 			why = LostSend
 		}
@@ -185,7 +202,21 @@ const (
 	I2
 	I3
 	Twice
+	Late  // a timer fired past an earlier armed deadline (O1, D2)
+	Ended // a runtime stop ran for a pause that had ended (E, D1)
 )
+
+// creditedOpen is whether an attempt the oracle saw a turn credited through
+// still waits for its answer. A lost attempt's own credit went with its loss
+// (D3); another prompt's loss leaves it standing.
+func creditedOpen(r Row, turned uint8) bool {
+	for k, a := range r.Att {
+		if a.open() && a.Stage != AtLost && turned&(1<<k) != 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func checkServed(r Row, h History) uint8 {
 	for l, reason := range r.Ret {
@@ -200,14 +231,16 @@ func checkServed(r Row, h History) uint8 {
 }
 func checkCommit(s State, prev Row, p Pending) uint8 {
 	bad := checkServed(s.S, s.H)
-	if r := s.S; r.Hold.By != 0 && (r.Hold.due() == 0 || r.waiting() && r.Hold.Answer == 0) {
+	if r := s.S; r.Hold.By != 0 && r.Intent.By == 0 && (r.Hold.due() == 0 || r.waiting() && r.Hold.Answer == 0) {
 		bad |= I2
 	}
 	if l := prev.Task.L; l != 0 && s.S.Task.L != l {
 		switch s.S.Ret[l] {
 		case RServed: // checked against independent result history above
 		case RReplaced:
-			if prev.RecoverBy != 0 || prev.Task.Conf != 0 && prev.waiting() {
+			// D5 against the oracle's own history: neither recovery doubt nor
+			// a confirmed task with an answer to come is replaced.
+			if prev.RecoverBy != 0 || s.H.Recovering&(1<<l) != 0 || prev.Task.Conf != 0 && prev.waiting() || creditedOpen(prev, s.H.Turned[l]) {
 				bad |= I1
 			}
 		case RPhaseEnd:
@@ -256,7 +289,7 @@ func checkCommit(s State, prev Row, p Pending) uint8 {
 func Check(s State) uint8 {
 	bad := s.H.Bad | checkServed(s.M, s.H) | checkServed(s.S, s.H)
 	r := s.M
-	repair := s.P.Kind != 0 || s.StopRetry || s.StopOwed || s.W.Fatal.K != 0 || s.Deferred.K != 0
+	repair := s.P.Kind != 0 || s.StopRetry || s.StopOwed || s.W.Fatal.K != 0
 	if r.Hold.By != 0 && !repair {
 		if r.Phase == PhIdle && !r.waiting() || r.Hold.due() <= s.Now || r.waiting() && r.Hold.Answer == 0 || !r.live() {
 			bad |= I2
@@ -268,8 +301,20 @@ func Check(s State) uint8 {
 	if s.StopOwed && s.S.Intent.By == 0 && s.S.Phase != PhSusp || s.StopRetry && s.M.Intent.By == 0 {
 		bad |= I3
 	}
+	// The launch a pause's runtime stop snapshot owes survives until it is
+	// recorded: as that pause's owed stop, in a stored intent that carries the
+	// snapshot's causes, or, after a holder's takeover (D13), in the stop the
+	// new holder recorded with those causes. A claim that has ended or failed
+	// is never relaunched, and a live claim that no intent is stopping and that
+	// has a process or is launching one (a pause that ended before the stop,
+	// then a relaunch) has had its launch.
 	for id, n := range s.H.Need {
-		if n != 0 && s.S.Stops[id] != 2 && !(s.S.Intent.Pause == uint8(id) && s.S.Intent.Causes != 0) {
+		r := s.S
+		carried := n == 0 || r.Stops[id] == 2 ||
+			r.Intent.By != 0 && (r.Intent.Pause == uint8(id) && r.Intent.Causes != 0 || r.Intent.Causes&n == n) ||
+			r.Phase == PhSusp && r.LastStop.Pause != uint8(id) && r.LastStop.Causes&n == n ||
+			r.Phase == PhEnded || r.Phase == PhFailed || r.Intent.By == 0 && r.live() && (s.W.Proc || r.Phase == PhLaunch)
+		if !carried {
 			bad |= I3
 		}
 	}

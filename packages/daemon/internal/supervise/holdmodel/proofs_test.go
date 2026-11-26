@@ -54,7 +54,13 @@ func proofSeeds() []seed {
 			}
 			id := fmt.Sprintf("/%s/pause=%t", q, pause)
 			for _, by := range []string{"op", "daemon", "release"} {
-				add("F1/suspendNow/"+by+id, base+hold+"end "+by+" :H2 error :H4")
+				// Only the daemon's own stop ends a phase (O1, S4): under a
+				// pause's hold the daemon's request moves no holder.
+				kept := " :kept"
+				if q == "phase" && by == "daemon" && !pause {
+					kept = " :phaseEnd"
+				}
+				add("F1/suspendNow/"+by+id, base+hold+"end "+by+" :H2 error :H4"+kept)
 				add("F2/turnEnded/"+by+id, base+hold+by+" end :H2 ok :served :H4")
 			}
 			add("F3/queue"+id, base+hold+"end new :kept error :unread")

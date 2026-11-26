@@ -150,11 +150,29 @@ func (e Event) String() string {
 	case KResult, KCrashFrame:
 		s = fmt.Sprintf("%s(%s,%s)", name, req(e.R), answerNames[e.A])
 	case KRefusal:
-		busy := ""
+		how := ""
 		if e.A == 1 {
-			busy = ",busy"
+			how += ",busy"
 		}
-		s = fmt.Sprintf("%s(%s%s)", name, req(e.R), busy)
+		switch e.B {
+		case 1:
+			how += ",replayed"
+		case 2:
+			how += ",streaming"
+		}
+		s = fmt.Sprintf("%s(%s%s)", name, req(e.R), how)
+	case KProbeIdle:
+		if e.A == 1 {
+			s = name + "(streaming)"
+		} else {
+			s = name + "(idle)"
+		}
+	case KStartedBy:
+		if e.A == 1 {
+			s = name + "(ruleHolds)"
+		} else {
+			s = name + "(row12)"
+		}
 	case KOutcome:
 		s = fmt.Sprintf("%s(%s,%s)", name, req(e.R), outcomeNames[e.A])
 	case KSuspend:
@@ -186,8 +204,10 @@ func (e Event) String() string {
 	default:
 		s = name
 	}
+	// The trace language's own fault suffix, so a printed witness replays as
+	// the same event (parse).
 	if e.Fault != 0 {
-		s += fmt.Sprintf("+fault%d@%d", e.Fault, e.At)
+		s += fmt.Sprintf("!%d.%d", e.Fault, e.At)
 	}
 	return s
 }

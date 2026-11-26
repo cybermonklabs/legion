@@ -85,6 +85,9 @@ const (
 	Unapplied
 	Expired
 	LostSend
+	// Unmatched: a legacy row (D12 condition 2) records no attempt, so an answer
+	// that reached the daemon could not be matched to the task it was for.
+	Unmatched
 )
 
 type Task struct {
@@ -97,6 +100,16 @@ type Attempt struct {
 }
 
 func (a Attempt) open() bool { return a.Stage >= AtReg && a.Stage <= AtLost }
+
+// othersOpen is whether an attempt of the row other than k still waits for its answer.
+func (r Row) othersOpen(k int) bool {
+	for j, a := range r.Att {
+		if j != k && a.open() {
+			return true
+		}
+	}
+	return false
+}
 
 type Hold struct {
 	By               Src
@@ -158,6 +171,11 @@ func (r Row) live() bool    { return r.Phase <= PhWork }
 func (r Row) waiting() bool { return r.outstanding() || r.RecoverBy != 0 }
 func (r Row) compact() bool { return r.Work == WkCompact || r.Work == WkCompactTurn }
 
+// unresolved is whether a take-back must move the task to a new id before
+// anything else lets it go: an answer is to come, a turn confirmed it, or a
+// legacy row records no attempt to say which (D12 condition 2).
+func (r Row) unresolved() bool { return r.waiting() || r.Task.Conf != 0 || r.Task.Unknown }
+
 type WireRequest struct {
 	L, Under, Conn, Inc, Root uint8
 	Written, Ack, Answered    bool
@@ -202,14 +220,19 @@ type History struct {
 	Requests, Admissions [3]uint8
 	LastRoot             [3]uint8
 	Twice                [3]Reason
-	Lost                 [3]Reason
+	// Lost is why the answer of one forwarded request cannot reach the daemon,
+	// per request: a loss of one forward never explains a retry of another.
+	Lost [NA]Reason
 	// Per forwarded request, not just the latest reason per logical task.
 	// Certified records the decision that actually committed the retry.
 	Certified  [NA]Reason
 	Ledger     [NA]Reason
-	Recovering uint8    // bit per logical task, from boot until an authoritative decision
-	Need       [3]uint8 // independent pre-runtime launch snapshots
-	Bad        uint8
+	Recovering uint8 // bit per logical task, from boot until an authoritative decision
+	// Turned is a bit per request whose attempt a turn start confirmed the
+	// logical task through. The replacement oracle reads it, not Task.Conf.
+	Turned [3]uint8
+	Need   [3]uint8 // independent pre-runtime launch snapshots
+	Bad    uint8
 }
 type State struct {
 	M, S                                        Row
@@ -244,6 +267,22 @@ func earlier(x, y uint16) uint16 {
 		return y
 	}
 	return x
+}
+
+// armed is the time of the earliest timed timer of s (the hold's bound, the
+// recovery bound, the wait for a turn, which recovery disarms), zero when none
+// is armed. A timer fires only at the earliest armed time, so no timer passes
+// an earlier deadline (O1, D2).
+func (s State) armed() uint16 {
+	r := s.M
+	t := r.RecoverBy
+	if t == 0 {
+		t = r.TurnBy
+	}
+	if r.Hold.By != 0 && !s.StopRetry {
+		t = earlier(t, r.Hold.due())
+	}
+	return t
 }
 func (s State) Class() string {
 	switch {

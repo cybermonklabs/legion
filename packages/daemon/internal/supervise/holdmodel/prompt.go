@@ -27,9 +27,13 @@ func retire(r *Row, why, k uint8) {
 		r.Task = Task{}
 	}
 }
+
+// queue is D5: a newer task waits behind recovery doubt, a legacy row's task
+// whose attempts are unknown (D12 condition 2), and a confirmed task with an
+// answer to come.
 func (d *decision) queue(e Event) {
 	r := d.M
-	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Conf != 0 && r.waiting() || e.K == KSupersede && r.outstanding()) {
+	if r.Task.L == e.A || r.Ret[e.A] != 0 || r.Task.L != 0 && (r.RecoverBy != 0 || r.Task.Unknown || r.Task.Conf != 0 && r.waiting() || e.K == KSupersede && r.outstanding()) {
 		return
 	}
 	retire(&r, RReplaced, 0)
@@ -78,7 +82,6 @@ func (d *decision) wire(k uint8) {
 		h.Ledger[k] = reason
 	}
 	h.LastRoot[q.L] = k + 1
-	h.Lost[q.L] = Original
 	h.Admissions[q.L]++
 }
 
@@ -111,6 +114,7 @@ func (d *decision) turn(e Event) {
 			}
 			r.Task.Conf = 1
 			r.News = a.News
+			d.H.Turned[r.Task.L] |= 1 << k // the oracle's own record of the credit
 			break
 		}
 		if d.Restored && r.Task.L != 0 && r.RecoverBy != 0 {
@@ -145,12 +149,17 @@ func (d *decision) outcome(e Event) {
 	case OcAck:
 		r.Att[k].Stage = AtAcked
 		d.W.Requests[k].Ack = true
-		if r.Phase == PhIdle {
+		// A turn already confirmed the task: that turn has started and may
+		// have ended, so the acknowledgement arms no wait for a turn
+		// (#5535's ackedInTurn).
+		if r.Phase == PhIdle && r.Task.Conf == 0 {
 			r.TurnBy = after(d.Now, 1)
 		}
 	case OcLost:
 		r.Att[k].Stage = AtLost
-		if r.Task.Conf != 0 {
+		// D3: the loss takes the confirmation back only where nothing else
+		// is outstanding. Another prompt still to answer keeps it (D5, A7).
+		if r.Task.Conf != 0 && !r.othersOpen(int(k)) {
 			r.Task.Conf = 0
 		}
 	case OcNoFrame:
@@ -174,6 +183,16 @@ func (d *decision) fail(r *Row) {
 	r.Hold = Hold{}
 	r.Intent = Intent{}
 	r.Notify = true
+}
+
+// matches is whether a result is the exact answer of an attempt of the pending
+// task that may settle it: the forwarded root the row records, under the id it
+// was sent under (M2, M3, D9).
+func (d *decision) matches(e Event) bool {
+	r := d.M
+	a := r.Att[e.R]
+	q := d.W.Requests[e.R]
+	return a.open() && a.L == r.Task.L && q.L == r.Task.L && q.Under == a.Under && q.Written && q.Root == e.R
 }
 func (d *decision) answer(e Event) {
 	r := d.M

@@ -54,12 +54,19 @@ func run(s State, e Event) (State, Effects) {
 	return execute(decision{State: s, input: e})
 }
 func execute(d decision) (State, Effects) {
+	before := d.State
 	d.dispatch(plain(d.input))
 	if d.crash {
 		d.Cut = true
 		d.input = Event{}
 		d.crash = false
 		d.restart(false)
+	}
+	// The deadline oracle. Time moves only when a timer fires, to that timer's
+	// own time, so a decision that ends later than the earliest timer armed
+	// before it has passed an earlier deadline (O1, D2).
+	if a := before.armed(); a != 0 && d.Now > before.Now && d.Now > a {
+		d.H.Bad |= Late
 	}
 	return d.State, d.Effects
 }
@@ -74,7 +81,37 @@ func (d *decision) pop() Event {
 func (d *decision) evict() {
 	e := d.pop()
 	if e.K == KResult || e.K == KRefusal {
-		d.H.Lost[d.W.Requests[e.R].L] = Overflow
+		d.H.Lost[d.W.Requests[e.R].Root] = Overflow
+	}
+}
+
+// receiveFatal records fatal evidence when the daemon receives it, before it
+// retries any pending write: its source redelivers it until the failure
+// commits (M6), across a failed write's repair and across a restart alike.
+func (d *decision) receiveFatal(e Event) {
+	r := d.M
+	if d.W.Fatal.K != 0 || !r.live() {
+		return
+	}
+	switch {
+	case e.K == KReport && e.A == RpFatal && (e.B == 0 || r.ReportSeq == 0):
+	case e.K == KResult && e.A == AFatal && d.matches(e):
+	default:
+		return
+	}
+	d.W.Fatal = e
+}
+
+// deferInput keeps the one input a failed repair left unconsumed (M8). Retries
+// and a drain are the repair's own, a pause's end has already changed the
+// store, and fatal evidence waits at its source.
+func (d *decision) deferInput(e Event) {
+	switch e.K {
+	case KTimerWrite, KTimerStopWrite, KDrain, KPauseEnds:
+		return
+	}
+	if d.Deferred.K == 0 && e != d.W.Fatal {
+		d.Deferred = e
 	}
 }
 func (d *decision) dispatch(e Event) {
@@ -119,14 +156,50 @@ func (d *decision) dispatch(e Event) {
 	case KCrashFrame:
 		q := &w.Requests[e.R]
 		q.Answered, q.Answer = true, e.A
-		d.H.Lost[q.L] = OldSocket
+		d.H.Lost[e.R] = OldSocket
 		d.restart(false)
 		return
+	case KOutcome:
+		// The send's synchronous answer is the shim's: it refused or deferred
+		// the request whatever the daemon's fence then does with the callback.
+		q := &w.Requests[e.R]
+		q.Returned = true
+		if e.A == OcRefused || e.A == OcBusy {
+			q.Answered, q.Answer = true, ARefLate
+			if w.Dedupe == q.Root+1 {
+				w.Dedupe = 0
+			}
+		}
+	case KPauseEnds:
+		// The pause ends in the store whatever the daemon is doing. The daemon
+		// drops the hold at the start of its next decision (dropEnded), so the
+		// event takes no deferred slot.
+		w.Pause = 0
+		if d.Deferred.K != 0 {
+			return
+		}
+	case KReport:
+		d.receiveFatal(e)
+		if d.Deferred.K != 0 {
+			return // fatal evidence waits at its source until the drain (M6, M8)
+		}
 	case KReplay:
 		e = d.pop()
 		if e.K == KRefusal {
 			e.B = 1
 		}
+		d.receiveFatal(e)
+	// A timer fires at the time it was armed, before a pending write's
+	// read-back can move its bound; the decision then reads the bound again.
+	// A drained timer fired when it arrived and moves no time.
+	case KTimerHold:
+		if due := d.M.Hold.due(); due != 0 && !d.StopRetry {
+			d.Now = max(d.Now, due)
+		}
+	case KTimerRecov:
+		d.Now = max(d.Now, d.M.RecoverBy)
+	case KTimerTurn:
+		d.Now = max(d.Now, d.M.TurnBy)
 	case KDrain:
 		if d.P.Kind != 0 && !d.flush() {
 			return
@@ -158,7 +231,9 @@ func (d *decision) dispatch(e Event) {
 				}
 			}
 		}
-		if !w.Attached || w.N != 0 {
+		// The shim holds the frame while no daemon is attached, while older
+		// frames wait before it, and while the daemon's deferred slot is taken.
+		if !w.Attached || w.N != 0 || d.Deferred.K != 0 {
 			if w.N == uint8(len(w.Backlog)) {
 				d.evict()
 			}
@@ -166,6 +241,7 @@ func (d *decision) dispatch(e Event) {
 			w.N++
 			return
 		}
+		d.receiveFatal(e)
 	}
 	// A runtime stop is irreversible. At this point the old delivery and
 	// its captured obligation own the next write; new rows cannot replace them.
@@ -182,16 +258,25 @@ func (d *decision) dispatch(e Event) {
 		d.P.Want.StartRow = 12
 	}
 	if d.P.Kind != 0 && !d.flush() {
-		if e.K != KTimerWrite && e.K != KTimerStopWrite && e.K != KDrain && d.Deferred.K == 0 {
-			d.Deferred = e
-		}
+		d.deferInput(e)
 		return
 	}
-	if d.W.Fatal.K != 0 && d.W.Fatal != e {
-		if d.Deferred.K == 0 && e.K != KTimerWrite {
-			d.Deferred = e
+	// Unacknowledged fatal evidence decides first (M6, O3): its failure ends
+	// the hold and any intent, so nothing below can stop the claim.
+	if d.W.Fatal.K != 0 {
+		if !d.M.live() {
+			d.W.Fatal = Event{} // the claim ended or stopped first: the evidence decides nothing
+		} else if d.W.Fatal != e {
+			d.deferInput(e)
+			e = d.W.Fatal
 		}
-		e = d.W.Fatal
+	}
+	// D1's order holds in every other decision, a repair's and a drain's
+	// included: a hold whose pause has ended is dropped before anything can
+	// stop the claim for it.
+	if d.W.Fatal.K == 0 && d.dropEnded() && d.P.Kind != 0 {
+		d.deferInput(e)
+		return
 	}
 	d.row(e)
 	d.finish()
@@ -200,7 +285,7 @@ func (d *decision) row(e Event) {
 	r := d.M
 	if !r.live() {
 		switch e.K {
-		case KResume, KSuspend, KStartedBy, KPauseBegins, KPauseEnds, KFailEffects, KTimerStopWrite:
+		case KResume, KSuspend, KStartedBy, KPauseBegins, KFailEffects, KTimerStopWrite:
 		default:
 			return
 		}
@@ -218,31 +303,18 @@ func (d *decision) row(e Event) {
 	case KTurnStart, KTurnEnd, KNamedStart, KProbeIdle:
 		d.turn(e)
 	case KOutcome:
-		d.W.Requests[e.R].Returned = true
-		if e.A == OcRefused || e.A == OcBusy {
-			q := &d.W.Requests[e.R]
-			q.Answered, q.Answer = true, ARefLate
-			if d.W.Dedupe == q.Root+1 {
-				d.W.Dedupe = 0
-			}
-		}
 		d.outcome(e)
 	case KResult, KRefusal:
-		a := r.Att[e.R]
-		q := d.W.Requests[e.R]
-		if e.K == KResult && a.open() && a.L == r.Task.L && q.L == r.Task.L && q.Under == a.Under && q.Written && q.Root == e.R {
-			if e.A == AOK {
-				d.H.OK[q.L] |= 1 << e.R
-			}
-			if e.A == AFatal {
-				d.W.Fatal = e
-			}
+		if e.K == KResult && e.A == AOK && d.matches(e) {
+			d.H.OK[r.Task.L] |= 1 << e.R
+		}
+		if e.K == KResult && r.Task.Unknown && r.Att[e.R].Stage == AtNone && d.W.Requests[e.R].L == r.Task.L {
+			// D12 condition 2: a legacy row records no attempt to match this
+			// answer against, so it decides nothing and cannot reach the task.
+			d.H.Lost[e.R] = Unmatched
 		}
 		d.answer(e)
 	case KReport:
-		if e.A == RpFatal && r.live() && (e.B == 0 || r.ReportSeq == 0) {
-			d.W.Fatal = e
-		}
 		d.report(e)
 	case KFailEffects:
 		if r.Notify {
@@ -272,13 +344,9 @@ func (d *decision) row(e Event) {
 			d.stop()
 		}
 	case KTimerWrite: // flush above; finish below
-	case KTimerHold:
-		if due := r.Hold.due(); due != 0 && !d.StopRetry {
-			d.Now = max(d.Now, due)
-		}
+	case KTimerHold: // time moved above; finish stops a hold that is due
 	case KTimerRecov:
-		if r.RecoverBy != 0 {
-			d.Now = max(d.Now, r.RecoverBy)
+		if r.RecoverBy != 0 && r.RecoverBy <= d.Now {
 			if r.Hold.By != 0 {
 				d.intend(r, e, false)
 			} else {
@@ -289,8 +357,7 @@ func (d *decision) row(e Event) {
 			}
 		}
 	case KTimerTurn:
-		if r.TurnBy != 0 {
-			d.Now = max(d.Now, r.TurnBy)
+		if r.TurnBy != 0 && r.TurnBy <= d.Now {
 			r.TurnBy = 0
 			take(&r)
 			if r.Charges < ChargeLimit {
@@ -301,13 +368,6 @@ func (d *decision) row(e Event) {
 	case KPauseBegins:
 		d.W.LastPause++
 		d.W.Pause = d.W.LastPause
-	case KPauseEnds:
-		d.W.Pause = 0
-		if r.Hold.Pause != 0 && !d.StopOwed {
-			r.Hold = Hold{}
-			r.Intent = Intent{}
-			d.write(ClaimWrite, r, e)
-		}
 	case KReady:
 		if r.Phase == PhLaunch {
 			r.Phase = PhIdle
@@ -362,7 +422,10 @@ func (d *decision) row(e Event) {
 		r.Wake = true
 		d.write(ClaimWrite, r, e)
 	case KStale:
-		if r.Phase == PhWork || r.Hold.By == 0 && (d.Sending != 0 || hasAck(r)) {
+		// D10's fence: recovery doubt holds the replacement back, as it holds
+		// back a newer task and a compaction's take-back. The relaunch waits
+		// for the answer or the bound, and a hold's stop then owes it.
+		if r.Phase == PhWork || r.RecoverBy != 0 || r.Hold.By == 0 && (d.Sending != 0 || hasAck(r)) {
 			r.Relaunch = true
 			d.write(ClaimWrite, r, e)
 		} else {
@@ -371,7 +434,7 @@ func (d *decision) row(e Event) {
 	case KDeath, KWake, KExit:
 		d.leave(e)
 	}
-	if d.P.Kind == 0 && !d.crash && d.M.Relaunch && d.M.Phase == PhIdle && d.M.Hold.By == 0 && d.Sending == 0 && !hasAck(d.M) {
+	if d.P.Kind == 0 && !d.crash && d.M.Relaunch && d.M.Phase == PhIdle && d.M.Hold.By == 0 && d.M.RecoverBy == 0 && d.Sending == 0 && !hasAck(d.M) {
 		d.leave(Event{K: KStale})
 	}
 }

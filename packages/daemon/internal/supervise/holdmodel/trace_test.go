@@ -62,19 +62,33 @@ var words = func() map[string]Event {
 
 func parse(t *testing.T, word string) Event {
 	t.Helper()
-	base, ft, _ := strings.Cut(word, "!")
-	e, ok := words[base]
-	if !ok {
-		t.Fatalf("unknown event %q", base)
-	}
-	if ft != "" {
-		var f, a uint8
-		if _, err := fmt.Sscanf(ft, "%d.%d", &f, &a); err != nil {
-			t.Fatal(err)
-		}
-		e.Fault, e.At = f, a
+	e, err := parseWord(word)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return e
+}
+
+// parseWord reads one word of the trace language: an event's name, then at
+// most one fault suffix `!<fault>.<operation>`, and nothing after it. Every
+// printed event (Event.String) is such a word, so a witness replays as itself.
+func parseWord(word string) (Event, error) {
+	base, ft, faulted := strings.Cut(word, "!")
+	e, ok := words[base]
+	if !ok {
+		return Event{}, fmt.Errorf("unknown event %q", base)
+	}
+	if !faulted {
+		return e, nil
+	}
+	f, a, dotted := strings.Cut(ft, ".")
+	fault, errF := strconv.ParseUint(f, 10, 8)
+	at, errA := strconv.ParseUint(a, 10, 8)
+	if !dotted || errF != nil || errA != nil || fault < uint64(FailWrite) || fault > uint64(CrashAfterRuntime) || at == 0 && fault != uint64(CrashAfterRuntime) {
+		return Event{}, fmt.Errorf("malformed fault %q in %q: want !<fault 1-5>.<operation>", ft, word)
+	}
+	e.Fault, e.At = uint8(fault), uint8(at)
+	return e, nil
 }
 func verdict(s State, v string) bool {
 	r := s.M
@@ -131,8 +145,20 @@ func verdict(s State, v string) bool {
 		return r.Relaunch
 	case "noError":
 		return r.ErrRun == 0
-	case "rt1", "rt2", "rt3", "rt4", "rt5", "lostCost":
-		return s.H.Twice[1] == map[string]Reason{"rt1": OldSocket, "rt2": Overflow, "rt3": NoProcess, "rt4": Unapplied, "rt5": Expired, "lostCost": LostSend}[v]
+	case "charge1":
+		return r.Charges == 1
+	case "atLimit":
+		return r.Charges == ChargeLimit
+	case "noPause":
+		return r.Hold.Pause == 0
+	case "pauseEnded":
+		return s.W.Pause == 0
+	case "noFatal":
+		return s.W.Fatal.K == 0
+	case "proc":
+		return s.W.Proc
+	case "rt1", "rt2", "rt3", "rt4", "rt5", "lostCost", "unmatched":
+		return s.H.Twice[1] == map[string]Reason{"rt1": OldSocket, "rt2": Overflow, "rt3": NoProcess, "rt4": Unapplied, "rt5": Expired, "lostCost": LostSend, "unmatched": Unmatched}[v]
 	default:
 		return s.Class() == v
 	}

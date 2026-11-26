@@ -4,8 +4,8 @@ func orderSeeds() []seed {
 	cs := []seed{}
 	add := func(n, s string) { cs = append(cs, seed{n, ready, s}) }
 	t := func(n, s string) { add("PRRT_kwDORFy7ds68"+n, s) }
-	t("CUsn", wire+"open row refused :owed :H4")
-	t("F5Q2", ack+"wait "+next+"open row refuses refused1 no :H3r ready accepts retry :H4")
+	t("CUsn", wire+"open row refused :charge1 :owed :H4 :kept")
+	t("F5Q2", ack+"wait "+next+"open row refuses refused1 :atLimit no :H3r :atLimit :kept ready accepts retry :H4")
 	t("CUsr", wire+"start hello stale end lost :launch :kept")
 	t("F5RA", ack+"wait "+next+"start hello stale end lost1 :relaunch no :launch")
 	t("C-Hi", wire+"open row lost :H2 bound :kept")
@@ -20,9 +20,9 @@ func orderSeeds() []seed {
 	t("GiMH", wire+"hello refused "+next+":again")
 	t("CUs1", held+"end ok :served :H4")
 	add("pause-control/stale-at-turn-end", held+"stale end :H2 error :H4 :owed")
-	add("death-after-failed-takeback", waiting+"no!1.1 death :kept :H4")
+	add("death-after-failed-takeback", waiting+"no!1.1 death :kept :H4 :owed")
 	add("dirty-recovery-stale-ack", wire+"compact!1.1 ack :unread compactEnd :unread")
-	add("refused-stop-unrelated", ack+"open row refuses bound wrongToken ready :H3r accepts retry :H4")
+	add("refused-stop-unrelated", ack+"open row refuses wait bound wrongToken ready :H3r accepts retry :H4")
 	for _, p := range []string{"lost end", "end lost"} {
 		add("lost-vs-turn-end/"+p, wire+"start open row "+p+" :H2 ok :served")
 	}
@@ -30,7 +30,7 @@ func orderSeeds() []seed {
 	add("C1/C2-replay-no-resend", ack+"detach late reconnect replay :unread :single")
 	add("C1/C2-replay-same-id", wire+"lost detach reconnect "+next+"detach late reconnect replay :kept :alias")
 	for _, by := range []string{"op row", "row op"} {
-		add("session-conflict/"+by, work+"open "+by+" :op :H1")
+		add("session-conflict/"+by, work+"open "+by+" :op :noPause :H1")
 	}
 	add("S4-over-working-pause", held+"daemon :pause")
 	add("S4-over-release", work+"release daemon :release")
@@ -68,11 +68,11 @@ func orderSeeds() []seed {
 	add("delayed-fatal-after-success", held+"ok fatalReport!1.1 :pending repair :failed")
 	add("expired-takeback-write-fails", waiting+"bound!1.1 :pending :noStop repair :H4 :owed")
 	add("unconfirmed-forced-stop-refused", wire+"open row refuses bound :H3r accepts retry :H4")
-	add("H4l/ordinary", ack+"op bound late :H4 :unread")
+	add("H4l/ordinary", ack+"op wait bound late :H4 :unread")
 	add("H4l/takeover", waiting+"op bound late :H4 :kept")
 	add("H4l/second-pause", waiting+"bound unpause resume open row late :H4 :kept")
 	add("replacement-runtime-refused", waiting+"refuses stale :H4 :owed")
-	add("paused-phase-daemon-controls", "phase prepare register w ack daemon bound :phaseEnd")
+	add("paused-phase-daemon-controls", "phase prepare register w ack daemon wait bound :phaseEnd")
 	add("non-root-exit", waiting+"exit :claimEnd")
 	add("wrong-token-before-H3-completion", "open row!1.2 :H3 :pending wrongToken :H3 :pending repair :H4")
 	add("same-id-alias-negative-fanout", wire+"lost "+next+"open row detach late late1 reconnect replay :H2 replay :H4 :unread")

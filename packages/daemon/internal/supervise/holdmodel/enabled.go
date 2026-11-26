@@ -61,6 +61,16 @@ func (s *State) base(e Event) bool {
 		return s.Deferred.K != 0 || w.Fatal.K != 0
 	case KFailEffects:
 		return r.Notify
+	case KPauseEnds:
+		return w.Pause != 0 // the store's own event, whatever the daemon is doing
+	case KTurnStart, KTurnEnd, KNamedStart, KRefusal, KResult:
+		// The agent's frames wait at the shim while the daemon's deferred
+		// slot is taken (M8): backpressure never refuses them at the source.
+		return s.frame(e)
+	case KReport:
+		if e.A == RpFatal {
+			return r.live() || r.Phase == PhFailed // fatal evidence waits at its source (M6)
+		}
 	}
 	if s.Deferred.K != 0 && !(e.K == KStartedBy && s.StopOwed) {
 		return false
@@ -90,47 +100,25 @@ func (s *State) base(e Event) bool {
 			return false
 		}
 		return !q.Ack || e.A == OcAck
-	case KTurnStart:
-		return w.Proc && w.Agent == 0 && (k == Foreign || w.Requests[k].Written && w.Requests[k].Root == k && !w.Requests[k].Answered && w.Requests[k].Inc == w.Inc)
-	case KTurnEnd:
-		return w.Agent != 0
-	case KNamedStart:
-		q := w.Requests[k]
-		return w.Proc && q.Written && q.Inc == w.Inc && q.Root != k && w.Requests[q.Root].Started
-	case KRefusal, KResult, KCrashFrame:
-		q := w.Requests[k]
-		if !q.Written {
-			return false
-		}
-		if e.K == KRefusal && q.Root != k && w.Requests[q.Root].Answer != ARefLate {
-			return false // only a root's negative response fans out
-		}
-		if e.K != KRefusal && q.Root != k {
-			return false
-		}
-		if e.K == KCrashFrame && (!w.Attached || w.N != 0 || s.P.Kind != 0) {
-			return false
-		}
-		if q.Answered {
-			return e.K == KRefusal && q.Answer == ARefLate || e.K != KRefusal && q.Answer == e.A && !r.Att[k].open()
-		}
-		return true
+	case KCrashFrame:
+		return w.Attached && w.N == 0 && s.P.Kind == 0 && s.frame(e)
 	case KDeliver, KSupersede:
 		return r.live() && (e.K == KDeliver || r.Task.L == 1)
 	case KSuspend:
 		return (r.live() || r.Phase == PhSusp) && (e.A != RqPauseRow && e.A != RqGate || w.Pause != 0)
 	case KPauseBegins:
 		return w.Pause == 0 && w.LastPause < 2
-	case KPauseEnds:
-		return w.Pause != 0
 	case KResume:
 		return r.Phase == PhSusp && !s.StopOwed && w.Pause == 0
+	// A timer fires only at the earliest armed time (armed), so none passes
+	// an earlier deadline.
 	case KTimerHold:
-		return r.Hold.By != 0 && !s.StopRetry && r.Hold.due() != 0
+		due := r.Hold.due()
+		return r.Hold.By != 0 && !s.StopRetry && due != 0 && due <= s.armed()
 	case KTimerRecov:
-		return r.RecoverBy != 0
+		return r.RecoverBy != 0 && r.RecoverBy <= s.armed()
 	case KTimerTurn:
-		return r.TurnBy != 0 && r.RecoverBy == 0
+		return r.TurnBy != 0 && r.RecoverBy == 0 && r.TurnBy <= s.armed()
 	case KRegDeadline:
 		return r.Phase == PhLaunch && r.Hold.By == SrcOperator
 	case KRelaunchAgain:
@@ -157,4 +145,34 @@ func (s *State) base(e Event) bool {
 		return r.live() || r.Phase == PhFailed
 	}
 	return false
+}
+
+// frame is whether the agent can send one of its frames now, wherever the
+// shim then holds it.
+func (s *State) frame(e Event) bool {
+	r, w := &s.M, &s.W
+	k := e.R
+	switch e.K {
+	case KTurnStart:
+		return w.Proc && w.Agent == 0 && (k == Foreign || w.Requests[k].Written && w.Requests[k].Root == k && !w.Requests[k].Answered && w.Requests[k].Inc == w.Inc)
+	case KTurnEnd:
+		return w.Agent != 0
+	case KNamedStart:
+		q := w.Requests[k]
+		return w.Proc && q.Written && q.Inc == w.Inc && q.Root != k && w.Requests[q.Root].Started
+	}
+	q := w.Requests[k]
+	if !q.Written {
+		return false
+	}
+	if e.K == KRefusal && q.Root != k && w.Requests[q.Root].Answer != ARefLate {
+		return false // only a root's negative response fans out
+	}
+	if e.K != KRefusal && q.Root != k {
+		return false
+	}
+	if q.Answered {
+		return e.K == KRefusal && q.Answer == ARefLate || e.K != KRefusal && q.Answer == e.A && !r.Att[k].open()
+	}
+	return true
 }
