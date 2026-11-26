@@ -102,7 +102,7 @@ func staleTesterCompletionAfterTheReturn(t *testing.T) {
 	// Before the return's task reaches the tester, the stopped round's turn reports its completion
 	// at the head the record holds. Refused, with nothing moved and nothing recorded.
 	before := recordedCompletions(t, h, claim.RoleTester)
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass",
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, staleEntryCode)
 	for _, want := range []string{
 		"the move that handed the phase out again moved the issue back",
@@ -125,11 +125,13 @@ func staleTesterCompletionAfterTheReturn(t *testing.T) {
 		t.Fatalf("the tester's row is on entry %d, want the return's %d above the stopped %d", entry, stopped+1, stopped)
 	}
 
-	// The return's task reaches the tester, and the completion of its own round is taken.
+	// The return's task reaches the tester, and the completion of its own round is taken: the
+	// state of k1 at the head it tested carries the pass the completion no longer names.
 	if returned := takeStart(t, h, tester.token, parent, claim.RoleTester); returned != stopped+1 {
 		t.Fatalf("the tester took entry %d, want the return's %d", returned, stopped+1)
 	}
+	testedAs(t, h, parent, headSHA, true)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass on the head merged with its base",
-		Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}))
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Reviewing)
 }

@@ -231,7 +231,7 @@ func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
 				SessionID: tester.session, Secret: tester.secret, Tree: tester.tree, Issue: tester.issue,
 			}, nil)
 			completed := h.complete(HandoffCompleteRequest{
-				GrantID: grantID, Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1,
+				GrantID: grantID, Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1,
 			})
 
 			if !tc.inTurn {
