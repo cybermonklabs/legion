@@ -1034,6 +1034,56 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 	}
 }
 
+// goCallFromAnotherPackage names the answer the `codegraph` tool gives wrong for a Go symbol whose
+// module sits below the indexed root: CodeGraph 1.5.0 reads only the go.mod at that root
+// (/opt/codegraph/lib/dist/resolution/go-module.js, loadGoModule: "only the project-root go.mod is
+// read"), so a call from another package falls through to matching by name and path and is lost.
+const goCallFromAnotherPackage = "a Go call from another package"
+
+// Every prompt that tells its role to ask `impact` or `callers` and to grep only for what the tool
+// does not answer also says that the tool does not answer a Go call from another package where the
+// module's go.mod is not at the root of the workspace, as in every repository whose Go modules sit
+// in their own directories. Without that sentence a role reads a short, complete-looking answer as
+// the whole blast radius. Measured on CodeGraph 1.5.0 in an index of this repository at 20ee90de:
+// `callers ComposePrompt` names TestComposePrompt alone, while runtime.ComposePrompt( is called in
+// cmd/legion/controller.go, internal/runtime/sandbox/manifest.go and internal/runtime/tmux/spawn.go;
+// `impact IsTreeRoot` names 4 symbols, all in package claim, against about 90 calls in 12 packages.
+// A scratch repository with its go.mod at the root resolves the same cross-package call, and with
+// that go.mod moved into a subdirectory `callers` answers "No callers found". The rendered reviewer
+// prompt of 1fc77041, asked whether to grep after those two answers, answered NO-GREP twice.
+func TestEveryCodeGraphStepSaysTheToolMissesAGoCallFromAnotherPackage(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	backends := slices.Sorted(maps.Keys(runtime.Backends))
+	for _, role := range claim.Roles {
+		listed := codeGraphRoles[role]
+		if !slices.Contains(listed, "impact") && !slices.Contains(listed, "callers") {
+			continue
+		}
+		for _, isRoot := range []bool{true, false} {
+			if isRoot && role != claim.RoleArchitect {
+				continue
+			}
+			for _, backend := range backends {
+				info := runtime.Backends[backend]
+				if !info.Runs(role) {
+					continue
+				}
+				row := fmt.Sprintf("%s (root %t) on %s", role, isRoot, backend)
+				launched := composedText(t, composer, role, isRoot)
+				if info.PromptPart != "" {
+					launched += readJoined(t, composer.Part(info.PromptPart))
+				}
+				if n := strings.Count(foldWhitespace(launched), goCallFromAnotherPackage); n != 1 {
+					t.Errorf("the prompt of %s holds %q %d times, want once: it tells the role to grep only for what `impact` and `callers` do not answer, and they do not answer a Go call from another package where the module's go.mod is not at the workspace's root", row, goCallFromAnotherPackage, n)
+				}
+			}
+		}
+	}
+}
+
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
 // not carry. Each is joined from halves, as retiredCheckSentences are, so a search of the
