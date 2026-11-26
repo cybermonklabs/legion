@@ -35,7 +35,8 @@
 -- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
 -- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
 -- to contract 217 or to any release before it, the way back in the header of
--- 20261117034837_issue_plans runs between the two, and at a rollback to a release before
+-- 20261117034837_issue_plans runs between the two, with the way back in the header of #5310's
+-- 20261124033010_plan_earlier_givers before or after it, and at a rollback to a release before
 -- cybermonklabs/legion#4903, the way back in the header of
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
@@ -45,7 +46,7 @@
 -- 20261125211005 (#5566's wake-due-earliest-moment) after contract 275 (the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
 -- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
--- #5566, whose newest migration is #5575's 20261125212800_claims_tree, carries 20261119203047 and
+-- #5310, whose newest migration is #5575's 20261125212800_claims_tree, carries 20261119203047 and
 -- not the task numbers, and then reads the function it wrote; a rollback to a release before #5566
 -- runs the way back in the header of 20261125163328_message_wake_pacing first of all, before this
 -- block, with every daemon of the database stopped; a rollback to a release before #5463 also runs
@@ -56,7 +57,9 @@
 -- way back in the header of 20261125000600_production_check_failed_looks first, before this block,
 -- with every daemon of the database stopped; #5575's 20261125212800_claims_tree and #5398's
 -- 20261124130001_pull_request_reviews_requested carry no way back, and this block reads nothing of
--- them; a rollback to contract 256 or before crosses 275, which takes no step of its own beyond
+-- them; #5310's 20261124033010_plan_earlier_givers needs no statement where the earlier release has
+-- the plan tables, and this block reads nothing of it; a rollback to contract 256 or before crosses
+-- 275, which takes no step of its own beyond
 -- pinning the worker
 -- image with the daemon, since its migration, 20261124182040_issue_pod_disks, carries no way back
 -- and this block reads nothing of it, except where legion.yaml sets dispatch_token_broker or
