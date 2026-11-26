@@ -4,7 +4,7 @@ body: |-
 
   Repository caches now hold the default branch alone. On their first start after this release, they narrow and repack an existing cache volume before they become ready or serve a pod.
 
-  One init container, `workspace-init` running `legion workspace-init provision`, fills the clone directly; `legion workspace-init fetch`, its `workspace-fetch` init container and the per-pod feed at `/legion/feed` are gone. What other entries of this release say of `workspace-init fetch`, `workspace-fetch` or the feed applies to the provision's fill of the clone: it takes the clone's history from the repository cache's bucket where the cache serves `/packs`, or else from `/tar`, within `workspace.FetchBudget`, which the bucket's 15-minute attempt brings to 205 minutes; it exits 3 for a cause outside the volume; and before its summary line it logs `workspace-init: source=bucket` and one `workspace-init: bucket object=<name> size=<bytes> sha256=<hex>` line per object, or `workspace-init: source=/tar reason=<why>`, the summary naming the cache as `<url> (bucket)` when the bucket filled the clone. A cache answers `/packs` only while it is ready with its clone narrowed to the default branch, and never with a set of packs it listed before its last narrowing.
+  One init container, `workspace-init` running `legion workspace-init provision`, fills the clone directly, and the issue volume holds no per-pod copy of the repository beside it. A cache answers `/packs` only while it is ready with its clone narrowed to the default branch, and never with a set of packs it listed before its last narrowing.
 time: 2026-11-26T07:27:10Z
 custom:
     Issue: INFRA-5887
