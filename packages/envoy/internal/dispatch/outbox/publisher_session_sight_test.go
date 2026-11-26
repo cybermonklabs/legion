@@ -217,7 +217,7 @@ func TestASessionWhoseSightTheBatchDidNotReadIsWithheldAndBacksTheEventOff(t *te
 	if err != nil {
 		t.Fatalf("envelope: %v", err)
 	}
-	read := &lookups{failed: map[string]error{}, sight: map[string]map[string]bool{},
+	read := &lookups{failed: map[string]error{},
 		sightSessions: map[string]struct{}{}, sightProjects: map[string]struct{}{"TT": {}}}
 	to, err := eventDestinations(context.Background(), Deps{}, &batchEvent{
 		pendingEvent: pendingEvent{event: event, routing: routing{route: &route}}, item: item,
@@ -354,7 +354,7 @@ func TestAWithheldDestinationIsRecordedNowhereAReaderSees(t *testing.T) {
 }
 
 // TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList holds every outbox read of a
-// session's sight to the listener record as the listener answers now (readSight,
+// session's sight to the listener record as the listener answers now (ListenerRefresh.settle,
 // Deps.ListenerRefresh). The stored record has expired; it lists TT for session-listed and
 // role-holder, both tied to nobody, and PUB alone for session-member, the session of a full member
 // TT's access list names. While TT is private every verdict depends on a list, so each reader runs
@@ -421,7 +421,7 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 			if _, err := database.Pool.Exec(ctx, `update route_roster set sent_at = now(), expires_at = now() + interval '1 hour'`); err != nil {
 				t.Errorf("renew the listener record: %v", err)
 			}
-		}, 3*time.Second)
+		})
 		return listener, runs
 	}
 	// settled reads whether event id was published, and whether it waits on a back-off.
@@ -541,6 +541,105 @@ func TestTheOutboxAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) 
 		if sentListed, sentMember := topicsNaming(publisher, listed), topicsNaming(publisher, claimer); len(sentListed) != 1 || len(sentMember) != 1 || !published || runs.Load() != 0 {
 			t.Fatalf("with no private project: %s sent %v, %s sent %v, published %v, refreshed %d times; want both sent in the pass and no refresh",
 				listed, sentListed, claimer, sentMember, published, runs.Load())
+		}
+	})
+}
+
+// TestTheOutboxAsksTheListenerAgainWithItsGateFree holds the refresh of an expired listener record
+// outside the outbox's gate (ListenerRefresh.askAgain): the refresh may wait on the listener for
+// the API's whole fetch bound, and the gate is the one statement at a time of every batch of a
+// scan (lanes.statement), so a refresh run under it holds every other batch's statements back
+// while it waits. Each reader that runs under a scan's gate - the batch's read, a role forward's
+// holder and the kept copy's handover - runs here with a gate, on a context that carries the mark
+// a scan's batches share (store.WithTransactionTracking), over the private TT and an expired record
+// that lists TT for the session it judges. The refresh finds the gate free, and renews the record
+// while another batch of the scan holds a connection on that shared mark (store.HoldsConnection),
+// which the pool refuses (store.ErrNestedAcquire) unless the refresh reads under a mark of its own
+// (store.ForConcurrentWorker); the reader then sends TT's event to that session. The fallback pass
+// runs under no gate.
+func TestTheOutboxAsksTheListenerAgainWithItsGateFree(t *testing.T) {
+	const record = `[{"session_id":"session-listed","projects":["TT"]},{"session_id":"role-holder","projects":["TT"]}]`
+	ctx := context.Background()
+	// seed stands up T-1 of the private TT, routed to route, and the listener record, expired a
+	// minute ago.
+	seed := func(t *testing.T, route *string) *store.Store {
+		t.Helper()
+		database := storetest.Open(t)
+		seedIssue(t, database, "T-1", route)
+		for _, statement := range []string{
+			`update projects set visibility = 'private' where key = 'TT'`,
+			`insert into route_roster (answered, sessions, sent_at, expires_at) values (true, '` + record + `', now() - interval '1 hour', now() - interval '1 minute')`,
+		} {
+			if _, err := database.Pool.Exec(ctx, statement); err != nil {
+				t.Fatalf("seed %q: %v", statement, err)
+			}
+		}
+		return database
+	}
+	// comment writes a comment of alice's on T-1 and its event.
+	comment := func(t *testing.T, database *store.Store) {
+		t.Helper()
+		alice := model.Actor{Kind: "user", ID: "alice"}
+		commentID := seedComment(t, database, "T-1", alice, "Is the order right?", nil)
+		appendEvent(t, database, events.NewBroker(), model.Event{
+			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Body: "Is the order right?"}},
+		})
+	}
+	// gated is deps as a scan runs its batches, with a gate and on a context carrying the scan's
+	// shared mark, and a bound refresh that counts its runs, checks the gate and the mark, and
+	// renews the record.
+	gated := func(t *testing.T, deps Deps) (Deps, context.Context, *atomic.Int32) {
+		t.Helper()
+		scan, runs := store.WithTransactionTracking(ctx), &atomic.Int32{}
+		gate := newLanes(func() {})
+		deps.lanes, deps.ListenerRefresh = gate, &ListenerRefresh{}
+		deps.ListenerRefresh.Bind(func(refresh context.Context) {
+			runs.Add(1)
+			if !gate.statements.TryLock() {
+				t.Errorf("the listener was asked again with the outbox's gate held")
+			} else {
+				gate.statements.Unlock()
+			}
+			_, release := store.HoldsConnection(scan)
+			defer release()
+			if _, err := deps.Store.Pool.Exec(refresh, `update route_roster set sent_at = now(), expires_at = now() + interval '1 hour'`); err != nil {
+				t.Errorf("renew the listener record while another batch of the scan holds a connection: %v", err)
+			}
+		})
+		return deps, scan, runs
+	}
+	t.Run("the batch's read", func(t *testing.T) {
+		route := "session:session-listed"
+		database := seed(t, &route)
+		comment(t, database)
+		publisher := &recordingPublisher{}
+		deps, scan, runs := gated(t, Deps{Store: database, Publisher: publisher})
+		if _, err := scanBatch(scan, deps, unfenced{}, holding(t, deps).instance); err != nil {
+			t.Fatalf("scan batch: %v", err)
+		}
+		if sent := topicsNaming(publisher, "session-listed"); runs.Load() == 0 || len(sent) != 1 {
+			t.Fatalf("the batch asked the listener %d times and sent session-listed %v; want it asked and TT's event sent", runs.Load(), sent)
+		}
+	})
+	t.Run("a role forward's holder", func(t *testing.T) {
+		route := "role:reviewer"
+		database := seed(t, &route)
+		comment(t, database)
+		publisher := &recordingPublisher{}
+		deps, scan, runs := gated(t, withHeldRoles(Deps{Store: database, Publisher: publisher}))
+		if _, err := scanBatch(scan, deps, unfenced{}, holding(t, deps).instance); err != nil {
+			t.Fatalf("scan batch: %v", err)
+		}
+		if forwarded := topicsNaming(publisher, contracts.RoleTopicPrefix+"reviewer"); runs.Load() == 0 || len(forwarded) != 1 {
+			t.Fatalf("the role forward asked the listener %d times and forwarded %v; want it asked and TT's event forwarded to %s", runs.Load(), forwarded, roleHolder)
+		}
+	})
+	t.Run("the kept copy's handover", func(t *testing.T) {
+		deps, scan, runs := gated(t, Deps{Store: seed(t, nil)})
+		sees, err := holderSeesTheCopy(scan, deps, roleHolder, contracts.Envelope{EventID: "dispatch-9", Payload: `{"project":"TT"}`})
+		if err != nil || !sees || runs.Load() == 0 {
+			t.Fatalf("the handover asked the listener %d times and answered %v, %v; want it asked and %s shown TT's kept copy", runs.Load(), sees, err, roleHolder)
 		}
 	})
 }

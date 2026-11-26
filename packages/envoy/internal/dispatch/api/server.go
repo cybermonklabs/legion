@@ -725,7 +725,7 @@ func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Backgroun
 	s := register(mux, lifetime, deps)
 	return Background{
 		Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
-		RefreshListenerRecord: s.refreshRosterForContent, ListenerRecordMargin: s.rosters.contentMargin(),
+		RefreshListenerRecord: s.refreshRosterForContent,
 	}
 }
 
@@ -750,12 +750,11 @@ type Background struct {
 	EventHorizon func() *events.Horizon
 	// RefreshListenerRecord is the refresh of the stored listener record the API's readers run
 	// before the session content rule reads it (refreshRosterForContent): it asks the listener
-	// again, in this process's one fetch, where the record has ListenerRecordMargin of its life or
+	// again, in this process's one fetch, where the record has the content margin of its life or
 	// less left (rosterCache.contentMargin), and stores its answer for every process. cmd/dispatch
-	// binds both into the outbox (outbox.ListenerRefresh), which runs it before it judges a
+	// binds it into the outbox (outbox.ListenerRefresh), which runs it before it judges a
 	// session's sight by a list of a record that has expired.
 	RefreshListenerRecord func(context.Context)
-	ListenerRecordMargin  time.Duration
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past

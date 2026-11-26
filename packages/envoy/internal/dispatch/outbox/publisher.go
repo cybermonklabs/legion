@@ -140,13 +140,13 @@ type Deps struct {
 	// nothing, which is safe while no project can be private; cmd/dispatch sets it once a hub can
 	// prove it.
 	PrivateHubsReady func() bool
-	// ListenerRefresh refreshes the stored listener record before a read of a session's sight
-	// judges a list of a record that has expired, where a verdict can depend on one (readSight):
-	// the batch's read (loadSessionSight), a role forward's holder (withholdUnseenHolders), the
-	// kept copy's handover (holderSeesTheCopy) and the fallback pass (fallbackSight). cmd/dispatch
-	// builds it before the API and binds the API's refresh into it once the API is registered. Nil,
-	// as this package's tests and a process with no API leave it, refreshes nothing and judges the
-	// record as it stands.
+	// ListenerRefresh refreshes the stored listener record, with the gate free, where a read of a
+	// session's sight found its verdict depended on a list of a record that had expired, before
+	// the sight is read again (ListenerRefresh.settle): the batch's read (lookups.settleSight), a
+	// role forward's holder (withholdUnseenHolders), the kept copy's handover (holderSeesTheCopy)
+	// and the fallback pass (fallbackSight). cmd/dispatch builds it before the API and binds the
+	// API's refresh into it once the API is registered. Nil, as this package's tests and a process
+	// with no API leave it, refreshes nothing and judges the record as it stands.
 	ListenerRefresh *ListenerRefresh
 	// privateHoldWait is how long the retry timer waits, while the hold keeps something, before it
 	// starts a scan that asks PrivateHubsReady again, and zero is privateHoldRecheck, which is what
@@ -1095,7 +1095,6 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (map[string]roleResolution, error) {
 	var resolvable []*batchEvent
 	want := newWanted()
-	want.listener = deps.ListenerRefresh
 	for _, event := range events {
 		if event.failure != nil || event.owner == "" {
 			continue
@@ -1122,6 +1121,11 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 		found, err = loadLookups(ctx, deps.Store.Pool, want)
 		return err
 	}); err != nil {
+		return nil, err
+	}
+	// The sight the lookups read is judged once the gate is given back, so a wait on the listener
+	// holds no other batch's statement back (lookups.settleSight).
+	if err := found.settleSight(ctx, deps); err != nil {
 		return nil, err
 	}
 	// What the attempts that name no session yet hold back, which the destinations below read

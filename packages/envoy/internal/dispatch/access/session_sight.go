@@ -72,61 +72,94 @@ func SessionSeesProjectClause(sessionExpr, projectAlias string) string {
 // SessionSeesProjectClause can depend on a listener list: a project is private, or a session is
 // tied to a restricted member, the two cases where the clause answers otherwise with a list than
 // without one. The second is whether the stored listener record (route_roster) holds an answer
-// with more than leftExpr seconds of its life left; a silence the API stored for a listener that
-// did not answer lists no session, so it is no answer. The clause reads a record past its
-// expires_at as no list at all, so a reader whose verdict depends on a list refreshes a record
-// that is not fresh before it judges (the outbox's readSight, the api's withheldFromSession).
-func SightListSQL(sessionsExpr, projectsExpr, leftExpr string) string {
+// that has not passed its expires_at; a silence the API stored for a listener that did not answer
+// lists no session, so it is no answer. The clause reads a record past its expires_at as no list
+// at all, and read in the clause's own statement, on its one now(), the second column says whether
+// the clause had a list to read, so it needs no margin: a reader whose verdict depends on a list
+// and finds the record expired refreshes it and reads again before it judges (the outbox's
+// ListenerRefresh, the api's withheldFromSession).
+func SightListSQL(sessionsExpr, projectsExpr string) string {
 	return fmt.Sprintf(`exists (select 1 from projects where key = any(%[2]s) and visibility = 'private')
 		or exists (select 1 from session_owners tied
 			join people tied_person on tied_person.email = tied.login and tied_person.member_kind = 'restricted'
 			where tied.session_id = any(%[1]s)),
-		coalesce((select answered and expires_at > now() + make_interval(secs => %[3]s) from route_roster), false)`,
-		sessionsExpr, projectsExpr, leftExpr)
+		coalesce((select answered and expires_at > now() from route_roster), false)`,
+		sessionsExpr, projectsExpr)
 }
 
-// RowsQuerier is the one read SessionsSeeProjects makes: a pool, a transaction, or a reader that
-// runs a query, such as the outbox's lookup reader.
+// RowsQuerier is the one read ReadSessionSight makes: a pool, a transaction, or a reader that runs
+// a query, such as the outbox's lookup reader.
 type RowsQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// SessionSightSQL is SessionsSeeProjects' one statement: of every session of $1 and every project
-// of $2, the pairs whose session sees the project (SessionSeesProjectClause). A key no project row
-// holds pairs with no session. A census of the statements a reader sends names it by this text.
+// SessionSightSQL is ReadSessionSight's one statement, of every session of $1 and every project of
+// $2: a row for each pair whose session sees the project (SessionSeesProjectClause), each beside
+// SightListSQL's two columns, and where no pair sees, one row of those two columns alone, its
+// project and session null. A key no project row holds pairs with no session. A census of the
+// statements a reader sends names it by this text.
 var SessionSightSQL = `
-	select p.key, s.id
-	from projects p
-	cross join unnest($1::text[]) as s(id)
-	where p.key = any($2::text[]) and ` + SessionSeesProjectClause("s.id", "p")
+	select list.depends, list.fresh, pair.key, pair.id
+	from (select ` + SightListSQL("$1::text[]", "$2::text[]") + `) as list (depends, fresh)
+	left join (
+		select p.key, s.id
+		from projects p
+		cross join unnest($1::text[]) as s(id)
+		where p.key = any($2::text[]) and ` + SessionSeesProjectClause("s.id", "p") + `
+	) as pair on true`
 
-// SessionsSeeProjects answers, in one statement, which of sessions see which of projects
-// (SessionSeesProjectClause): for each project key, the sessions that see it. A session or a
-// project it names no pair for sees, or is seen by, nothing.
-func SessionsSeeProjects(ctx context.Context, q RowsQuerier, sessions, projects []string) (map[string]map[string]bool, error) {
-	sight := map[string]map[string]bool{}
+// SessionSight is what one read of sessions' sight answers (ReadSessionSight). Sees is, for each
+// project key, the sessions that see it (SessionSeesProjectClause). ListExpired is whether that
+// verdict could depend on a listener list while the stored listener record held no answer that
+// had not expired (SightListSQL), so the clause judged every session by its ties alone: a reader
+// that must not judge by a list it could not read refreshes the record and reads again (the
+// outbox's ListenerRefresh).
+type SessionSight struct {
+	Sees        map[string]map[string]bool
+	ListExpired bool
+}
+
+// ReadSessionSight answers, in one statement (SessionSightSQL), which of sessions see which of
+// projects, and whether that verdict depended on a list of a listener record that had expired. A
+// session or a project it names no pair for sees, or is seen by, nothing. With no session or no
+// project it reads nothing, and no verdict depends on a list.
+func ReadSessionSight(ctx context.Context, q RowsQuerier, sessions, projects []string) (SessionSight, error) {
+	sight := SessionSight{Sees: map[string]map[string]bool{}}
 	if len(sessions) == 0 || len(projects) == 0 {
 		return sight, nil
 	}
 	rows, err := q.Query(ctx, SessionSightSQL, sessions, projects)
 	if err != nil {
-		return nil, fmt.Errorf("read which sessions see which projects: %w", err)
+		return SessionSight{}, fmt.Errorf("read which sessions see which projects: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var project, session string
-		if err := rows.Scan(&project, &session); err != nil {
-			return nil, fmt.Errorf("read which sessions see which projects: %w", err)
+		var depends, fresh bool
+		var project, session *string
+		if err := rows.Scan(&depends, &fresh, &project, &session); err != nil {
+			return SessionSight{}, fmt.Errorf("read which sessions see which projects: %w", err)
 		}
-		if sight[project] == nil {
-			sight[project] = map[string]bool{}
+		sight.ListExpired = depends && !fresh
+		if project == nil {
+			continue
 		}
-		sight[project][session] = true
+		if sight.Sees[*project] == nil {
+			sight.Sees[*project] = map[string]bool{}
+		}
+		sight.Sees[*project][*session] = true
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read which sessions see which projects: %w", err)
+		return SessionSight{}, fmt.Errorf("read which sessions see which projects: %w", err)
 	}
 	return sight, nil
+}
+
+// SessionsSeeProjects answers, in one statement (ReadSessionSight), which of sessions see which of
+// projects: for each project key, the sessions that see it. A session or a project it names no
+// pair for sees, or is seen by, nothing.
+func SessionsSeeProjects(ctx context.Context, q RowsQuerier, sessions, projects []string) (map[string]map[string]bool, error) {
+	sight, err := ReadSessionSight(ctx, q, sessions, projects)
+	return sight.Sees, err
 }
 
 // SessionSeesProject reports whether session sees project (SessionSeesProjectClause), in one

@@ -1839,12 +1839,13 @@ func fallbackCopyWithdrawn(ctx context.Context, deps Deps, held fallbackCopy) (b
 // fallbackSight is what one fallback pass read of whether the sessions its copies reach may be
 // shown their events' projects (readSight): one statement, before the pass decides any row, over
 // every session whose own topic a claimed row is bound for and every project those rows' events
-// name, as a batch reads its sessions' sight in one statement (loadSessionSight). A session the
-// pass names only as it decides a row - a role destination's holder - is read then, alone, and
-// kept for the pass's later rows. A read that failed, a listener record that stays expired where
-// a verdict depends on a list among them, answers its error to every row that asks after it,
-// which counts an attempt on the row and backs it off (failedFallbackCopy), as any decision that
-// fails does.
+// name, as a batch reads its sessions' sight in one statement (loadSessionSight), and one more
+// once the listener is asked again where the verdict depended on a list of an expired listener
+// record. A session the pass names only as it decides a row - a role destination's holder - is
+// read then, alone, and kept for the pass's later rows. A read that failed, a listener record that
+// stays expired where a verdict depends on a list among them, answers its error to every row that
+// asks after it, which counts an attempt on the row and backs it off (failedFallbackCopy), as any
+// decision that fails does.
 type fallbackSight struct {
 	ctx  context.Context
 	deps Deps
@@ -1869,13 +1870,13 @@ func newFallbackSight(ctx context.Context, deps Deps, copies []fallbackCopy, eve
 	return sight
 }
 
-// load reads the sight of every session of sessions for every project of projects in one
-// statement, and keeps every pair it read.
+// load reads the sight of every session of sessions for every project of projects (readSight),
+// and keeps every pair it read.
 func (s *fallbackSight) load(sessions, projects []string) {
 	if len(sessions) == 0 || len(projects) == 0 || s.err != nil {
 		return
 	}
-	seen, err := readSight(s.ctx, s.deps.Store.Pool, s.deps.ListenerRefresh, sessions, projects)
+	seen, err := readSight(s.ctx, s.deps, sessions, projects)
 	if err != nil {
 		s.err = err
 		return

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -63,10 +62,10 @@ func (s *server) deliveryProject(ctx context.Context, issueKey, artifactID *stri
 // project is "", a delivery of no project. A sight that could not be read withholds the send too,
 // and its failure says so: a send Dispatch cannot judge is not made.
 //
-// Where the verdict can depend on a listener list and the stored listener record has expired or
-// has the content margin or less of its life left (access.SightListSQL), the record is refreshed
-// first, as the session content rule's readers refresh it (refreshRosterForContent): a send of the
-// sender's lane, a Retry or the delivery sweep has no request whose reader refreshed it. A record
+// Where the verdict can depend on a listener list and the stored listener record has expired, as
+// the verdict's own statement reads it (access.SightListSQL), the record is refreshed first, as
+// the session content rule's readers refresh it (refreshRosterForContent): a send of the sender's
+// lane, a Retry or the delivery sweep has no request whose reader refreshed it. A record
 // still expired after the refresh, as when the listener does not answer, is a list Dispatch could
 // not read, so the send fails under listenerUnreachablePrefix, which a later try outlasts
 // (retryableDeliveryFailure), rather than being withheld for good. Where no verdict depends on a
@@ -79,13 +78,13 @@ func (s *server) withheldFromSession(ctx context.Context, session, project strin
 		return projectWithheldPrefix + "Dispatch has no database to read whether session " + session + " sees project " + project
 	}
 	var sees, depends, fresh bool
-	read := func(left time.Duration) error {
-		return s.deps.Store.Pool.QueryRow(ctx, sessionSightQuery, session, project, left.Seconds()).Scan(&sees, &depends, &fresh)
+	read := func() error {
+		return s.deps.Store.Pool.QueryRow(ctx, sessionSightQuery, session, project).Scan(&sees, &depends, &fresh)
 	}
-	err := read(s.rosters.contentMargin())
+	err := read()
 	if err == nil && depends && !fresh && s.deps.Envoy != nil {
 		s.refreshRosterForContent(ctx)
-		if err = read(0); err == nil && !fresh {
+		if err = read(); err == nil && !fresh {
 			return listenerUnreachablePrefix + "the stored listener record has expired and the listener did not answer again, " +
 				"so Dispatch could not read whether session " + session + " sees project " + project + " and sent nothing"
 		}
@@ -101,10 +100,9 @@ func (s *server) withheldFromSession(ctx context.Context, session, project strin
 
 // sessionSightQuery is withheldFromSession's one statement: whether session $1 sees project $2
 // (access.SessionSeesProjectClause), beside whether that verdict can depend on a listener list and
-// whether the stored listener record has more than $3 seconds of its life left
-// (access.SightListSQL).
+// whether the stored listener record has an answer that has not expired (access.SightListSQL).
 var sessionSightQuery = `select exists (select 1 from projects p where p.key = $2 and ` +
-	access.SessionSeesProjectClause("$1::text", "p") + `), ` + access.SightListSQL("array[$1::text]", "array[$2::text]", "$3::float8")
+	access.SessionSeesProjectClause("$1::text", "p") + `), ` + access.SightListSQL("array[$1::text]", "array[$2::text]")
 
 // refuseSessionOutsideProject is the refusal of a write that gives session work of project, or
 // sends it one of project's items - what names the work - when the session may not be shown that

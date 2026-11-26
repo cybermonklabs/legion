@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestWithNoPrivateProjectANewProjectReSnapshotsNoDeliveryOrLegionPage: in a deployment with no
@@ -55,37 +54,31 @@ func TestWithNoPrivateProjectANewProjectReSnapshotsNoDeliveryOrLegionPage(t *tes
 	}](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "NEW", "title": "NEW is down", "priority": 0}, http.StatusCreated)).Key
 
-	deadline := testwait.Context(t).Done()
 	for {
-		select {
-		case sent := <-conn.frames:
-			switch frame := sent.frame.(type) {
-			case DeliveryLiveSnapshot:
-				raw, _ := json.Marshal(frame)
-				t.Fatalf("a new project sent alice's page %s a snapshot, which a deployment with no private project never sends it: %.300s", frame.Sub, raw)
-			case DeliveryLiveDelta:
-				if frame.Sub != "t" {
-					continue
-				}
-				held = applyLiveDelta(t, deliveryLiveTimeline, held, frame)
-				var timeline struct {
-					Measures struct {
-						UnownedP0 []struct {
-							Key string `json:"key"`
-						} `json:"unowned_p0"`
-					} `json:"measures"`
-				}
-				if err := json.Unmarshal(held, &timeline); err != nil {
-					t.Fatalf("decode the timeline alice's page holds: %v", err)
-				}
-				for _, issue := range timeline.Measures.UnownedP0 {
-					if issue.Key == created {
-						return
-					}
+		switch frame := conn.next(t, "a delta listing "+created+", NEW's unowned P0 issue, on alice's timeline").(type) {
+		case DeliveryLiveSnapshot:
+			raw, _ := json.Marshal(frame)
+			t.Fatalf("a new project sent alice's page %s a snapshot, which a deployment with no private project never sends it: %.300s", frame.Sub, raw)
+		case DeliveryLiveDelta:
+			if frame.Sub != "t" {
+				continue
+			}
+			held = applyLiveDelta(t, deliveryLiveTimeline, held, frame)
+			var timeline struct {
+				Measures struct {
+					UnownedP0 []struct {
+						Key string `json:"key"`
+					} `json:"unowned_p0"`
+				} `json:"measures"`
+			}
+			if err := json.Unmarshal(held, &timeline); err != nil {
+				t.Fatalf("decode the timeline alice's page holds: %v", err)
+			}
+			for _, issue := range timeline.Measures.UnownedP0 {
+				if issue.Key == created {
+					return
 				}
 			}
-		case <-deadline:
-			t.Fatalf("no delta before the test binary's deadline listed %s, NEW's unowned P0 issue, on alice's timeline", created)
 		}
 	}
 }

@@ -289,15 +289,15 @@ const heldUnseen = "the role's holder does not see the event's project"
 // access.SessionSeesProjectClause): a holder that may not be shown the event's project is sent
 // nothing, and the forward counts as reached (roleForward.skip), as one to the event's own actor
 // does, so the role's later events are not held back for it. The sight of every such holder for
-// every such event's project is read in one statement on the outbox's pool, under its gate
-// (lanes.statement), after the stored listener record is asked again where it must be (readSight).
-// A read that fails, a listener record that stays expired where a verdict depends on a list, or a
-// Deps with no store, leaves each forward it would have judged pending with nothing sent
-// (roleForward.err, heldStateUnresolved), backed off and resolved again, as a holder whose claim
-// could not be read is. A forward the event already reached, one kept for a role nobody holds
-// (whose handover judges the holder it reaches, handOverKeptCopy), and one that sends nothing
-// whatever is judged by nothing here, nor is an event that names no project
-// (destinations.withheld).
+// every such event's project is read in one statement on the outbox's pool, under its gate, and
+// once more, after the listener is asked again with the gate free, where the verdict depended on
+// a list of an expired listener record (readSight). A read that fails, a listener record that
+// stays expired where a verdict depends on a list, or a Deps with no store, leaves each forward it
+// would have judged pending with nothing sent (roleForward.err, heldStateUnresolved), backed off
+// and resolved again, as a holder whose claim could not be read is. A forward the event already
+// reached, one kept for a role nobody holds (whose handover judges the holder it reaches,
+// handOverKeptCopy), and one that sends nothing whatever is judged by nothing here, nor is an
+// event that names no project (destinations.withheld).
 //
 // A withheld forward is logged with the event, the project, the role and the holder, at Info.
 func withholdUnseenHolders(ctx context.Context, deps Deps, events []*batchEvent) {
@@ -328,12 +328,7 @@ func withholdUnseenHolders(ctx context.Context, deps Deps, events []*batchEvent)
 	}
 	sight, err := map[string]map[string]bool(nil), errNoSightReader
 	if deps.Store != nil {
-		err = deps.lanes.statement(func() error {
-			var read error
-			sight, read = readSight(ctx, deps.Store.Pool, deps.ListenerRefresh,
-				slices.Sorted(maps.Keys(holders)), slices.Sorted(maps.Keys(projects)))
-			return read
-		})
+		sight, err = readSight(ctx, deps, slices.Sorted(maps.Keys(holders)), slices.Sorted(maps.Keys(projects)))
 	}
 	for index, dest := range judged {
 		forward, event := dest.forward, owners[index]
@@ -1062,10 +1057,11 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 
 // holderSeesTheCopy reports whether holder may be shown the event item carries, by the rule every
 // destination is judged by (access.SessionSeesProjectClause, readSight), read on the outbox's pool
-// under its gate: an event that names no project in its payload (model.Event.Project) is shown, as
-// the batch's own destinations are (destinations.withheld). A payload that does not decode, a Deps
-// with no store, and a listener record that stays expired where the verdict depends on a list
-// answer an error, which hands nothing over and leaves the copy on the lane.
+// under its gate, and read again with the listener asked where the verdict depended on a list of
+// an expired listener record: an event that names no project in its payload (model.Event.Project)
+// is shown, as the batch's own destinations are (destinations.withheld). A payload that does not
+// decode, a Deps with no store, and a listener record that stays expired where the verdict depends
+// on a list answer an error, which hands nothing over and leaves the copy on the lane.
 func holderSeesTheCopy(ctx context.Context, deps Deps, holder string, item contracts.Envelope) (bool, error) {
 	var carried struct {
 		Project string `json:"project"`
@@ -1079,12 +1075,7 @@ func holderSeesTheCopy(ctx context.Context, deps Deps, holder string, item contr
 	if deps.Store == nil {
 		return false, errNoSightReader
 	}
-	var sight map[string]map[string]bool
-	err := deps.lanes.statement(func() error {
-		var read error
-		sight, read = readSight(ctx, deps.Store.Pool, deps.ListenerRefresh, []string{holder}, []string{carried.Project})
-		return read
-	})
+	sight, err := readSight(ctx, deps, []string{holder}, []string{carried.Project})
 	return sight[carried.Project][holder], err
 }
 

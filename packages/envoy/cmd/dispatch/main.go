@@ -1217,7 +1217,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
-	listenerRefresh.Bind(background.RefreshListenerRecord, background.ListenerRecordMargin)
+	listenerRefresh.Bind(background.RefreshListenerRecord)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // lookup answers the reads an event's destinations depend on: an ask's followers in the order they
@@ -59,12 +59,10 @@ type lookup interface {
 // batch reads in the same statements as mentions and leaves out of its readings
 // (lookups.editOnly). sessions and projects are the sessions the routes named and the projects
 // the events are judged against, whose sight the batch reads (loadSessionSight); sees answers
-// every session seen, so the first pass adds every destination the second may. listener is what
-// that read refreshes the stored listener record through first (Deps.ListenerRefresh, readSight).
+// every session seen, so the first pass adds every destination the second may.
 type wanted struct {
 	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
 	sessions, projects                                                           map[string]struct{}
-	listener                                                                     *ListenerRefresh
 }
 
 func newWanted() *wanted {
@@ -143,9 +141,10 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // primaries by the issue's key. failed holds each id no read answers - an id that is no uuid,
 // which the column it is read from refuses (validIDs; a thread's is not failed but has no entry),
 // or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
-// with the error the event's destinations then report. sight is, for each project read, the
-// sessions that see it, of the sessions read (sightSessions, sightProjects: loadSessionSight), and
-// sightUnread why the batch read no sight at all (errListenerRecordExpired), nil when it read it.
+// with the error the event's destinations then report. sight is what the batch read of the sight
+// of the sessions read for each project read (sightSessions, sightProjects: loadSessionSight), and
+// sightUnread why the batch may not judge by it (errListenerRecordExpired: settleSight), nil when
+// it may.
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
@@ -158,7 +157,7 @@ type lookups struct {
 	// read and kept whole like every other, and readings leaves it out.
 	editOnly      map[string]struct{}
 	failed        map[string]error
-	sight         map[string]map[string]bool
+	sight         access.SessionSight
 	sightSessions map[string]struct{}
 	sightProjects map[string]struct{}
 	sightUnread   error
@@ -246,7 +245,7 @@ func (l *lookups) sees(sessionID, project string) (bool, error) {
 	case l.sightUnread != nil:
 		return false, fmt.Errorf("the batch read no sight of session %s for project %s: %w", sessionID, project, l.sightUnread)
 	}
-	return l.sight[project][sessionID], nil
+	return l.sight.Sees[project][sessionID], nil
 }
 
 // answeredSessions is every session a read of l answered, each once: the ask followers, the
@@ -317,18 +316,19 @@ type queryer interface {
 // copies that own a destination of one (loadMentionDeliveries, two statements), comment recipients
 // (loadCommentRecipients), primary document authors (loadPrimaryDocumentAuthors), and, last, the
 // sight of every session the routes named or those reads answered for every project the events
-// are judged against (loadSessionSight), which with a listener refresh (wanted.listener) first
-// reads the listener record, and reads it again after a refresh (readSight). Each read is the
-// per-id read the outbox made before, over a set of ids: the same rows, in the same order for each
-// id. Every kind but the issues' and the sight's is a uuid, read and answered in its canonical form
-// (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
-// whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
-// reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
-// read is of two sets of comments at once - the new comments whose destinations read what their
-// mentions did (wanted.mentions) and the comments whose edits ask which of their mentions failed
-// (wanted.editMentions, mentionFallbackKeys) - so it costs its two statements whatever either set
-// holds, and the reading of a comment only an edit asked for is left out of the batch's readings
-// (editOnlyIDs, lookups.readings).
+// are judged against (loadSessionSight), whose one statement also says whether its verdict
+// depended on a list of an expired listener record: only then does the batch read the sight once
+// more, a tenth read, after the gate is given back and the listener asked again
+// (lookups.settleSight). Each read is the per-id read the outbox made before, over a set of ids:
+// the same rows, in the same order for each id. Every kind but the issues' and the sight's is a
+// uuid, read and answered in its canonical form (validIDs, canonicalID); an id that is no uuid is
+// never sent to Postgres, which would refuse the whole statement over it, and is recorded failed,
+// as the per-id read failed on it before - but a reply's reply_to, which then names no thread, has
+// no recipients and fails nothing. The mention read is of two sets of comments at once - the new
+// comments whose destinations read what their mentions did (wanted.mentions) and the comments
+// whose edits ask which of their mentions failed (wanted.editMentions, mentionFallbackKeys) - so
+// it costs its two statements whatever either set holds, and the reading of a comment only an edit
+// asked for is left out of the batch's readings (editOnlyIDs, lookups.readings).
 //
 // A read of ask followers, thread root authors, message authors, mention deliveries or the
 // sessions' sight that fails fails the batch, which is then left unrecorded and read again. A
@@ -381,23 +381,17 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	return found, nil
 }
 
-// loadSessionSight reads, in one statement after the listener record's, which of the sessions the
-// batch's routes named (wanted.sessions) and its reads answered (lookups.answeredSessions) see which
-// of the projects its events are judged against (wanted.projects), by the access package's rule
-// (readSight), and records what it read (lookups.sight). A batch whose events name no project, or
-// no session, reads nothing. A listener record that stays expired where a verdict depends on a
-// list fails no read: the batch reads no sight (lookups.sightUnread), so every copy it would judge
-// is withheld and its event backs off (destinations.withheld), and nothing is sent or withheld on
-// a list it could not read.
+// loadSessionSight reads, in one statement, which of the sessions the batch's routes named
+// (wanted.sessions) and its reads answered (lookups.answeredSessions) see which of the projects its
+// events are judged against (wanted.projects), by the access package's rule
+// (access.ReadSessionSight), and whether that verdict depended on a list of an expired listener
+// record, and records what it read (lookups.sight), which settleSight then judges. A batch whose
+// events name no project, or no session, reads nothing.
 func loadSessionSight(ctx context.Context, db queryer, want *wanted, found *lookups) error {
 	sessions := found.answeredSessions()
 	maps.Copy(sessions, want.sessions)
 	found.sightSessions, found.sightProjects = sessions, want.projects
-	sight, err := readSight(ctx, db, want.listener, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(want.projects)))
-	if errors.Is(err, errListenerRecordExpired) {
-		found.sight, found.sightUnread = map[string]map[string]bool{}, err
-		return nil
-	}
+	sight, err := access.ReadSessionSight(ctx, db, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(want.projects)))
 	if err != nil {
 		return err
 	}
@@ -405,90 +399,112 @@ func loadSessionSight(ctx context.Context, db queryer, want *wanted, found *look
 	return nil
 }
 
+// settleSight judges the sight loadLookups read as every outbox read of a sight is judged
+// (ListenerRefresh.settle), once the gate the lookups held is given back: where its verdict
+// depended on a list of an expired listener record, the listener is asked again and the sight read
+// once more, under the gate (readSightOnce). A record that stays expired fails no read: the batch
+// may judge by no sight (lookups.sightUnread), so every copy it would judge is withheld and its
+// event backs off (destinations.withheld), and nothing is sent or withheld on a list it could not
+// read.
+func (l *lookups) settleSight(ctx context.Context, deps Deps) error {
+	sight, err := deps.ListenerRefresh.settle(ctx, l.sight, func() (access.SessionSight, error) {
+		return readSightOnce(ctx, deps, slices.Sorted(maps.Keys(l.sightSessions)), slices.Sorted(maps.Keys(l.sightProjects)))
+	})
+	switch {
+	case errors.Is(err, errListenerRecordExpired):
+		l.sightUnread = err
+	case err != nil:
+		return err
+	default:
+		l.sight = sight
+	}
+	return nil
+}
+
 // ListenerRefresh is the API's refresh of the stored listener record (route_roster), which every
-// outbox read of a session's sight asks before it judges a list of a record that has expired
-// (readSight), as the API's readers refresh the record before the session content rule reads it.
-// cmd/dispatch builds the outbox before it registers the API, so it gives the outbox an empty one
-// and binds the API's refresh into it once the API is registered (Bind). Until then it refreshes
-// nothing, and a read whose verdict depends on a list of an expired record fails as when the
-// listener does not answer.
+// outbox read of a session's sight runs where its verdict depended on a list of a record that had
+// expired, before it reads the sight again (settle), as the API's readers refresh the record before
+// the session content rule reads it. cmd/dispatch builds the outbox before it registers the API, so
+// it gives the outbox an empty one and binds the API's refresh into it once the API is registered
+// (Bind). Until then it refreshes nothing, and a read whose verdict depends on a list of an expired
+// record fails as when the listener does not answer.
 type ListenerRefresh struct {
-	bound atomic.Pointer[boundRefresh]
+	bound atomic.Pointer[func(context.Context)]
 }
 
-// boundRefresh is what Bind sets: the refresh, and the life the stored record must have left for a
-// read to judge by it without asking.
-type boundRefresh struct {
-	refresh func(context.Context)
-	margin  time.Duration
-}
-
-// Bind sets refresh, which asks the listener again and stores its answer for every process, and
-// margin, the life the stored record must have left for the outbox to take it without asking: the
-// API's own (api.Background's RefreshListenerRecord and ListenerRecordMargin).
-func (l *ListenerRefresh) Bind(refresh func(context.Context), margin time.Duration) {
-	l.bound.Store(&boundRefresh{refresh: refresh, margin: margin})
+// Bind sets refresh, which asks the listener again and stores its answer for every process: the
+// API's own (api.Background's RefreshListenerRecord).
+func (l *ListenerRefresh) Bind(refresh func(context.Context)) {
+	l.bound.Store(&refresh)
 }
 
 // errListenerRecordExpired is a sight not read because a verdict of it depends on a listener list
 // and the stored listener record holds no answer that has not expired, even once the listener was
-// asked again (readSight).
+// asked again (ListenerRefresh.settle).
 var errListenerRecordExpired = errors.New("the stored listener record has expired and asking the listener again did not renew it, so no session's list could be read")
 
-// listenerRecordQuery is readSight's read of the stored listener record, for the sessions $1 over
-// the projects $2 (access.SightListSQL): whether a verdict can depend on a listener list, and
-// whether the record holds an answer with more than $3 seconds of its life left.
-var listenerRecordQuery = `select ` + access.SightListSQL("$1::text[]", "$2::text[]", "$3::float8")
-
-// readSight is every outbox read of which of sessions see which of projects
-// (access.SessionsSeeProjects), after the stored listener record is asked again where it must be.
-// With listener set, where a verdict can depend on a list and the record has expired or has
-// listener's margin of its life or less left, it runs the refresh once and reads the record again;
-// a record that has still expired answers errListenerRecordExpired and no sight, which each caller
-// takes as a sight it could not read. Where no verdict depends on a list it asks nothing, and with
-// no listener, as this package's tests and a process with no API build Deps, it judges the record
-// as it stands.
-func readSight(ctx context.Context, db queryer, listener *ListenerRefresh, sessions, projects []string) (map[string]map[string]bool, error) {
-	if len(sessions) == 0 || len(projects) == 0 {
-		return map[string]map[string]bool{}, nil
+// settle answers sight, one read of sessions' sight (access.ReadSessionSight), as the outbox judges
+// by it. Where its verdict depended on a list of a listener record that had expired, it runs the
+// bound refresh (askAgain) and answers what reread then reads; a record that has still expired
+// answers errListenerRecordExpired, which each caller takes as a sight it could not read. Where no
+// verdict depended on a list it asks nothing, and with no ListenerRefresh, as this package's tests
+// and a process with no API build Deps, it answers sight as it was read.
+func (l *ListenerRefresh) settle(ctx context.Context, sight access.SessionSight, reread func() (access.SessionSight, error)) (access.SessionSight, error) {
+	if l == nil || !sight.ListExpired {
+		return sight, nil
 	}
-	if listener != nil {
-		bound := listener.bound.Load()
-		var margin time.Duration
-		if bound != nil {
-			margin = bound.margin
-		}
-		depends, fresh, err := readListenerRecord(ctx, db, sessions, projects, margin)
-		if err != nil {
-			return nil, err
-		}
-		if depends && !fresh {
-			if bound != nil {
-				bound.refresh(ctx)
-				_, fresh, err = readListenerRecord(ctx, db, sessions, projects, 0)
-				if err != nil {
-					return nil, err
-				}
-			}
-			if !fresh {
-				return nil, errListenerRecordExpired
-			}
+	if l.askAgain(ctx) {
+		var err error
+		if sight, err = reread(); err != nil {
+			return access.SessionSight{}, err
 		}
 	}
-	return access.SessionsSeeProjects(ctx, db, sessions, projects)
+	if sight.ListExpired {
+		return access.SessionSight{}, errListenerRecordExpired
+	}
+	return sight, nil
 }
 
-// readListenerRecord runs listenerRecordQuery: whether a verdict depends on a list, and whether the
-// stored record has more than left of its life left.
-func readListenerRecord(ctx context.Context, db queryer, sessions, projects []string, left time.Duration) (depends, fresh bool, err error) {
-	rows, err := db.Query(ctx, listenerRecordQuery, sessions, projects, left.Seconds())
+// askAgain runs the bound refresh, and reports false, running nothing, before Bind. Every caller
+// runs it with the outbox's gate free (lanes.statement), holding no connection: the refresh may
+// wait on the listener for the API's whole fetch bound, and the gate, the one statement at a time
+// of every batch of a scan, is held around the outbox pool's statements alone. The refresh reads
+// the record on the API's pool under a mark of its own (store.ForConcurrentWorker): the batches of
+// a scan share one mark of the one-connection-per-caller rule, so a statement another batch runs
+// beside the refresh once the gate is free would otherwise have that read refused
+// (store.ErrNestedAcquire).
+func (l *ListenerRefresh) askAgain(ctx context.Context) bool {
+	refresh := l.bound.Load()
+	if refresh == nil {
+		return false
+	}
+	(*refresh)(store.ForConcurrentWorker(ctx))
+	return true
+}
+
+// readSight is every outbox read of which of sessions see which of projects but the batch's own
+// (loadSessionSight, settleSight): one statement on deps's pool under its gate (readSightOnce),
+// judged as settle judges it, so where its verdict depended on a list of an expired listener record
+// the listener is asked again, with the gate free, and the statement run once more.
+func readSight(ctx context.Context, deps Deps, sessions, projects []string) (map[string]map[string]bool, error) {
+	read := func() (access.SessionSight, error) { return readSightOnce(ctx, deps, sessions, projects) }
+	sight, err := read()
 	if err == nil {
-		_, err = pgx.ForEachRow(rows, []any{&depends, &fresh}, func() error { return nil })
+		sight, err = deps.ListenerRefresh.settle(ctx, sight, read)
 	}
-	if err != nil {
-		return false, false, fmt.Errorf("read the listener record the sight is judged by: %w", err)
-	}
-	return depends, fresh, nil
+	return sight.Sees, err
+}
+
+// readSightOnce is one read of which of sessions see which of projects (access.ReadSessionSight)
+// on deps's pool, under its gate (lanes.statement).
+func readSightOnce(ctx context.Context, deps Deps, sessions, projects []string) (access.SessionSight, error) {
+	var sight access.SessionSight
+	err := deps.lanes.statement(func() error {
+		var read error
+		sight, read = access.ReadSessionSight(ctx, deps.Store.Pool, sessions, projects)
+		return read
+	})
+	return sight, err
 }
 
 // mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one
