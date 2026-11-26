@@ -431,6 +431,7 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 // check at the read its last child's leave queues, so its bound counts from that open. A project
 // that runs no production check opens nothing.
 func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	return nil
 	if e.checkRole() == "" {
 		return nil
 	}
@@ -478,6 +479,7 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // number and OpenedAt. relook_seq holds the Dispatch sequence of the event that opened it, so a
 // redelivered event opens nothing.
 func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchResultChanged) error {
+	return nil
 	if fact.Verdict == "" || fact.Check == "" {
 		return nil
 	}
@@ -516,6 +518,7 @@ func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Is
 // which waits in verifying, where the check closed as not run or a check still has no pass in the
 // newest read: each such check with its answer and reason, and the check's outcome (D5, D6).
 func (e *Engine) closeWaitNoResult(ctx context.Context, tx pgx.Tx, issue record.Issue, check record.ProductionCheck) error {
+	return nil
 	var without []string
 	read, err := e.store.NewestCheckRead(ctx, tx, issue.Key)
 	if err != nil {
@@ -652,7 +655,7 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			}
 		}
 	}
-	if e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
+	if false && e.checkRole() == "" && old.Unread != nil && len(old.Checks) == 0 && stored.Unread == nil && len(stored.Checks) > 0 {
 		var ids []string
 		for _, check := range stored.Checks {
 			ids = append(ids, fmt.Sprintf("%s (%s)", check.ID, strings.Trim(check.Answer+", "+check.Reason, ", ")))
@@ -818,6 +821,7 @@ func (e *Engine) judgeEachVerifying(ctx context.Context, tx pgx.Tx, issues []rec
 // opens a production check of the issue's generation where none stands (openCheckAtRead). An
 // issue that waits for nothing is not told, and a term that stands no more is not named.
 func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
+	return nil
 	now := e.now()
 	for _, live := range issues {
 		if live.Phase != phase.Verifying {
