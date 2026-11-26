@@ -22,6 +22,7 @@
  * node build, which intercepts neither `fetch` nor `XMLHttpRequest` here.
  */
 
+import type { WhoamiUser } from "@legion/contracts";
 import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
@@ -53,6 +54,19 @@ const shellHandlers: RequestHandler[] = [
   // know, status and code both.
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
+  ),
+  // Settings reads the scopes Dispatch says the signed-in person's own credential holds, and offers
+  // the Set P0 box only where they name p0 (`features/settings/AgentTokensSection.tsx`), so every
+  // test that renders Settings makes this read without being about scopes. The answer is the
+  // server's own for a person at a browser, who holds every scope of a person's own credential,
+  // p0 among them. A test about another answer - a build before p0, a read still out, a failed
+  // read - answers this route itself.
+  http.get("/api/v1/whoami", () =>
+    Response.json({
+      kind: "user",
+      login: "alice",
+      scopes: ["person", "approve", "p0"],
+    } satisfies WhoamiUser)
   ),
   http.get("/api/v1/agents", () => Response.json([])),
   // The one read a cold page makes before it draws anything (`api/queries.ts`, `readLanding`),

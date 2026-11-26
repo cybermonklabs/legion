@@ -583,7 +583,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
 		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
 		// from its own claims that Dispatch will never take. The issue's next ready, end or other
-		// change of a claim queues a fresh publication of the live set (roleHoldersChanged, the
+		// change of a claim queues a fresh publication of the set (roleHoldersChanged, the
 		// store's putClaim).
 		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
 		var refusal *dispatch.Error
@@ -1528,11 +1528,13 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	return nil
 }
 
-// publishRoleHolders writes the session of each live Legion role of the issue onto the issue's
-// Dispatch row. The set is read from the claims now, in a transaction of its own, not when the row
-// was queued: a claim that ended after the queue is gone from it, and two claim changes of one
-// issue never publish a stale set. It is sent whole, empty included, since it replaces what
-// Dispatch holds, so a role whose claim ended leaves the set with no delete route.
+// publishRoleHolders writes the session of each Legion role of the issue whose claim holds it
+// (supervise.HoldsRole, record.Postgres.RoleHolders) onto the issue's Dispatch row: a claim the
+// idle release suspended keeps its role, so neither the release of an idle pod nor the wake that
+// brings it back changes the set. The set is read from the claims now, in a transaction of its
+// own, not when the row was queued: a claim that ended after the queue is gone from it, and two
+// claim changes of one issue never publish a stale set. It is sent whole, empty included, since it
+// replaces what Dispatch holds, so a role whose claim ended leaves the set with no delete route.
 //
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order. Every other answer is decided by
@@ -1543,16 +1545,16 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")
 	}
-	var live []record.RoleHolder
+	var held []record.RoleHolder
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
+		held, err = r.records.RoleHolders(ctx, tx, payload.Issue)
 		return err
 	}); err != nil {
-		return fmt.Errorf("read the live role holders of %s: %w", payload.Issue, err)
+		return fmt.Errorf("read the role holders of %s: %w", payload.Issue, err)
 	}
-	holders := make([]dispatch.RoleHolder, len(live))
-	for i, holder := range live {
+	holders := make([]dispatch.RoleHolder, len(held))
+	for i, holder := range held {
 		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
 	}
 	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {

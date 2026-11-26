@@ -2014,6 +2014,15 @@ export class DispatchApiClient {
     return this.json<AuthenticatedUser>("/auth/whoami");
   }
 
+  /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a
+   *  person at a browser, every scope of a person's own credential. `/auth/whoami` names none.
+   *  Settings offers Set P0 only where they name `p0`, which a build before it never does. A
+   *  list the answer leaves null holds none. */
+  async whoAmIScopes(): Promise<string[]> {
+    const whoami = await this.read("/api/v1/whoami", {});
+    return whoami.scopes ?? [];
+  }
+
   /** `GET /api/v1/landing`: one page's whole cold read - the viewer, the shell every page draws,
    *  and the part of the answer this page needs - in place of the wave of reads each of those
    *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`

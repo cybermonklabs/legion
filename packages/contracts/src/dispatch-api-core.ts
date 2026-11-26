@@ -47,10 +47,11 @@ export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
  *
- *  `scopes` is the set of `DISPATCH_SCOPES` that credential held at the act (a Legion daemon's
- *  `legion-status` is never recorded), recorded with it and never read back
- *  from the token: a person who narrows a token afterwards narrows what it may do next, and
- *  does not un-approve what it approved while it held `approve`.
+ *  `scopes` is the set of `DISPATCH_SCOPES` (`person`, `approve`, `p0`) that credential held at
+ *  the act (a Legion daemon's `legion-status` and `read` are never recorded), recorded with it and
+ *  never read back from the token. A person who narrows a token afterwards narrows what it may do
+ *  next, and does not undo what it did while it held `approve` or `p0`. `p0` lets a credential
+ *  make an issue's own priority 0, and no mint gives it by default.
  *
  *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
  *  token's own session); a session a personal token's request named is recorded without it. */

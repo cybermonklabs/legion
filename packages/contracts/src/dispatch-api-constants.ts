@@ -25,25 +25,30 @@ import type { CredentialPendingRow, MyReplyRow } from "./dispatch-api.generated"
 import type { EventType } from "./dispatch-api-events";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
 
-/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
- *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
- *  the credential's own person on every route a person reaches through the dashboard, and
- *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
- *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
- *  and minting, changing or revoking a personal token. A credential holding `approve` holds
- *  `person` too, and no token the secrets broker issued holds `approve`. */
-export const DISPATCH_SCOPES = ["person", "approve"] as const;
+/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson`,
+ *  `model.ScopeApprove` and `model.ScopeP0` and the `agent_tokens.scopes` check that stores them.
+ *  `person` acts as the credential's own person on every route a person reaches through the
+ *  dashboard. `approve` settles what a person settles: a document review, a decision's Keep, the
+ *  answer of an approval ask, a machine-login decision, a credential-grant, machine-login or
+ *  sign-in revoke, and minting, changing or revoking a personal token. `p0` lets a credential make
+ *  an issue's own priority 0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). A browser
+ *  sign-in holds all three. A personal token holds `p0` only where its maker gave it, and may hold
+ *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too.
+ *  No broker-issued token, shared token or service-account token holds `p0`, and of the
+ *  broker-issued tokens only the approve-only token, which no machine holds, holds `approve`. */
+export const DISPATCH_SCOPES = ["person", "approve", "p0"] as const;
 
 /** The scope words a personal token can carry, which the agent token list names and `scopes` in
- *  `GET /api/v1/whoami` names for it: the two of `DISPATCH_SCOPES` and `read`. A token that holds
- *  `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or beside
- *  `person`, never beside `approve`. `read` is a mark on the token and not a scope a credential
- *  acts under, so no act records it, and `DISPATCH_SCOPES` and `ActorActSchema` keep `person` and
- *  `approve` alone. `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
+ *  `GET /api/v1/whoami` names for it: the three of `DISPATCH_SCOPES` and `read`. A token that
+ *  holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or
+ *  beside `person`, never beside `approve` or `p0`. No mint gives `p0` by default. `read` is a
+ *  mark on the token and not a scope a credential acts under, so no act records it, and
+ *  `DISPATCH_SCOPES` and `ActorActSchema` keep `person`, `approve` and `p0` alone.
+ *  `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
  *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
  *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
  *  records it either, and no personal token can hold it. */
-export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "p0", "read"] as const;
 
 /**
  * How long an issue claim is held for a holder the Envoy registry calls `unresponsive`: a

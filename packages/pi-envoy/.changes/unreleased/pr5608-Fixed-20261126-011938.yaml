@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The role-takeover and registration-stall smokes' loopback stack starts natsd, the listener and
+  each recording proxy on ports the kernel chooses as each binds them, and reads every port from
+  what that service reports, so no other program can take a service's port before it binds it.
+time: 2026-11-26T01:19:38Z
+custom:
+    Issue: pr5608

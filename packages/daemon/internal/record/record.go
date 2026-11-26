@@ -186,6 +186,10 @@ type Issue struct {
 	// It is the issue's own and never its tree root's: the root's is read from the root's record
 	// where it is wanted (PriorityOf).
 	Priority Priority
+	// Resolved is the priority Dispatch resolves the issue to, with the issue it comes from, as the
+	// same observation showed it (record's Resolved), taken wherever Priority is taken: admission
+	// reads it (AdmissionPriority), the issue's own priority keeps its meaning.
+	Resolved Resolved
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
@@ -2853,11 +2857,12 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
-	// LiveRoleHolders is the session of each live claim of issue, by role, that the claim holds
-	// (claim_sessions holds every name of it for that claim): the set a role-holder publication sends.
-	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
-	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
-	// changed at or after since, in key order: the issues the boot publishes.
+	// RoleHolders is the session of each claim of issue that holds its role
+	// (supervise.HoldsRole), by role, that the claim holds (claim_sessions holds every name of it
+	// for that claim): the set a role-holder publication sends.
+	RoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RecentClaimIssues is every issue of the Dispatch project with a claim that holds its role, or
+	// a claim that changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names

@@ -560,8 +560,11 @@ marked with tags or annotations:
   type (`scopes-type`). It lists the OAuth scopes the minted token carries, each the part of a
   Google scope after `https://www.googleapis.com/auth/`, separated by spaces
   (`cloud-platform bigquery`). A secret without it mints the `cloud-platform` scope alone, which
-  is what every such secret minted before the tag existed, and a changed list reaches the token
-  at the next release. The names are the short ones because an AWS tag value holds at most 256
+  is what every such secret minted before the tag existed. The list is in the fingerprint of the
+  secret by its own name and of each profile of it with no `google` block of its own, so a changed
+  list, or the tag added or taken off, ends each live grant decided under the old one at its next
+  release, and the session asks again: a grant never mints at scopes it was not decided under. The
+  names are the short ones because an AWS tag value holds at most 256
   characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
   whole scope URL, a name with a capital letter, and a name given twice are each refused
   `scopes-malformed`. Set it with `agent-secrets secret create|retag --scopes "<scope> <scope>"`.
