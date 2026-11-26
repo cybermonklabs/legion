@@ -31,7 +31,7 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 - Link into a skill as `skill://<name>/<path>`, never by relative path: each plugin's skills install on their own, so a relative link out of one dangles.
 
 - A Legion prompt (a skill, a role prompt in `packages/daemon/internal/prompts/roles/`, or an agent in `packages/pi-legion/agents/`) names a task agent only as `task(agent="<name>")` and a skill only as `skill://<name>`:
-  the daemon's boot gate checks only those forms.
+  the daemon's boot gate checks the names its reader collects (`packages/daemon/internal/promptrefs`), and these two forms are the ones Legion's texts write.
 
 - An agent or a skill that a Legion prompt names ships here or in `packages/pi-legion/agents/`, unless Oh My Pi bundles it.
 
