@@ -905,11 +905,14 @@ async function expectCards(
 }
 
 /** (4) in Graph: the check that serves two statements has its thread beside its row under its
- *  stored parent, and the column holds that thread once. */
+ *  stored parent - right of the main column, level with its words or, where the column stacks
+ *  (`stacked`, G5), 8 px or more under the box above it, and over no other box - and the column
+ *  holds that thread once. */
 async function expectCheckOnce(
   page: Page,
   seeded: MarginSeed,
-  spots: readonly Spot[]
+  spots: readonly Spot[],
+  stacked: boolean
 ): Promise<void> {
   const check = spots.filter((spot) => spot.id === seeded.checkComment);
   await expect(
@@ -919,13 +922,16 @@ async function expectCheckOnce(
   await expect
     .poll(
       async () => {
-        const [reading] = (await readSpots(page, check)).spots;
+        const reading = await readSpots(page, check);
+        const [drawn] = reading.spots;
         return {
           beside:
-            reading?.box != null &&
-            reading.words !== null &&
-            Math.abs(reading.box.top - reading.words.first.top) <= 2,
-          underParent: reading?.underParent ?? false,
+            drawn?.box != null &&
+            drawn.rowDrawn &&
+            drawn.box.left >= reading.mainRight - 0.5 &&
+            offWords(reading, check, stacked).length === 0 &&
+            covering(reading, check).length === 0,
+          underParent: drawn?.underParent ?? false,
         };
       },
       { message: "in Graph, the check's thread stands beside its row under its stored parent" }
@@ -979,7 +985,7 @@ async function readEveryView(
     if (view === "conversation") await expectPostRows(page, seeded);
     await expectPlaced(page, read, must, view, gates.stacking);
     await expectCards(page, seeded, read, must, view);
-    if (view === "graph") await expectCheckOnce(page, seeded, read);
+    if (view === "graph") await expectCheckOnce(page, seeded, read, gates.stacking);
   }
 }
 
@@ -1724,12 +1730,41 @@ async function keepNoQuote(page: Page): Promise<ReadonlySet<string>> {
 /** The first and the last line of a match of words, as `readSpots` measures them. */
 type WordsBox = NonNullable<SpotReading["words"]>;
 
-/** Scrolls the first row of `node` to the middle of the window at once, so a pointer reaches its
- *  words and the rows beside it. */
-async function showRow(page: Page, node: string): Promise<void> {
-  await stageRow(page, node)
-    .first()
-    .evaluate((row) => row.scrollIntoView({ behavior: "instant", block: "center" }));
+/**
+ * Brings the element `shown` locates to the middle of the window, waits out the frames the page
+ * lays the scrolled page out in (`framesPass`), and answers what `measure` reads then, once every
+ * match it reads stands inside the window (`page.viewportSize()`): a pointer presses nothing past
+ * the window's edge, and a press there makes no selection. The scroll is made again on each try,
+ * where the page moved it after the last one.
+ */
+async function inWindow(
+  page: Page,
+  shown: Locator,
+  measure: () => Promise<readonly WordsBox[]>,
+  what: string
+): Promise<readonly WordsBox[]> {
+  const size = page.viewportSize();
+  if (size === null) throw new Error(`the page has no window to press ${what} in`);
+  const inside = (words: WordsBox) =>
+    [words.first, words.last].every(
+      (line) =>
+        line.top >= 0 && line.left >= 0 && line.bottom <= size.height && line.right <= size.width
+    );
+  let measured: readonly WordsBox[] = [];
+  await expect
+    .poll(
+      async () => {
+        await shown.evaluate((element) =>
+          element.scrollIntoView({ behavior: "instant", block: "center" })
+        );
+        await framesPass(page);
+        measured = await measure();
+        return measured.every(inside);
+      },
+      { message: `${what} stand inside the window once scrolled to its middle` }
+    )
+    .toBe(true);
+  return measured;
 }
 
 /** The lines of match `occurrence` of `quote` in the words of the row of `node`, where the window
@@ -1761,25 +1796,29 @@ async function dragAcross(page: Page, from: WordsBox, to: WordsBox): Promise<voi
 }
 
 /** Selects match `occurrence` of `quote` in the words of the row of `node` by pointer, its row
- *  brought into the window first: a press at its first character's left and a drag to its last
- *  character's right. */
+ *  brought into the window first (`inWindow`): a press at its first character's left and a drag
+ *  to its last character's right. */
 async function selectWords(
   page: Page,
   node: string,
   quote: string,
   occurrence: number
 ): Promise<void> {
-  await showRow(page, node);
-  const words = await wordsAt(page, node, quote, occurrence);
+  const [words] = await inWindow(
+    page,
+    stageRow(page, node).first(),
+    async () => [await wordsAt(page, node, quote, occurrence)],
+    `match ${occurrence} of "${quote}" in the row of ${node}`
+  );
+  if (words === undefined) throw new Error(`the row of ${node} draws no ${quote}`);
   await dragAcross(page, words, words);
 }
 
 /** The lines of the first match of `quote` in the element `line` locates - a line a row draws
- *  under its words - scrolled to the middle of the window first. */
+ *  under its words - where the window shows them now. */
 async function lineWords(line: Locator, quote: string): Promise<WordsBox> {
   // The row that holds the line is drawn above, so one reading of the line finds its words.
-  const words = await line.first().evaluate((element, wanted) => {
-    element.scrollIntoView({ behavior: "instant", block: "center" });
+  const words = await line.evaluate((element, wanted) => {
     const rect = (box: DOMRect) => ({
       bottom: box.bottom,
       left: box.left,
@@ -2128,12 +2167,16 @@ async function readNoControl(
   };
 
   await takes(lens, "view", "the lens's verdict");
-  await showRow(page, lens);
-  await dragAcross(
+  const [margin, record] = await inWindow(
     page,
-    await wordsAt(page, lens, "margin", 0),
-    await wordsAt(page, finding, "record", 0)
+    stageRow(page, lens).first(),
+    async () => [await wordsAt(page, lens, "margin", 0), await wordsAt(page, finding, "record", 0)],
+    `"margin" in the row of ${lens} and "record" in the row of ${finding}`
   );
+  if (margin === undefined || record === undefined) {
+    throw new Error("the lens's and the finding's rows draw no words to select across");
+  }
+  await dragAcross(page, margin, record);
   await framesPass(page);
   await expect(control, "no control stands on a selection across two rows").toHaveCount(0);
   await expectLoadSettled(traffic);
@@ -2153,10 +2196,14 @@ async function readNoControl(
 
   await takes(risk, "slow", "the risk's heading");
   // The risk's early warning line: "The warning comes before the reader asks."
-  const warning = await lineWords(
-    stageRow(page, risk).first().locator('[data-lens-line="early_warning"]'),
-    "comes"
+  const line = stageRow(page, risk).first().locator('[data-lens-line="early_warning"]').first();
+  const [warning] = await inWindow(
+    page,
+    line,
+    async () => [await lineWords(line, "comes")],
+    `"comes" in the early warning line of ${risk}`
   );
+  if (warning === undefined) throw new Error(`the early warning line of ${risk} draws no words`);
   await dragAcross(page, warning, warning);
   await framesPass(page);
   await expect(
@@ -2898,6 +2945,8 @@ async function sendCounted(
 // waited out to a 1.5 s quiet window, and a send from the composer waited out to that window.
 test("the margin adds no request", async ({ browser }) => {
   test.setTimeout(300_000);
+  // Both seeds name an agent in a row, the planner who holds the child issue, so each load reads
+  // the agents list once whatever the margin draws (`e2e/issue-page-margin.ts`'s `seedLayout`).
   const agentsEqual = onBase(
     "the load with threads reads /api/v1/agents as often as the load without them, since a fixed-open card's reply composer reads the agents only once its reply is used",
     "COMPOSER"

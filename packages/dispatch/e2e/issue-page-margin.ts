@@ -2,6 +2,7 @@ import { type Query, type Result, routeUrl } from "../web/src/api/paths";
 import type { IssueTreeRead } from "../web/src/api/types";
 import {
   baseUrl,
+  claimIssue,
   createAsk,
   createComment,
   createIssue,
@@ -318,6 +319,12 @@ async function seedLayout(): Promise<Layout> {
     project: PROJECT,
     title: "Keep child issue titles readable",
   });
+  // The planner holds the child, so the child's row in Conversation and in Graph names an agent
+  // (`ChildIssueFacts`' `AgentName`), which reads the agents list on both seeds alike: the page's
+  // own read wherever it names an agent, which a thread an agent wrote would read too (c-reads).
+  // The outline names a comment's author with no read (`useAgentText`), and an agent's post on
+  // the issue that no person wrote in is no node of the conversation (`refs/conversation.go`).
+  await claimIssue(child.key, asPlanner);
   const crossIssueChild = await createIssue({
     force: true,
     parent: key,
