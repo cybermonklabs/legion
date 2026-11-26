@@ -17,29 +17,15 @@
  *   as the components do. A value import from `page-words.ts` or `./page-words-parts` makes an
  *   import cycle.
  */
-import { UPLOAD_FAILED_TEXT } from "../artifacts/upload-words";
 import {
   ADDRESS_WORDS,
-  CHANGED_EDIT_LEAD,
   COMPOSER_WORDS,
   DELIVERY_COMMANDS,
   DISCARD_DRAFT_LABEL,
-  GONE_REPLY_WORDS,
-  KEPT_REPLY_WORDS,
-  MOVED_SEND_WORDS,
   OFFER_LABELS,
-  WRITTEN_ELSEWHERE_WORDS,
 } from "../conversation/composer-words";
-import { MODE_LABELS, NO_DELIVERY_WORDS, TITLES_JOINER } from "../conversation/delivery";
-import {
-  EXPIRED_RETRY_WORDS,
-  SAME_KEY_RETRY_WORDS,
-  STOP_TRYING_LABEL,
-  STOPPED_SEND_WORDS,
-  STOPPED_WRITE_WORDS,
-  STOPPING_LABEL,
-  STOPPING_REASON,
-} from "../writes/write-words";
+import { MODE_LABELS, TITLES_JOINER } from "../conversation/delivery";
+import { STOP_TRYING_LABEL, STOPPING_LABEL, STOPPING_REASON } from "../writes/write-words";
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
@@ -115,37 +101,234 @@ export const ADDRESS_FALLBACK_WORDS = freeze({
 export const CURRENT_POINT = "location" as const;
 
 /**
- * What the box at the foot of the outline says in answer to the reader's act in the words of the
- * composer it is (`MentionComposer`) and of the parts that composer draws, each taken from the
- * module that writes it for every composer, so the box and every other composer say the same
- * words. The box hands the composer's own to it (`OutlineLook.words`, from `composer` here); the
- * parts draw theirs: a reply kept for another row (`kept_reply`), one whose post the outline no
- * longer draws (`gone_reply`), an edit that waits beside a newer comment (`changed_edit`), a
- * refusal held for another address than the box shows (`elsewhere`, `address`), what a send to the
- * sessions a draft names would do (`no_delivery`, `titles_joiner`, `commands`), a send the reader
- * stopped (`stopped_send`, `same_key_retry`, `expired_retry`, `moved_send`, `stopped_write`,
- * `stopping_reason`), and an upload that failed (`upload_failed`). A sentence that names a
- * session, an author, an address or what a write may have done is cut around that name, as
- * `BLOCKED_BY_REFUSALS` of `page-words.ts` cuts its sentences around a key, and a sentence that
+ * What the box at the foot of the outline says in answer to the reader's act (root R22): each
+ * answer one sentence, in the page's own words where the composer every other surface draws
+ * (`MentionComposer`) and the parts it draws say two or three, and in place of Dispatch's own
+ * words of a refusal, which the box never draws. A word or a sentence the page keeps from that
+ * composer is taken by import from the module that writes it for every composer, never copied:
+ * why Send refuses a draft (`send_refusals`), the warning of a plain mode (`delivery.plain`),
+ * the presses' commands and the joiner of the sessions a notice names (`commands`,
+ * `titles_joiner`), the words an address is said in - its prepositions, and a reply's -
+ * (`address`), and why Stop trying takes no second press (`stopping_reason`).
+ * `IssueComposer.tsx` hands the rest to the box (`OutlineLook.answers`):
+ *
+ * - `deleted_reply`: Send's refusal of a reply to a post deleted since, by its kind, with where
+ *   the draft goes instead;
+ * - `late`: a send past its deadline;
+ * - `delivery`: a send to sessions that advertise no delivery mode (`deaf`), by why - their
+ *   lists hold nothing (`unlisted`), hold no mode this page knows (`unknown`), or some of each
+ *   (`mixed`) - and to sessions that do not advertise the mode the draft asks for
+ *   (`unsupported`), with the modes they take `instead`;
+ * - `refused`: a send Dispatch refused, by its code, and `other` for any other code, a failure to
+ *   reach Dispatch and a send it did not answer in time; each says the words are kept;
+ * - `stopped`: a send that ended without Dispatch's verdict, by how it ended;
+ * - `upload`: a file uploading into the draft that the reader stopped, that Dispatch refused by
+ *   its code, or that ended any other way;
+ * - `elsewhere`: Send's refusal of a refused draft written for another place than the box shows;
+ * - `kept_reply`, `gone_reply`, `changed_edit`: a reply kept for another row, one whose post the
+ *   outline no longer draws, and an edit that waits beside a newer comment.
+ *
+ * A sentence that names a session, an author, an address or how many hours Dispatch keeps a
+ * write's key is cut around that name, as `BLOCKED_BY_REFUSALS` of `page-words.ts` cuts its
+ * sentences around a key: the name is drawn between `before` and `after`. A sentence that
  * differs by the kind of post or by one or many is keyed by it.
  */
 export const COMPOSER_ANSWER_WORDS = freeze({
   address: { prepositions: ADDRESS_WORDS.prepositions, reply: ADDRESS_WORDS.reply },
-  changed_edit: CHANGED_EDIT_LEAD,
+  changed_edit:
+    "This comment changed since you wrote your edit, so the field shows it as it reads now and your edit is kept here:",
   commands: DELIVERY_COMMANDS,
-  composer: COMPOSER_WORDS,
-  elsewhere: WRITTEN_ELSEWHERE_WORDS,
-  expired_retry: EXPIRED_RETRY_WORDS,
-  gone_reply: GONE_REPLY_WORDS,
-  kept_reply: KEPT_REPLY_WORDS,
-  moved_send: MOVED_SEND_WORDS,
-  no_delivery: NO_DELIVERY_WORDS,
-  same_key_retry: SAME_KEY_RETRY_WORDS,
-  stopped_send: STOPPED_SEND_WORDS,
-  stopped_write: STOPPED_WRITE_WORDS,
+  deleted_reply: {
+    ask: "The question this reply answers was deleted and takes no reply, so press Write on the issue instead to send it on the issue.",
+    comment:
+      "The comment this reply answers was deleted and takes no reply, so press Write on the issue instead to send it on the issue.",
+    message:
+      "The message this reply answers was deleted and takes no reply, so press Write on the issue instead to send it on the issue.",
+  },
+  delivery: {
+    deaf: {
+      mixed:
+        " advertise no delivery mode this Dispatch knows or cannot reach their conversations, so sending it records a failed attempt.",
+      unknown: {
+        many: " list no delivery mode this Dispatch knows, so sending it records a failed attempt.",
+        one: " lists no delivery mode this Dispatch knows, so sending it records a failed attempt.",
+      },
+      unlisted: {
+        many: " advertise no delivery mode while their plugins cannot reach their conversations, so sending it records a failed attempt.",
+        one: " advertises no delivery mode while its plugin cannot reach its conversation, so sending it records a failed attempt.",
+      },
+    },
+    plain: COMPOSER_WORDS.delivery.plain,
+    unsupported: {
+      after: COMPOSER_WORDS.delivery.unsupported.after,
+      before: COMPOSER_WORDS.delivery.unsupported.before,
+      instead: {
+        ...COMPOSER_WORDS.delivery.unsupported.instead,
+        before: ", so sending it records a failed attempt; prefix with ",
+      },
+    },
+  },
+  elsewhere: {
+    address: {
+      after: ", so go back there to send it, or discard it.",
+      before: "This message was written ",
+    },
+    gone: {
+      ask: {
+        deleted:
+          "This message was written as a reply to a question that was deleted and takes no reply, so discard it to write here.",
+        gone: "This message was written as a reply to a question that is no longer listed, so discard it to write here.",
+      },
+      comment: {
+        deleted:
+          "This message was written as a reply to a comment that was deleted and takes no reply, so discard it to write here.",
+        gone: "This message was written as a reply to a comment that is no longer listed, so discard it to write here.",
+      },
+      message: {
+        deleted:
+          "This message was written as a reply to a message that was deleted and takes no reply, so discard it to write here.",
+        gone: "This message was written as a reply to a message that is no longer listed, so discard it to write here.",
+      },
+    },
+    reply:
+      "This message was written as a reply, so press Reply on that row again to send it, or discard it.",
+  },
+  gone_reply: {
+    after: {
+      deleted: {
+        now: " that your reply answered was deleted and takes no reply, so your reply is kept here:",
+        waits:
+          " that your reply answered was deleted and takes no reply, so your reply is kept here to use in this field once it is empty:",
+      },
+      gone: {
+        now: " that your reply answered is no longer listed, so your reply is kept here:",
+        waits:
+          " that your reply answered is no longer listed, so your reply is kept here to use in this field once it is empty:",
+      },
+    },
+    before: { ask: "The question by ", comment: "The comment by ", message: "The message by " },
+  },
+  kept_reply: {
+    ask: {
+      after: " is kept: press Reply on that question to go on with it.",
+      before: "Your reply to the question by ",
+    },
+    comment: {
+      after: " is kept: press Reply on that comment to go on with it.",
+      before: "Your reply to the comment by ",
+    },
+    message: {
+      after: " is kept: press Reply on that message to go on with it.",
+      before: "Your reply to the message by ",
+    },
+  },
+  late: "Still sending, since Dispatch has not confirmed it yet: it keeps trying, and the message is delivered once.",
+  refused: {
+    ANCHOR_MISSING:
+      "The words this comment is on are no longer in their document, so it cannot be placed there and your words are kept.",
+    CAP_EXCEEDED:
+      "Dispatch takes nothing this long, so your words are kept to shorten and send again.",
+    DECISION_BLOCK_IN_BODY:
+      "A decision cannot stand in a comment, so your words are kept to take it out and send again.",
+    INVALID_INPUT:
+      "Dispatch could not take this as it is written, so your words are kept to change and send again.",
+    ISSUE_CLOSED: "This issue is closed and takes no question, so your words are kept.",
+    KEY_REUSED:
+      "Dispatch had already taken other words under this send's key, so this was not sent and your words are kept.",
+    POST_DELETED: "What this reply answers was deleted and takes no reply, so your words are kept.",
+    other: "Dispatch refused this message or did not answer, and your words are kept.",
+  },
+  send_refusals: COMPOSER_WORDS.refusals,
+  stopped: {
+    expired:
+      "Dispatch has not confirmed this message and no longer holds its key, so a Retry sends it anew and may deliver it a second time.",
+    interrupted: {
+      after:
+        " hours of the first try delivers it at most once, while a later one may deliver it twice.",
+      before: "This page closed before Dispatch confirmed this message, and a Retry within ",
+    },
+    moved: {
+      after:
+        ", so it may have been delivered there, and sending it from here is a new message that may be delivered a second time.",
+      before: "Dispatch has not confirmed this message, sent ",
+    },
+    unconfirmed: {
+      after:
+        " hours of the first try delivers it at most once, while a later one may deliver it twice.",
+      before: "Dispatch has not confirmed this message, and a Retry within ",
+    },
+  },
   stopping_reason: STOPPING_REASON,
   titles_joiner: TITLES_JOINER,
-  upload_failed: UPLOAD_FAILED_TEXT,
+  upload: {
+    other:
+      "The file was not uploaded, since Dispatch refused it or did not answer, and your words are kept.",
+    refused: {
+      PRECONDITION_FAILED:
+        "The document changed while this file uploaded, so open it to see what it says now and upload again.",
+      PRECONDITION_REQUIRED:
+        "Dispatch needs to know which version this file replaces, so open the document and upload again.",
+    },
+    stopped: {
+      expired:
+        "Dispatch has not confirmed the file and no longer holds its key, so a Retry uploads it anew and may store it a second time.",
+      unconfirmed: {
+        after:
+          " hours of the first try stores it at most once, while a later one may store it twice.",
+        before: "Dispatch has not confirmed the file, which may be stored, and a Retry within ",
+      },
+    },
+  },
+} as const);
+
+/**
+ * The names the reference picker in the box at the foot of the outline draws (decision 527):
+ * the list's accessible name, the heading over each kind's rows, and the control on a row that
+ * holds parts, in the page's own kind words - a question, never an ask, and parts, never the
+ * blocks a record is made of (root R1). They are names, as `CONTROL_LABELS` holds the box's
+ * controls drawn after an act, so `unasked` lists them; the picker's lines are
+ * `BOX_PICKER_LINES`. `IssueComposer.tsx` hands both to the box (`OutlineLook.picker`).
+ */
+export const BOX_PICKER_NAMES = freeze({
+  headings: {
+    agent: "Agents",
+    ask: "Questions",
+    "ask-part": "Question parts",
+    comment: "Comments",
+    "comment-block": "Comment parts",
+    component: "Components",
+    document: "Documents",
+    "document-block": "Document parts",
+    issue: "Issues",
+    message: "Messages",
+    "message-block": "Message parts",
+    person: "People",
+    role: "Roles",
+  },
+  label: "References",
+  parts: { blocks: "Parts", documents: "Documents" },
+} as const);
+
+/**
+ * What the reference picker in the box at the foot of the outline says once the reader has
+ * opened it, each one sentence or a state's words: what two typed letters will add
+ * (`instruction`), that no row matches (`empty`), that an opened row holds no parts
+ * (`parts_none`), where the agent list behind the agent and role rows stands (`agents`), said of
+ * the list and of no part of the system behind it, and what a role's row says of a role no
+ * running session holds (`stopped_role`). The list's loading line and its failed read are the
+ * page's own `ANSWER_LINES.references_loading` and `references_unreadable`, which
+ * `IssueComposer.tsx` hands the picker beside these.
+ */
+export const BOX_PICKER_LINES = freeze({
+  agents: {
+    loading: "Loading the agents…",
+    refilling: "The list of agents is refilling, so try again in a moment.",
+    unreachable: "Could not load the agents.",
+  },
+  empty: "Nothing matches what you typed.",
+  instruction: "Type two characters to search issues, documents, questions, comments and messages.",
+  parts_none: { blocks: "This holds no parts.", documents: "This agent holds no documents." },
+  stopped_role: "not running, so not told",
 } as const);
 
 export default {
@@ -173,7 +356,7 @@ export default {
       /** What the box says, once a row's Reply moved it on, of what the reader wrote on the
        *  issue, or on a statement, and the box keeps there, with the control that goes back to
        *  it: the box's own that writes on the issue, or the statement's Reply. A reply kept for a
-       *  row is said in the composer's own words, which name the author of what it answers. */
+       *  row is said by `COMPOSER_ANSWER_WORDS.kept_reply`, which names the author it answers. */
       kept_on_issue:
         "What you wrote on the issue is kept: press Write on the issue instead to go on with it.",
       kept_on_statement:
@@ -186,11 +369,6 @@ export default {
         "The statement you wrote on has changed or is gone, so what you wrote is kept here:",
       kept_statement_gone_waits:
         "The statement you wrote on has changed or is gone, so what you wrote is kept here to use in this field once it is empty:",
-      /** What the box says, after the composer's own words that the post a reply answers was
-       *  deleted while the reply was open, of where it sends the draft instead: the box's own
-       *  control that writes on the issue, where the draft then goes as a comment, or as a
-       *  question with the Question chip pressed. */
-      deleted_reply_way: "Press Write on the issue instead to send it on the issue.",
     },
     CONTROL_LABELS: {
       /** Opens the editor of the issue's title: the button laid over the title's heading in the
@@ -200,6 +378,21 @@ export default {
       /** The marks drawn before the words of the box's two kinds, on their chips. */
       composer_comment_mark: "“",
       composer_question_mark: "?",
+      /** The names a screen reader reads the box at the foot of the outline by (decision 527):
+       *  its form, the field of the line that edits the reader's comment - the write line's
+       *  field is named by its chip's word, `composer_comment` or `composer_question` - and the
+       *  list, off screen, of the sessions and roles its comment is delivered to, each read by
+       *  its name. */
+      composer_form: "Draft",
+      edit_comment: "Edit comment",
+      composer_mentioned: "Mentioned",
+      /** The field's description, which a screen reader reads beside its name for a reader who
+       *  cannot see the chips: what the line's keys do, on the write line and on the line that
+       *  edits a comment. */
+      composer_keys:
+        "Enter sends and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
+      composer_keys_edit:
+        "Enter saves and Shift+Enter starts a new line; @ links an agent, a role or a person, # an issue, and [[ anything else",
       /** The control beside a refusal that drops the draft it handed back, and the presses of a
        *  draft drawn beside the box's line: its own reply or statement's draft drops or takes it,
        *  and an edit that waits beside a newer comment does. The words of every composer. */
@@ -236,6 +429,6 @@ export default {
       target_separator: "·",
     },
   },
-  unasked: [],
-  answers: [ADDRESS_FALLBACK_WORDS, COMPOSER_ANSWER_WORDS],
+  unasked: [BOX_PICKER_NAMES],
+  answers: [ADDRESS_FALLBACK_WORDS, COMPOSER_ANSWER_WORDS, BOX_PICKER_LINES],
 } as const satisfies PartWords;
