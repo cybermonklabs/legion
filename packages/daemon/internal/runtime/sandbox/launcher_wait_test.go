@@ -786,8 +786,11 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 			return sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, func(o *Options) { o.TerminationGrace = grace })
 		}
 		on, off := at(keptMicroVM()), at(testMicroVM())
-		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace, len(claim.Roles)); got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
-			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (5h49m41s)", got, want)
+		// 6 h 4 min 41 s: launchBound at the default boot timeout and grace over ProvisionBound's 295
+		// minutes, the fetch's whole budget, its attempt on the cache's bucket among its terms, with
+		// the shared clone's bound and the checkout's.
+		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace, len(claim.Roles)); got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
+			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (6h4m41s)", got, want)
 		}
 		if got, want := on.LaunchBound(), launchBound(boot, keptVolumeAttachWait, on.ProvisionBound(), grace, len(claim.Roles)); got != want || got != off.LaunchBound()+keptVolumeAttachWait-boot {
 			t.Fatalf("LaunchBound with keep_volume on = %s, want %s: %s more than with it off", got, want, keptVolumeAttachWait-boot)

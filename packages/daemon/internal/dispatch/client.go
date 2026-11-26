@@ -121,6 +121,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
 			Priority:     issue.Priority,
+			Resolved:     resolvedPriority(issue.ResolvedPriority, issue.PriorityFrom),
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,

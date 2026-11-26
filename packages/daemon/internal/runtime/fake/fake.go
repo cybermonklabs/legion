@@ -140,9 +140,16 @@ type Runtime struct {
 	onRead func()
 	// took is every pod a ReplacePod replaced, which ReadAct answers taken from then on, as the
 	// Sandbox runtime answers a pod its replacement's suspension took. ReplacePod and
-	// ReplaceIssuePod read nothing of it, so a test that replaces the same pod again is answered
-	// as before.
+	// ReplaceIssuePod read nothing of it, so a test that replaces the same pod again is answered as
+	// before.
 	took map[string]bool
+	// roundTook is every pod a round's own replacement suspended: a ReplacePod that replaced it or
+	// whose suspension landed before its error, a ReplaceIssuePod that replaced it, and a launch
+	// whose RoundPodEnds answered yes (launchInto). PodDrift answers every claim recorded in such a
+	// pod drifted from nothing, whichever claim or issue the replacement was made through, as the
+	// Sandbox runtime reads the drift of every claim of a pod off its one Sandbox, which the round's
+	// replacement marked as its own (drift.go, PodDrift; relaunch.go, roundReplacement).
+	roundTook map[string]bool
 	// replaced is every pod a replacement by issue (ReplaceIssuePod) or a launch (RoundPodEnds)
 	// replaced, by uid, with the uid of the pod a launch built in its place, "" while none has:
 	// the issue's Sandbox no longer holds it, as IssuePod then answers, and a launch scripted into
@@ -177,9 +184,10 @@ func NewRuntime() *Runtime {
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
 		replaced:    map[string]string{},
-		// suspendedOver and took start empty: no replacement has landed on any pod.
+		// suspendedOver, took and roundTook start empty: no replacement has landed on any pod.
 		suspendedOver: map[string]bool{},
 		took:          map[string]bool{},
+		roundTook:     map[string]bool{},
 		sandboxGone:   map[string]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
@@ -246,9 +254,9 @@ func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", e
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
 
 // ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
-// runtime answers a pod built from a configuration the runtime has since moved on from. A claim no
-// call named has drifted from nothing, which is the uninteresting case; nil clears this claim's
-// answer.
+// runtime answers a pod built from a configuration the runtime has since moved on from, until a
+// round's own replacement takes the claim's recorded pod (roundTook, PodDrift). A claim no call
+// named has drifted from nothing, which is the uninteresting case; nil clears this claim's answer.
 func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -558,9 +566,11 @@ func (r *Runtime) launched(ctx context.Context, spec runtime.SpawnSpec, next Spa
 // built in its place is a suspended Sandbox, and the launch builds a new pod without asking
 // anything. A live pod — the one scripted, or the one a launch built in its place — is asked of
 // RoundPodEnds, as the Sandbox runtime asks of a live pod it would keep: a yes records a
-// ReplaceRoundPodAtLaunch call and replaces the pod with a new one, and an error is the launch's.
-// A launch that comes up in another pod than the scripted one forgets its claim's drift, as
-// ReplacePod does: every pod the fake builds is built from the configuration the runtime has now.
+// ReplaceRoundPodAtLaunch call and replaces the pod with a new one, as the round's own replacement
+// (roundTook: every claim recorded in the old pod reads drifted from nothing), and an error is
+// the launch's. A launch that comes up in another pod than the scripted one forgets its claim's
+// drift, as ReplacePod does: every pod the fake builds is built from the configuration the
+// runtime has now.
 // RoundPodEnds runs with mu free, so it may drive the fake again.
 func (r *Runtime) launchInto(ctx context.Context, spec runtime.SpawnSpec, loc runtime.Locator) (runtime.Locator, error) {
 	r.turn.Lock()
@@ -581,6 +591,7 @@ func (r *Runtime) launchInto(ctx context.Context, spec runtime.SpawnSpec, loc ru
 			r.mu.Lock()
 			r.calls = append(r.calls, Call{Method: "ReplaceRoundPodAtLaunch", Spec: spec, PodUID: pod})
 			r.replaced[pod] = ""
+			r.roundTook[pod] = true
 			pod = r.buildIn(pod)
 			r.mu.Unlock()
 		}

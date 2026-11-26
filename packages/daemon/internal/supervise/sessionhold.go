@@ -721,7 +721,9 @@ func IsSessionHeldElsewhere(err error) bool {
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
 // so nothing else of this claim waits behind it but whoever asked: an operator's forget or
-// retry, the controller keeper's retry, or a workflow start row's (review round 16 of #4220, #66).
+// retry, the controller keeper's retry, a workflow start row's (review round 16 of #4220, #66),
+// or the project controller's own launch, whose replacement of a failing or an old session asks
+// it once (replaceEndedSession, else replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
 func (m *Machine) mayForget(ctx context.Context, request string) error {
 	session := m.claim.Session
 	if session == "" {

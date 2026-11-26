@@ -456,7 +456,8 @@ What each part is for:
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
-  controller, which resumes its session hearing the new list.
+  controller, which resumes its session hearing the new list, unless the session is older than
+  `controller_session_max_age_hours`, when the relaunch starts a fresh session.
 - **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
   project's issues opens a
   [production check](/legion/legion/concepts/#the-production-check), and which role works it. It
@@ -1239,11 +1240,15 @@ Set `controller: daemon` in `legion.yaml` (it needs `dispatch_url`) and restart 
 and supervises it the same way; the rest of this section is the Kubernetes runtime's.
 It launches the controller at boot as an Agent Sandbox pod, `legion-<project>-controller`, with the
 same model access as the workers and a volume of its own, which its Sandbox owns, relaunches it when it
-dies, and resumes the same session. You start nothing, and `legion controller start` against this
-daemon is refused: one controller runs per project. Nobody types into the pod: reach the controller
-through Dispatch (a message to its session on the Agents page, a reply to an ask it opened, a
-mention) and read its session with `kubectl logs <pod> -c controller`, its one container's log. A
-Send from the Agents page is answered in the conversation that page shows.
+dies, and resumes the same session, unless two launches of that session in a row end before it
+finishes another turn, or the session is older than `controller_session_max_age_hours` (72 by
+default) when the daemon relaunches it: then the daemon starts a fresh session instead. The
+daemon stops no live controller for its age. You start nothing, and
+`legion controller start` against this daemon is refused: one controller runs per project. Nobody
+types into the pod: reach the controller through Dispatch (a message to its session on the Agents
+page, a reply to an ask it opened, a mention) and read its session with
+`kubectl logs <pod> -c controller`, its one container's log. A Send from the Agents page is
+answered in the conversation that page shows.
 `legion claims list` shows its claim.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.
@@ -1496,6 +1501,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  P0: 0 of the 3 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound none in force, none in legion.yaml; none set while the daemon runs
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
     WIDGETS-15 2 of 2, starting: It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank, and 1 issue at P1 whose work came back stands ahead of all of them.
@@ -1519,18 +1525,27 @@ Closing the terminal leaves the project without one, and the daemon logs
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue takes a slot when the daemon starts it and gives it back as the admission rule says
-  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
-  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
-  trees that run whether or not any issue of theirs holds one.
+  The `admission` line counts every issue that holds a slot, a root or a child, beside the cap.
+  An issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
+  A tree of four issues holding a slot holds four of them, and `live trees` counts the trees that
+  run whether or not any issue of theirs holds a slot.
+  The regular cap counts only holders that are not P0: a P0 issue needs no free regular slot and
+  starts outside the regular cap while below any P0 bound (the `P0:` line shows P0 holders and
+  the P0 bound).
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
-  daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no
-  priority, each issue at its own priority, else at its tree root's; and within one priority the
-  issues whose work came back first, oldest first by the moment it came back, and then the issues
-  that have not started, by the Dispatch rank of each issue's tree root and then its own. A
-  priority changed in Dispatch moves the issue at the next admission pass, and priority takes no
+  daemon promotes them.
+  It orders them by the priority Dispatch resolves first: P0, P1, P2, P3, and then issues with no
+  priority.
+  With an older Dispatch release that sends no `resolved_priority`, the order falls back to the
+  issue's own priority or its Legion root's for the line alone, and that fallback never makes an
+  issue P0.
+  Within one priority, issues whose work came back stand first, oldest first by the moment it came
+  back.
+  Issues that have not started follow, ordered by the Dispatch rank of each issue's tree root and
+  then its own.
+  A priority change in Dispatch moves the issue at the next admission pass, and priority takes no
   slot back from work that runs. The order is strict and nothing ages: while a higher priority
   has an issue that can take a slot, no issue of a lower one, and none with no priority, reaches
   a free slot, however long it has waited; an entry that waits on another issue is passed over,
@@ -1707,13 +1722,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
   says what each reason means and what to do.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `p0Holders` how many slot holders are P0 and outside `cap`, `p0Bound` the P0 bound in force with configured and live values, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
   `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
   the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
-  below, for a caller below contract 250),
+  below, for a caller below contract 250), `resolvedPriority` (the priority Dispatch resolves for
+  the issue, 0 to 3 or null; absent when Dispatch sent none), `priorityFrom` (the issue key
+  `resolvedPriority` comes from; absent when own or none),
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
@@ -1736,8 +1753,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
   issue that gave its slot back to wait on another issue,
   [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `priority`, the
-  priority that placed the issue in the line, its own, else its tree root's (0 for P0 to 3 for P3, or
-  null for an issue that waits after P3); `partPlace` and
+  priority that placed the issue in the line (the priority Dispatch resolves for it, 0 for P0 to
+  3 for P3, or null for an issue that waits after P3; with an older Dispatch release that sends
+  no `resolved_priority`, its own priority or its Legion root's for line order alone); `partPlace` and
   `partLength`, its place among the issues of its own priority and part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two

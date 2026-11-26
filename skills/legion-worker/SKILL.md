@@ -18,10 +18,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 3. Before you write the handoff or report your step, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
    another role that commits next sets aside whatever the working copy holds.
 
-4. Every role writes the one workspace, so a file can change under your check.
-   Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
-   A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
-   A run whose output you did not capture can be neither confirmed nor cleared.
+4. Before you run a check, read `skill://legion-worker/references/results.md`, "Where a check runs".
 
 5. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
@@ -42,7 +39,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
-- Another agent that needs an action (a stop, retry, suspension, resume, compaction or fresh session) is the controller's: ask it with a `dispatch comment` on that agent's issue mentioning its role, never with `envoy_publish`.
+- Another agent that needs an action (a stop, retry, suspension, resume, compaction or fresh session) is the controller's: ask it with a `dispatch comment` on that agent's issue mentioning its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md`).
 
 - **Ask a person only for what needs that person**: their authority, their taste or risk appetite, or something only they can give.
 
@@ -53,7 +50,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
-- When another role's topic answers 404, read its handoff or its runs (step 1).
+- When another role's topic answers 404, read its handoff with `dispatch handoff-read`, or its runs (step 1).
 
 ## Commits and pushes
 
@@ -71,7 +68,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  A later phase that pushes uses that branch, and one that edits a pull request edits that one.
+  A later phase that pushes uses that branch, and a later phase that edits a pull request edits that one.
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.

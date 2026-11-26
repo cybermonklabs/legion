@@ -44,14 +44,9 @@ The daemon starts every worker and moves every phase; you write no code.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
 6. A root: file every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
-   a child open when the gate opens holds the root's own first phase, and one filed later runs beside it.
+   a child open when the gate opens holds the root's own first phase, and a child filed later runs beside that phase.
 
-- Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
-  one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
-  A check carrying `ci_check` is CI's and takes no `run` (`skill://legion-architect/references/design-gate.md#a-check-ci-proves`).
-
-- Where this tree builds or changes a page, screen or dashboard a person opens, that person sees it and answers before you request approval (`skill://legion-architect/references/surface-round.md`).
-  A child's own architect sends such a surface up to the root's architect.
+- Before you write a spec's requirements and checks, or build a surface a person opens, read `skill://legion-architect/references/design-gate.md`, "Requirements, checks and surfaces".
 
 ## 2. Children in flight
 
@@ -60,7 +55,7 @@ The daemon starts every worker and moves every phase; you write no code.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["ACME-41"] })`.
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`.
   Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
@@ -73,8 +68,8 @@ A parent's own first phase does not start while Dispatch shows an open child und
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from its task's steps' evidence, and never downgrade one.
-  A child proves only the part it carries, by a check of its own whose `serves` names the criterion.
+- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
+  Only the part a child carries is proven in the child, with a check of its own whose `serves` names the criterion.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:

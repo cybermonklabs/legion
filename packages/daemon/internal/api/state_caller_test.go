@@ -1277,13 +1277,26 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
 // (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
-// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
-// but the three served this daemon's own body is below it. Every other key of the settings block is
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes), and a caller below
+// p0BoundContract the admission without `p0Holders` and `p0Bound` (withoutP0Start): every row of
+// those tables but the three served this daemon's own body is below both. Every other key of the settings block is
 // served as this contract writes it, since no reader types it (answers.go's typedSettings). One
 // contract decides the stand-ins, because the two sides of a caller's shaping part only below
 // ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
+	if contract < entryNumber(p0BoundContract) {
+		if admission, carries := want["admission"].(map[string]any); carries {
+			delete(admission, "p0Holders")
+			delete(admission, "p0Bound")
+		}
+		if issues, carries := want["issues"].(map[string]any); carries {
+			for _, issue := range issues {
+				delete(issue.(map[string]any), "resolvedPriority")
+				delete(issue.(map[string]any), "priorityFrom")
+			}
+		}
+	}
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
 	}

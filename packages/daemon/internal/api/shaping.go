@@ -2213,6 +2213,27 @@ func withoutIntakeGiveUps(state State) (State, bool) {
 	return state, true
 }
 
+// withoutP0Start is state with no `admission.p0Holders` or `admission.p0Bound`, the two keys
+// p0BoundContract added to the state; its routes are no keys of this one. `cap` stays, and says to
+// every reader what it always said: the cap of the slots, which now counts no P0 holder. Both are
+// pointers with `omitempty`, so nil takes the key off. Admission is a value of the state, so the
+// state the source answered is left as it was, as withoutPause leaves it.
+func withoutP0Start(state State) (State, bool) {
+	moved := state.Admission.P0Holders != nil || state.Admission.P0Bound != nil
+	state.Admission.P0Holders, state.Admission.P0Bound = nil, nil
+	return state, moved
+}
+
+// withoutResolvedPriority is the issue with no `resolvedPriority` or `priorityFrom`, the two keys
+// p0BoundContract added to each issue; `priority` stays, the issue's own as it always was. The
+// first is a pointer with `omitempty` and the second an `omitempty` string, so the zero value takes
+// each key off. Issue is a value, so the state the source answered is left as it was.
+func withoutResolvedPriority(issue Issue) (Issue, bool) {
+	moved := issue.ResolvedPriority != nil || issue.PriorityFrom != ""
+	issue.ResolvedPriority, issue.PriorityFrom = nil, ""
+	return issue, moved
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are

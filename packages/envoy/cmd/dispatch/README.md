@@ -5959,6 +5959,9 @@ Each item below names a path with its method and identity, then its purpose.
   Each publication sets the mark on every holder it stores or keeps, regardless of either setting.
   Only a marked holder names an architect whose status write the status guard lets through.
   The answer does not carry the mark.
+
+- `/api/v1/issues/{key}/role-holders` (PUT: its refusals, the project's mark and its answer)
+
   A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a session or a claim named twice, a claim that is no claim token of the issue and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
