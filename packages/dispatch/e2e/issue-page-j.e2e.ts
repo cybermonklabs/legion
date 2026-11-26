@@ -1,5 +1,5 @@
 /** the Spec view reads the server's stored decisions, ties and results */
-import type { Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
@@ -68,8 +68,8 @@ import {
   tree,
 } from "./issue-page-g";
 import {
+  caretInNode,
   focusedNodeId,
-  focusInside,
   gapKinds,
   idsOf,
   onScreen,
@@ -910,26 +910,26 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     // The view's own words, as row (7) reads them (reading (g)): an author's words are theirs.
     expect((await ownWords(body)).join(" "), "the Spec view reads proven").not.toMatch(/proven/i);
 
-    // Enter on a statement opens it where it is edited: the issue's own address at its block,
-    // with the focus on its row of the outline. A statement draws no body, so it is focused
-    // directly rather than by the outline's `focusRow`, which waits for one.
+    // Enter on a statement puts the caret at the start of its text, and the statement is edited
+    // in place, in its row of the Spec view, which stays drawn at its own address (part Y's R9).
+    // A statement draws no body, so it is focused directly rather than by the outline's
+    // `focusRow`, which waits for one.
     const third = nodeRow(page, statement(3)).first();
     await third.focus();
     await expect(third).toBeFocused();
+    const address = page.url();
     await page.keyboard.press("Enter");
-    await expect(
-      page,
-      "Enter on a statement does not open the issue's address at its block"
-    ).toHaveURL(new RegExp(`/issues/${seeded.key}#b-${requirementBlockId(3)}$`));
     await expect
-      .poll(() => focusedNodeId(page), {
-        message: "Enter on a statement does not put the focus on its row of the outline",
+      .poll(async () => (await caretInNode(page)) && (await focusedNodeId(page)) === statement(3), {
+        message: "Enter on a statement does not put the caret in its text",
       })
-      .toBe(statement(3));
-    expect(await body.count(), "Enter on a statement leaves the Spec view drawn").toBe(0);
-    expect(await focusInside(tree(page)), "the focus on the statement is not in the outline").toBe(
-      true
-    );
+      .toBe(true);
+    expect(
+      await textBeforeCaret(page, requirementBlockId(3)),
+      "Enter on a statement does not put the caret at the start of its text"
+    ).toBe("");
+    expect(page.url(), "Enter on a statement leaves the Spec view's address").toBe(address);
+    expect(await body.count(), "Enter on a statement does not keep the Spec view drawn").toBe(1);
   });
 
   await phase(browser, seedChildWithSpec, async (page, seeded) => {
@@ -953,6 +953,33 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     ).toEqual([]);
   });
 });
+
+/** The text a caret can enter between the start of block `blockId` and the caret, in the editable
+ *  that holds the focus; null where the caret is not in that block. "" is a caret at the start of
+ *  its text. A block's label is drawn in `contenteditable="false"`, which no caret enters, so it
+ *  is no text before the caret (`node-caret.ts`'s `firstPlace`). */
+function textBeforeCaret(page: Page, blockId: string): Promise<string | null> {
+  return page.evaluate((block) => {
+    const selection = window.getSelection();
+    const anchor = selection?.anchorNode ?? null;
+    const editable = document.activeElement?.closest('[contenteditable="true"]') ?? null;
+    const drawn = editable?.querySelector(`[data-block-id="${CSS.escape(block)}"]`) ?? null;
+    if (selection === null || anchor === null || drawn === null || !drawn.contains(anchor)) {
+      return null;
+    }
+    const before = document.createRange();
+    before.setStart(drawn, 0);
+    before.setEnd(anchor, selection.anchorOffset);
+    let text = "";
+    const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.parentElement?.isContentEditable !== true || !before.intersectsNode(node)) continue;
+      const end = node === before.endContainer ? before.endOffset : undefined;
+      text += (node.textContent ?? "").slice(0, end);
+    }
+    return text;
+  }, blockId);
+}
 
 /** The block id of the statement of 200 words the picture's row writes into the seeded spec,
  *  after a reference to one of the issue's children. */
