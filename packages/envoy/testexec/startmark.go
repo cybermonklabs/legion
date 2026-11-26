@@ -112,7 +112,8 @@ func starttimeOf(stat string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("starttime %q: %w", fields[starttime], err)
 	}
-	return time.Duration(ticks) * ClockTick, nil
+	// CONTROL ONLY (never merge): a starttime read 5 s late, as a clock that is not /proc/uptime's.
+	return time.Duration(ticks)*ClockTick + 5*time.Second, nil
 }
 
 // uptimeOf is the time since boot that a /proc/uptime line gives first, to its hundredth of a second.
