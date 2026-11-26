@@ -348,6 +348,8 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 		{"two results of one check stand by made_at whatever their addresses", digestStepResultOrder},
 		{"a block retyped later is typed at an earlier cut as its text then opens", digestStepRetype},
 		{"the migration set runs no statement against artifact_reviews", digestStepMigrations},
+		{"an approval given before the move reads approved after it by the carry, and only a review after the cutover compares a digest", digestStepCarriedAcrossTheMove},
+		{"a person's answer to an ask block carries the approval before the move and after it, with the same verdict", digestStepAnswerCarryAcrossTheMove},
 		// Last: it runs graphcensus.Backfill over the whole database.
 		{"the request's query version holds its definition, and the backfill's version of a later query holds none", digestStepDefinitionNodes},
 	} {
@@ -1441,16 +1443,18 @@ func awaitDigestsFilled(t *testing.T, database *store.Store, artifactID string) 
 	})
 }
 
-// digestStepRecordUnmoved pins the gate's rule for a version whose record did not move (R14): "A
+// digestStepRecordUnmoved pins the rule for a version whose record did not move (R14): "A
 // paragraph moved before a requirement leaves both standing, although the version's bytes
-// changed", and a historical review "authorizes no later version whose digest differs". A spec
-// holds a criterion k1, a paragraph and a requirement r1 under k1, in that text order, its spec
-// query gated and approved. Moving the requirement before the paragraph through the edits route
-// gives the requirement a new text_rank: the new version's digest moves and the approval reads
-// stale on every gate. Approved again, moving the paragraph before the requirement gives the
-// paragraph, which the spec query does not take, the new text_rank: the new version's digest is the
-// approved version's, no carried review is written, and the approval stands on every gate at the
-// later version, keeping the version the person approved.
+// changed", "a historical review authorizes no later version whose digest differs", and a version
+// whose record digest equals the approved one's is carried as the result carry is. A spec holds a
+// criterion k1, a paragraph and a requirement r1 under k1, in that text order, its spec query gated
+// and approved. Moving the requirement before the paragraph through the edits route gives the
+// requirement a new text_rank: the new version's digest moves, no carried review is written, and
+// the approval reads stale on every gate. Approved again, moving the paragraph before the
+// requirement gives the paragraph, which the spec query does not take, the new text_rank: the new
+// version's digest is the approved version's, and the write carries alice's approval to it
+// (docs.RecordCarryReason), its artifact.approved before the version's artifact.version, so every
+// gate reads approved at a version equal to latest_version, which the Legion daemon reads.
 func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	ctx := context.Background()
 	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec whose paragraph moves",
@@ -1489,9 +1493,12 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 			moved, versionDigestOf(t, rig.database, spec.id, moved), approved+1, versionDigestOf(t, rig.database, spec.id, approved))
 	}
 	requireGate(t, rig, issue.Key, model.GatedStepSpec, gate, false, "the requirement moved before the paragraph")
+	if reviews := listReviews(t, rig.handler, spec.id); len(reviews) == 0 || reviews[0].Version != approved || reviews[0].CarriedFromVersion != nil {
+		t.Errorf("the move of r1 left the reviews of %s %+v, want alice's own approval of version %d newest: no carry crosses a moved record", spec.refKey, reviews, approved)
+	}
 
-	// The paragraph moved before the requirement: the paragraph takes the new text_rank, and the
-	// spec query's record does not move.
+	// The paragraph moved before the requirement: the paragraph takes the new text_rank, the spec
+	// query's record does not move, and the write carries the approval to its version.
 	approveStanding(t, rig, issue.Key, model.GatedStepSpec, spec.id, "the paragraph's move")
 	approved = newest()
 	reviews := len(listReviews(t, rig.handler, spec.id))
@@ -1501,17 +1508,13 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	if moved != approved+1 {
 		t.Fatalf("the move of the paragraph before r1 left version %d of %s newest, want %d", moved, spec.refKey, approved+1)
 	}
-	if got, want := versionDigestOf(t, rig.database, spec.id, moved), versionDigestOf(t, rig.database, spec.id, approved); got != want {
-		t.Errorf("version %d of %s, whose paragraph alone moved, answers the digest %s, want the approved version %d's, %s", moved, spec.refKey, got, approved, want)
+	if after := listReviews(t, rig.handler, spec.id); len(after) != reviews+1 {
+		t.Errorf("the move of the paragraph left %d reviews of %s, want the %d before it and the record carry", len(after), spec.refKey, reviews)
 	}
-	after := listReviews(t, rig.handler, spec.id)
-	if len(after) != reviews || after[0].Version != approved || after[0].CarriedFromVersion != nil {
-		t.Errorf("the move of the paragraph left the reviews of %s %+v, want the %d before it, the newest alice's own approval of version %d: no carry stands it",
-			spec.refKey, after, reviews, approved)
-	}
+	requireApprovalCarriedByRecord(t, rig.handler, rig.database, spec.id, approved, moved)
 	requireGate(t, rig, issue.Key, model.GatedStepSpec, gate, true, "the paragraph moved before the requirement")
-	if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.Version == nil || *got.Approval.Version != approved || got.Approval.LatestVersion != moved {
-		t.Errorf("the approval of %s reads %+v, want approved version %d at latest version %d", spec.refKey, got.Approval, approved, moved)
+	if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.Version == nil || *got.Approval.Version != moved || got.Approval.LatestVersion != moved {
+		t.Errorf("the approval of %s reads %+v, want approved at version %d, its latest version", spec.refKey, got.Approval, moved)
 	}
 }
 
