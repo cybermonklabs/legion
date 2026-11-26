@@ -103,8 +103,11 @@ func deploymentRolesDropped() string {
 // LEGION-241, held from step, is held from implementing for a caller at recordFieldsContract or
 // above and names no heldFrom below it, where withoutRecordFields already clears it, and keeps its
 // checker's worker; neither names a stepRole; no stranded claim names the checker; and one line
-// names the row. At the contract, LEGION-240 is at step and names the checker's start as waiting
-// for its pod, both name the checker, and the checker's stranded claim is served.
+// names the row. At the contract and at each contract above it, LEGION-240 is at step and names the
+// checker's start as waiting for its pod, both name the checker, and the checker's stranded claim
+// is served. The start is named by its role alone below startWaitTokenContract's entry
+// (withoutStartWaitTokens), and from that entry on as the source holds it, by its role and its
+// claim's token.
 func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	var contracts []int
 	for _, row := range stateNarrowings() {
@@ -116,7 +119,16 @@ func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	contracts = append(contracts, added)
 	for _, contract := range contracts {
 		t.Run(fmt.Sprint(contract), func(t *testing.T) {
-			served, narrowings, _ := stateServedWithLog(t, populatedState(t), contract)
+			state := populatedState(t)
+			source := state.Issues["LEGION-240"].StartWaitsForPod
+			if len(source) == 0 {
+				t.Fatal("LEGION-240 of the populated state names no start that waits for its pod: this case proves nothing")
+			}
+			wantWaiting := "[checker]"
+			if contract >= entryNumber(startWaitTokenContract) {
+				wantWaiting = fmt.Sprint(comparableJSON(t, source))
+			}
+			served, narrowings, _ := stateServedWithLog(t, state, contract)
 			older := contract < added
 			step, held := served.Issues["LEGION-240"], served.Issues["LEGION-241"]
 			if step == nil || held == nil {
@@ -148,8 +160,8 @@ func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 			switch {
 			case older && named:
 				t.Errorf("LEGION-240 names startWaitsForPod %v below deploymentRolesContract, want none", waiting)
-			case !older && fmt.Sprint(waiting) != "[checker]":
-				t.Errorf("LEGION-240 is served startWaitsForPod %v, want [checker]", waiting)
+			case !older && fmt.Sprint(waiting) != wantWaiting:
+				t.Errorf("LEGION-240 is served startWaitsForPod %v, want %s", waiting, wantWaiting)
 			}
 			if workers, _ := held["workers"].(map[string]any); workers["checker"] == nil {
 				t.Errorf("LEGION-241 is served the workers %v, want its checker's among them", held["workers"])
