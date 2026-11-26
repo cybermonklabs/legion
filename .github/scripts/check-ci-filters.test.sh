@@ -42,8 +42,8 @@
 # dispatch_references filter matches, and a release's version argument list (VERSION_ARGS) must,
 # as git reads it, cover every package directory, go.mod and go.work its build compiles from for
 # any of its targets, name no path git reads no file for and no path of the build's modules it
-# compiles nothing from, while its build script runs the pinned line exactly, with no env:, export
-# or sourced file around it. A script's go command is read under every step of each job
+# compiles nothing from, while its build script is the whole text the entry pins and no env: of
+# the release's job moves it. A script's go command is read under every step of each job
 # that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
 # under that caller alone and reads its other jobs under every caller whose filter is not
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
@@ -2835,11 +2835,10 @@ check "names it" "$(contains "$out" 'PUSH_WORKFLOWS names .github/workflows/site
 # as git reads the list.
 # release_args <root>: release.yaml's LEGION_VERSION_ARGS names what the release builds from -
 # mod/cmd/app, mod/lib (which cmd/app imports), mod/go.mod and go.work - and its job build runs
-# release.sh, which builds ./cmd/app for linux/amd64 and darwin/arm64 on one line. VERSION_ARGS
-# stands for that build with one go command per target, each pinned to that line as a script_run
-# Run is. The key is LEGION_VERSION_ARGS because around_job reads the workflow's env: too, and
-# ENV_ALLOWED holds that name.
-release_build='CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app'
+# release.sh, which builds ./cmd/app for linux/amd64 and darwin/arm64. VERSION_ARGS pins release.sh
+# whole, as an Exact entry pins a step, and stands for what that text compiles with one go command
+# per target. The key is LEGION_VERSION_ARGS because rule 25 reads the workflow's env: as around_job
+# reads a ci.yaml job's, and ENV_ALLOWED holds that name.
 release_args() {
   cat > "$1/.github/workflows/release.yaml" <<'YAML'
 name: Release
@@ -2855,14 +2854,23 @@ jobs:
       - name: Build the app
         run: .github/scripts/release.sh
 YAML
-  printf '#!/usr/bin/env bash\nfor target in linux/amd64 darwin/arm64; do\n  %s\ndone\n' "$release_build" \
-    > "$1/.github/scripts/release.sh"
+  cat > "$1/.github/scripts/release.sh" <<'SH'
+#!/usr/bin/env bash
+for target in linux/amd64 darwin/arm64; do
+  CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app
+done
+SH
   replace "$1/.github/scripts/ci_job_reads.py" 'VERSION_ARGS = []' "$(cat <<'PY'
 from ci_filter_coverage import version_args
-BUILD = 'CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app'
-VERSION_ARGS = [version_args(".github/workflows/release.yaml", "LEGION_VERSION_ARGS", "build", [
-    run("mod", ["./cmd/app"], "release.sh's build for " + t, mode="build", source=".github/scripts/release.sh",
-        text=BUILD, env={"CGO_ENABLED": "0", "GOOS": t.split("/")[0], "GOARCH": t.split("/")[1]})
+TEXT = r"""#!/usr/bin/env bash
+for target in linux/amd64 darwin/arm64; do
+  CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go -C mod build -o "out/$target/app" ./cmd/app
+done
+"""
+VERSION_ARGS = [version_args(".github/workflows/release.yaml", "LEGION_VERSION_ARGS", "build",
+                             ".github/scripts/release.sh", TEXT, [
+    run("mod", ["./cmd/app"], "release.sh's build for " + t, mode="build",
+        env={"CGO_ENABLED": "0", "GOOS": t.split("/")[0], "GOARCH": t.split("/")[1]})
     for t in ("linux/amd64", "darwin/arm64")])]
 PY
 )"
@@ -2961,52 +2969,41 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "reports the list covers the build" "$(contains "$out" "$(version_args_report 2 0 0 0)")"
 
-# The Runs stand for the release's build only while the script runs exactly the pinned line, with
-# nothing around it that moves what it compiles.
+# The Runs stand for the release's build only while the script is the text the entry pins, whole:
+# whatever a change to it does - another flag, another target, another build line, an export, a
+# file sourced however - it fails until the entry is changed with it.
 echo "case: a release build that no longer runs the command its go commands stand for"
 root=$(fixture version-args-stale-pin)
 release_args "$root"
 replace "$root/.github/scripts/release.sh" ' go -C mod build -o' ' go -C mod build -tags extra -o'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the script and the pinned text, its % escaped as an annotation escapes it" \
-  "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh no longer holds \`CGO_ENABLED=0 GOOS=\"\${target%25/\*}\" GOARCH=\"\${target#\*/}\" go -C mod build -o \"out/\$target/app\" ./cmd/app\`, the build VERSION_ARGS in ci_job_reads.py pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS")"
+check "names the script, the line and both its texts" \
+  "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh is off the text VERSION_ARGS in ci_job_reads.py pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS: its line 3 reads \`.*-tags extra.*\` where the pinned text's reads \`.*\`; so whether .github/workflows/release.yaml's LEGION_VERSION_ARGS covers what its build compiles is unknown. Make the script that text again, or change the entry's pinned text with it")"
 check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
 
-for prefix in 'GOFLAGS=-tags=extra' 'GOWORK=off'; do
-  echo "case: the release build's line with $prefix in front of it"
-  root=$(fixture "version-args-prefix-${prefix%%=*}")
+# off_pin <name> <old> <new>: a fixture whose release.sh has <old> replaced by <new>, which the
+# check must refuse as off its pin, judging no list.
+off_pin() {
+  echo "case: the release script with $1"
+  root=$(fixture "version-args-off-pin-${1// /-}")
   release_args "$root"
-  replace "$root/.github/scripts/release.sh" '  CGO_ENABLED=0 GOOS=' "  $prefix CGO_ENABLED=0 GOOS="
+  replace "$root/.github/scripts/release.sh" "$2" "$3"
   run_check "$root"
   check "fails" "$(is "$status" 1)"
-  check "names the line that is more than the pinned text" \
-    "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh's \`.*\`, the build VERSION_ARGS pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS, may compile other than its go commands say: its line is \`$prefix CGO_ENABLED=0 ")"
+  check "names the script off its pin" \
+    "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh is off the text VERSION_ARGS in ci_job_reads.py pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS: ")"
   check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
-done
-
-# A line beside the pinned one can set what the build compiles with: an export of a name go reads,
-# `set -a` before an assignment, a file sourced into the script's own shell. A name the pinned line
-# sets on itself is that line's, which no other line moves.
-echo "case: a release script that exports a name go reads before the build"
-root=$(fixture version-args-export)
-release_args "$root"
-replace "$root/.github/scripts/release.sh" 'for target in' $'export GOWORK=off GOFLAGS=-tags=extra\nfor target in'
-run_check "$root"
-check "fails" "$(is "$status" 1)"
-check "names the line and the name" \
-  "$(contains "$out" "may compile other than its go commands say: its line \`export GOWORK=off GOFLAGS=-tags=extra\` names GOWORK, which go reads, and the pinned line does not set it")"
-root=$(fixture version-args-sourced)
-release_args "$root"
-replace "$root/.github/scripts/release.sh" 'for target in' $'source ./build.env\nfor target in'
-run_check "$root"
-check "fails on a file sourced into the script" \
-  "$(contains "$out" "its line \`source ./build.env\` hands the commands after it what it sets, or another file's settings")"
-root=$(fixture version-args-own-name)
-release_args "$root"
-replace "$root/.github/scripts/release.sh" 'for target in' $'export CGO_ENABLED=1\nfor target in'
-run_check "$root"
-check "passes an export of a name the pinned line sets on itself" "$(is "$status" 0)"
+}
+off_pin 'GOFLAGS before the build' '  CGO_ENABLED=0 GOOS=' '  GOFLAGS=-tags=extra CGO_ENABLED=0 GOOS='
+off_pin 'GOWORK before the build' '  CGO_ENABLED=0 GOOS=' '  GOWORK=off CGO_ENABLED=0 GOOS='
+off_pin 'GOOS fixed to windows' 'GOOS="${target%/*}"' 'GOOS=windows'
+off_pin 'a target added' 'linux/amd64 darwin/arm64; do' 'linux/amd64 darwin/arm64 windows/amd64; do'
+off_pin 'a second build line' 'done' $'  go -C mod build -tags extra -o out/extra ./cmd/app\ndone'
+off_pin 'an export before the loop' 'for target in' $'export GOWORK=off GOFLAGS=-tags=extra\nfor target in'
+off_pin 'a file sourced inside an if' 'for target in' $'if [ -f build.env ]; then source build.env; fi\nfor target in'
+off_pin 'an export of what a command prints' 'for target in' $'export $(grep -v "^#" build.env | xargs)\nfor target in'
+off_pin 'set -e -a' 'for target in' $'set -e -a\nfor target in'
 
 echo "case: a release job whose env sets a name go reads"
 root=$(fixture version-args-step-env)
@@ -3014,10 +3011,20 @@ release_args "$root"
 replace "$root/.github/workflows/release.yaml" '        run: .github/scripts/release.sh' $'        env:\n          GOFLAGS: -tags=extra\n        run: .github/scripts/release.sh'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step and the name" \
-  "$(contains "$out" "may compile other than its go commands say: step \"Build the app\"'s env sets GOFLAGS")"
+check "names the step, the name and ENV_ALLOWED" \
+  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's job build: step \"Build the app\"'s env sets GOFLAGS, a setting that can change what .github/scripts/release.sh compiles where no pin holds it; .*ENV_ALLOWED$")"
 
-echo "case: a release workflow that is gone, a job that runs the script no more, no list, a pathspec with magic"
+# Another release's list in the workflow's env: is a name go never reads, which ENV_ALLOWED takes.
+echo "case: a release workflow whose env: gains another release's list"
+root=$(fixture version-args-workflow-env)
+release_args "$root"
+replace "$root/.github/workflows/release.yaml" '  LEGION_VERSION_ARGS: >-' $'  OTHER_VERSION_ARGS: -- docs/\n  LEGION_VERSION_ARGS: >-'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the name and says it goes in ENV_ALLOWED" \
+  "$(contains "$out" "the workflow's env sets OTHER_VERSION_ARGS, a setting that can change what .github/scripts/release.sh compiles where no pin holds it; .* a name go never reads, such as another release's list in the workflow's env:, goes in ENV_ALLOWED$")"
+
+echo "case: a release workflow that is gone, a script that is gone, a job that runs the script no more, no list, a pathspec with magic"
 root=$(fixture version-args-no-workflow)
 release_args "$root"
 rm "$root/.github/workflows/release.yaml"
@@ -3026,12 +3033,18 @@ check "fails" "$(is "$status" 1)"
 check "names the workflow as absent" \
   "$(contains "$out" "\.github/workflows/release.yaml, the workflow VERSION_ARGS names for LEGION_VERSION_ARGS, is absent")"
 check "and not as a missing key" "$(is "$(contains "$out" 'workflow env: has no')" false)"
+root=$(fixture version-args-no-script)
+release_args "$root"
+rm "$root/.github/scripts/release.sh"
+run_check "$root"
+check "fails when the pinned script is gone" \
+  "$(contains "$out" "\.github/scripts/release.sh, the build VERSION_ARGS pins for LEGION_VERSION_ARGS, is absent")"
 root=$(fixture version-args-unrun)
 release_args "$root"
 replace "$root/.github/workflows/release.yaml" '        run: .github/scripts/release.sh' '        run: echo build'
 run_check "$root"
 check "fails when no step of the job runs the script" \
-  "$(contains "$out" "no step of .github/workflows/release.yaml's job build runs .github/scripts/release.sh, the script VERSION_ARGS pins LEGION_VERSION_ARGS's build to")"
+  "$(contains "$out" "no step of .github/workflows/release.yaml's job build runs .github/scripts/release.sh, the build VERSION_ARGS pins for LEGION_VERSION_ARGS")"
 root=$(fixture version-args-no-list)
 release_args "$root"
 replace "$root/.github/workflows/release.yaml" '  LEGION_VERSION_ARGS: >-' '  PI_LEGION_VERSION_ARGS: >-'

@@ -124,10 +124,12 @@ job runs it on the pull request, on every change to a Go file, a module file or 
 - It fails naming each package directory or module file the list does not read, each listed path
   git reads no file for, and each listed path inside the build's modules under which the build
   compiles nothing. It does not refuse a listed path wider than the build, such as packages/.
-- The entry's go commands are pinned to the build's line of release-build-legion.sh, as every
-  script_run Run is: that line alone, unchanged and unbroken, with no env: of the job or the
-  workflow, no export or plain assignment of a name go reads and no sourced file in the script
-  around it. Any of those fails the check until the entry says what the build runs now.
+- The entry pins release-build-legion.sh whole, as an Exact entry pins a step, and its go
+  commands say what that text compiles: ./cmd/legion for each legion target, with CGO_ENABLED=0.
+  Any change to the script fails the check, naming the first line that differs, until the entry's
+  pinned text, and its go commands where the build moves, change with it. An env: of the job or
+  the workflow that can move what go compiles fails too; a name go never reads, such as another
+  release's list in the workflow's env:, goes in ENV_ALLOWED.
 
 The envoy part of the list for the host's target, by hand, from packages/daemon:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |

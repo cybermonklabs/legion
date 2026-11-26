@@ -280,17 +280,21 @@ class TagRun:
 class VersionArgs:
     """A release's version argument list, which rule 25 holds to the build it versions: `key` of
     `workflow`'s workflow-level `env:`, whose words after `--` are the paths release-bump.sh reads
-    the commits of (`git log <range> -- <paths>`), and `runs`, the go commands of the build its
-    job `job` runs, one per target, each pinned to its script's line as a script_run Run is."""
+    the commits of (`git log <range> -- <paths>`); `script`, the build a step of the job `job`
+    runs, pinned whole to `text` as an Exact entry pins a step (compared as text, after trailing
+    whitespace, never parsed); and `runs`, which stand for what that text compiles, one go command
+    per target, while the script is that text."""
 
     workflow: str
     key: str
     job: str
+    script: str
+    text: str
     runs: tuple
 
 
-def version_args(workflow, key, job, runs):
-    return VersionArgs(workflow, key, job, tuple(runs))
+def version_args(workflow, key, job, script, text, runs):
+    return VersionArgs(workflow, key, job, script, text, tuple(runs))
 
 
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
@@ -852,18 +856,27 @@ def module_trees_and_go_files(files: list) -> list:
 
 
 # ---------------------------------------------------------------- files and filters
+def git(*args: str, input: bytes = b"", env=None) -> bytes:
+    """What `git <args>` prints in the repository, as bytes. Each argument and the input go to git
+    as bytes (os.fsencode), so a file name that is not UTF-8, which repo_files keeps, reaches git
+    as the name it is. A git that fails raises RepositoryInputError, naming the subcommand and what
+    git printed."""
+    result = subprocess.run(["git", *map(os.fsencode, args)], cwd=REPO, input=input, env=env, capture_output=True)
+    if result.returncode != 0:
+        command = next(a for a in args if not a.startswith("-") and "=" not in a)
+        raise RepositoryInputError(
+            repository_path(REPO),
+            RuntimeError(f"git {command} failed in {REPO}: {os.fsdecode(result.stderr).strip()}"),
+        )
+    return result.stdout
+
+
 def repo_files() -> list:
     """Tracked files and untracked ones git does not ignore, so an uncommitted new file counts
     and a build output, which no diff ever carries, does not."""
     out = []
     for extra in ([], ["--others", "--exclude-standard"]):
-        result = subprocess.run(["git", "ls-files", "-z", *extra], cwd=REPO, capture_output=True)
-        if result.returncode != 0:
-            raise RepositoryInputError(
-                repository_path(REPO),
-                RuntimeError(f"git ls-files failed in {REPO}: {os.fsdecode(result.stderr).strip()}"),
-            )
-        out += os.fsdecode(result.stdout).split("\0")
+        out += os.fsdecode(git("ls-files", "-z", *extra)).split("\0")
     return sorted({f for f in out if f and (REPO / f).is_file()})
 
 
@@ -1974,30 +1987,6 @@ def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, w
                                     f"same files and runs the same tests, add it to ENV_ALLOWED"))
 
 
-def script_pin(r: Run, files, units: list, owner: str) -> str | None:
-    """A script_run Run's pin, which a gate's Run and rule 25's both hold: None where its script,
-    `r.source`, is gone or no longer holds `r.text`; else why the go command it starts can compile
-    other than the Run says, or '': the line holding the text is that text alone, uncontinued, and
-    no env:, shell: or defaults.run.shell of the workflow, the job or its steps, no container: and
-    no environment write of the job can move it - over every step of the job (around_job, over
-    `units`, step_holders' tuples of the job `owner` names), since this check cannot prove which
-    step starts the script."""
-    if r.source not in files:
-        return None
-    source_text = read_repository_text(REPO / r.source)
-    if squash(r.text) not in squash(source_text):
-        return None
-    lines = source_text.split("\n")
-    held = [i for i, line in enumerate(lines) if r.text in line]
-    reason = around_job(units, owner) or ("" if held else "its text spans lines")
-    for i in held:
-        line = lines[i].strip(" \t")
-        if not reason and line != r.text:
-            reason = f"its line is `{line}`, not the text alone"
-        elif not reason and continued(lines, i):
-            reason = "it is part of a backslash continuation"
-    return reason
-
 
 # ---------------------------------------------------------------- the check
 GATES_DIR = ".github/ci-gates"
@@ -2211,18 +2200,35 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             if not steps or squash(r.text) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "
                                                  f"remove the Run"))
-    # A script's go command is held exact rather than reduced (script_pin). A job that calls a
-    # workflow runs the script from that workflow's jobs, so each of them is read the same way. Its
-    # variables are the Run author's.
+    # A script's go command is held exact rather than reduced: the line holding the pinned text is
+    # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
+    # job or its steps, no container: and no environment write of the job can move it - over every
+    # step of the job (around_job), since the check cannot prove which step starts the script. A
+    # job that calls a workflow runs the script from that workflow's jobs, so each of them is read
+    # the same way. Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
                 continue
-            reason = script_pin(r, files, units, g.job)
-            if reason is None:
+            if r.source not in files:
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
-            elif reason:
+                continue
+            source_text = read_repository_text(REPO / r.source)
+            if squash(r.text) not in squash(source_text):
+                problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
+                                                f"gate {g.filter} lists; update or remove the Run"))
+                continue
+            lines = source_text.split("\n")
+            held = [i for i, line in enumerate(lines) if r.text in line]
+            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
+            for i in held:
+                line = lines[i].strip(" \t")
+                if not reason and line != r.text:
+                    reason = f"its line is `{line}`, not the text alone"
+                elif not reason and continued(lines, i):
+                    reason = "it is part of a backslash continuation"
+            if reason:
                 unreduced[g.filter].append((r, f"{r.source}, which job {g.job} runs, runs `{r.text}`", reason))
     # A citation names the workflow file that holds the step: ci.yaml, or a workflow one of its
     # jobs calls. The step must still be there, so a rename or a move fails here. The set already
@@ -2911,13 +2917,6 @@ PROBE = "version-args-probe"
 # The environment variables that change how git reads a pathspec. The release's version step sets
 # none, so the scratch index is read without them, whatever the machine running this check sets.
 PATHSPEC_ENV = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS")
-# A name a go command reads from its environment, or bash before the script (BASH_ENV, ENV), or
-# that chooses the go binary (PATH) or go's env file (HOME, XDG_CONFIG_HOME): ENV_ALLOWED's comment
-# says how each can change what go compiles.
-GO_ENV_NAME = re.compile(r"\b(GO[A-Z0-9_]*|CGO_[A-Z0-9_]+|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|PATH)\b")
-# A script line that hands the commands after it whatever it sets (`set -a`, `set -o allexport`),
-# or runs another file's settings in the script's own shell (`source`, `.`).
-HANDS_ON = re.compile(r"\bset\s+(?:-[A-Za-z]*a[A-Za-z]*|-o\s+allexport)\b|(?:^|[;&|(]\s*)(?:source|\.)\s")
 
 
 def under(path: str, root: str) -> bool:
@@ -2927,56 +2926,30 @@ def under(path: str, root: str) -> bool:
     return path == root or path.startswith(root + "/")
 
 
-def git_reads(session: Session, tag: str, files, paths, problems: list[Annotation], where: str) -> dict:
+def git_reads(tmp: str, files, paths, problems: list[Annotation], where: str) -> dict:
     """{each of `paths`: the files of `files` git reads for it as a pathspec}, git deciding:
-    `git ls-files` over a scratch index holding an empty blob at each of `files` (no object is
-    written, and neither the repository's own index nor its tree is read), from the repository's
-    root. That is where the git log of release-bump.sh reads the same words (git log <range> --
-    <paths>), and git reads a pathspec alike in both: a glob as a glob, a `./`, a `//` or a `..`
-    as git normalizes it, and a trailing slash as taking in a directory alone, so that `go.mod/`
-    reads nothing. A path git refuses (one outside the repository) is a problem naming git's
-    refusal, and reads nothing."""
+    `git ls-files` over a scratch index of its own under `tmp`, holding an empty blob at each of
+    `files` (no object is written, and neither the repository's own index nor its tree is read,
+    and core.splitIndex=false keeps a shared index out of the repository's .git), from the
+    repository's root. That is where the git log of release-bump.sh reads the same words (git log
+    <range> -- <paths>), and git reads a pathspec alike in both: a glob as a glob, a `./`, a `//`
+    or a `..` as git normalizes it, and a trailing slash as taking in a directory alone, so that
+    `go.mod/` reads nothing. A path git refuses (one outside the repository) is a problem naming
+    git's refusal, and reads nothing."""
     env = {k: v for k, v in os.environ.items() if k not in PATHSPEC_ENV}
-    blob = subprocess.run(["git", "hash-object", "-t", "blob", "--stdin"], cwd=REPO, env=env, input="",
-                          capture_output=True, text=True)
-    if blob.returncode != 0:
-        raise RepositoryInputError(".", f"git hash-object failed: {' '.join(blob.stderr.split())[:300]}")
-    env["GIT_INDEX_FILE"] = os.path.join(session.tmp, f"version-args-{tag}.index")
-    entries = "".join(f"100644 {blob.stdout.strip()}\t{f}\0" for f in sorted(set(files)))
-    made = subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=REPO, env=env, input=entries,
-                          capture_output=True, text=True)
-    if made.returncode != 0:
-        raise RepositoryInputError(".", f"git update-index of a scratch index failed: "
-                                        f"{' '.join(made.stderr.split())[:300]}")
+    blob = git("hash-object", "-t", "blob", "--stdin", env=env).strip()
+    env["GIT_INDEX_FILE"] = os.path.join(tempfile.mkdtemp(dir=tmp), "index")
+    git("-c", "core.splitIndex=false", "update-index", "-z", "--index-info", env=env,
+        input=b"".join(b"100644 " + blob + b"\t" + os.fsencode(f) + b"\0" for f in sorted(set(files))))
     reads = {}
     for path in dict.fromkeys(paths):
-        listed = subprocess.run(["git", "ls-files", "-z", "--", path], cwd=REPO, env=env, capture_output=True,
-                                text=True)
-        if listed.returncode != 0:
-            problems.append(error(where, f"git refuses {path} as a pathspec "
-                                         f"({' '.join(listed.stderr.split())[:300]}), so the release's version "
-                                         f"step reads no commit through it"))
-        reads[path] = set(filter(None, listed.stdout.split("\0"))) if listed.returncode == 0 else set()
+        try:
+            reads[path] = set(filter(None, os.fsdecode(git("ls-files", "-z", "--", path, env=env)).split("\0")))
+        except RepositoryInputError as refused:
+            problems.append(error(where, f"git refuses {path} as a pathspec ({refused.cause}), so the release's "
+                                         f"version step reads no commit through it"))
+            reads[path] = set()
     return reads
-
-
-def script_env_reason(source: str, texts) -> str:
-    """The first line of a release build's script, beside the lines its Runs pin (`texts`), that
-    can hand those go commands an environment their lines do not show: one naming a name go reads
-    (GO_ENV_NAME) outside ENV_ALLOWED that no pinned line sets as its own prefix - an export, an
-    unset, a plain assignment - or one that hands on what it sets or sources a file (HANDS_ON); or
-    ''. A name a pinned line sets on itself is that line's, which no other line moves. Read as
-    words, never parsed, so a line that only reads such a name fails too: wide, never narrow."""
-    own = {m.group(1) for text in texts for m in map(ASSIGNMENT.fullmatch, text.split()) if m}
-    for line in script_lines(read_repository_text(REPO / source)):
-        if line in texts:
-            continue
-        if HANDS_ON.search(line):
-            return f"its line `{line}` hands the commands after it what it sets, or another file's settings"
-        names = [n for n in GO_ENV_NAME.findall(line) if n not in ENV_ALLOWED and n not in own]
-        if names:
-            return f"its line `{line}` names {names[0]}, which go reads, and the pinned line does not set it"
-    return ""
 
 
 def run_platform(r: Run) -> str:
@@ -2984,54 +2957,47 @@ def run_platform(r: Run) -> str:
     return f"{env['GOOS']}/{env['GOARCH']}" if "GOOS" in env and "GOARCH" in env else "the host's platform"
 
 
-def hold_release_build(entry, files, problems: list[Annotation]) -> bool:
-    """Whether `entry`'s Runs stand for the build its job runs, each refusal a problem: every Run
-    is a script_run, its job is one of its workflow's and runs a step naming the script, and each
-    script holds its pin (script_pin, over the release job read as around_job reads a ci.yaml job)
-    with no other line moving the pinned command's environment (script_env_reason)."""
-    held = f"so whether {entry.workflow}'s {entry.key} covers what its build compiles is unknown"
-    if not entry.runs or not all(r.source and r.text for r in entry.runs):
+def hold_release_build(entry, document: dict, files: set, held: str, problems: list[Annotation]) -> bool:
+    """Whether `entry`'s runs stand for the build its job runs, each refusal a problem: the entry
+    lists a go command; its job is one of the workflow's and runs a step naming the script; the
+    script is there and is the text the entry pins (pin_difference), so any change to it - another
+    build line, another target, an export, a sourced file, an edited comment - fails until the
+    entry is changed with it; and nothing around the job can move what that text compiles
+    (around_reason over every step of the job, as around_job reads a ci.yaml job's)."""
+    if not entry.runs:
         problems.append(error(".github/scripts/ci_job_reads.py", f"VERSION_ARGS' entry for {entry.key} lists no go "
-                                                                  f"command, or one that is no script_run pinned to "
-                                                                  f"its script's line, {held}"))
+                                                                  f"command, {held}"))
         return False
-    document = load_repository_yaml(REPO / entry.workflow) or {}
     job = (document.get("jobs") or {}).get(entry.job)
     if not isinstance(job, dict):
         problems.append(error(entry.workflow, f"{entry.workflow} has no job {entry.job}, the job VERSION_ARGS says "
                                               f"builds what its {entry.key} versions, {held}"))
         return False
-    units = [(entry.job, entry.workflow, entry.job, document, job)]
+    steps = job.get("steps") or []
+    if not any(entry.script in str(step.get("run", "")) for step in steps):
+        problems.append(error(entry.workflow, f"no step of {entry.workflow}'s job {entry.job} runs {entry.script}, "
+                                              f"the build VERSION_ARGS pins for {entry.key}, {held}"))
+        return False
+    if entry.script not in files:
+        problems.append(error(entry.workflow, f"{entry.script}, the build VERSION_ARGS pins for {entry.key}, is "
+                                              f"absent, {held}"))
+        return False
     ok = True
-    for source in dict.fromkeys(r.source for r in entry.runs):
-        texts = list(dict.fromkeys(r.text for r in entry.runs if r.source == source))
-        if not any(source in str(step.get("run", "")) for step in job.get("steps") or []):
-            problems.append(error(entry.workflow, f"no step of {entry.workflow}'s job {entry.job} runs {source}, the "
-                                                  f"script VERSION_ARGS pins {entry.key}'s build to, {held}"))
-            ok = False
-            continue
-        pinned = True
-        for text in texts:
-            r = next(r for r in entry.runs if r.source == source and r.text == text)
-            reason = script_pin(r, files, units, entry.job)
-            if reason is None:
-                problems.append(error(source, f"{source} no longer holds `{text}`, the build VERSION_ARGS in "
-                                              f"ci_job_reads.py pins for {entry.workflow}'s {entry.key}, {held}; make "
-                                              f"the entry's go commands what the script builds"))
-                pinned = False
-            elif reason:
-                problems.append(error(source, f"{source}'s `{text}`, the build VERSION_ARGS pins for "
-                                              f"{entry.workflow}'s {entry.key}, may compile other than its go commands "
-                                              f"say: {reason}; {held}. Put what it sets on the pinned line and in the "
-                                              f"entry's go commands"))
-                pinned = False
-        reason = script_env_reason(source, texts) if pinned else ""
-        if reason:
-            problems.append(error(source, f"{source}, the build VERSION_ARGS pins for {entry.workflow}'s "
-                                          f"{entry.key}, may compile other than its go commands say: {reason}; "
-                                          f"{held}. Put what it sets on the pinned line and in the entry's go "
-                                          f"commands"))
-        ok = ok and pinned and not reason
+    drift = pin_difference(read_repository_text(REPO / entry.script), entry.text)
+    if drift:
+        problems.append(error(entry.script, f"{entry.script} is off the text VERSION_ARGS in ci_job_reads.py pins "
+                                            f"for {entry.workflow}'s {entry.key}: {drift}; {held}. Make the script "
+                                            f"that text again, or change the entry's pinned text with it, and its go "
+                                            f"commands where the build compiles other packages or targets"))
+        ok = False
+    around = around_reason(document, job, steps)
+    if around:
+        problems.append(error(entry.workflow, f"{entry.workflow}'s job {entry.job}: {around}, a setting that can "
+                                              f"change what {entry.script} compiles where no pin holds it; {held}. "
+                                              f"Remove it, or put it in the pinned script; a name go never reads, "
+                                              f"such as another release's list in the workflow's env:, goes in "
+                                              f"ENV_ALLOWED"))
+        ok = False
     return ok
 
 
@@ -3053,15 +3019,17 @@ def check_version_args(session: Session, data, files: list, problems: list[Annot
     The runs stand for the build only while hold_release_build holds them. Returns the report
     lines."""
     report = []
-    for number, entry in enumerate(data.VERSION_ARGS):
+    tree = set(files)
+    for entry in data.VERSION_ARGS:
         held = f"so whether {entry.workflow}'s {entry.key} covers what its build compiles is unknown"
         if not (REPO / entry.workflow).is_file():
             problems.append(error(".github/scripts/ci_job_reads.py", f"{entry.workflow}, the workflow VERSION_ARGS "
                                                                       f"names for {entry.key}, is absent, {held}"))
             continue
-        if not hold_release_build(entry, files, problems):
+        document = load_repository_yaml(REPO / entry.workflow) or {}
+        if not hold_release_build(entry, document, tree, held, problems):
             continue
-        env = (load_repository_yaml(REPO / entry.workflow) or {}).get("env")
+        env = document.get("env")
         value = env.get(entry.key) if isinstance(env, dict) else None
         words = value.split() if isinstance(value, str) else []
         paths = words[words.index("--") + 1:] if "--" in words else []
@@ -3085,32 +3053,30 @@ def check_version_args(session: Session, data, files: list, problems: list[Annot
         deciding = sorted(f for f in module_files if os.path.basename(f) in DECIDING_MODULE_FILES)
         build = "; ".join(dict.fromkeys(f"`go list -deps {' '.join(r.pkgs)}` in {r.workdir}" for r in entry.runs))
         platforms = ", ".join(dict.fromkeys(run_platform(r) for r in entry.runs))
-        script = ", ".join(dict.fromkeys(r.source for r in entry.runs))
         if not compiled or not deciding:
             problems.append(error(entry.workflow, f"{build} listed {len(compiled)} first-party package directories and "
                                                   f"{len(deciding)} go.mod or go.work files for {platforms}, {held}"))
             continue
         probes = {d: f"{d}/{PROBE}" for d in compiled}
-        reads = git_reads(session, str(number), [*files, *probes.values()], paths, problems, entry.workflow)
+        reads = git_reads(session.tmp, [*files, *probes.values()], paths, problems, entry.workflow)
         read = set().union(*reads.values())
         uncovered = []
         for d in sorted(compiled):
             if probes[d] not in read:
                 uncovered.append(d)
                 problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names no path that covers {d}/, "
-                                                      f"the directory of a package {script} compiles ({build}, for "
-                                                      f"{', '.join(dict.fromkeys(compiled[d]))}), so a commit that "
+                                                      f"the directory of a package {entry.script} compiles ({build}, "
+                                                      f"for {', '.join(dict.fromkeys(compiled[d]))}), so a commit that "
                                                       f"changes only that package releases no binary; add {d}/ after "
                                                       f"its `--`"))
         for f in deciding:
             if f not in read:
                 uncovered.append(f)
                 problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names no path that covers {f}, a "
-                                                      f"module file of the workspace {script} builds in, whose lines "
-                                                      f"decide the versions and the toolchain the binary is built with, "
-                                                      f"so a commit that changes only it releases no binary; add {f} "
-                                                      f"after its `--`"))
-        tree = set(files)
+                                                      f"module file of the workspace {entry.script} builds in, whose "
+                                                      f"lines decide the versions and the toolchain the binary is built "
+                                                      f"with, so a commit that changes only it releases no binary; add "
+                                                      f"{f} after its `--`"))
         nothing = [word for word in dict.fromkeys(paths) if not reads[word]]
         for word in nothing:
             bare = os.path.normpath(word)
@@ -3130,12 +3096,12 @@ def check_version_args(session: Session, data, files: list, problems: list[Annot
             if any(got < reads[other] for other in reads):
                 continue
             idle.append(word)
-            problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names {word}, under which {script} "
-                                                  f"compiles no package and holds no module file ({build}, for "
-                                                  f"{platforms}), so a commit that changes only it releases a binary "
-                                                  f"it is not in; take it out of the list, and its --patch-path, which "
-                                                  f"release-bump.sh refuses without it"))
-        report.append(f"{entry.workflow} {entry.key}: {script} compiles {len(compiled)} first-party package "
+            problems.append(error(entry.workflow, f"{entry.workflow}'s {entry.key} names {word}, under which "
+                                                  f"{entry.script} compiles no package and holds no module file "
+                                                  f"({build}, for {platforms}), so a commit that changes only it "
+                                                  f"releases a binary it is not in; take it out of the list, and its "
+                                                  f"--patch-path, which release-bump.sh refuses without it"))
+        report.append(f"{entry.workflow} {entry.key}: {entry.script} compiles {len(compiled)} first-party package "
                       f"directories and reads {len(deciding)} go.mod and go.work files for {platforms}; "
                       f"{len(uncovered)} no listed path covers, {len(idle)} listed paths cover none, "
                       f"{len(nothing)} listed paths git reads no file for")

@@ -38,7 +38,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
     (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
     (LEGION_RELEASE_SCRIPT, "rule 25 holds release.yaml's LEGION_VERSION_ARGS to the build this script runs, "
-                            "whose command VERSION_ARGS pins"),
+                            "which VERSION_ARGS pins whole"),
     (DOCS_SITE, "ci_filter_coverage.py looks the docs gate's step citations up in it"),
     (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),
     (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "

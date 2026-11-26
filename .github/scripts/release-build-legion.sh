@@ -22,20 +22,23 @@
 #
 # Run from the repository root: .github/scripts/release-build-legion.sh
 # CI runs it in release.yaml's legion_build job, at the step "Build legion".
+#
+# .github/scripts/ci_job_reads.py's VERSION_ARGS pins this file whole: rule 25 of
+# .github/scripts/check-ci-filters.sh holds release.yaml's LEGION_VERSION_ARGS to what it compiles,
+# so any change here fails that check until the pinned text there changes with it.
 set -euo pipefail
 
 : "${LEGION_CONTRACT_ORDER:?is unset or empty: set it to the stamp scripts/daemon-contract-order.sh --stamp prints for this commit}"
 
 mkdir -p out assets
-# The build is one line, which .github/scripts/ci_job_reads.py's VERSION_ARGS pins whole: rule 25
-# of check-ci-filters.sh holds release.yaml's LEGION_VERSION_ARGS to what it compiles.
-ldflags="-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$LEGION_CONTRACT_ORDER"
 for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
   os=${target%/*}
   arch=${target#*/}
   dir="legion-$os-$arch"
   mkdir -p "out/$dir"
-  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false -ldflags "$ldflags" -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion
+  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \
+    -ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$LEGION_CONTRACT_ORDER" \
+    -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion
   (cd packages/daemon && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
     ../../scripts/go-third-party-notices.sh "$GITHUB_WORKSPACE/out/$dir/THIRD_PARTY_NOTICES" ./cmd/legion)
   tar czf "assets/$dir.tar.gz" -C out "$dir"

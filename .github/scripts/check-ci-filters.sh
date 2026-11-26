@@ -387,14 +387,14 @@
 #      list, over a scratch index holding the tree's files and a new file in each package
 #      directory, from the repository's root, as release-bump.sh's git log does. A path wider
 #      than the build (packages/) is not refused. The build is the entry's go commands, one per
-#      target, listed as every closure here is, and script_run Runs pinned to its script's line
-#      as a gate's are: the line must be the pinned text alone and unbroken, no env:, shell,
-#      container or environment write of the release's job may move it, and no other line of
-#      the script may export, assign or unset a name go reads that the pinned line does not set
-#      on itself, `set -a` or source a file. Each of those fails, and so does a workflow that is
-#      absent, a job that runs no step naming the script, a list the workflow does not hold, a
-#      path with pathspec magic, which this rule does not read, and a build that lists no
-#      first-party package or module file.
+#      target, listed as every closure here is; they stand for the build while its script is the
+#      whole text the entry pins, compared as an Exact entry's (pin_difference), so any change to
+#      the script - another flag, target or build line, an export, a sourced file - fails naming
+#      the first line that differs until the entry changes with it, and while no env:, shell,
+#      container or environment write of the release's job can move what it compiles. Each of
+#      those fails, and so does a workflow or a script that is absent, a job that runs no step
+#      naming the script, a list the workflow does not hold, a path with pathspec magic, which
+#      this rule does not read, and a build that lists no first-party package or module file.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
