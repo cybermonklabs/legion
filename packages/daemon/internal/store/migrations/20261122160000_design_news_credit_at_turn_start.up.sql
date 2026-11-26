@@ -40,12 +40,21 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
--- this file again. The release before this one, contract 275 (the one whose
--- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
--- daemon that writes to Dispatch as itself under dispatch_token_broker) as main releases it after
--- #4392, whose newest migration is #4392's 20261124182040_issue_pod_disks, carries
--- 20261119203047 and not the task numbers, and then reads the function it wrote; a rollback to
--- contract 256 or before crosses 275, which takes no step of its own beyond pinning the worker
+-- this file again. The release before this one, main's build that carries contract entries
+-- 20261125161436 (#4580's role-identities) and 20261125181543 (#5463's look-names-its-check) after
+-- contract 275 (the one whose internal/api/version.go carries the entry for dispatch://INFRA-4425,
+-- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under
+-- dispatch_token_broker), as main releases it after #5575, whose 20261125212800_claims_tree is its
+-- newest migration, carries 20261119203047 and not the task numbers, and then reads the function it
+-- wrote; a rollback to a release before #5463 also runs that release's step (docs/kubernetes.md,
+-- "Rolling back the release whose check report names its check"), one to a release before #4472
+-- takes private_name_rules_file out of legion.yaml where the file sets it, one to a release before
+-- #4580 deletes <state_dir>/bin/jj under a tmux daemon, and one to a release before #5385 runs the
+-- way back in the header of 20261125000600_production_check_failed_looks first, before this block,
+-- with every daemon of the database stopped; #5575's 20261125212800_claims_tree and #5398's
+-- 20261124130001_pull_request_reviews_requested carry no way back, and this block reads nothing of
+-- them; a rollback to contract 256 or before crosses 275, which takes no step of its own beyond
+-- pinning the worker
 -- image with the daemon, since its migration, 20261124182040_issue_pod_disks, carries no way back
 -- and this block reads nothing of it, except where legion.yaml sets dispatch_token_broker or
 -- dispatch_token_transition_file, which an earlier release refuses as keys it does not know: take
