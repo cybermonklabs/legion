@@ -828,7 +828,7 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	}
 	// A fragment of an issue room joins the room's other documents in one state, which must still
 	// load with it (refuseUndecodableSeed); a document that is its own room starts it.
-	if target.room != artifactID {
+	if !target.ownRoom() {
 		if err := refuseUndecodableSeed(ctx, tx, target.room, update); err != nil {
 			return "", err
 		}
@@ -1276,10 +1276,7 @@ func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, 
 	if err := refuseLostAskBlocks(open); err != nil {
 		return &ErrInvalidAskBlock{Reason: err}
 	}
-	return answerDroppedAnsweredAsks(ctx, q, holder, func(blockID string) bool {
-		_, kept := held[blockID]
-		return !kept
-	}, by, true)
+	return answerDroppedAnsweredAsks(ctx, q, holder, keptOutOf(held), by, true)
 }
 
 // refuseBatchDroppedAskBlocks refuses an edit batch for the open asks of the blocks the batch
@@ -1314,6 +1311,15 @@ func droppedBlock(dropped map[string]struct{}) func(blockID string) bool {
 	return func(blockID string) bool {
 		_, lost := dropped[blockID]
 		return lost
+	}
+}
+
+// keptOutOf answers whether a block is no block of held, the open ask blocks a tree holds
+// (openAskBlockIDs): an ask block the write's tree leaves out.
+func keptOutOf(held map[string]struct{}) func(blockID string) bool {
+	return func(blockID string) bool {
+		_, kept := held[blockID]
+		return !kept
 	}
 }
 
@@ -1990,6 +1996,11 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 	target, err := s.targetOf(ctx, artifactID)
 	if err != nil {
 		return err
+	}
+	// A document of an issue room is refused while that room shuts down, as openLiveOperation
+	// refuses it: the shutdown is the room's, not the document's.
+	if !target.ownRoom() && s.shuttingDown(target.room) {
+		return ErrServiceUnavailable
 	}
 	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target)
 	return err

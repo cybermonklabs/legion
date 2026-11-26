@@ -48,9 +48,9 @@ var errSettleJoined = errors.New("docs: an issue's documents settle outside ever
 // a room: an issue room holds its tree's own fragment and one of each role document its
 // document_rooms rows name, and every other document of an issue, of an issue with no issue room
 // (no issue_trees row) and of a converted one alike, is its own room and holds that room's own
-// fragment (R5 of this branch's spec, version 112). The decisions query node of an issue born
+// fragment (R5 of the issue-tree spec, version 112). The decisions query node of an issue born
 // converted, a doc row with no fragment and no document_rooms row (refs.DecisionsQuerySQL, D6 of
-// this branch's plan), holds none.
+// the issue-tree plan), holds none.
 func holdsFragmentSQL(alias string) string {
 	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
 }
@@ -373,7 +373,7 @@ func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey strin
 // version that a settlement of a closed issue's document writes (versionWrite.closedIssue): for
 // each document of the issue, in id order, it moves the open approval request that names the
 // document to the document's latest version (MoveApprovalAsk), and then carries an approval to
-// that version (carryStandingApproval), as the version's own write does on an open issue. Before
+// that version (carryToLatest), as the version's own write does on an open issue. Before
 // a closed issue's document settled, the first settlement after the reopen wrote that text and
 // did both. Without them a restored request names the version from before the close, so a
 // person's approval from it reviews that version and reads stale, and an approved text that a

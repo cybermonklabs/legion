@@ -11,6 +11,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -19,7 +20,7 @@ import (
 // document: the tree artifact's own fragment (D3 of the issue-tree plan). A document
 // converted into an issue room holds a fragment of that room named by its own artifact id
 // (fragmentOf), so a read of a room names the fragments it reads (treeOfFragments).
-const fragmentName = "prosemirror"
+const fragmentName = model.ArtifactFragmentOwn
 const marksMapName = "marks"
 
 // outsideSchemaRepair ends every refusal of a tree a document holds outside the Proof schema: what
@@ -398,13 +399,13 @@ type roomLayout []string
 
 // fragments is every fragment of the room's Yjs document the room's rendering reads, in order.
 func (l roomLayout) fragments() []string {
-	return append([]string{fragmentName}, l...)
+	return append(append(make([]string, 0, len(l)+1), fragmentName), l...)
 }
 
 // documents is the document each fragment of the room holds, beside fragments: room itself for
 // its own fragment, then each document the layout names.
 func (l roomLayout) documents(room string) []string {
-	return append([]string{room}, l...)
+	return append(append(make([]string, 0, len(l)+1), room), l...)
 }
 
 // blockDocuments is the document that holds each block of tree, a tree of room read over the

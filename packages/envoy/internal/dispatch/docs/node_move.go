@@ -19,10 +19,10 @@ import (
 // document's own room or its issue's room is joined for the write (joinLiveWrite, whose owner lock
 // the transaction holds already), and the room's lock is taken (lockDocumentRoom), after every
 // owner lock, as an edit with a precondition takes it. Under them the document's tree is read
-// (applyLive), move is written into it whole (pmdoc.ValidDocument.MoveNodeText) and the tree is
-// validated once and written as the fragment's new state (writeNodeText). The edit route's
-// operations are no part of it: pmdoc.MoveBlock nests no list item and validates the document after
-// each move.
+// (applyLive), move is written into it whole (pmdoc.ValidDocument.MoveNodeText, which validates
+// the tree it answers), and the tree is validated again and written as the fragment's new state
+// (writeNodeText). The edit route's operations are no part of it: pmdoc.MoveBlock nests no list
+// item and validates the document after each move.
 //
 // It answers whether the write changed the document, which a version the caller writes then
 // records (SnapshotVersion). A move that would leave a callout or a list item with no block of its
@@ -61,11 +61,12 @@ func (s *Service) MoveBlockText(ctx context.Context, artifactID string, move pmd
 // fragment, whole, in the transaction ctx joined, which has joined the document's room for the write
 // and holds its lock: a write of the node routes (MoveBlockText, DeleteBlocksText). The tree is read
 // under the room's lock (applyLive), the block ids a new list lacks are minted (pmdoc.EnsureBlockIDs),
-// and the tree is validated once and written as the fragment's new state (pmdoc.UpdateDocument),
-// operation naming the write in a validation's refusal. A rewrite that answers no tree writes
-// nothing. It answers whether the write changed the document, and rewrite's own error as it is.
+// and the tree is validated with them and written as the fragment's new state (pmdoc.UpdateDocument),
+// operation naming the write in a validation's refusal: a second validation, since each rewrite of
+// the node routes validates the tree it answers before those ids are minted (pmdoc's MoveNodeText,
+// DeleteNodeText). A rewrite that answers no tree writes nothing. It answers whether the write
+// changed the document, and rewrite's own error as it is.
 func (s *Service) writeNodeText(ctx context.Context, artifactID string, actor model.Actor, operation string, rewrite func(pmdoc.ValidDocument) (*pmdoc.Node, error)) (bool, error) {
-	changed := false
 	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		start, err := startTree(current, doc)
 		if err != nil {
@@ -87,13 +88,14 @@ func (s *Service) writeNodeText(ctx context.Context, artifactID string, actor mo
 		transact(func(transaction *crdt.Transaction) {
 			updateErr = pmdoc.UpdateDocument(transaction, fragment, written)
 		})
-		changed = updateErr == nil
 		return updateErr
 	})
+	// applyLive answers websocket.ErrNoChanges for a write that left the fork as it was, so a write
+	// it answers nil for changed the document.
 	if errors.Is(err, websocket.ErrNoChanges) {
 		return false, nil
 	}
-	return changed, err
+	return err == nil, err
 }
 
 // HoldStoredBlock records, in the ledger of the transaction ctx joined, that a move of the node
@@ -103,10 +105,10 @@ func (s *Service) writeNodeText(ctx context.Context, artifactID string, actor mo
 // queued in the write phase and no read of the transaction sees them. The caller records it before
 // the version its move writes, whose index pass would otherwise place the block by its text.
 func (s *Service) HoldStoredBlock(ctx context.Context, address string, block refs.StoredBlock) error {
-	ledger := ledgerFrom(ctx)
-	if ledger == nil || ledger.tx == nil {
+	if _, joined := txFromContext(ctx); !joined {
 		return errUnjoined
 	}
+	ledger := ledgerFrom(ctx)
 	if ledger.storedBlocks == nil {
 		ledger.storedBlocks = map[string]refs.StoredBlock{}
 	}

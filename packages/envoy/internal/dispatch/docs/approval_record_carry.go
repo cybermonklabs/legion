@@ -42,16 +42,16 @@ import (
 const recordCarryEnd = ": this version changes nothing that approval covers."
 
 // RecordCarryReason is the reason of a record carry of the approval of version origin
-// (approvalOrigin): CarriedReviewReasonPrefix, the opening the Legion daemon matches, the version
-// and recordCarryEnd.
+// (approvalOrigin): model.CarriedReviewReasonPrefix, the opening the Legion daemon matches, the
+// version and recordCarryEnd.
 func RecordCarryReason(origin int) string {
-	return CarriedReviewReasonPrefix + strconv.Itoa(origin) + recordCarryEnd
+	return model.CarriedReviewReasonPrefix + strconv.Itoa(origin) + recordCarryEnd
 }
 
 // IsRecordCarry reports whether reason is a record carry's, byte for byte as RecordCarryReason
 // writes it: the fill holds such a carry to the digest its approval stood on (fillOwedDigests).
 func IsRecordCarry(reason string) bool {
-	number, opened := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	number, opened := strings.CutPrefix(reason, model.CarriedReviewReasonPrefix)
 	number, closed := strings.CutSuffix(number, recordCarryEnd)
 	origin, err := strconv.Atoi(number)
 	return opened && closed && err == nil && RecordCarryReason(origin) == reason
@@ -385,26 +385,26 @@ func (node *statedNode) moves() bool {
 	return node.written || node.placed || node.ranked || node.standing
 }
 
-// types is every type the node, of kind kind, can be taken by once the facts stand, head being its
-// node in the head's walk, nil where the walk does not take it: its type there, and the type
+// types is every type the node target can be taken by once the facts stand, head being its node in
+// the head's walk, nil where the walk does not take it: its type there, and the type
 // refs.TreeNodeType gives of each supertag it can hold with each opening its text can open with.
 // known is false for a node outside the head's walk of which no node write states the supertag,
 // whose type the facts alone do not say.
-func (node *statedNode) types(kind string, head *TreeNode) (types []string, known bool) {
+func (node *statedNode) types(target refs.Target, head *TreeNode) (types []string, known bool) {
 	supertags := slices.Clone(node.supertags)
 	if head != nil {
 		types = append(types, head.Type)
 		supertags = append(supertags, head.Supertag)
 	}
 	for _, supertag := range node.supertags {
-		types = append(types, refs.TreeNodeType(kind, supertag, ""))
+		types = append(types, refs.TreeNodeType(target.Kind, target.ID, supertag, ""))
 	}
 	for _, opening := range node.openings {
 		if len(supertags) == 0 {
-			types = append(types, refs.TreeNodeType(kind, "", opening))
+			types = append(types, refs.TreeNodeType(target.Kind, target.ID, "", opening))
 		}
 		for _, supertag := range supertags {
-			types = append(types, refs.TreeNodeType(kind, supertag, opening))
+			types = append(types, refs.TreeNodeType(target.Kind, target.ID, supertag, opening))
 		}
 	}
 	return types, head != nil || len(node.supertags) > 0
@@ -468,7 +468,7 @@ func readStatedFacts(writes []graphstore.Uncaused) statedFacts {
 // what the facts alone say of its type (recordUnmoved's C).
 func (stated statedFacts) mayTake(takes []string) bool {
 	for target, node := range stated {
-		types, _ := node.types(target.Kind, nil)
+		types, _ := node.types(target, nil)
 		for _, typ := range types {
 			if slices.Contains(takes, typ) {
 				return true
@@ -523,7 +523,7 @@ func (stated statedFacts) leavesQuery(tree IssueTree, query string, takes []stri
 			}
 			joining = append(joining, target)
 		}
-		types, known := node.types(target.Kind, head)
+		types, known := node.types(target, head)
 		if !known {
 			return nil, false
 		}

@@ -2620,7 +2620,8 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	var cursor *roomCursor
 	slot, update, err := s.applySuppressed(backfillCtx, artifactID, nil, func(doc *crdt.Doc, origin any) error {
 		cursor = s.cursorOf(doc)
-		read, _, err := s.liveFragmentsTree(artifactID, doc, s.layoutOf(doc).fragments())
+		layout := s.layoutOf(doc)
+		read, _, err := s.liveFragmentsTree(artifactID, doc, layout.fragments())
 		if err != nil {
 			return err
 		}
@@ -2630,7 +2631,7 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		if s.afterBackfillRead != nil {
 			s.afterBackfillRead(artifactID)
 		}
-		_, _, minted, stampRenamed, err := stampBlockIDs(doc, s.layoutOf(doc), origin)
+		_, _, minted, stampRenamed, err := stampBlockIDs(doc, layout, origin)
 		report.Stamped = minted
 		renamed = stampRenamed
 		return err
@@ -2818,10 +2819,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // read; it is lost by this close, and it could not have been stored anyway, since its append
 // would meet an artifacts row that has gone.
 func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
-	if s.srv.GetDoc(artifactID) == nil {
-		return
-	}
-	if err := s.Evict(ctx, artifactID); err != nil && ctx.Err() == nil {
+	if err := s.evictResident(ctx, artifactID); err != nil {
 		// The room stays open until this process's next close of it. The removal is
 		// announced once and the row it names is gone, so nothing notifies it again; what
 		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),

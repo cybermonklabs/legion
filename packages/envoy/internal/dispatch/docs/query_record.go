@@ -307,7 +307,7 @@ func walkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	tree.ViewOf = viewOfIssue(chain)
 	walk.nodes[walk.issue] = TreeNode{Kind: walk.issue.Kind, ID: walk.issue.ID, Type: graphstore.SupertagIssue}
 	walk.take(&tree, walk.issue)
-	if first := walk.ordered(walk.issue); len(first) > 0 && walk.nodes[first[0]].Type == memoType {
+	if len(tree.Nodes) > 1 && tree.Nodes[1].Type == memoType {
 		tree.Memo = 1
 	}
 	for _, root := range slices.Concat(lifted, roots) {
@@ -553,7 +553,7 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 	}
 	for item, row := range rows {
 		node := w.nodes[item]
-		node.Type, node.MadeAt = refs.TreeNodeType(item.Kind, row.Supertag, ""), row.MadeAt
+		node.Type, node.MadeAt = refs.TreeNodeType(item.Kind, item.ID, row.Supertag, ""), row.MadeAt
 		w.nodes[item] = node
 	}
 	return nil
@@ -920,23 +920,22 @@ var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText}
 // its kind and then its far end, the kind and the far end's address, each a field. The values and
 // the relations are read at the walk's cut, as the server sees the store.
 func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) (QueryRecord, error) {
-	takes, defined := queryDefinitions[query]
+	indices, defined := tree.Takes(query)
 	if !defined {
 		return QueryRecord{}, fmt.Errorf("the query %q has no record", query)
 	}
 	var taken []TreeNode
 	var targets []refs.Target
-	for index, node := range tree.Nodes {
-		if takes(tree, index) {
-			taken = append(taken, node)
-			targets = append(targets, node.target())
-		}
+	for _, index := range indices {
+		taken = append(taken, tree.Nodes[index])
+		targets = append(targets, tree.Nodes[index].target())
 	}
 	facts, err := refs.TreeFactsOf(ctx, q, targets, tree.Cut)
 	if err != nil {
 		return QueryRecord{}, fmt.Errorf("read the %s record of %s: %w", query, tree.Issue, err)
 	}
 	var record, scratch bytes.Buffer
+	var names []string
 	for _, node := range taken {
 		held := facts[node.target()]
 		writeRecordField(&record, node.Address())
@@ -944,7 +943,7 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 		writeRecordField(&record, node.Parent.Kind+":"+node.Parent.ID)
 		writeRecordField(&record, node.Rank)
 		scratch.Reset()
-		names := make([]string, 0, len(held.Values))
+		names = names[:0]
 		for name := range held.Values {
 			if !slices.Contains(recordLeftOut, name) {
 				names = append(names, name)
@@ -960,7 +959,7 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 		scratch.Reset()
 		relations := slices.Clone(held.Relations)
 		slices.SortFunc(relations, func(a, b refs.TreeRelation) int {
-			return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.To.Kind+":"+a.To.ID, b.To.Kind+":"+b.To.ID))
+			return cmp.Or(strings.Compare(a.Kind, b.Kind), refs.CompareAddresses(a.To, b.To))
 		})
 		for _, relation := range relations {
 			writeRecordField(&scratch, relation.Kind)

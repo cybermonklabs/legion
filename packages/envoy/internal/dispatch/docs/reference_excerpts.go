@@ -341,10 +341,7 @@ func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.
 			held = append(held, removals)
 		}
 	}
-	switch len(held) {
-	case 0:
-		return graphstore.Uncaused{}
-	case 1:
+	if len(held) == 1 {
 		return held[0]
 	}
 	return graphstore.Joined(held...)

@@ -54,14 +54,8 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 			return settleDone, st.stoppedShort(err)
 		}
 		if !slices.Equal(layout, st.layout) {
-			_ = tx.Rollback(ctx)
-			refusal := fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those",
-				errRoomLayoutMoved, room, len(st.layout), len(layout))
-			if parent.Err() != nil {
-				return settleDone, st.stoppedShort(refusal)
-			}
-			s.reloadReplacedRoom(parent, room, state, st.generation, st.doc, refusal)
-			return settleDone, settleOutcome{next: settleReloaded}
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those",
+				errRoomLayoutMoved, room, len(st.layout), len(layout)))
 		}
 	}
 	latest, err := latestVersion(ctx, tx, room)
@@ -128,17 +122,12 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 			// one that did not, the retry arms the settlement again, and that settlement, once this
 			// one's rollback has let the close finish, loads the room at the head.
 			return settleDone, st.stoppedShort(fmt.Errorf("catch the room up to the durable head: %w", errRoomReplaced))
-		case outcome == catchUpReplaced:
+		case outcome == catchUpReplaced || outcome == catchUpMoved:
 			// The rollback releases the document's advisory lock, which the room's close needs: a
-			// close flushes the room's persistence, whose appends take that lock.
-			_ = tx.Rollback(ctx)
-			refusal := fmt.Errorf("%w: room %s holds the document through update %d, and the stored history was replaced under it (head %d)",
-				ErrRoomBehindHead, room, st.cursor.heldThrough(), head)
-			if parent.Err() != nil {
-				return settleDone, st.stoppedShort(refusal)
-			}
-			s.reloadReplacedRoom(parent, room, state, st.generation, st.doc, refusal)
-			return settleDone, settleOutcome{next: settleReloaded}
+			// close flushes the room's persistence, whose appends take that lock. A room whose
+			// document moved into its issue's room (catchUpMoved) is closed the same way.
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s holds the document through update %d, and the stored history was replaced under it (head %d)",
+				ErrRoomBehindHead, room, st.cursor.heldThrough(), head))
 		}
 		if through := st.cursor.heldThrough(); through != head {
 			return settleDone, st.stoppedShort(fmt.Errorf("%w: room %s holds the document through update %d after its catch-up, the stored document stands at %d",
@@ -189,4 +178,17 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 		s.afterSettleRead(room)
 	}
 	return settleOn, settleOutcome{}
+}
+
+// reloadRefused ends a settlement that refusal refuses before it writes anything: the transaction
+// rolls back, which keeps doc_settlements_pending and releases the document's advisory lock the
+// room's close needs, and the room is closed and reloaded under parent (reloadReplacedRoom), or,
+// once parent has ended, the settlement stops short with refusal.
+func (st *settlement) reloadRefused(ctx, parent context.Context, refusal error) (settleStep, settleOutcome) {
+	_ = st.tx.Rollback(ctx)
+	if parent.Err() != nil {
+		return settleDone, st.stoppedShort(refusal)
+	}
+	st.service.reloadReplacedRoom(parent, st.room, st.state, st.generation, st.doc, refusal)
+	return settleDone, settleOutcome{next: settleReloaded}
 }

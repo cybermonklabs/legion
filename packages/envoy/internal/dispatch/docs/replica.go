@@ -948,14 +948,11 @@ func (s *Service) replicaOf(live *crdt.Doc) *renderedReplica {
 	return nil
 }
 
-// liveTree is the tree of live, the document resident under room, as of one moment (readLive).
+// liveTree is the tree of live, the document resident under room, as of one moment: its own
+// fragment, as liveFragmentsTree reads it.
 func (s *Service) liveTree(room string, live *crdt.Doc) (*pmdoc.Node, error) {
-	var tree *pmdoc.Node
-	var treeErr error
-	if err := s.readLive(room, live, func(doc *crdt.Doc) { tree, treeErr = treeOf(doc) }); err != nil {
-		return nil, err
-	}
-	return tree, treeErr
+	tree, _, err := s.liveFragmentsTree(room, live, []string{fragmentName})
+	return tree, err
 }
 
 // liveFragmentsTree is liveTree over the fragments fragments names, joined as a room's rendering

@@ -815,6 +815,12 @@ func headVersionOf(room string) string {
 var headVersion = headVersionOf("$1")
 
 func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
+	return roomHead(ctx, q, room)
+}
+
+// roomHead is the head of room's stored history (headVersion), read through q. It reads nothing of
+// a PgVersioned, so a caller that holds none, a seed's check of its room, reads it here.
+func roomHead(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
 	var version int64
 	if err := q.QueryRow(ctx, `select `+headVersion, room).Scan(&version); err != nil {
 		return 0, fmt.Errorf("read document head: %w", err)

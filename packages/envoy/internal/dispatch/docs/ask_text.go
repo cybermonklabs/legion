@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -177,10 +178,7 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		return entries, nil
 	}
 	err := pgx.BeginTxFunc(ctx, s.store.Pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		held := make([]string, 0, len(nodes))
-		for id := range nodes {
-			held = append(held, id)
-		}
+		held := slices.Collect(maps.Keys(nodes))
 		rows, err := tx.Query(ctx, `
 			select `+AskColumns+`
 			from asks a where `+refs.AsksOfFragmentBlocksSQL("a", "$1::uuid", "$2::text[]")+`

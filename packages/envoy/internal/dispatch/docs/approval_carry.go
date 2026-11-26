@@ -193,14 +193,7 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest, steps, record, sink)
-}
-
-// carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
-// an approval (carryNewestApprovalNaming). It hands sink the events it appends, as carryApproval
-// does.
-func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, steps decisionStepCases, record RecordCarry, sink func(model.Event)) error {
-	return carryNewestApprovalNaming(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps, "", record, sink)
+	return carryNewestApprovalNaming(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL, steps, "", record, sink)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -292,7 +285,8 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
 		})
 	}
-	if len(shown.nodes) > 0 || holdsDecision(tree) {
+	change, carried := "", false
+	if len(shown.nodes) > 0 || holdsBlockType(tree, decisionType) {
 		approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
 		if err != nil {
 			return err
@@ -312,22 +306,21 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 			if steps.restore {
 				input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
 			}
-			change, carried, err := carryVerdict(input)
-			if err != nil {
+			if change, carried, err = carryVerdict(input); err != nil {
 				return skipUnreadableVersion(artifactID, number, err)
 			}
-			if carried {
-				origin, err := approvalOrigin(ctx, tx, artifactID, newest)
-				if err != nil {
-					return err
-				}
-				reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
-				if arrived != "" {
-					reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
-				}
-				return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
-			}
 		}
+	}
+	if carried {
+		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
+		if err != nil {
+			return err
+		}
+		reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
+		if arrived != "" {
+			reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
+		}
+		return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
 	}
 	if arrived != "" {
 		return nil
@@ -608,16 +601,6 @@ func answeredAskBlocks(ctx context.Context, tx pgx.Tx, shown versionAsks, approv
 func closesWithReadings(node *pmdoc.Node) bool {
 	_, admitted := pmdoc.TypedContent(node)
 	return len(admitted) > 0
-}
-
-// holdsDecision reports whether tree holds a decision block anywhere.
-func holdsDecision(tree *pmdoc.Node) bool {
-	held := false
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		held = held || node.Type == decisionType
-		return !held
-	})
-	return held
 }
 
 // copyAgreesWithItsSource reports whether node, a copy of source's ask on another document,
@@ -936,7 +919,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	var held graphstore.Uncaused
 	change := asks.Answered(answer)
 	change.From, change.Who, change.At, change.Held = asks.StateOpen, actor, answer.At, &held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, *ask, change)
 	if err != nil {
 		return fmt.Errorf("answer approval ask: %w", err)
 	}

@@ -335,11 +335,7 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 			return err
 		}
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
-		claimed := make([]graphstore.NodeKey, 0, len(claims))
-		for _, claim := range claims {
-			claimed = append(claimed, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
-		}
-		graphstore.QueueHeads(b, claimed)
+		graphstore.QueueHeads(b, graphstore.HeadsOfClaims(claims))
 		return nil
 	}, nil
 }
@@ -1732,7 +1728,7 @@ func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who mode
 	}
 	change := asks.Restored(prior.State, prior.Answer)
 	change.Who, change.At, change.Held = who, time.Now().UTC(), held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, ask, change)
 	if err != nil {
 		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
 	}

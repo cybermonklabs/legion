@@ -436,21 +436,25 @@ func (capture authorCapture) roomAuthors() []model.Actor {
 	return actorSlice(authors)
 }
 
-// pendingRoomAuthors is the authors of room's edits no version has listed that write's read of the
-// room holds, as a capture of that read lists them (authorCapture.roomAuthors): the pending authors
-// its transaction reads (transactionPendingAuthors) and the in-flight credits observed by the read
-// (liveWrite.forkSeq), none for a fork read from the store. An upload's version lists none of them
-// and clears them all (uploadCapture), so its write reads them first, for the room's removals
-// (holdRoomRemovals).
-func pendingRoomAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite) ([]model.Actor, error) {
-	authors, err := transactionPendingAuthors(ctx, tx, room)
+// pendingRoomAuthors is the authors of document's edits no version has listed that write's read of
+// its room holds, as a capture of that read lists them (authorCapture.roomAuthors): the pending
+// authors its transaction reads of document (transactionPendingAuthors) and the in-flight credits
+// observed by the read (liveWrite.forkSeq), none for a fork read from the store. Of an issue room
+// it takes, as captureDocumentAuthors does, only the credits whose update changed document's
+// fragment or that name no document: a person whose edit changed only another document of the
+// room made no edit of this one. An upload's version lists none of them and clears them all
+// (uploadCapture), so its write reads them first, for the room's removals (holdRoomRemovals).
+func pendingRoomAuthors(ctx context.Context, tx pgx.Tx, document string, write *liveWrite) ([]model.Actor, error) {
+	authors, err := transactionPendingAuthors(ctx, tx, document)
 	if err != nil {
 		return nil, err
 	}
 	if write != nil && !write.cold && write.state != nil {
 		write.state.mu.Lock()
 		for _, record := range write.state.unconsumedInflightLocked(write.forkSeq) {
-			mergeAuthors(authors, record.authors)
+			if record.documents == nil || slices.Contains(record.documents, document) {
+				mergeAuthors(authors, record.authors)
+			}
 		}
 		write.state.mu.Unlock()
 	}

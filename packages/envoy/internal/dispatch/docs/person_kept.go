@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
@@ -41,15 +42,14 @@ func CallerIsPerson(proving model.Actor) bool {
 	return proving.Credential.Holds(model.ScopePerson)
 }
 
-// AskOfBlockSQL answers the id of the ask that holds the question's state for the `:::ask` block
+// askOfBlockSQL answers the id of the ask that holds the question's state for the `:::ask` block
 // whose node the store keys as $1 and $2. It looks up document_blocks by
 // document_blocks_node_address (migration 20261111043000) and joins the block's own ask by
 // document and block id, matching the block id keys of asks_block_id_unique (migration 0127). Where
 // the block has no ask of its own, it reads the source ask from the block's current asserted
 // copied_from tuple (graphstore.CurrentTupleRead). It answers null for an ask block with neither and
-// no row for any other node. The state route reads it for the ask that holds a block's state (api's
-// askHoldsState), and PersonDecisionOf for whether that ask is answered.
-var AskOfBlockSQL = `
+// no row for any other node. PersonDecisionOfBlock reads it for whether that ask is answered.
+var askOfBlockSQL = `
 	select coalesce(k.id::text, copied.to_id)
 	from document_blocks b
 	left join asks k on k.block_artifact_id = b.artifact_id
@@ -125,25 +125,47 @@ func PersonDecisionOf(ctx context.Context, q Queryer, kind, id string) (PersonDe
 
 // PersonDecisionOfBlock reads whether the block of a document whose node the store keys as kind
 // and id, and whose document_blocks row holds the type typ, is a person's decision (R32): an
-// `:::ask` block whose ask - the block's own, or for a copy its source (AskOfBlockSQL) - is
-// answered, named "the :::ask block" and quoted by its question; or a decision whose current
-// decided_by names a person, named "the decision" and quoted by its words, the text its node holds
-// (decisionQuote). A block of any other type is none, with no statement, and so is an ask block
-// whose ask is open or that no ask holds. A caller that read the block's type already, as the node
-// routes do, asks here with it.
+// `:::ask` block whose ask is answered, named "the :::ask block" and quoted by its question; or a
+// decision whose current decided_by names a person, named "the decision" and quoted by its words,
+// the text its node holds (decisionQuote). The ask of an `:::ask` block is found as refs'
+// QuestionMap finds it: the block's own, else for a copy its source, which the copy's
+// copied_from tuple names (askOfBlockSQL), else, for a copy no settlement has claimed yet, the
+// one its opening line names as copied_from (copiedFromLine), read off the text its node holds:
+// such a copy of an answered ask is a person's decision from its first read. A block of any other
+// type is none, with no statement, and so is an ask block whose ask is open or that no ask holds.
+// A caller that read the block's type already, as the node routes do, asks here with it.
 func PersonDecisionOfBlock(ctx context.Context, q Queryer, kind, id, typ string) (PersonDecision, bool, error) {
 	switch typ {
 	case "ask":
+		var ask, text *string
+		var answered bool
 		var question string
 		err := q.QueryRow(ctx, `
-			select coalesce(k.question, '') from (`+AskOfBlockSQL+`) block (ask)
-			join asks k on k.id::text = block.ask
-			where k.state = '`+asks.StateAnswered+`'`, kind, id).Scan(&question)
+			select block.ask, coalesce(k.state = '`+asks.StateAnswered+`', false), coalesce(k.question, ''),
+			       case when block.ask is null then `+blockTextSQL("$1", "$2")+` end
+			from (`+askOfBlockSQL+`) block (ask)
+			left join asks k on k.id::text = block.ask`, kind, id).Scan(&ask, &answered, &question, &text)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PersonDecision{}, false, nil
 		}
 		if err != nil {
 			return PersonDecision{}, false, fmt.Errorf("read the ask of the block %s: %w", id, err)
+		}
+		if ask == nil && text != nil {
+			source := copiedFromLine(*text)
+			if source == "" {
+				return PersonDecision{}, false, nil
+			}
+			err := q.QueryRow(ctx, `select state = '`+asks.StateAnswered+`', coalesce(question, '') from asks where id = $1::uuid`, source).Scan(&answered, &question)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return PersonDecision{}, false, nil
+			}
+			if err != nil {
+				return PersonDecision{}, false, fmt.Errorf("read the ask %s the block %s is a copy of: %w", source, id, err)
+			}
+		}
+		if !answered {
+			return PersonDecision{}, false, nil
 		}
 		return PersonDecision{What: "the :::ask block", Words: question}, true, nil
 	case "decision":
@@ -162,6 +184,24 @@ func PersonDecisionOfBlock(ctx context.Context, q Queryer, kind, id, typ string)
 		return PersonDecision{What: "the decision", Words: quoted}, true, nil
 	}
 	return PersonDecision{}, false, nil
+}
+
+// copiedFromLine is the ask an `:::ask` block's opening line names as copied_from, text being the
+// block's markdown, its opening line first: the line read as refs' question blocks read it
+// (pmdoc.ParseTypedDirectiveOpen), the value a uuid, in its canonical spelling; "" for a line that
+// names none.
+func copiedFromLine(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	_, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimSpace(line))
+	if !ok {
+		return ""
+	}
+	copied, _ := attrs["copied_from"].(string)
+	parsed, err := uuid.Parse(copied)
+	if err != nil {
+		return ""
+	}
+	return parsed.String()
 }
 
 // decisionQuote is a decision block's words as R32's refusal quotes them, read off markdown that
@@ -211,24 +251,18 @@ type typedChanges struct {
 // block.
 func typedBlockChanges(before, after *pmdoc.Node) (typedChanges, error) {
 	var changes typedChanges
-	held := map[string]*pmdoc.Node{}
-	pmdoc.Walk(before, func(node *pmdoc.Node) bool {
+	held := blocksByID(before, func(node *pmdoc.Node) string {
 		if node.Type != "ask" && node.Type != "decision" {
-			return true
+			return ""
 		}
-		if id := ownBlockID(node); id != "" {
-			if _, repeated := held[id]; !repeated {
-				held[id] = node
-			}
-		}
-		return true
+		return blockID(node)
 	})
 	if len(held) == 0 {
 		return changes, nil
 	}
 	written := make(map[string]*pmdoc.Node, len(held))
 	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
-		id := ownBlockID(node)
+		id := blockID(node)
 		if _, wanted := held[id]; wanted {
 			if _, seen := written[id]; !seen {
 				written[id] = node
@@ -323,12 +357,6 @@ func blocksByID(tree *pmdoc.Node, idOf func(*pmdoc.Node) string) map[string]*pmd
 	return blocks
 }
 
-// ownBlockID is the id a block carries in its tree, as an ask row keys the block of its ask.
-func ownBlockID(node *pmdoc.Node) string {
-	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-	return id
-}
-
 // keptAsksOf is each answered ask of the document artifactID whose block a write changes, in the
 // order of their block ids, as ErrAnsweredAskKept names it: the asks of the blocks changed names,
 // or for a standing read, a repair's, each answered ask whose block the block index holds as an
@@ -354,7 +382,7 @@ func keptAsksOf(ctx context.Context, q Queryer, artifactID string, changed map[s
 	defer rows.Close()
 	var blocks map[string]*pmdoc.Node
 	if standing {
-		blocks = blocksByID(after, ownBlockID)
+		blocks = blocksByID(after, blockID)
 	}
 	var kept []KeptAsk
 	for rows.Next() {
