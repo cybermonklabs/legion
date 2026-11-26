@@ -3394,6 +3394,7 @@ func respellVerification(t *testing.T, database *store.Store, artifactID string,
 // and stands. A version that rewords the check itself moves its words, and the pass no longer
 // stands.
 func TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESRS", "acme/widgets", "Respelled")
@@ -3816,6 +3817,8 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 // (githubapp.RequestTimeout) is raised past any run, so the deadline the read's context carries is
 // the one thing that can end it, and the detail names that deadline.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
+	// Not parallel: it writes the package variables ciReadDeadline (shortenCIReadDeadline) and
+	// githubapp.RequestTimeout.
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))

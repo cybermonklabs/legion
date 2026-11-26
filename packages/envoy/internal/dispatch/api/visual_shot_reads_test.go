@@ -433,6 +433,7 @@ func liveAnswer(t *testing.T, client *socketClient, sub string) {
 // table, and a person's edit in the room, by the room and the table it appends to - so a tracer
 // that saw nothing, or a check that names nothing, cannot pass.
 func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	statements := &shotStatements{}
 	traced := storetest.TracedStore(t, database, statements)

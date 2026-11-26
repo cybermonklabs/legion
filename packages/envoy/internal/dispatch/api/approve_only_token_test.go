@@ -34,6 +34,7 @@ func approveOnlyAnswer(jkt string) ciphertoken.Introspection {
 // issue, and its mint and change of a personal token, are refused 403 APPROVE_ONLY_TOKEN, and none
 // of them is recorded.
 func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const approveOnly, person = "an-approve-only-token", "the-boxs-person-scoped-token"
@@ -91,6 +92,7 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 // list is read against the table, so a row added later that needs approve is on it unless it is
 // named here.
 func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	var want []string
 	for _, route := range approveRows(rig.served) {
@@ -119,6 +121,7 @@ func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.
 // /ws/live, answers the approve-only token 403 APPROVE_ONLY_TOKEN, and each row it names answers
 // anything but that refusal. A walk that walked nothing fails.
 func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	const token = "an-approve-only-token-walking-every-row"

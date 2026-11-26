@@ -322,6 +322,7 @@ func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) 
 // names Dispatch's own credential, never the unreachable broker 503 AGENT_SECRETS_UNAVAILABLE
 // would send the operator to, and the one log line it writes names the file to fix.
 func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newFakeBrokerRig(t)
 	missing := filepath.Join(t.TempDir(), "missing")
 	handler := newCredentialTestHandlerReading(t, rig.server.URL, missing)
