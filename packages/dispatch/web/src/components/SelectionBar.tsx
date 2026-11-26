@@ -218,8 +218,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // through. A reading that finds nothing owed changes nothing, so the readings run to `READINGS`
   // of them or to the reader's own next action, whichever comes first.
   const finish = useCallback((): void => {
-    let landing = landed.current;
-    if (landing === null) return;
+    const owed = landed.current;
+    if (owed === null) return;
+    // The landing as this reading reads it: the record itself moves on as the reading writes it.
+    let landing: OwedLanding = owed;
     const list = latest.current;
     const { leaving } = list;
     const order = list.order();
@@ -245,6 +247,16 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       return;
     }
     const head = list.head?.() ?? null;
+    /** Gives back the scroll the landing spent on a mark that is owed something now, once: the
+     *  reader is owed the view they pressed in, and the least scroll from there to the landing that
+     *  is kept (the architect's rule of 2026-11-25 05:3xZ). Every least scroll after it stands on
+     *  that view rather than undoing the reading before it. */
+    const giveBack = (): void => {
+      if (landing.spent.length === 0) return;
+      putScrollBack(landing.spent);
+      landing = { ...landing, spent: [] };
+      landed.current = landing;
+    };
     /** Hands the place off again from the rows the list holds now, as the hand-off's own landing
      *  chooses one, and reads that landing in its turn. The list's own stop takes the focus where
      *  no row in sight can. */
@@ -283,10 +295,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         forget();
         return;
       }
+      giveBack();
       placeAgain(landing);
       return;
     }
-    if (landing.at === null) landed.current = { ...landing, at: viewScrollOf(mark) };
+    if (landing.at === null) {
+      landing = { ...landing, at: viewScrollOf(mark) };
+      landed.current = landing;
+    }
     const lost = focusOnDocument();
     // A control the reader moved to is theirs, and nothing here takes the focus from it.
     if (!lost && document.activeElement !== mark) {
@@ -304,16 +320,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     // whole rather than passed over; and so is a mark the view moved away from under them.
     // Whether the view moved under the reader is read before anything of this reading moves it.
     const away = landing.at !== null && viewScrollOf(mark) !== landing.at;
-    // The scroll the landing spent was spent to show a mark the going then moved: the reader is
-    // owed the view they pressed in, and the least scroll from there to the landing that is kept
-    // (the architect's rule of 2026-11-25 05:3xZ). So the first reading that finds something owed
-    // gives it back, once, and every least scroll after that stands on the view the reader pressed
-    // in rather than undoing the reading before it.
-    if (landing.spent.length > 0) {
-      putScrollBack(landing.spent);
-      landing = { ...landing, spent: [] };
-      landed.current = landing;
-    }
+    giveBack();
     if (landing.id === landing.last || away) {
       if (!landNearest(mark, head)) {
         forget();
