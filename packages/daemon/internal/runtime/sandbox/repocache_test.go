@@ -622,7 +622,13 @@ func TestRepositoryCacheReadsReadiness(t *testing.T) {
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	// RepositoryCache reads the Sandbox store, which nothing orders after the pod store: the
+	// Sandbox and its pod arrive on informers of their own, and a read made once the pod store
+	// held the pod found no Sandbox on a loaded runner.
+	g.eventually("the cache's Sandbox and its pod in the runtime's stores", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && g.r.storedPod(name) != nil
+	})
 	status, found := g.r.RepositoryCache(cacheRepo)
 	if !found || status.Ready || status.Address != "" || status.Sandbox != name || status.Repo != cacheRepo {
 		t.Fatalf("RepositoryCache before readiness = %+v, %t; want found, not ready, no address", status, found)
