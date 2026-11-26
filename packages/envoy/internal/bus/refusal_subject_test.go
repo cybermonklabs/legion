@@ -11,15 +11,19 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// seedLookup is a connect's environment (WithEnvironment) that names seed as the nkey seed and
-// nothing else, so rows that each connect as the user of a server of their own run in parallel,
-// which t.Setenv forbids.
-func seedLookup(seed string) func(string) (string, bool) {
-	return func(name string) (string, bool) {
-		if name == NkeySeedEnvVar && seed != "" {
-			return seed, true
-		}
-		return "", false
+// testnats.SeedOnly, the one seed lookup of the module's tests, names the seed by a string of its
+// own, because testnats cannot import this package. It must answer under the variable a connect
+// reads (NkeySeedEnvVar), and an empty seed is none, as an unset variable is.
+func TestTheTestsSeedLookupAnswersTheBusSeedVariable(t *testing.T) {
+	t.Parallel()
+	if seed, ok := testnats.SeedOnly("SUAEXAMPLE")(NkeySeedEnvVar); !ok || seed != "SUAEXAMPLE" {
+		t.Fatalf("testnats.SeedOnly answered %q, %v under %s, want the seed it holds", seed, ok, NkeySeedEnvVar)
+	}
+	if _, ok := testnats.SeedOnly("")(NkeySeedEnvVar); ok {
+		t.Fatalf("testnats.SeedOnly answered an empty seed under %s, want none", NkeySeedEnvVar)
+	}
+	if _, ok := testnats.SeedOnly("SUAEXAMPLE")(nkeySeedFileVariable); ok {
+		t.Fatalf("testnats.SeedOnly answered under %s, want the seed variable alone", nkeySeedFileVariable)
 	}
 }
 
@@ -45,7 +49,7 @@ func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped stri
 	}
 	t.Cleanup(admin.Close)
 	relay := testnats.StartUnansweredRelayOn(t, uri, dropped)
-	client, err := Connect([]string{relay.URL()}, append([]ConnectOption{WithEnvironment(seedLookup(seed))}, options...)...)
+	client, err := Connect([]string{relay.URL()}, append([]ConnectOption{WithEnvironment(testnats.SeedOnly(seed))}, options...)...)
 	if err != nil {
 		t.Fatalf("connect as the denied user through the relay: %v", err)
 	}
@@ -324,7 +328,7 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 // nothing until it is connected, so nats.go fails the create at once with its own error, and the
 // create neither waits for an answer nor takes a refusal.
 func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
-	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(seedLookup("")), WithConnectInBackground())
+	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
 	if err != nil {
 		t.Fatalf("connect in the background: %v", err)
 	}

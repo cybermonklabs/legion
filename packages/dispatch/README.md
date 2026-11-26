@@ -433,14 +433,15 @@ Its inputs are the harness's own. `DATABASE_URL`, when set, is used as given: it
 every start. Unset, the command runs `packages/envoy/scripts/dev-postgres.sh`, which creates,
 starts or reuses the `dispatch-pg` container, and creates database `dispatch_local` in it once.
 That script runs the container from its pinned image, pgvector on PostgreSQL 18, the version
-Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. It
-refuses a `dispatch-pg` on any other image or major and prints the commands that dump its
-databases and restore them into a new container on the pinned image, quoted so they paste as they
-read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `PLAIN_HTTP_PORT`,
-`FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one: unset, the OS
-chooses each, so two instances never collide; set, the port is used as given, and an occupied one
-fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.ts`), and a Ctrl-C
-ends a psql in flight too.
+Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. They
+also need `btree_gin`, a contrib extension that PostgreSQL includes, and a migration creates each
+of the two extensions. The script refuses a `dispatch-pg` on any other image or major and prints the
+commands that dump its databases and restore them into a new container on the pinned image,
+quoted so they paste as they read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
+`PLAIN_HTTP_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one:
+unset, the OS chooses each, so two instances never collide; set, the port is used as given, and
+an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
+(`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
 
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the

@@ -980,14 +980,17 @@ means: a picture upload (nothing else was written: run the call again, which upl
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
-(`markdownRoundTrip`, `related`, `dryRunResult`) made nothing either, so that replayed 2xx is no
-landing: the client asks the call once more under a new key, which runs it afresh, and a second
-such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no
-`DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept no copy of its
-answer, and to run the command again, which asks under a new key: `dispatch related` and a
-`dispatch result --dry-run` exit 1 on one, and `dispatch artifact` refuses the upload its
-stored-text check could not run, saying to send it again. A replayed refusal is the refusal
-Dispatch first gave, thrown as any other.
+(`markdownRoundTrip`, `fileRoundTrip`, `related`, `dryRunResult`) made nothing either, so that
+replayed 2xx is no landing: the client asks the call once more under a new key, which runs it
+afresh, and a second such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`,
+`status`), no `DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept
+no copy of its answer, and to run the command again, which asks under a new key: `dispatch related`
+and a `dispatch result --dry-run` exit 1 on one. `dispatch artifact` refuses an upload of text
+that is not blank, given inline, read from `--content-file` or from stdin, when the check of that
+text got such an answer, saying to send it again; blank text given any of those ways and a
+Markdown `--path` file go up unchecked when their check gets no answer, as
+the account of the dry run further down says. A replayed refusal is the refusal Dispatch first
+gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -1305,17 +1308,153 @@ hyphens for underscores (`issue-update`), one flag per field
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
 first `: `; a label holding `: ` goes in `--options-json`, which the generated command line uses
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
-stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
+stdin. The command reads each file and stdin as bytes and decodes them as UTF-8, keeping a byte
+order mark as U+FEFF (`readFileText`, `dispatch-file-text.ts`, which `bin/dispatch.ts` hands
+`runDispatchCli`). Bytes that are not UTF-8, which it once stored as U+FFFD, refuse the command,
+for every field and every command, with exit 1, before anything is sent. A field that holds no
+document's text, every field but one, is refused for them alone, in Dispatch's own refusal of the
+first U+0000 or byte that is not UTF-8 among them, whichever comes first, as Dispatch reads them
+(`unstorableBytes`): `NUL_CHARACTER: <field> holds a NUL character (U+0000) at character N,
+which Dispatch cannot store` or `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at
+character N, which Dispatch cannot store`, where `<field>` is the argument the flag sets (`body`
+for `--body-file`) and N is where the character stands, counted from 1 in UTF-16 units, as
+Dispatch counts it. UTF-8 holding a U+0000 is not refused there: `dispatch comment --body-file`
+sends it to Dispatch, which answers it. The one field the command checks as a Markdown document's
+bytes is `dispatch artifact`'s `content`, which the command's entry in the command table names
+(`DispatchCommand.documentFields`, `dispatch-commands/table.ts`). Read from `--content-file`
+or stdin, its bytes are refused whether or not they are UTF-8, as a Markdown `--path` file of the
+same bytes is, in that upload's order and words (`documentBytesRefusal`) under `content`: text
+past 1 MiB with `CAP_EXCEEDED` first, then the first U+0000 or byte that is not UTF-8. Text the
+strict read decoded is UTF-8, and so is text given inline, so only its size or a U+0000 can
+refuse it, and only such text is checked again in its UTF-8 (`documentFieldRefusal`). A value
+given inline in argv holds no U+0000 on any kernel, and Bun hands the command its argv already
+decoded, each byte that is not UTF-8 written as U+FFFD. Linux holds one argument to
+`MAX_ARG_STRLEN`, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB pages
+(`include/uapi/linux/binfmts.h`), so with 4 KiB pages argv carries no text past 1 MiB, and with
+64 KiB pages it can. A program that calls `runDispatchCli` itself can hand it either on any
+kernel. The check runs on inline text however it is given, so such text is refused as the same
+text read from `--content-file` is, whatever the page size.
+For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
-them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either. The one exception
-is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
-arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
-nothing. A retraction's dry run sends nothing.
+them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no state of this session
+but what a `dispatch result` record's dry run reads (below). Each refusal of a file's, stdin's or
+inline text's bytes above, and of a Markdown `--path` file's (below), comes before that check,
+once the flags are read and before anything that needs Dispatch (its configuration, the refusal
+of a Dispatch that is off, any client), by the dry run as by the call, with the same refusal line
+and exit 1, with Dispatch on or off, so `dispatch artifact` refuses such a text without asking
+Dispatch.
+A command whose call asks Dispatch something before it writes asks it in its dry run too, through
+its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
+such step is `dispatch artifact`'s: for text given inline, read from `--content-file` or from
+stdin, it makes the call's own stored-text check
+(`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
+Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
+text but the empty string), or one the call refuses for the text alone. A text whose typed
+blocks' attributes differ from Dispatch's only in their order is no such text: the call uploads it
+in Dispatch's order (`storedUpload`, `dispatch-commands/stored-spelling.ts`), so the dry run passes
+it. The check is the one place that decides what blank text (what Go's `strings.TrimSpace` empties, `goBlankPattern`) is
+asked: a refusal alone, never its spelling, and a check of it that gets no answer leaves the upload
+to make its own refusal. Text past the 1 MiB of UTF-8 one document holds is refused with
+`CAP_EXCEEDED` and exit 1 without asking Dispatch anything (`documentTooLarge`): the call refuses
+it before it reads whether the owner holds the name, so the two answer alike under a held name
+too, and the dry run builds no client for it, so it refuses it with no Dispatch configured too. A
+round trip answer Dispatch marks as its refusal of the text (the `Dispatch-Text-Refusal` header,
+`TEXT_REFUSAL_HEADER`, which the client reads for its presence alone), at any status, is refused
+with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the call refuses it. The route
+makes, in the order, status, code and words of an upload, every check that upload makes of the
+text alone, and marks each refusal. Every upload makes some of them, a replacement included (a
+JSON upload of blank content over a held document is refused as blank before its text is parsed):
+a NUL character (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the
+parse's own refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads
+back otherwise (`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose
+rendering does not read back, which that refusal names instead (`INVALID_ASK_BLOCK`). Only a new
+document's seed makes the rest, which a replacement relaxes: a block id written twice and an
+element this build cannot create yet (`INVALID_MARKDOWN`), an ask block that breaks its content
+rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the elements (`CAP_EXCEEDED`), and a
+check proved by CI that breaks the rules its attributes keep (`INVALID_CI_CHECK`). The route
+makes those only for a request that asks for them (`new_document: true`). It answers any other
+as the most permissive replacement takes the text,
+one over a document already holding what the text holds: with the rendering that replacement
+stores, or with a refusal every replacement makes, the parse's own, the ask refusal it names
+instead and a render that fails. The check asks for them where the call makes a new document,
+without `--force`; with `--force` the upload may replace a document, judged by those looser
+rules, so the check asks for none of them and compares the rendering Dispatch answers as for any
+text, and every marked refusal it gets is the call's. So its dry run passes, with no warning, a
+text the call's upload can then refuse for one of a new document's checks: under a name the owner
+does not hold, because `--force` uploads a new document; under a name the owner holds, because a
+replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
+grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
+the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
+whatever its status. A
+`--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown, which the
+upload carries as `text/markdown`) is held to the same checks, in the same place: once the flags
+are read, before the argument check and before anything that needs Dispatch, the command reads it
+once, as its upload reads it (`documentFileRead`; the command table names the field,
+`DispatchCommand.documentPathField`), and refuses a file past 1 MiB by its size before it reads
+it and then by the bytes it read, and then the first U+0000 or byte that is not UTF-8 in those
+bytes, in the upload's words, which name the field `file` (`documentBytesRefusal`). All of this
+comes before AskGate's gate of the call too. The command hands the bytes it read to the dry run's
+step, which checks those bytes and does not read the file again, and to the call. Where AskGate
+reviews the call, its check reads the file a second time for its digest, and the call checks and
+sends the bytes that read took in place of the command's; otherwise the call checks and sends the
+command's bytes and does not read the file again. A file the command cannot read (missing, not
+readable, a directory) is no refusal of its text: the argument check comes first, and then the
+dry run's step, where it runs, and the call read the file and answer with the read's own error.
+A file that is neither a regular file nor a directory (a FIFO, a device, a socket), whose read can
+wait forever, the command does not read, nor does the dry run's step, which asks Dispatch nothing
+about it: the call uploads it unchecked, and Dispatch's upload judges it. The call and its dry run
+then send the bytes they checked to their own round trip (`POST /api/v1/markdown/file-round-trip`,
+`file` in base64, with `new_document` as for inline text), which Dispatch checks as it checks an
+upload's file part, and take only its refusal (`storedFileCheck`), never a spelling, since the call
+stores a Markdown file as the store spells it. The call throws that refusal before it uploads, so
+the two print the same refusal and exit alike; on any other answer, a spelling or none (no answer
+in time, a failure, or a Dispatch without the route, which answers 404 or 405), the call uploads
+the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
+failed with, the call asks it with the dry run's own client options (`askOnceWithinDryRun`):
+once, within the same 5 s, with no wait before asking a route again. A file Dispatch stores as
+its bytes, or a FIFO, a device or a socket, is asked nothing, by the call as by the dry run. What
+only the call checks, since it needs more than the
+text, stays the call's: whether the owner holds the name, the token of a replacement, a
+replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
+result, and the issue's state. The call checks the text, however it is given, before it reads
+whether the owner holds the name, so a text the check refuses gets the same refusal from the call
+and its dry run under a held name too. A text that is not blank, given inline, read from
+`--content-file` or from stdin, whose check got no answer from a Dispatch that has the route, the
+call refuses there too, before it reads the name (`storedTextCheckFailed`), while its dry run
+passes it with the warning below. A text the check passes, the call without `--force` still
+refuses under a held name, and the dry run, which cannot know the name, passes it. With no
+Dispatch configured, the dry run and the call alike still refuse, with exit 1, once the flags are
+read and before the argument check (above), a document's text past 1 MiB, and one holding a
+U+0000 or a byte that is not UTF-8, whether it is given inline, read from `--content-file` or from
+stdin, or in a Markdown `--path` file. Any other text that is not empty, given inline, read from
+`--content-file` or from stdin, and any other Markdown file the command reads, the dry run passes
+with a warning that the call is refused for the same reason; the empty string, which it asks
+Dispatch nothing about, it passes with no warning; and the call is refused for Dispatch being off,
+exit 2. The
+step waits at most 5 s. For a text it asks about (each but an empty text given inline, read from
+`--content-file` or from stdin) and does not refuse before it asks, when it gets no answer (no
+Dispatch configured, any other failure, no answer in time, or a Dispatch without the route), the
+dry run passes, and one `dispatch: warning:` line on stderr says why and what the call does then,
+as the check's kind says it: text given inline, read from `--content-file` or from stdin, that a
+Dispatch without
+the route cannot check, and blank text whose check got no answer, the call uploads unchecked; a
+file the call asks about once more, and uploads unchecked if that gets no answer either; any other
+text the call refuses until Dispatch answers.
+The JSON stays alone on stdout. With
+`DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch nothing, for a caller that reads the
+arguments alone: it still refuses, once the flags are read, a text given inline, read from
+`--content-file` or from stdin, or in a Markdown `--path` file, for its bytes. The variable does
+not change a
+`dispatch result` record's dry run. That dry run asks Dispatch through
+the call itself (`dryRunAsksDispatch`): it needs Dispatch on, as the record does, reads what the
+record reads (this session's title among it), and after the arguments prints the pull-request body
+line Dispatch answers on `POST …/results/dry-run`, recording nothing. A retraction's dry run sends
+nothing. Every other dry run reads no Dispatch, so it runs with Dispatch off too. A call that a dry
+run passed can still stop on what Dispatch answers or on this session's state.
 
 `dispatch login --device [--person <address>]` logs the machine in at the secrets broker
 (`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
