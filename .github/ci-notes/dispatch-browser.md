@@ -982,9 +982,9 @@ in the "Browser-test dispatch dashboard against two server processes" step makes
 
 ## Why the two-process job builds the Dispatch server itself
 
-run-server.sh builds it too, inside the harness's boot wait for each server
-(e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
-current and start in seconds.
+run-server.sh builds it too, inside the harness's wait for each server's report
+(e2e/harness-start.ts's `serving`, which sets no bound of its own); built here, both servers
+find it current and start in seconds.
 
 ## Why the Chromium install takes no apt and no cache, and what its budget is
 

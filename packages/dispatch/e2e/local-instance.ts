@@ -174,7 +174,12 @@ try {
   console.log("Stopping the Dispatch local instance.");
 } catch (error) {
   if (error instanceof Interrupted) {
-    console.error("dispatch:local interrupted before the instance was up");
+    // The harness's start names what it was waiting for when the Ctrl-C came
+    // (`interruptedBefore`, e2e/local-instance-support.ts): its waits have no bound of their own,
+    // so that name is the only account of a process that never came up. A bare "interrupted" says
+    // nothing more than this line, and is left out.
+    const why = ["", "interrupted"].includes(error.message) ? "" : `: ${error.message}`;
+    console.error(`dispatch:local interrupted before the instance was up${why}`);
     exitCode = 130;
   } else {
     console.error(

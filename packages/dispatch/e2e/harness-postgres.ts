@@ -34,7 +34,7 @@
  *  directory and starts every server with it preloaded, at the same path, so a row can make the
  *  disk stop answering (e2e/disk-stall.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { buildStallLibrary, diskStallDir, stallEnvironment } from "./disk-stall";
-import { Interrupted } from "./local-instance-support";
+import { announceWait, Interrupted, interruptedBefore } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
@@ -167,8 +167,6 @@ async function serverSettings(env: NodeJS.ProcessEnv): Promise<string[]> {
   maxConnections ??= readMaxConnections(env);
   return [`max_connections=${await maxConnections}`, ...settings];
 }
-/** How long a stack's server may take to answer `select 1`. */
-const readyMs = 120_000;
 /** How many ports a cluster tries before it gives up (see `freePort`). */
 const bindAttempts = 3;
 
@@ -234,61 +232,178 @@ async function stackOf(
   try {
     return await started();
   } catch (error) {
-    if (signal?.aborted === true) throw new Interrupted();
+    if (signal?.aborted === true) throw error instanceof Interrupted ? error : new Interrupted();
     throw error;
   }
 }
 
 /** Waits until `url` answers `select 1`: a server that is up has read its data directory, run
- *  its own recovery and opened its port. */
-async function ready(url: string, what: string, signal?: AbortSignal): Promise<void> {
-  const deadline = Date.now() + readyMs;
-  for (;;) {
-    try {
-      await sqlAt(url, ["select 1"], signal);
-      return;
-    } catch (error) {
-      // The psql above was killed by the signal, or the one before it was: a stopping run waits
-      // out none of the deadline that is left.
-      if (signal?.aborted === true) throw new Interrupted();
-      if (Date.now() > deadline) {
-        throw new Error(
-          `The Dispatch e2e harness cannot start: ${what} did not answer within ` +
-            `${readyMs / 1000} s: ${error instanceof Error ? error.message : String(error)}`
-        );
+ *  its own recovery and opened its port.
+ *
+ *  The wait has no bound of its own, as the harness's wait for its listeners has none (`serving`
+ *  in e2e/harness-start.ts says why): how long a server takes to come up is the machine's, and a
+ *  bound of 120 s failed a start that was only slow, under a caller whose own deadline was far
+ *  away. It ends on the answer; on the server's end, which `gone` reads after each try that
+ *  failed, with the last try's error; on a psql that cannot be started at all, such as one that
+ *  is not on PATH, which no later try can change; or on the caller's abort (`signal`), whose
+ *  Interrupted names the server it waited for (`interruptedBefore`). A try that never returns, a
+ *  server that takes the connection and never answers, is ended by that abort too, since the psql
+ *  it runs takes the signal. It writes when the wait begins and ends (`announceWait`; `what`
+ *  names the stack). Exported for e2e/__tests__/harness-postgres.test.ts. */
+export async function ready(
+  url: string,
+  what: string,
+  gone: () => boolean,
+  signal?: AbortSignal
+): Promise<void> {
+  const since = Date.now();
+  const waited = announceWait("e2e/harness-postgres.ts", `${what} answers select 1`);
+  try {
+    for (;;) {
+      try {
+        await sqlAt(url, ["select 1"], signal);
+        return;
+      } catch (error) {
+        // The psql above was killed by the signal, or the one before it was.
+        if (signal?.aborted === true) throw interruptedBefore(`${what} answered select 1`, since);
+        // A psql that ran and failed has a numeric exit `code`; one that could not be started has
+        // the spawn's own (ENOENT, EACCES), which every later try would meet again.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (typeof code === "string" && code !== "ABORT_ERR") {
+          throw new Error(
+            `The Dispatch e2e harness cannot start: psql, which asks ${what} for select 1, could ` +
+              `not be started: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        if (gone()) {
+          throw new Error(
+            `The Dispatch e2e harness cannot start: ${what} stopped before it answered select 1: ` +
+              `${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
-      await sleep(200);
+      // An abort ends the pause at once, and the next try's psql, given an aborted signal, fails
+      // before it starts, which the branch above names.
+      await sleep(200, undefined, { signal }).catch(() => {});
+    }
+  } finally {
+    waited();
+  }
+}
+
+/** Whether the postmaster of the cluster in `data` has ended: the pid its `postmaster.pid` names,
+ *  read once here, after `pg_ctl -w start` returned, is no running process, or there was no
+ *  file to read. The postmaster is no child of this process (`pg_ctl` starts it as a daemon), so
+ *  its pid is the one handle there is. */
+function postmasterGone(data: string): () => boolean {
+  let pid = Number.NaN;
+  try {
+    pid = Number(readFileSync(join(data, "postmaster.pid"), "utf8").split("\n")[0]);
+  } catch {
+    // No file: the server that `pg_ctl` started has already gone.
+  }
+  return () => {
+    if (!Number.isInteger(pid) || pid <= 0) return true;
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  };
+}
+
+/** The `-t` every `pg_ctl -w start` here is given, in seconds: a year. pg_ctl has no wait without
+ *  a limit, and its default limit, `PGCTLTIMEOUT` or 60 s, is a wall-clock bound on how long a
+ *  server takes to come up, which is the machine's (`ready` says why the harness keeps none). With
+ *  this limit its clock decides nothing: the wait ends when the server takes connections, or when
+ *  its postmaster has died, both of which pg_ctl reads itself, or on the caller's abort, which
+ *  ends the pg_ctl and the postmaster it started (`startCluster`). */
+const pgCtlStartWait = String(365 * 24 * 60 * 60);
+
+/** Kills, with SIGKILL, every process that serves the cluster in `data`: a `postgres -D <data>`,
+ *  read from `/proc/<pid>/cmdline`. It is the Linux backstop for the one case `startCluster`'s
+ *  SIGINT does not reach: a pg_ctl that the abort ended after it forked the postmaster and before
+ *  it installed the handler that passes SIGINT on (pg_ctl.c, `do_start`). That postmaster runs in a
+ *  session of its own, so it outlives its pg_ctl, and it may not have written `postmaster.pid`
+ *  yet, which leaves `pg_ctl stop` nothing to stop. A postmaster's children rewrite their command
+ *  lines, so this finds the postmaster alone, and its death ends them. A machine with no `/proc`
+ *  has no such backstop, and a postmaster that is still between its fork and its exec when the
+ *  table is read is not found either; both cases need the abort to land in pg_ctl's first
+ *  instants. */
+function killServersOf(data: string): void {
+  let pids: string[];
+  try {
+    pids = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry));
+  } catch {
+    return;
+  }
+  for (const pid of pids) {
+    let argv: string[];
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    } catch {
+      continue;
+    }
+    const at = argv.indexOf("-D");
+    if (at < 0 || argv[at + 1] !== data || !(argv[0] ?? "").endsWith("postgres")) continue;
+    try {
+      process.kill(Number(pid), "SIGKILL");
+    } catch {
+      // gone already
     }
   }
 }
 
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
- *  environment pg_ctl, and so the postmaster, runs with. */
+ *  environment pg_ctl, and so the postmaster, runs with. `signal`, the caller's abort, ends the
+ *  start's wait with an Interrupted that names the server it waited for: it sends the pg_ctl
+ *  SIGINT, which a pg_ctl waiting on `-w start` passes on to the postmaster it started before it
+ *  ends (pg_ctl.c, `trap_sigint_during_startup`), so the postmaster shuts down on every platform;
+ *  `killServersOf` covers the instant before pg_ctl installs that handler, on Linux. Each attempt
+ *  writes when its wait begins and ends (`announceWait`). */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
   what: string,
   env: NodeJS.ProcessEnv,
-  server: NodeJS.ProcessEnv
+  server: NodeJS.ProcessEnv,
+  signal?: AbortSignal
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
+  const since = Date.now();
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
+    const waited = announceWait(
+      "e2e/harness-postgres.ts",
+      `${what} takes connections on port ${port} (pg_ctl -w start, attempt ${attempt} of ${bindAttempts})`
+    );
     try {
       await execFileAsync(
         join(bin, "pg_ctl"),
-        ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
-        { env: server }
-      );
+        [
+          "-D",
+          data,
+          "-l",
+          join(dir, "postgres.log"),
+          "-o",
+          options.join(" "),
+          "-t",
+          pgCtlStartWait,
+          "-w",
+          "start",
+        ],
+        { env: server, killSignal: "SIGINT", signal }
+      ).finally(waited);
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
-      // `pg_ctl -w start` gives up its own wait after `PGCTLTIMEOUT` and exits non-zero, but
-      // the postmaster it started goes on running and holding `postmaster.pid`: the next
+      // A pg_ctl that ended without the server taking connections, or that the caller's abort
+      // killed, can leave the postmaster it started running and holding `postmaster.pid`: the next
       // attempt's start would fail on that lock rather than on its port, and a throw here would
       // leave a server serving a loopback port while the pool removes the data directory under
       // it (`e2e/harness-pool.ts`). A stop that fails is a server that never bound, which is why
@@ -296,6 +411,10 @@ async function startCluster(
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
         () => {}
       );
+      if (signal?.aborted === true) {
+        killServersOf(data);
+        throw interruptedBefore(`${what} took connections`, since);
+      }
     }
   }
   throw new Error(
@@ -368,11 +487,12 @@ function binariesProvider(
       templateDir,
       "the stacks' Postgres template",
       env,
-      server
+      server,
+      signal
     );
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
-      await ready(admin, "the stacks' Postgres template", signal);
+      await ready(admin, "the stacks' Postgres template", postmasterGone(data), signal);
       await sqlAt(admin, [`create database ${databaseName}`], signal);
       await sqlAt(
         `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`,
@@ -398,16 +518,16 @@ function binariesProvider(
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what, env, server);
+        const port = await startCluster(bin, data, stackDir, what, env, server, signal);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
         const url = `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
         try {
-          await ready(url, what, signal);
+          await ready(url, what, postmasterGone(data), signal);
         } catch (error) {
           // The postmaster is up from `startCluster` on, and a wait the run's signal or the
-          // deadline ended returns no `StackDatabase`, so no caller holds a stop for it: the
+          // server's end ended returns no `StackDatabase`, so no caller holds a stop for it: the
           // pool would delete this data directory under a server still serving a loopback port.
           // A stop that fails here is a server that is already gone, which is why the failure
           // the caller sees is the wait's.
@@ -504,12 +624,26 @@ function imageProvider(
             continue;
           }
           const url = `postgres://postgres:dispatch@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
+          // The container's end is the server's: `docker wait` returns once it has exited, and is
+          // stopped once the wait below is over, however it ends.
+          const watching = new AbortController();
+          let exited = false;
+          execFileAsync("docker", ["wait", container], { signal: watching.signal }).then(
+            () => {
+              exited = true;
+            },
+            () => {}
+          );
           try {
-            await ready(url, what, signal);
+            await ready(url, what, () => exited, signal);
             // The image carries the extension; the database the image made still has to install it,
             // as migration 0072 needs it.
             await sqlAt(url, ["create extension if not exists vector"], signal);
           } catch (error) {
+            if (error instanceof Interrupted) {
+              await remove();
+              throw error;
+            }
             // The container holds the port, so no other port is a different question: it is the
             // server inside that never answered, and the refusal says that rather than counting
             // ports. Its own last lines are read before it is removed.
@@ -520,6 +654,8 @@ function imageProvider(
                 `${port} and then ${error instanceof Error ? error.message : String(error)}; ` +
                 `the container said: ${said}`
             );
+          } finally {
+            watching.abort();
           }
           return {
             port,

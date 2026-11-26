@@ -29,28 +29,21 @@ export interface HarnessListener {
    *  variable, and hands the row the keeper's unix socket in `keeperEnv`; set, it hands the row
    *  that port in `portEnv`. */
   readonly heldAhead?: { readonly keeperEnv: string; readonly portEnv: string };
-  /** The line it prints once it serves, whose one group is the port it serves on. */
+  /** The line it prints once it serves, whose one group is the port it serves on. The start
+   *  waits for it with no bound of its own (`serving` in e2e/harness-start.ts says why). */
   readonly report: RegExp;
   /** A path that answers 200 once it is ready, when listening is not enough. */
   readonly health?: string;
-  /** How long it may take to report and be ready. */
-  readonly bootMs: number;
   /** Whether a deployed run (`PLAYWRIGHT_BASE_URL`) starts it. */
   readonly deployed: boolean;
 }
 
 const script = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.url));
 
-/** run-server.sh builds the server before it listens, and a cold `go build` on a busy machine is
- *  the long pole, so the server gets ten minutes. */
-const serverBootMs = 600_000;
-const listenerBootMs = 30_000;
-
 /** A run-server.sh row: the server's slog line, written with the address it serves on (a held
  *  socket's, or the one it bound), is `msg="dispatch: listening" addr=127.0.0.1:<port>`. */
 const dispatchServer = {
   argv: ["bash", script("run-server.sh")],
-  bootMs: serverBootMs,
   deployed: false,
   health: "/healthz",
   report: /msg="dispatch: listening" addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
@@ -123,7 +116,6 @@ function dispatchListeners(): HarnessListener[] {
   return [
     {
       argv: ["bun", script("round-robin-proxy.ts")],
-      bootMs: listenerBootMs,
       deployed: false,
       id: "round-robin-proxy",
       key: "dispatch",
@@ -150,7 +142,6 @@ function signInIssuerListeners(): HarnessListener[] {
   return [
     {
       argv: ["bash", script("run-signin-issuer.sh")],
-      bootMs: serverBootMs,
       deployed: false,
       env: {
         DISPATCH_E2E_SIGNIN_AS: oidcSignIn.person,
@@ -186,7 +177,6 @@ function realBrokerListeners(): HarnessListener[] {
   return [
     {
       argv: ["bash", script("run-broker.sh"), "issuer"],
-      bootMs: serverBootMs,
       deployed: false,
       id: "dev-oidc-issuer",
       key: "devIssuer",
@@ -195,7 +185,6 @@ function realBrokerListeners(): HarnessListener[] {
     },
     {
       argv: ["bash", script("run-broker.sh"), "broker"],
-      bootMs: serverBootMs,
       deployed: false,
       id: "real-broker",
       key: "realBroker",
@@ -221,7 +210,6 @@ function realBrokerListeners(): HarnessListener[] {
 export const harnessListeners: readonly HarnessListener[] = [
   {
     argv: ["bun", script("fake-envoy.ts")],
-    bootMs: listenerBootMs,
     deployed: true,
     id: "fake-envoy",
     key: "fakeEnvoy",
@@ -230,7 +218,6 @@ export const harnessListeners: readonly HarnessListener[] = [
   },
   {
     argv: ["bun", script("fake-github.ts")],
-    bootMs: listenerBootMs,
     deployed: false,
     id: "fake-github",
     key: "fakeGithub",
@@ -241,7 +228,6 @@ export const harnessListeners: readonly HarnessListener[] = [
     ? [
         {
           argv: ["bun", script("fake-broker.ts")],
-          bootMs: listenerBootMs,
           deployed: false,
           id: "fake-broker",
           key: "fakeBroker" as const,
@@ -254,7 +240,6 @@ export const harnessListeners: readonly HarnessListener[] = [
     ? [
         {
           argv: ["bun", script("fake-embedder.ts")],
-          bootMs: listenerBootMs,
           deployed: false,
           id: "fake-embedder",
           key: "fakeEmbedder" as const,
@@ -268,7 +253,6 @@ export const harnessListeners: readonly HarnessListener[] = [
   ...realBrokerListeners(),
   {
     argv: ["bun", script("plain-http-proxy.ts")],
-    bootMs: listenerBootMs,
     deployed: true,
     id: "plain-http-proxy",
     key: "plainHttp",

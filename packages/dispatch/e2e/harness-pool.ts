@@ -23,7 +23,7 @@
  *  answers; and the stack lines below name every port of every stack, so the log of such a run
  *  still shows the collision.
  */
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -81,7 +81,8 @@ const stopping = new AbortController();
  *  Postgres that is serving, an initdb halfway through, a server the harness has started are
  *  all held by this promise alone, and it is the start's own `catch` - and the stop paths of
  *  `e2e/harness-start.ts` and `e2e/harness-postgres.ts` under it - that puts them down. It
- *  never rejects; the copy kept here swallows what `startStacks` hands its caller. */
+ *  never rejects: it settles with what the start failed with, or undefined where it did not,
+ *  and the copy kept here swallows what `startStacks` hands its caller. */
 let starting: Promise<unknown> | undefined;
 
 /** Set by the listener of the signals nobody else handles (`terminatingSignals`), so a second
@@ -92,9 +93,9 @@ let terminating = false;
  *  holding, after which it stops what is up and ends this process anyway.
  *
  *  A start that has read the abort unwinds in about a second, since every wait in it takes that
- *  signal; what it cannot cut short is an `execFile` already running - a `pg_ctl -w start` or
- *  the `pg_ctl -w stop` that follows it, each bounded by PGCTLTIMEOUT - and the harness's own
- *  `Supervisor.stop`, which SIGKILLs whatever is left 10 s after its SIGTERM. The bound is not
+ *  signal, `pg_ctl -w start` among them; what it cannot cut short is the `pg_ctl -w stop` that
+ *  follows a start, bounded by PGCTLTIMEOUT, and the harness's own `Supervisor.stop`, which
+ *  SIGKILLs whatever is left 10 s after its SIGTERM. The bound is not
  *  generous for its own sake, because whoever sent the signal is counting too: a pod's
  *  `terminationGracePeriodSeconds` is 30 s by default and a `timeout -k` is of that order, and
  *  a handler still waiting when the SIGKILL arrives stops nothing at all. 15 s leaves the stop
@@ -146,7 +147,21 @@ async function terminate(signal: TerminatingSignal): Promise<void> {
   // a Postgres serving a loopback port and a data directory behind it: the stack is not in
   // `stacks` yet, so `stopStacks` would stop nothing and remove the run directory under a
   // server that is still up. The wait is bounded, so a start that never settles still ends.
-  if (starting !== undefined) await Promise.race([starting, sleep(terminateGraceMs)]);
+  const failure =
+    starting === undefined
+      ? undefined
+      : await Promise.race([starting, sleep(terminateGraceMs).then(() => undefined)]);
+  // What the start failed with is its caller's to report, and a caller that leaves that to the
+  // runtime's report of a rejection it never handled (e2e/harness-up.ts) never prints it: the
+  // signal raised below ends this process first. Under a test's limit or a CI step's, an
+  // interrupted start's message is the only account of what it was waiting for
+  // (`interruptedBefore`), so it is written here, to fd 2 at once, before anything else.
+  if (failure !== undefined) {
+    writeSync(
+      2,
+      `${named}: the start ended: ${failure instanceof Error ? failure.message : String(failure)}\n`
+    );
+  }
   // Stacks that are up are stopped keeping what a failed run keeps, since nothing here knows how
   // the run ended: the log directories of a run of more than one stack (a run of one stack, such
   // as e2e/harness-up.ts's, has none, and `clearRunDir` removes its directory either way). No
@@ -267,7 +282,10 @@ export async function startStacks(
   // The listener's own copy, which swallows: the rejection a cancelled start hands its caller
   // is handled by the `await` below, and a second reference to it must not become an unhandled
   // rejection of the handler's.
-  starting = start.catch(() => undefined);
+  starting = start.then(
+    () => undefined,
+    (error: unknown) => error ?? new Error("the start rejected with nothing")
+  );
   try {
     return await start;
   } finally {
@@ -312,7 +330,12 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         if (url !== "") own.DATABASE_URL = url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
-        const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
+        const harness = await startHarness({
+          env: own,
+          label: `stack ${index}`,
+          logDir,
+          signal: stopping.signal,
+        });
         stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {
         await database?.stop(true);

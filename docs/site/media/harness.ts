@@ -4,7 +4,7 @@
 // proxy) on ports the OS chooses, seeds example data, opens a signed-in browser context at a docs
 // viewport, and checks a page is ready and clean before it is captured. `shots.ts` and
 // `walkthrough.ts` both run on it, as does any section's own media.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import {
@@ -100,13 +100,21 @@ export async function withHarness<T>(body: (harness: Harness) => Promise<T>): Pr
   const { startHarness } = await import("../../../packages/dispatch/e2e/harness-start");
   const interrupted = new AbortController();
   const starting = startHarness({ logDir: join(WORK, "harness"), signal: interrupted.signal });
-  // A stop while the harness starts ends what has started; after, it ends the whole harness.
+  // A stop while the harness starts ends what has started; after, it ends the whole harness. A
+  // start the stop ended rejects naming what it was waiting for (`interruptedBefore`, as its waits
+  // have no bound of their own), and that line is written before the exit, to fd 2 at once, as
+  // the exit would drop a write still queued.
   const onSignal = () => {
     interrupted.abort();
     void starting
       .then(
         (started) => started.stop(),
-        () => undefined
+        (error: unknown) => {
+          writeSync(
+            2,
+            `docs/site/media/harness.ts: the harness start ended: ${error instanceof Error ? error.message : String(error)}\n`
+          );
+        }
       )
       .then(() => process.exit(130));
   };

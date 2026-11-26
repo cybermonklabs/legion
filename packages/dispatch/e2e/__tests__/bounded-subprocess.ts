@@ -27,8 +27,10 @@
  * starts, one for each fake a row of the four `outside-path-reach*` test files or of the three
  * `outside-edge-refusals*` ones asks for, the processes `local-instance-support.test.ts` starts
  * through its `Supervisor`, the stand-in Dispatches `prepareStandIn` of
- * `outside-agent-tailnet-stand-ins.ts` starts, and the squatters `squat` of
- * `outside-agent-acceptance.test.ts` leaves running until its row ends. Three subprocesses a row
+ * `outside-agent-tailnet-stand-ins.ts` starts, the squatters `squat` of
+ * `outside-agent-acceptance.test.ts` leaves running until its row ends, and the `harness-up.ts`
+ * the SIGTERM row of `harness-start.test.ts` signals while its start waits, which that row kills,
+ * with the stand-in Envoy it holds, when it fails. Three subprocesses a row
  * can wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and
  * hooks of `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`),
  * whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that

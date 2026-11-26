@@ -8,6 +8,7 @@
  *  import, and of the other e2e modules only e2e/pg-url.ts is imported, which imports nothing and
  *  opens nothing, so `e2e/__tests__/local-instance-support.test.ts` drives it without a server. */
 import { type ChildProcess, spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Ask, InboxRow } from "../web/src/api/types";
@@ -26,6 +27,37 @@ function untilAborted<T>(step: Promise<T>, signal: AbortSignal | undefined): Pro
   step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   if (signal.aborted) onAbort();
   return promise;
+}
+
+/** The Interrupted a wait of a harness start throws when the caller's signal aborts it
+ *  (`serving` and `keepPort` in e2e/harness-start.ts, `ready` in e2e/harness-postgres.ts). Those
+ *  waits have no bound of their own, so the caller's deadline is their hang guard, and this names
+ *  what the wait was for and how long it had waited: a start its caller ended says which process
+ *  never came up. `fact` is what would have ended the wait; `since` the `Date.now()` it began. */
+export function interruptedBefore(fact: string, since: number): Interrupted {
+  const seconds = ((Date.now() - since) / 1000).toFixed(1);
+  return new Interrupted(`interrupted ${seconds} s into the wait, before ${fact}`);
+}
+
+/** Writes, as a wait of a harness start begins, one line naming what it waits for, and returns the
+ *  function that writes the line saying the wait is over, which the wait calls however it ends (a
+ *  `finally`). `who` names the waiter: the module, and the stack it starts for where a caller
+ *  starts more than one (`HarnessOptions.label` in e2e/harness-start.ts; a stack's Postgres is
+ *  named in `fact`). `fact` is what will end the wait.
+ *
+ *  Those waits have no bound of their own, so when the caller's deadline ends one with a SIGKILL
+ *  that leaves no message - a test's bounded child, a CI step's limit - these lines are the account
+ *  of the hang: the wait it was in is the one whose `waiting` line has no `no longer waiting` line
+ *  after it. The last line of the output need not be that one, since a pool starts its stacks at
+ *  once and their lines interleave. Both lines are written to fd 2 at once, as a SIGKILL would lose
+ *  a line still queued for a stream. */
+export function announceWait(who: string, fact: string): () => void {
+  const since = Date.now();
+  writeSync(2, `${who}: waiting, with no bound of its own, until ${fact}\n`);
+  return () => {
+    const seconds = ((Date.now() - since) / 1000).toFixed(1);
+    writeSync(2, `${who}: no longer waiting (after ${seconds} s) until ${fact}\n`);
+  };
 }
 
 interface Running {

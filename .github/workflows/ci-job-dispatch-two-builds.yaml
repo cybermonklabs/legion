@@ -262,9 +262,9 @@ jobs:
         run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Build the Dispatch server
-        # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
-        # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
-        # and starts in seconds.
+        # Dispatch A's; run-server.sh builds it too, inside the harness's wait for each server's
+        # report (e2e/harness-start.ts's `serving`, which sets no bound of its own); built here, A
+        # finds it current and starts in seconds.
         run: go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
