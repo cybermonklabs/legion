@@ -16,6 +16,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -53,7 +54,15 @@ import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
-import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import {
+  markedCommentNode,
+  skipWithoutTreeNodeMarks,
+  treeAnswer,
+  treeNode,
+} from "./tree-read/tree-fixtures";
+
+/** Skips the cases that need the tree read to answer a post's marks on its node. */
+const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -170,26 +179,24 @@ function approvalAsk(): NonNullable<IssueDetails["open_asks"]>[number] {
  *  stubbed. */
 let stubbedIssue: IssueDetails = issue;
 
-/** Answers the header's reads through `api`: the issue, the reader's state of it, its comments
- *  (which the count reads a Change from) and the projects, whose gates only a root issue reads.
- *  A list without this issue's project gates nothing, which is the one chip these tests assert. */
+/** Answers the header's reads through `api`: the issue, the reader's state of it and the
+ *  projects, whose gates only a root issue reads. A list without this issue's project gates
+ *  nothing, which is the one chip these tests assert. The count reads a Change from the tree
+ *  read, and no comments list: a read of one reaches the network, which fails the file. */
 function stubHeader(
   nextIssue: IssueDetails,
   state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 }
 ): () => void {
   const originalGetIssue = api.getIssue;
   const originalGetMyState = api.getMyState;
-  const originalListComments = api.listComments;
   const originalListProjects = api.listProjects;
   stubbedIssue = nextIssue;
   api.getIssue = async () => nextIssue;
   api.getMyState = async () => ({ "CORE-1": state });
-  api.listComments = async () => [];
   api.listProjects = async () => [];
   return () => {
     api.getIssue = originalGetIssue;
     api.getMyState = originalGetMyState;
-    api.listComments = originalListComments;
     api.listProjects = originalListProjects;
     stubbedIssue = issue;
   };
@@ -338,20 +345,20 @@ test("the header hides whose turn when the server sent open asks without waiting
   }
 });
 
-// The count reads the reader's login, the decisions, the coverage, the comments and the tree,
-// under the keys the outline reads them by, and a root issue's header reads the
+// The count reads the reader's login, the decisions, the coverage and the tree, under the keys
+// the outline reads them by, and a root issue's header reads the
 // projects for its gated steps, under the key the shell's sidebar reads them by. The header mounts
 // again each time the reader comes back to the issue's page, and under the app's `staleTime` a
 // read is stale 30 s after it answered (`main.tsx`), each observer judging it by its own options:
-// read with the app's defaults, the header mounted again past that would send all five and the
-// projects read again, although the feed's events keep them fresh (decision 180).
+// read with the app's defaults, the header mounted again past that would send all four and the
+// projects read again, although the feed's events keep them fresh. It reads no comments list.
 test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
   const restore = stubHeader(issue);
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
-  // what says the mount came past the age the five and the projects read would go stale at.
+  // what says the mount came past the age the four and the projects read would go stale at.
   const getIssue = spyOn(api, "getIssue");
-  // The login and the decisions answered here, and the coverage, the comments and the tree by
-  // what the file already answers them with.
+  // The login and the decisions answered here, and the coverage and the tree by what the file
+  // already answers them with.
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -361,9 +368,9 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
       open_questions: [],
     }),
     spyOn(api, "getIssueCoverage"),
-    spyOn(api, "listComments"),
     spyOn(api, "getIssueTree"),
   ];
+  const comments = spyOn(api, "listComments");
   // The issue has no parent, so its header reads the projects, answered by `stubHeader`'s list.
   const listProjects = spyOn(api, "listProjects");
   const sent = () => reads.map((read) => read.mock.calls.length);
@@ -375,7 +382,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
 
   try {
     // The login is the one the shell already holds, and each other read is sent once.
-    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
+    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1]));
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const issueReads = getIssue.mock.calls.length;
@@ -388,15 +395,16 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     await waitFor(() => expect(getIssue.mock.calls.length).toBeGreaterThan(issueReads));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
-      0, 1, 1, 1, 1,
+      0, 1, 1, 1,
     ]);
+    expect(comments, "the header read the issue's comments").not.toHaveBeenCalled();
     expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
       1
     );
   } finally {
     view.unmount();
     setSystemTime();
-    for (const read of reads) read.mockRestore();
+    for (const read of [...reads, comments]) read.mockRestore();
     listProjects.mockRestore();
     getIssue.mockRestore();
     restore();
@@ -470,8 +478,8 @@ test("the header counts a Change under the decision whose block of the spec hold
       ],
       spec_artifact_id: issue.primary_artifact_id,
     }),
-    spyOn(api, "listComments").mockResolvedValue([change]),
   ];
+  const comments = spyOn(api, "listComments").mockResolvedValue([]);
   // The tree read's answer, which the header reads in place of the spec's blocks: each decision a
   // node of the issue, and the Change under the node of the decision it was written in.
   const tree = spyOn(api, "getIssueTree").mockResolvedValue(
@@ -486,21 +494,97 @@ test("the header counts a Change under the decision whose block of the spec hold
     ])
   );
   const queryClient = headerClient();
-  // The comments are held before the header mounts, as the outline's read of them leaves them, so
-  // no count is drawn from the decisions and the coverage before the Change is read: that count
-  // would draw the decision of the list whatever the tree read says.
-  queryClient.setQueryData(["comments", "CORE-1"], [change]);
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
     expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
     expect(tree).toHaveBeenCalled();
+    expect(comments, "the header read the issue's comments").not.toHaveBeenCalled();
+    expect(
+      queryClient.getQueryCache().find({ exact: true, queryKey: ["comments", "CORE-1"] }),
+      "the header observes the issue's comments list"
+    ).toBeUndefined();
   } finally {
     view.unmount();
-    for (const read of [...reads, tree]) read.mockRestore();
+    for (const read of [...reads, tree, comments]) read.mockRestore();
     restore();
   }
 });
+
+// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// `deleted_by`): a decision whose only Change the read answers deleted waits on the reader again,
+// and one whose Change stands waits on its agent, so of two decisions of the review list the count
+// draws one, read from Conversation's answer alone, with no comments list.
+test.skipIf(withoutTreeNodeMarks)(
+  "the header counts a decision whose only Change the tree read answers deleted, and not one whose Change stands",
+  async () => {
+    const asked = decision("asked", { links: [shaped(specRef("r1"))] });
+    const dropped = decision("dropped", { links: [shaped(specRef("r1"))] });
+    const changeOf = (id: string, deleted: boolean): Comment => ({
+      ...commentDeliveryFields(),
+      anchor: null,
+      ask_id: null,
+      author: { id: "alice", kind: "user" },
+      body: deleted ? "" : "Say which pages this covers.",
+      created_at: "2026-11-11T09:00:00Z",
+      ...(deleted
+        ? { deleted_at: "2026-11-11T10:00:00Z", deleted_by: { id: "alice", kind: "user" } }
+        : {}),
+      edited_at: null,
+      id,
+      issue_key: "CORE-1",
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: null,
+    });
+    const restore = stubHeader(issue);
+    const reads = [
+      spyOn(api, "getIssueDecisions").mockResolvedValue(
+        decisionsRead([asked, dropped], issue.artifacts[0])
+      ),
+      spyOn(api, "getIssueCoverage").mockResolvedValue({
+        gaps: [],
+        has_plan: false,
+        issue: "CORE-1",
+        requirements: [
+          {
+            block_id: "r1",
+            checks: 1,
+            gaps: [],
+            plan_tasks: 0,
+            ref: specRef("r1"),
+            text: "The first.",
+          },
+        ],
+        spec_artifact_id: issue.primary_artifact_id,
+      }),
+    ];
+    const comments = spyOn(api, "listComments");
+    const tree = spyOn(api, "getIssueTree").mockResolvedValue(
+      treeAnswer([
+        treeNode("CORE-1", "issue", null),
+        treeNode("asked", "decision", "CORE-1"),
+        markedCommentNode(changeOf("c-asked", false), "asked"),
+        treeNode("dropped", "decision", "CORE-1"),
+        markedCommentNode(changeOf("c-dropped", true), "dropped"),
+      ])
+    );
+    const view = renderHeader("/issues/CORE-1", headerClient());
+    try {
+      await waitFor(() =>
+        expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (1)")
+      );
+      expect(comments, "the header read the issue's comments").not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      for (const read of [...reads, tree, comments]) read.mockRestore();
+      restore();
+    }
+  }
+);
 
 test("the header keeps state actions available while approval awaits", async () => {
   // The request waits on the reader, so its chip carries Approve in the header.

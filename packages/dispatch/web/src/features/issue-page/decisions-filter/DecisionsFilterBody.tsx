@@ -150,6 +150,7 @@ export function DecisionsFilterBody({
   request,
   reveal,
   root,
+  treePending = false,
   view,
   waitingPress,
 }: {
@@ -198,6 +199,8 @@ export function DecisionsFilterBody({
   reveal?: string;
   /** The whole tree, which holds each ask and each decision and each statement a tie names. */
   root: TreeNode;
+  /** Whether `root` is still being rebuilt from newly arrived reads (`OutlineReads.treePending`). */
+  treePending?: boolean;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
   /** The press of the header's count of what waits on the reader that turned this filter on
@@ -207,7 +210,7 @@ export function DecisionsFilterBody({
 }): ReactNode {
   const navigate = useNavigate();
   const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
+    { issue, reader, root, treePending, view }
   );
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).

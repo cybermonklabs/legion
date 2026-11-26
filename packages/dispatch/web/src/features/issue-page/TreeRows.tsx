@@ -14,7 +14,6 @@ import type { Artifact } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { useDocumentAdmissions } from "./document-admission";
 import { type RowSlices, useDrawnInSlices } from "./drawn-in-slices";
 import { documentOfNode } from "./issue-artifacts";
 import { isStatement, type TreeNode } from "./issue-tree";
@@ -25,7 +24,6 @@ import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-wo
 import { rowSelectorOf } from "./tree-focus";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
-import { nodeEditable } from "./useNodeEditing";
 
 /**
  * The rows of the issue's tree, drawn.
@@ -48,7 +46,6 @@ export function TreeRows({
   container,
   context,
   coverageOut = false,
-  editing,
   focused,
   foldedMore = false,
   isClosed,
@@ -79,8 +76,6 @@ export function TreeRows({
    *  counts of what serves it are drawn in meanwhile (`NodeRow`'s `countsHeld`), so the counts
    *  arriving move no row. False unless the tree passes it. */
   coverageOut?: boolean;
-  /** The row the reader is editing in and the document its editor belongs to. */
-  editing: { readonly artifactId: string; readonly row: string } | undefined;
   /** The key of the row the focus is on: the row that holds the focus, or the one a press on
    *  another control of the page took it from, which keeps its focused look until that press has
    *  ended (`IssueTree.tsx`'s `useReleaseFocus`). */
@@ -123,8 +118,8 @@ export function TreeRows({
   threads: ReadonlyMap<string, ThreadMark>;
   /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
    *  `placesItself`): the outline's first row the page opens on and the row a zoom leaves the
-   *  reader on, each until the reader acts, and the row the reader is editing in, which the
-   *  editor's caret places as the reader writes. */
+   *  reader on, each until the reader acts. The row the reader is editing in places nothing
+   *  either, which that row sets for itself (`NodeRow`'s `useEditedRow`). */
   unplaced: string | undefined;
   /** The id of the node the tree is zoomed to, whose row is drawn open by definition, so it
    *  draws no fold control, whose press drew nothing. Absent where the tree is drawn from the
@@ -140,9 +135,6 @@ export function TreeRows({
   const [authors] = useState(() => new Map<string, RowAuthor>());
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
-  // What each document's room last admitted the page to, read once for every row: a row of a
-  // document its room admitted read-only takes no typing (`nodeEditable`).
-  const admissions = useDocumentAdmissions();
   // A row's top in the window, read from its element in the tree; undefined where it is not
   // drawn, and for the row that pages a node's children, which carries no key of its own. In the
   // commit that mounts the tree its element is given its ref after these rows' layout effects
@@ -196,8 +188,9 @@ export function TreeRows({
             // draws again no row it gives nothing to.
             countsHeld={coverageOut && isStatement(row.node)}
             {...(place === undefined ? {} : { document: place.artifact })}
-            editable={nodeEditable(place, isClosed, admissions)}
-            {...(editing?.row === key ? { editing: editing.artifactId } : {})}
+            // Each row reads its own document's room admission (`useDocumentReadOnly`) and
+            // whether it is being edited (`useEditedRow`), so neither draws every row again.
+            editable={!isClosed && place !== undefined}
             expanded={row.expanded}
             focused={focused === key}
             foldable={!(row.level === 1 && row.node.id === zoomRoot)}

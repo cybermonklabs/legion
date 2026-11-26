@@ -95,6 +95,11 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     In `src/typed-block-commands.ts`: `validateValue`'s `minutes` case calling it.
     In `src/tests/block-schema.test.ts`: its import and the suite's case for the kind.
 
+31. Single-block editors (`element` and `beforeConnect` options, decision 544).
+    `src/lib.ts`'s `CreateProofEditorOptions` gains `element?: Y.XmlElement` and `beforeConnect?: (view: EditorView) => void`.
+    When `element` is given, `createProofEditor` refuses a document-level node (`XmlFragment` or `doc`), wraps `serializerCtx` before `.use(listener)` so a non-`doc` root serializes inside `doc`, sets `editorStateOptionsCtx` and `schema.topNodeType` to the element's own node type and attributes, and binds `collabService` to `opts.element` instead of `opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror')` (the one rewritten line).
+    When `beforeConnect` is given, it runs with `view` right before `collabService.connect()` and carries the installed plugins into `prosePluginsCtx`.
+
 ## The two micromark copies
 
 `src/directive-factories.ts` and `src/html-flow.ts` have no counterpart in the fork.

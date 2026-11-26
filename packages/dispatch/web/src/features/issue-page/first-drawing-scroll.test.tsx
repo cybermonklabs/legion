@@ -27,18 +27,17 @@ import {
 /**
  * The first drawing of the outline's rows and its scroll ("The first drawing and its scroll" of
  * the plan), rows 2 and 6. The outline draws its first rows once every read that can place a row
- * or say which row the page's first focus goes to has answered - the tree read, the asks, the
- * comments, the decisions and the reader's login - so the first commit of rows draws them where
- * they stay; the coverage, the results and the messages only mark rows placed already, and are
- * not waited on. A read refused is an answer too. The page's first focus lands once every read
- * the rows come from has answered, on a row drawn.
+ * or say which row the page's first focus goes to has answered - the tree read, which answers the
+ * comments too, the asks, the decisions and the reader's login - so the first commit of rows
+ * draws them where they stay; the coverage, the results and the messages only mark rows placed
+ * already, and are not waited on. A read refused is an answer too. The page's first focus lands
+ * once every read the rows come from has answered, on a row drawn.
  */
 
 /** The reads that can place a row of the outline or say where its first focus goes, beside the
  *  tree read, each by the api client's read of it and what it answers here. */
 const PLACING = {
   asks: { read: "listIssueAskThreads", answer: () => [] },
-  comments: { read: "listComments", answer: () => [...TWO_THREADS] },
   decisions: { read: "getIssueDecisions", answer: () => decisionsRead([]) },
   whoami: {
     read: "whoAmI",
@@ -205,10 +204,9 @@ test("row 2: Conversation with no question waiting: the first commit of rows giv
 });
 
 /** The reads that can place a row and draw a line of their own where they stand refused, each by
- *  the api client's read of it and the words its line says (`outline-reads.ts`'s `sixReads`). */
+ *  the api client's read of it and the words its line says (`outline-reads.ts`'s `besideReads`). */
 const REFUSABLE = [
   { line: STATE_LINES.asks_unreadable, name: "asks", read: "listIssueAskThreads" },
-  { line: STATE_LINES.comments_unreadable, name: "comments", read: "listComments" },
   { line: STATE_LINES.messages_unreadable, name: "messages", read: "listIssueMessages" },
   { line: STATE_LINES.issue_decisions_unreadable, name: "decisions", read: "getIssueDecisions" },
 ] as const satisfies readonly {

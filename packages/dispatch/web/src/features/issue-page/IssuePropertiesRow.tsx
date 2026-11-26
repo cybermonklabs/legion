@@ -39,7 +39,6 @@ import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -83,11 +82,11 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the tree read, which the outline keeps fresh by its own rule (`TREE_FRESH`), whose
-  // decision nodes hang the Changes written on them, which say which decision a Change belongs
-  // to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
-  // refresh them, never their age (decision 180). Staleness is per observer, so each read here
+  // reader's login, the decisions, the coverage's statements, and the tree read, which the
+  // outline keeps fresh by its own rule (`TREE_FRESH`), whose decision nodes hang the Changes
+  // written on them and whose comments are the Changes of a decision it holds no node for - and
+  // kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
+  // refresh them, never their age. Staleness is per observer, so each read here
   // takes that rule too, and the count costs no request of its own (`waiting.ts`). Until a
   // decision's node is held the count reads the Changes asked of it by their quotes, as
   // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
@@ -96,10 +95,6 @@ export function IssuePropertiesRow({
   const viewer = viewerRead.data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const comments = useQuery({
-    ...issueCommentsQuery(issue.key),
-    ...EVENT_FRESH,
-  });
   const treeRead = useTreeRead(issue);
   const tree = treeRead.answer;
   // Whether every read the count is counted from has settled, with its answer or its failure:
@@ -108,11 +103,7 @@ export function IssuePropertiesRow({
   // push every control after it along the line as the count arrives (R3: on a load of a large
   // issue the approval control slid 160 px right when the tree read answered).
   const counted =
-    !viewerRead.isPending &&
-    !decisions.isPending &&
-    !coverage.isPending &&
-    !comments.isPending &&
-    !treeRead.pending;
+    !viewerRead.isPending && !decisions.isPending && !coverage.isPending && !treeRead.pending;
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -125,10 +116,9 @@ export function IssuePropertiesRow({
         viewer,
         decisions.data,
         (reference) => statements.has(nodeIdOf(reference)),
-        comments.data,
         tree
       ),
-    [issue, viewer, decisions.data, statements, nodeIdOf, comments.data, tree]
+    [issue, viewer, decisions.data, statements, nodeIdOf, tree]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

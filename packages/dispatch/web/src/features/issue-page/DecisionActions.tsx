@@ -354,6 +354,11 @@ function ChangeComposer({
   const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
+    // The issue the Change is written on, as Keep names it: the tree read and its views are held
+    // while the write is out and read once it settles, so the Change the read hangs under the
+    // decision is drawn as soon as the comment lands, and the decision says it was changed and
+    // leaves the review list (`decision-review.ts`).
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
@@ -372,12 +377,8 @@ function ChangeComposer({
         },
         bounds
       ),
-    // The change is a comment of the issue's, and the comments read is what tells the page a
-    // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
-    // the review list and draws the change under it as soon as the comment lands.
     onSuccess: () => {
       setBody("");
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },
     // A send Dispatch refused, or one the reader stopped, gives the words back to the draft: the

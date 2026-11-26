@@ -36,11 +36,13 @@ import {
   Editor,
   rootCtx,
   defaultValueCtx,
+  editorStateOptionsCtx,
   editorViewCtx,
   parserCtx,
   remarkCtx,
   schemaCtx,
   serializerCtx,
+  SerializerReady,
   remarkStringifyOptionsCtx,
   prosePluginsCtx,
 } from '@milkdown/core';
@@ -172,6 +174,13 @@ export interface CreateProofEditorOptions {
   /** The XmlFragment of `ydoc` the editor binds: the one holding its document, where the
    *  host's Yjs document holds several. Defaults to 'prosemirror'. */
   fragment?: string;
+  /** Bind a block editor directly to one block's `Y.XmlElement` instead of the document's whole
+   *  fragment, with the root node of the element's own type and attributes. Document-level nodes
+   *  (a bare fragment or a `doc` element) are refused. */
+  element?: Y.XmlElement;
+  /** Called with the ProseMirror view right before `collabService.connect()` binds and renders
+   *  Yjs content, so host node views and plugins install once before the first draw. */
+  beforeConnect?: (view: EditorView) => void;
   /** Host-owned awareness instance (e.g. from HocuspocusProvider#awareness).
    *  Pass null/undefined to run without collaborative cursors. */
   awareness?: Awareness | null;
@@ -433,6 +442,14 @@ export async function createProofEditor(
   opts: CreateProofEditorOptions,
 ): Promise<ProofEditorHandle> {
   root.classList.add('proof-editor');
+  if (opts.element !== undefined) {
+    const nodeName = (opts.element as { nodeName?: unknown }).nodeName;
+    if (typeof nodeName !== 'string' || nodeName === '' || nodeName === 'doc') {
+      throw new Error(
+        `createProofEditor element must be a block Y.XmlElement, not ${JSON.stringify(nodeName ?? 'XmlFragment')}`,
+      );
+    }
+  }
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
@@ -463,6 +480,18 @@ export async function createProofEditor(
     .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock, opts.documentRef) as unknown as MilkdownPlugin[]) : [])
     .use(blockIdPlugins)
     .use(history)
+    .use(
+      opts.element
+        ? ((ctx) => async () => {
+            await ctx.wait(SerializerReady);
+            const schema = ctx.get(schemaCtx);
+            const base = ctx.get(serializerCtx);
+            ctx.set(serializerCtx, (node) =>
+              base(node.type.name === 'doc' ? node : schema.nodes.doc.create(null, node)),
+            );
+          }) as MilkdownPlugin
+        : [],
+    )
     .use(listener)
     .use(collab)
     .use(cursor)
@@ -534,6 +563,26 @@ export async function createProofEditor(
         },
       }));
       ctx.set(heatmapCtx.key, { mode: heatMapMode });
+      if (opts.element) {
+        const element = opts.element;
+        ctx.set(editorStateOptionsCtx, (prev) => {
+          const schema = prev.schema;
+          const nodeType = schema?.nodes[element.nodeName];
+          if (!schema || !nodeType) {
+            throw new Error(
+              `block editor element type ${JSON.stringify(element.nodeName)} is not in the editor schema`,
+            );
+          }
+          Object.assign(schema, { topNodeType: nodeType });
+          const doc = nodeType.createAndFill(element.getAttributes());
+          if (doc === null) {
+            throw new Error(
+              `block editor could not build a root node of type ${JSON.stringify(element.nodeName)}`,
+            );
+          }
+          return { ...prev, doc };
+        });
+      }
     })
     .create();
 
@@ -567,7 +616,11 @@ export async function createProofEditor(
     relaxAskContentCheck(ctx.get(schemaCtx));
     // This package's own edit of the copied file: upstream calls bindDoc, which binds the
     // 'prosemirror' fragment, and an issue's room holds one fragment per document.
-    collabService.bindXmlFragment(opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
+    if (opts.beforeConnect) {
+      opts.beforeConnect(view);
+      ctx.set(prosePluginsCtx, [...view.state.plugins]);
+    }
+    collabService.bindXmlFragment(opts.element ?? opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
     collabService.mergeOptions({
       yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
     });

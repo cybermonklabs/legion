@@ -33,7 +33,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // (`published`), so none of them reads a reference the page asks for; and the outline's names
   // line while those reads stand failed (`names`), which the body draws over its list, since
   // every reference its rows draw waits on those names.
-  const { names, published, readsSettled, refused, root } = useOutlineReads(issue);
+  const { names, published, readsSettled, refused, root, treePending } = useOutlineReads(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
@@ -86,6 +86,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         request={request}
         reveal={reveal?.at(-1)?.id}
         root={root}
+        treePending={treePending}
         view={view.root}
         // The press of the header's count of what waits on the reader, left in the history
         // entry (part P): each press goes to the next thing that waits (the tester's F12).

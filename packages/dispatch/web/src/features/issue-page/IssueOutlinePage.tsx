@@ -42,7 +42,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
 import { outlineOf, outlineQuery } from "./tree-read/tree-read";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
@@ -162,11 +162,11 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
  * from, so none of them waits for the issue read: the page mounts no slot until that read
  * answers, and each slot's hooks sent these reads only as the slot mounted, so on a cold load
  * each went out after the issue read had come back. They are the tree read of the view `route`
- * opens, the six reads `useIssueTree` builds the tree from beside it - the coverage, the
- * decisions, the results, the asks, the comments and the messages - and the reader's login. Each
- * is sent under the key and with the function its hook reads it by, so the hook, once mounted,
- * finds it out or answered and sends nothing of its own: a load sends each of them once, as
- * before, only sooner.
+ * opens, which answers the comments too, the five reads `useIssueTree` builds the tree from beside
+ * it - the coverage, the decisions, the results, the asks and the messages - and the reader's
+ * login. Each is sent under the key and with the function its hook reads it by, so the hook, once
+ * mounted, finds it out or answered and sends nothing of its own: a load sends each of them once,
+ * as before, only sooner.
  *
  * A read the cache holds already - answered, refused or out - is left to its hook, which reads it
  * as it read it before (a refused tree read, for one, is not read again by a new observer,
@@ -188,7 +188,6 @@ function startReadsAtOpen(queryClient: QueryClient, route: IssueRoute): void {
   startRead(queryClient, issueDecisionsQuery(key, true));
   startRead(queryClient, issueResultsQuery(key));
   startRead(queryClient, issueAskThreadsQuery(key));
-  startRead(queryClient, issueCommentsQuery(key));
   startRead(queryClient, issueMessagesQuery(key));
   startRead(queryClient, whoAmIQuery());
 }

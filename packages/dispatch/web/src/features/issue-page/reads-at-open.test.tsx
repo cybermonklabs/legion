@@ -14,17 +14,17 @@ import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fix
 
 /**
  * The reads the page starts as it mounts (`IssueOutlinePage.tsx`): the tree read of the view the
- * address opens, the six reads the tree is built from beside it and the reader's login, each
- * under the key and with the function its hook reads it by, so none of them waits for the issue
- * read, which the page's slots are mounted after, and none is sent a second time once they are.
+ * address opens, which answers the comments too, the five reads the tree is built from beside it
+ * and the reader's login, each under the key and with the function its hook reads it by, so none
+ * of them waits for the issue read, which the page's slots are mounted after, and none is sent a
+ * second time once they are.
  */
 
 /** The api client's reads the page sends with a load of Conversation, each by the name the case
- *  says it by: the tree read, the six reads and the reader's login, as the request log names
+ *  says it by: the tree read, the five reads and the reader's login, as the request log names
  *  them (`requests`). */
 const READS_AT_OPEN = {
   asks: "listIssueAskThreads",
-  comments: "listComments",
   coverage: "getIssueCoverage",
   decisions: "getIssueDecisions",
   messages: "listIssueMessages",
@@ -76,12 +76,12 @@ function requests(): ReadAtOpen[] {
 }
 
 // The page mounted no slot until the issue read answered, and each slot sent the reads it draws
-// from as it mounted: on a cold load the tree read, the six reads and the reader's login waited
+// from as it mounted: on a cold load the tree read, the five reads and the reader's login waited
 // for the lazy chunk and then for the issue read, one after the other. They are sent as the page
 // mounts, beside the issue read, which is held here: all of them go out while it is still out.
 // Once it answers the slots read each of them under the key it was started under, and send none
 // again.
-test("the tree read and the six reads are sent before the issue read answers", async () => {
+test("the tree read and the five reads are sent before the issue read answers", async () => {
   const issueRead = Promise.withResolvers<IssueDetails>();
   const issue = spyOn(api, "getIssue").mockReturnValue(issueRead.promise);
   // The app's client (`main.tsx`): no read tried again here, and a read 30 s old read again by a

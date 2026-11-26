@@ -1943,13 +1943,19 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
       "the table is no wider than what it shows, so it does not scroll inside itself"
     ).toBeGreaterThan(before.table.client);
     expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
-    // A reader's sideways scroll over the table, as a trackpad makes it.
-    const at = await table.boundingBox();
-    expect(at, "the table has no box on the page").not.toBeNull();
-    await page.mouse.move(
-      (at?.x ?? 0) + (at?.width ?? 0) / 2,
-      (at?.y ?? 0) + (at?.height ?? 0) / 2
-    );
+    // A reader's sideways scroll over the table, as a trackpad makes it, over the part of the
+    // table the box draws on the screen: the box holds its height to the room the row has
+    // (`holdEditorAtBlock`), so a table taller than that runs on inside the box, where it is
+    // clipped, and the row's actions stand over the spot the table's own centre would be.
+    const at = await table.evaluate((element) => {
+      const drawn = element.getBoundingClientRect();
+      const box = element.closest("[data-editor-box]")?.getBoundingClientRect();
+      const top = Math.max(drawn.top, box?.top ?? drawn.top, 0);
+      const bottom = Math.min(drawn.bottom, box?.bottom ?? drawn.bottom, window.innerHeight);
+      return { height: bottom - top, x: drawn.left + drawn.width / 2, y: (top + bottom) / 2 };
+    });
+    expect(at.height, "the box draws no part of the table on the screen").toBeGreaterThan(0);
+    await page.mouse.move(at.x, at.y);
     await page.mouse.wheel(before.table.scroll, 0);
     await expect
       .poll(async () => (await widths()).lastShown, {

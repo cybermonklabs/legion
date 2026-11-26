@@ -43,7 +43,9 @@ import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
+import { useDocumentReadOnly } from "./document-admission";
 import { useDocumentStage } from "./document-stage";
+import { useEditedRow } from "./edited-row";
 import { holdsFirstFocus } from "./first-focus";
 import { chipName } from "./first-line";
 import { useHeldChipLine } from "./held-chip-lines";
@@ -125,7 +127,6 @@ export const NodeRow = memo(function NodeRow({
   countsHeld = false,
   document,
   editable = false,
-  editing,
   expanded,
   focused,
   foldable = true,
@@ -164,14 +165,13 @@ export const NodeRow = memo(function NodeRow({
    *  another of the issue's (R7). Undefined for a node that is no block of a document of this
    *  issue. */
   document?: Artifact;
-  /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
-   *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
-   *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
+  /** Whether the row's node is a block of a document the page may let the reader type in - the
+   *  issue is open and the node has a document - which the row reads with what its document's
+   *  room admitted (`useDocumentReadOnly`) to carry `data-editable`, for a view that lets the
+   *  reader edit its words in place and draws such a row its own way: part I's outline passes
+   *  it, and its styles draw the cue that the row takes typing (decision 323). False unless the
    *  view passes it. */
   editable?: boolean;
-  /** The document this row's own text lives in, while the reader is editing it here: its
-   *  editor is drawn in place of the row's words and the caret is in this node's block. */
-  editing?: string;
   /** `true` when its children are drawn, `false` when it holds children the reader folded, and
    *  undefined for a node that holds none. */
   expanded?: boolean;
@@ -204,8 +204,9 @@ export const NodeRow = memo(function NodeRow({
    *  every row does but three of the outline's: its first row as the page opens on it with no
    *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
    *  it draws, each of which stays where it stands until the reader acts, and the row the reader
-   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
-   *  All three are `IssueTree.tsx`'s to set. */
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes
+   *  and which sets this for itself (`useEditedRow`). The first two are `IssueTree.tsx`'s to
+   *  set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -224,6 +225,12 @@ export const NodeRow = memo(function NodeRow({
   threadRead?: ThreadMark;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
+  // The document this row's own text lives in while the reader is editing it here: its editor is
+  // drawn in place of the row's words and the caret is in this node's block. The tree publishes
+  // the edited row alone (`EditedRowContext`), so only this row hears Enter.
+  const editing = useEditedRow(rowKey);
+  const readOnly = useDocumentReadOnly(document?.id);
+  const takesTyping = editable && !readOnly;
   const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
@@ -238,7 +245,14 @@ export const NodeRow = memo(function NodeRow({
   const oneLine = expanded === false;
   const ids = rowNameIds(useId());
 
-  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
+  // The row being edited places nothing of its own: the editor keeps its caret on screen as the
+  // reader writes, and grows the row.
+  const press = useRowOnScreen(
+    row,
+    focused,
+    BELOW_WHAT_STAYS,
+    editing === undefined && placesItself !== false
+  );
 
   const depth = indentOf(level);
   const edges = node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0;
@@ -269,7 +283,7 @@ export const NodeRow = memo(function NodeRow({
       aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
-      data-editable={editable ? "" : undefined}
+      data-editable={takesTyping ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -919,6 +933,10 @@ export function RowMargin({
                     </span>
                   </>
                 ) : null}
+                {/* A decision whose Change may stand on a comment page the read has not loaded
+                    says so as a count with more to read does (R15), rather than read as
+                    unchanged (`TreeNode.changeUnread`). */}
+                {node.changeUnread === true ? <span data-change-unread="">+</span> : null}
               </span>
             </span>
           )}

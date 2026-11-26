@@ -48,7 +48,11 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
     useOutlineReads(issue);
   // What the first group's two rows count, over the whole tree and under the same words filter as
   // the view row's signals, once the tree may be counted (`briefCounts`).
-  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, address.filter);
+  const counts = useDeferredBriefCounts(
+    { namesHeld, readsHeld, root, warm },
+    address.filter,
+    address.preset
+  );
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.

@@ -198,14 +198,6 @@ function useLastAnswered(refs: readonly string[], answered: boolean): readonly s
   return last.current;
 }
 
-/** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
- *  refresh (`["comments", key]`); a view of the same read takes its key from here. */
-export const issueCommentsQuery = (key: string) =>
-  queryOptions({
-    queryKey: ["comments", key],
-    queryFn: () => api.listComments(key),
-  });
-
 /** The issue's messages as the tree reads them (`listIssueMessages`), under the key the feed's
  *  rules refresh (`["issue-messages", key]`); a view of the same read takes its key from here. */
 export const issueMessagesQuery = (key: string) =>
@@ -220,7 +212,6 @@ export const issueMessagesQuery = (key: string) =>
  *  compile until it is named. */
 const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>> = {
   asks: true,
-  comments: true,
   coverage: true,
   decisions: true,
   holdsPlanTask: true,
@@ -268,7 +259,6 @@ function prepareOutline(reads: IssueTreeReads): void {
 function treeInputKeys(key: string, outline: QueryKey) {
   return {
     asks: issueAskThreadsQuery(key).queryKey,
-    comments: issueCommentsQuery(key).queryKey,
     coverage: issueCoverageQuery(key).queryKey,
     decisions: issueDecisionsQuery(key, true).queryKey,
     messages: issueMessagesQuery(key).queryKey,
@@ -430,11 +420,12 @@ function useBuiltTree(
  * or an address (R15) - which place, order and word every node; no document's blocks are read.
  * `IssueTreeReads.tree` is that read's whole answer as loaded (R7), so
  * `presetView`, `filterSignals` and `blocksOf` read the one tree the page holds. Beside it stand
- * the reads that tell what the answer does not: the coverage, decisions, results, comments,
- * messages and the reader's login. Details' pins and the new page's margin share the outline's
- * asks read with each ask's thread (`issueAskThreadsQuery`). The comments also say which
- * decision a person asked to change (`decision-review.ts`); the login says which open questions
- * wait on the reader (`IssueTreeReads.viewer`).
+ * the reads that tell what the answer does not: the coverage, decisions, results, messages and
+ * the reader's login. Details' pins and the new page's margin share the outline's asks read with
+ * each ask's thread (`issueAskThreadsQuery`). The comments are the answer's own: each comment
+ * node carries its anchor and its author's marks, and the comments under a decision say which
+ * decision a person asked to change (`decision-review.ts`' `treeComments`); the login says which
+ * open questions wait on the reader (`IssueTreeReads.viewer`).
  *
  * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds,
@@ -470,7 +461,6 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
   const latestReads = useCallback(
     (): IssueTreeReads => ({
       asks: client.getQueryData(inputs.asks),
-      comments: client.getQueryData(inputs.comments),
       coverage: client.getQueryData(inputs.coverage),
       decisions: client.getQueryData(inputs.decisions),
       holdsPlanTask: holdsPlanTask(client.getQueryData(inputs.plan)),
@@ -489,7 +479,7 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
   // again, though nothing it holds had changed.
   //
   // Of the feed's rules (`api/event-refresh.ts`), these refresh the reads the tree is built from:
-  // `["comments", key]` on a comment event and on a document's upload or new version;
+  // the tree read and its views on every event of the issue, a comment's among them;
   // `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
   // repaired or found invalid; `["decisions", key]` on an ask event, a Keep, a document's new
   // version and the block index catching up on documents a write left owing it
@@ -513,9 +503,6 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
   const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({ ...issueAskThreadsQuery(key), ...EVENT_FRESH });
-  // Under the keys the margin, the history and the focused row's facts read too, so a reader
-  // opening the panel after the tree finds them answered rather than read a second time.
-  const comments = useQuery({ ...issueCommentsQuery(key), ...EVENT_FRESH });
   // Under the key the history and the margin read too, and one of the reads the names wait on
   // (`answered`); the model reads from it only what its author did to a message - deleted it or
   // last edited it - since the tree read answers each message as a node with no such mark.
@@ -556,7 +543,6 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
-      comments: comments.data,
       coverage: coverage.data,
       decisions: decisions.data,
       holdsPlanTask: planTaskHeld,
@@ -568,7 +554,6 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
     }),
     [
       asks.data,
-      comments.data,
       coverage.data,
       decisions.data,
       issue,
@@ -587,9 +572,9 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
   const nextRefs = read.answer === undefined ? noOutlineRefs : cachedOutlineReferences(reads);
   const refs = useLastAnswer(nextRefs) ?? noOutlineRefs;
   // One request for every name, not one per read that landed. Each of these reads adds to the
-  // tree as it arrives - the tree read every node, the decisions read a decision no node holds,
-  // the asks an answer, the comments a Change moved under its decision - so asking while any is
-  // still out would ask for the addresses known so far and ask again for the rest: measured on
+  // tree as it arrives - the tree read every node and every comment, the decisions read a
+  // decision no node holds, the asks an answer - so asking while any is still out would ask for
+  // the addresses known so far and ask again for the rest: measured on
   // this pod, that cost the first load two reads and sometimes three, where the design is "the
   // names come last and all at once" (above) and the first load's budget is 40 requests. The
   // reader's login is one of the reads this gate waits on: it adds no node, but the tree is
@@ -601,7 +586,6 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
     !read.pending &&
     nextRefs !== undefined &&
     !asks.isPending &&
-    !comments.isPending &&
     !coverage.isPending &&
     !decisions.isPending &&
     !messages.isPending &&

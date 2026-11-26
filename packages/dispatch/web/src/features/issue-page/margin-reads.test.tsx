@@ -77,14 +77,22 @@ function stubDecisionsRead(): Mock<typeof api.getIssueDecisions> {
 /** The margin's reads of the issue (`useMarginItems`, which reads the asks through
  *  `useAnsweredAsks`): in the Details drawer where `inDrawer` is given, as the new page's shell
  *  draws the margin, and with no drawer otherwise, as every other page draws it. Where `spec` is
- *  given, the margin is beside that document, shown, and so reads its decisions too. */
-function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined, spec?: Artifact) {
+ *  given, the margin is beside that document, its editor up and shown, and so reads its decisions
+ *  too; `documentUp` says whether a document's editor is up, the spec's or another's. */
+function renderMargin(
+  client: QueryClient,
+  inDrawer: MarginDrawer | undefined,
+  spec?: Artifact,
+  documentUp = spec !== undefined
+) {
   return renderHook(
-    () =>
+    ({ up }: { up: boolean }) =>
       useMarginItems(OWNER, "comments", spec, NO_PLACEMENTS, NO_PLACEMENTS, undefined, {
         documentShown: spec !== undefined,
+        documentUp: up,
       }),
     {
+      initialProps: { up: documentUp },
       wrapper: ({ children }: { children: ReactNode }) => (
         <QueryClientProvider client={client}>
           <MarginSlotProvider drawer={inDrawer}>{children}</MarginSlotProvider>
@@ -95,17 +103,19 @@ function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined, s
 }
 
 /** Waits until each read, and the decisions' read where it is given, has gone out once and every
- *  one has answered. */
+ *  one has answered: the comments' once where the margin reads them, which in Details it does
+ *  only beside a document (`commentsRead`). */
 async function firstAnswers(
   client: QueryClient,
   reads: MarginReads,
   inDrawer: boolean,
-  decisions?: Mock<typeof api.getIssueDecisions>
+  decisions?: Mock<typeof api.getIssueDecisions>,
+  commentsRead = true
 ): Promise<void> {
   await waitFor(() => {
     expect(reads.getInbox).toHaveBeenCalledTimes(1);
     expect(reads.getMyState).toHaveBeenCalledTimes(1);
-    expect(reads.listComments).toHaveBeenCalledTimes(1);
+    expect(reads.listComments).toHaveBeenCalledTimes(commentsRead ? 1 : 0);
     expect(reads.listIssueAsks).toHaveBeenCalledTimes(inDrawer ? 0 : 1);
     expect(reads.listIssueAskThreads).toHaveBeenCalledTimes(inDrawer ? 1 : 0);
     if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
@@ -120,9 +130,10 @@ const BESIDE = [
   ["the shown spec", specArtifact],
 ] as const;
 
-// On the new issue page the outline reads the issue's asks and comments under the margin's keys
-// and keeps them fresh by events (`useIssueTree.ts`), so the margin in the Details drawer holds
-// them the same way: a window focus past the app's 30 s staleness reads neither again. Beside the
+// On the new issue page the outline reads the issue's asks under the margin's keys and keeps them
+// fresh by events (`useIssueTree.ts`), so the margin in the Details drawer holds them the same
+// way: a window focus past the app's 30 s staleness reads them no more. It reads the issue's
+// comments only beside a document, and holds them the same way. Beside the
 // shown spec it reads the decisions too, which the outline also reads under this key and keeps
 // fresh by events, and the same focus reads them again no more than it reads the asks and the
 // comments. The inbox and the reader's state keep the app's defaults there too, so their second
@@ -135,7 +146,7 @@ test.each(
   const client = appClient();
   const view = renderMargin(client, drawer, spec);
   try {
-    await firstAnswers(client, reads, true, decisions);
+    await firstAnswers(client, reads, true, decisions, spec !== undefined);
     await focusPastStaleness(client);
     await waitFor(() => {
       expect(reads.getInbox).toHaveBeenCalledTimes(2);
@@ -143,7 +154,7 @@ test.each(
     });
     expect(reads.listIssueAsks).not.toHaveBeenCalled();
     expect(reads.listIssueAskThreads).toHaveBeenCalledTimes(1);
-    expect(reads.listComments).toHaveBeenCalledTimes(1);
+    expect(reads.listComments).toHaveBeenCalledTimes(spec === undefined ? 0 : 1);
     if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
@@ -182,7 +193,7 @@ test("the new page's margin sends no plain asks read when the outline holds the 
   const view = renderMargin(client, drawer);
   try {
     await waitFor(() => {
-      expect(reads.listComments).toHaveBeenCalledTimes(1);
+      expect(reads.getInbox).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
     expect(reads.listIssueAsks).not.toHaveBeenCalled();
@@ -191,6 +202,50 @@ test("the new page's margin sends no plain asks read when the outline holds the 
   } finally {
     view.unmount();
     client.clear();
+  }
+});
+
+// The new page reads no comment list at load: in Details the margin's cards are drawn only while
+// a document's editor is up (`slots/details.tsx`), so the margin reads the issue's comments then,
+// once, and not before; every other page has no drawer and reads them at mount, as it always has.
+test("in Details the margin reads the issue's comments only once a document's editor is up, and once", async () => {
+  const reads = stubMarginReads();
+  const client = appClient();
+  const view = renderMargin(client, drawer, undefined, false);
+  try {
+    await waitFor(() => {
+      expect(reads.getInbox).toHaveBeenCalledTimes(1);
+      expect(reads.listIssueAskThreads).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    expect(
+      reads.listComments,
+      "the margin read the comments with no document up"
+    ).not.toHaveBeenCalled();
+    expect(
+      client.getQueryCache().find({ exact: true, queryKey: ["comments", OWNER.key] }),
+      "the margin observes the issue's comments list with no document up"
+    ).toBeUndefined();
+    view.rerender({ up: true });
+    await waitFor(() => expect(reads.listComments).toHaveBeenCalledTimes(1));
+    view.rerender({ up: false });
+    view.rerender({ up: true });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(reads.listComments, "a document up again read the comments again").toHaveBeenCalledTimes(
+      1
+    );
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+  reads.listComments.mockClear();
+  const outside = appClient();
+  const elsewhere = renderMargin(outside, undefined, undefined, false);
+  try {
+    await waitFor(() => expect(reads.listComments).toHaveBeenCalledTimes(1));
+  } finally {
+    elsewhere.unmount();
+    outside.clear();
   }
 });
 

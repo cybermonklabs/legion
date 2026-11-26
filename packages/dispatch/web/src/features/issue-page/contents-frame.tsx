@@ -192,10 +192,10 @@ export function ThreeThingsAbove({
 function ThreeThingsOf({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug ?? "";
-  const { filter } = issueAddress(route, search, hash, specSlug);
+  const { filter, preset } = issueAddress(route, search, hash, specSlug);
   const { namesHeld, readsHeld, root, warm } = useOutlineReads(issue);
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
-  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, filter);
+  const counts = useDeferredBriefCounts({ namesHeld, readsHeld, root, warm }, filter, preset);
   const lineNames = useIssueNames(issue.key);
   return (
     <IssueThreeThings

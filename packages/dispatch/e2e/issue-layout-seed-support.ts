@@ -343,6 +343,12 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     }),
     name: "plan.md",
   });
+  // The open question's ask is made by the server's indexer, which may still owe the spec's first
+  // version when the answered question is written; it then makes both asks at one instant, and
+  // the tree read orders a node's conversation by when each was made and then by address, which
+  // for two asks is a random id. So the answered question is written once the open one's ask
+  // stands, and the two stand in the order they were written.
+  const openQuestionAskId = await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID);
   await editArtifact(
     specArtifactId,
     { ops: [{ after: "end", markdown: answeredQuestionBlock(issue.key), op: "insert" }] },
@@ -403,7 +409,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     commentThreads,
     decisions: Array.from({ length: shape.decisions }, (_, index) => decisionBlockId(index + 1)),
     key: issue.key,
-    openQuestionAskId: await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID),
+    openQuestionAskId,
     parentKey: parent.key,
     planArtifactId: plan.artifact.id,
     specArtifactId,

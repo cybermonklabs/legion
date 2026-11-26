@@ -21,6 +21,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { ViewRowSlot } from "./slots/view-row";
 import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import type { TreeAnswer } from "./tree-read/tree-read";
+import { ViewReadProvider } from "./tree-read/view-read";
 
 /**
  * The places the page holds before their reads answer (R3, "The places held" of the plan), row
@@ -62,8 +63,10 @@ const TREE: TreeAnswer = treeAnswer([
   ...TWO_THREADS.map((comment) => commentNode(comment)),
 ]);
 
-/** Answers every read the row reaches, but the tree read, which it holds until `answer` is
- *  called: the read every count is counted from (`tree` is its stub). */
+/** Answers every read the row reaches, but the tree's reads - the outline read and the view reads
+ *  the load sends with it, Plan's among them, which holds the plan's tasks under Conversation and
+ *  each filter (`planTasksOut`) - which it holds until `answer` is called: the reads every count
+ *  is counted from (`tree` is their stub). */
 function holdTheTreeRead() {
   const held = Promise.withResolvers<TreeAnswer>();
   const tree = spyOn(api, "getIssueTree").mockReturnValue(held.promise);
@@ -87,8 +90,9 @@ function holdTheTreeRead() {
   };
 }
 
-/** The view row of the fixtures' issue at `preset`'s own address, under the page's providers,
- *  with the route the page reads from that address. */
+/** The view row of the fixtures' issue at `preset`'s own address, under the page's providers and
+ *  under the view reads a load of that address sends with it, as the stage sends them
+ *  (`ViewReadProvider`), with the route the page reads from that address. */
 function renderRowAt(client: QueryClient, preset: Preset) {
   const issue = issueDetails();
   const route =
@@ -100,7 +104,9 @@ function renderRowAt(client: QueryClient, preset: Preset) {
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <ProvidersSlot issue={issue} route={route}>
-            <ViewRowSlot issue={issue} route={route} />
+            <ViewReadProvider issue={issue} preset={preset}>
+              <ViewRowSlot issue={issue} route={route} />
+            </ViewReadProvider>
           </ProvidersSlot>
         </KeymapProvider>
       </QueryClientProvider>
@@ -194,8 +200,9 @@ test("each view control's box is the same before and after its count's read answ
         try {
           await waitFor(() => {
             expect(reads.tree, `the tree was never read ${where}`).toHaveBeenCalled();
+            // Each tree read sent is held, each once: the reads out are those and no other.
             expect(client.isFetching(), `a read other than the tree's is still out ${where}`).toBe(
-              1
+              reads.tree.mock.calls.length
             );
           });
           expect(
