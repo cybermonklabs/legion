@@ -17,18 +17,26 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
-import { defined } from "./dispatch-commands/context";
+import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
 import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
 import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import {
+  documentBytesRefusal,
+  documentFieldRefusal,
+  documentFileRead,
+  uploadedFile,
+} from "./dispatch-commands/stored-text";
+import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
+import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
+import { unstorableBytes } from "./dispatch-file-text";
 import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { LOGIN_COMMAND } from "./dispatch-login-command";
 import { runDispatchProxy, socketPathTaken } from "./dispatch-proxy";
@@ -49,9 +57,10 @@ import {
   writePicture,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
+import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
-import { sessionEnvoySettings } from "./session-settings";
+import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
 
@@ -65,10 +74,15 @@ export interface DispatchCliIo {
   stdoutBytes?(bytes: Uint8Array): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
-  /** A file's text; `-` is all of stdin. */
+  /** A file's text; `-` is all of stdin. The `dispatch` entry reads it as bytes that must be
+   *  UTF-8 (`readFileText`), and throws `NotUtf8Error` for bytes that are not, which the command
+   *  refuses with Dispatch's own refusal of them. */
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
+   *  set); a test sets a shorter one. */
+  readonly dryRunDeadlineMs?: number;
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
   readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
@@ -146,6 +160,11 @@ export function cliRefusals(text: string): CliRefusal[] {
 /** How long a result waits on the listener for the session's subscriptions, after the write
  *  itself has landed: one attempt, no retry, since the read is best effort. */
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
+
+/** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
+function dispatchOffText(off: SectionOff): string {
+  return off.error === null ? off.notice : `dispatch config: ${off.error}`;
+}
 
 /**
  * The output, at most `limit` characters (unbounded for a host that shows all of it). Within the
@@ -442,6 +461,62 @@ export async function runDispatchCli(
           parsed.tool
         );
   }
+  // The local checks of a text alone run here, once the flags are read: before the arguments are
+  // checked and before anything that needs Dispatch (its configuration, the refusal of a Dispatch
+  // that is off, any client), so the dry run and the call refuse a text from this one step alike,
+  // with Dispatch on or off and whether or not DISPATCH_DRY_RUN_LOCAL is set, in Dispatch's own
+  // refusal and with its exit code, and send nothing. The command's table entry names the fields
+  // held to a Markdown document's rule (`DispatchCommand.documentFields`, `documentPathField`).
+  // Such a field's text, given inline or read from a file or stdin, is refused as the upload of a
+  // Markdown `--path` file of the same bytes refuses it, the size first, then the first U+0000 or
+  // byte that is not UTF-8 (`documentBytesRefusal`), whether or not the bytes read are UTF-8; a
+  // text the strict read decoded, and one given inline, can fail only for its size or a U+0000
+  // (`documentFieldRefusal`). A text given in argv holds no U+0000 on any kernel. Linux holds one
+  // argument to MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB
+  // pages, so with 4 KiB pages argv carries no text past 1 MiB, and with 64 KiB pages it can. An
+  // in-process caller's text can be either on any kernel. Inline text is checked here however it
+  // is given, so nothing here depends on the page size: such a text is refused as a text read from
+  // a file is, and the dry run and the call refuse it alike with Dispatch off too.
+  // Any other field read from a file or stdin is no document, so it is refused only for bytes that
+  // are not UTF-8 (an `unstorable` parse), at their first U+0000 or byte that is not UTF-8
+  // (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are
+  // not UTF-8 hold such a byte, so each finds a refusal. The file the command uploads is checked
+  // as its upload is (`documentFileRead`), which reads it once, only where Dispatch stores it as a
+  // Markdown document, and refuses it in the same order: past the bytes one document holds by its
+  // size, then by the bytes read, then at the first U+0000 or byte that is not UTF-8. The bytes it
+  // read are handed on (`uploadBytes`). The dry run's step checks those bytes and does not read the
+  // file again. The call checks and sends them too, save where AskGate reviews it (`gatedWrite`,
+  // with AskGate on for this session): AskGate's check reads the file a second time for its
+  // digest, and the call sends the bytes that read took in place of these, which
+  // `documentFileBytes` checks again before they are sent. A file it cannot read is no refusal of
+  // its text, so it is left to what comes after: the argument check, and then the dry run's step,
+  // where it runs, and the call, which read the file and throw the read's own error. It does not
+  // read a FIFO, a device or a socket, whose read can wait forever, so the dry run's step asks
+  // Dispatch nothing about it, and the call uploads it unchecked, for Dispatch's upload to judge.
+  const command = dispatchCommands[parsed.tool as DispatchToolName];
+  const documentFields = command?.documentFields ?? [];
+  if (parsed.kind === "unstorable") {
+    const { tool, field, bytes } = parsed;
+    const refusal = (documentFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
+      field,
+      bytes
+    );
+    return refuse(messageFor(refusal), REFUSED, tool);
+  }
+  for (const field of documentFields) {
+    const text = parsed.args[field];
+    if (typeof text !== "string") continue;
+    const refusal = documentFieldRefusal(field, text);
+    if (refusal !== undefined) return refuse(messageFor(refusal), REFUSED, parsed.tool);
+  }
+  const uploadPath =
+    command?.documentPathField === undefined ? undefined : parsed.args[command.documentPathField];
+  let pathBytes: Uint8Array<ArrayBuffer> | undefined;
+  if (typeof uploadPath === "string") {
+    const read = await documentFileRead(uploadedFile(io.cwd, uploadPath));
+    if (read.kind === "refused") return refuse(messageFor(read.refusal), REFUSED, parsed.tool);
+    if (read.kind === "passed") pathBytes = read.bytes;
+  }
 
   // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
   // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
@@ -496,21 +571,69 @@ export async function runDispatchCli(
   }
 
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
-    // The call's own argument check, so the call refuses no arguments its dry run passed. Of
-    // Dispatch's configuration it reads only the server URLs a dashboard-URL ref is read against,
-    // and it refuses nothing for what the configuration holds; it reads no state of this session
-    // and asks Dispatch nothing, so it runs with Dispatch off too, and its standard output is the
-    // JSON alone. A call whose dry run Dispatch answers goes on below, as the call itself does.
-    const settings = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
-    const { problems } = await checkDispatchCall({
+    // The call's own argument check, so the call refuses no arguments its dry run passed. It runs
+    // with Dispatch off too, reading a dashboard-URL ref only against a server it knows. A call
+    // whose dry run Dispatch answers (`dryRunAsksDispatch`: a `dispatch result` record) goes on
+    // below, as the call itself does.
+    const resolved = await sessionDispatchSettings(file, env, {
+      cwd: io.cwd,
+      session: sessionId,
+      tokenFiles: true,
+    });
+    const settings = resolved.dispatch;
+    const checked = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
       cwd: io.cwd,
       env,
-      serverUrls: "config" in settings ? dispatchServerUrls(settings.config) : [],
+      serverUrls: settings.enabled ? dispatchServerUrls(settings) : [],
     });
-    if (problems.length > 0) {
-      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
+    if (checked.problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+    }
+    // A command whose call asks Dispatch a question before it writes asks it here too, from the
+    // session's Dispatch as the call resolves it, and is refused as the call is, with its output
+    // and exit code (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store
+    // its inline text, and whether Dispatch refuses a Markdown file's bytes, and refuses a text
+    // the call refuses for its spelling or for the text alone. With
+    // DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments alone
+    // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
+    // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
+    // of a dry run that passes is the JSON alone.
+    const step = command?.dryRun;
+    if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
+      const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const verdict = await step({
+        tool: parsed.tool,
+        args: checked.args,
+        cwd: io.cwd,
+        ...defined("uploadBytes", pathBytes),
+        deadline,
+        deadlineMs,
+        client: () => {
+          for (const warning of resolved.warnings) io.stderr(`dispatch: ${warning}\n`);
+          if (!settings.enabled) {
+            throw new Error(file.path === null ? file.error : dispatchOffText(settings));
+          }
+          // The client stops at the dry run's deadline and asks once within it
+          // (askOnceWithinDryRun).
+          return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+            signal: deadline,
+            ...askOnceWithinDryRun(deadlineMs),
+          });
+        },
+      });
+      // The call prints what it throws as `messageFor` prints it, and exits 2 on a
+      // `ToolInputError` and 1 on any other error, and so does its dry run.
+      if (verdict.kind === "refused") {
+        return refuse(
+          messageFor(verdict.refusal),
+          verdict.refusal instanceof ToolInputError ? USAGE : REFUSED,
+          parsed.tool
+        );
+      }
+      if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
     }
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
@@ -715,7 +838,9 @@ export async function runDispatchCli(
       tool,
       args,
       cwd: io.cwd,
-      ...(uploadBytes === undefined ? {} : { uploadBytes }),
+      // AskGate's bytes, where its check read the file, are the bytes it digested, so they are sent
+      // in place of those read once the flags were read.
+      ...defined("uploadBytes", uploadBytes ?? pathBytes),
       host,
       sessionId,
       sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),

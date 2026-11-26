@@ -12,11 +12,14 @@ export const OK = 0;
  *  DispatchServiceError). It is also a Dispatch the command cannot reach
  *  (DispatchUnreachableError), a trade at the secrets broker that fails and leaves the call no
  *  token to present, and Dispatch keeping no answer for a call that writes nothing
- *  (DispatchAnswerNotKeptError). */
+ *  (DispatchAnswerNotKeptError), or text the CLI refuses in Dispatch's own refusal once the flags
+ *  are read, before it asks: bytes that are not UTF-8 in a file or stdin a flag read, and a
+ *  Markdown document's text past the bytes one document holds or holding U+0000 or a byte that is
+ *  not UTF-8, given inline, read from a file or stdin, or in a Markdown `--path` file. */
 export const REFUSED = 1;
 
-/** A usage error: an argument the CLI refuses before any request, whether the argv named a
- *  command or not, and a session or a configuration the command cannot use: a refusal of
+/** A usage error: any other argument the CLI refuses before any request, whether the argv named
+ *  a command or not, and a session or a configuration the command cannot use: a refusal of
  *  hostSession (DISPATCH_HOST or the session id unset), of hostedDispatch (Dispatch turned off, an
  *  envoy.json it cannot read) or of unhostedDispatch (`dispatch api` where no host runs it, with
  *  no Dispatch or no credential set), and a corrupted state.json. */

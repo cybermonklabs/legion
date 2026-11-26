@@ -57,10 +57,11 @@ export interface WriteRoute {
  * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
  * of a gated session names, and the first of which `dispatch proxy`'s 405 for that write names
  * (dispatch-proxy.ts, `methodRefusal`). A route that writes nothing (`markdown/round-trip`,
- * `related`, `results/dry-run`) names the command that sends it, since the gate refuses it all the
- * same. A write method of `DispatchClient` that no command calls has no row, and neither has
- * `sendRoute`, which sends the route its caller names: `dispatch-api-routes.test.ts` names each in
- * its `NO_COMMAND`, and holds the table to every write `DispatchClient` sends.
+ * `markdown/file-round-trip`, `related`, `results/dry-run`) names the command that sends it,
+ * since the gate refuses it all the same. A write method of `DispatchClient` that no command calls
+ * has no row, and neither has `sendRoute`, which sends the route its caller names:
+ * `dispatch-api-routes.test.ts` names each in its `NO_COMMAND`, and holds the table to every write
+ * `DispatchClient` sends.
  */
 export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
@@ -113,6 +114,7 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/markdown/round-trip", commands: ["artifact"] },
+  { method: "POST", pattern: "/api/v1/markdown/file-round-trip", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects", commands: ["project"] },
   {
     method: "PUT",

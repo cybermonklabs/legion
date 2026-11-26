@@ -9,9 +9,26 @@ An agent works in Dispatch through one shell command, `dispatch`. The Envoy plug
 agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells it which session
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
-them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing,
-except that `dispatch result`'s dry run of a record asks Dispatch for the pull-request body line
-the record would print, and Dispatch records nothing.
+them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
+nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
+1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
+`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (a path ending
+in `.md` or `.markdown`): once the flags are read, before the arguments are checked and before
+anything that needs Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call
+does. For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
+text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
+file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
+also refuses what an upload refuses for the text alone, such as a text that makes more elements than
+one write may, or that holds markdown the parser refuses. Without `--force` that includes what
+Dispatch refuses only of a new document, such as an ask block that breaks its content rule or a
+block id written twice. With `--force`, which may replace a document Dispatch judges by looser
+rules, the dry run asks for none of those, so it passes with no warning a text the call can then
+refuse for one of them: under a name the owner does not hold, because the call uploads a new
+document; under a name the owner holds, because a replacement holds those rules for the blocks it
+adds or changes, and refuses a rendering that grows past the bytes one document holds over the
+version it replaces. When Dispatch cannot answer, the dry run says so on stderr and passes; an
+empty text given inline, in `--content-file` or on stdin, which it asks Dispatch nothing about, it
+passes with no warning.
 `dispatch proxy --dry-run` checks the proxy's arguments and its environment instead. It prints the
 Dispatch server, the session and the socket that the proxy would use, and starts nothing.
 `dispatch login` takes no `--dry-run`.
@@ -231,11 +248,14 @@ whole spec with your text. Use `dispatch artifact` for real files, such as a rep
 draft to send as-is.
 
 An upload that does replace a document the owner already holds under that name says which version it replaces.
-Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and Dispatch checks the token against the live document under the write's own lock.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before it sends the upload, and Dispatch checks the token against the live document under the write's own lock.
 An upload naming a token the document has moved past is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
 An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; name it anyway, because Dispatch will refuse a replacement naming none again once every deployed command sends one.
 An upload that replaces a file or a picture names the token of the version it replaces the same way: `dispatch doc-read` of the file prints its latest version's `Document token: sha256:…` line in the header, before the file's text, and an upload naming any other token is refused `409 PRECONDITION_FAILED` as a document's is; a named version's read prints its hash as `Content: sha256:…` instead.
-An upload under a name the owner holds, without `--force`, is refused before anything is sent, and the refusal prints no token: for a file or a picture it names `--force` with the token your own `dispatch doc-read` printed, or `--force` alone where the version standing under the name states no token; for an upload of another kind than the name holds (Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch keeps one kind under one name.
+An upload under a name the owner holds, without `--force`, is refused before the upload is sent, and the refusal prints no token: for a file or a picture it names `--force` with the token your own `dispatch doc-read` printed, or `--force` alone where the version standing under the name states no token; for an upload of another kind than the name holds (Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch keeps one kind under one name.
+The command checks a Markdown text before it reads which names the owner holds, with a round trip to Dispatch that stores nothing.
+A text that check refuses for the text alone gets that refusal under a held name, as it does under a new one, even where the name holds a file or a picture.
+A text that is not blank, given inline, in `--content-file` or on stdin, and whose check got no answer from a Dispatch that has the round trip, is refused there too, before the held-name read: `Dispatch could not say how it would store this text, so nothing was uploaded`.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
@@ -432,8 +452,11 @@ a document version a delete renamed), the first answer's status and the code `AN
 When the write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed
 2xx reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
 call that writes nothing (`dispatch related`, `dispatch result --dry-run`, the check an upload runs
-first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key, and exits 1 if
-Dispatch keeps no answer again. When an attempt may have
+first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key. If Dispatch keeps
+no answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of text that
+is not blank, given inline, in `--content-file` or on stdin, is refused, and the refusal says to
+send it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked.
+When an attempt may have
 landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
 non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key once an
 earlier answer to the same write carried it), or on a final refusal: `Idempotency-Replayed: ?1`

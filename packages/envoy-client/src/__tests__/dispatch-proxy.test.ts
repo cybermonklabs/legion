@@ -2380,6 +2380,8 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   projectArtifact: "artifact",
   // `dispatch artifact` checks an inline text before it uploads the text.
   markdownRoundTrip: "artifact",
+  // And a Markdown `--path` file's bytes, the same check of a file.
+  fileRoundTrip: "artifact",
   docEdit: "doc-edit",
   requestApproval: "request-approval",
   planApprove: "plan-approve",
