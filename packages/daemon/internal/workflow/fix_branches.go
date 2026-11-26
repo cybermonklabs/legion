@@ -136,6 +136,9 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 // reads origin for it, and makes the fix's working copy at its head where origin holds it, so a fix
 // that pushed at an update round's ask goes on from its own commits on a new pod.
 func (e *Engine) fixBranchOf(issue record.Issue, fix record.TaskFix) string {
+	if fix.Pushed[string(claim.RoleImplementer)] == "" {
+		return ""
+	}
 	branch, _ := e.besideBranchOf(issue, fix.Task, fix.Fix, claim.RoleImplementer)
 	return branch
 }
