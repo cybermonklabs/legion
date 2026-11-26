@@ -1,0 +1,29 @@
+-- 20261115121838_drop_controller_wakes_for_nothing.up.sql -- the controller notices of the two
+-- kinds the daemon no longer writes go.
+--
+-- The daemon tells the controller no notice its skill says to do nothing on
+-- (#4065). Two kinds were only that: `awaiting-person`, a root that waits on
+-- a person (workflow's enterAwaiting), on which the skill said "Nothing", and `unslotted`, a root
+-- admission took out of the workflow (admit's releaseUnslotted), which the controller reads from
+-- the state instead. This release writes neither, and the two kinds left record's
+-- controllerOnlyNoticeKind with their notices.
+--
+-- So a row of either kind that the release before this one left queued is a row this release
+-- cannot run: kind 'controller_notice', with a payload whose own kind is 'awaiting-person' or
+-- 'unslotted'. DecodeOutboxPayload validates every row it decodes (record/outbox.go), and a
+-- controller notice of a kind it does not know fails on every attempt and never finishes: there is
+-- no attempt cap and no dead letter. Deleting it costs one wake of the controller that its skill
+-- said to do nothing on.
+--
+-- Deleting the rows a release leaves unrunnable is what this directory does:
+-- 0016_ready_packet.up.sql:19,25, 0035_resident_roles.up.sql:9,
+-- 20261105231916_production_check_role_and_wake.up.sql:42 and
+-- 20261109060737_drop_awaiting_slot_notice.up.sql:75. The boot applies every migration before the
+-- API serves and before any outbox lane claims a row (st.Migrate in daemon.Run), so this delete is
+-- the whole of the upgrade's side of it.
+--
+-- A rollback needs nothing of it: the release before this one writes and runs both kinds, and
+-- this migration changes no column and no constraint. There is no down file: migrations here are
+-- forward-only.
+delete from outbox
+  where kind = 'controller_notice' and payload->>'kind' in ('awaiting-person', 'unslotted');
