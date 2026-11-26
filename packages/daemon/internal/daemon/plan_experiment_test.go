@@ -46,8 +46,8 @@ import (
 //   - owner: mode on at the arm a, so ten rows a/owner; each issue's plan is taken at both sends
 //     and its run starts at implementing;
 //   - default: mode on at the arm b, so ten rows b/default; both sends of each owner's plan are
-//     answered 409 PLAN_NOT_TAKEN, since a refusal leaves the fact unspent, and each issue runs
-//     the default steps from planning;
+//     answered 409 PLAN_NOT_TAKEN, since the workflow judges every give of a plan whatever its
+//     id's mark (intake's factApplies), and each issue runs the default steps from planning;
 //   - shares: mode random, a and b of weight 1 each, so the ten recorded arms, in the order of
 //     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), both arms are
 //     drawn, and each issue runs as its own arm says; its control swaps one issue's recorded

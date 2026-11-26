@@ -2331,6 +2331,7 @@ def browser_gate(filter, job):
          f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
          "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         ("packages/test-fixtures/src/go-command.ts",
          "`packages/dispatch/e2e/harness-postgres.ts#goOutput` imports it, which `packages/dispatch/e2e/global-setup.ts#startStacks` "

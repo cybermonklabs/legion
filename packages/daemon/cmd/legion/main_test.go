@@ -33,7 +33,16 @@ import (
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
 // — its argv, its signal handling, its exit status — so a test can run a command as its own
 // process; workspace-init's tests run several contending for one tree volume, the way two pods'
-// init containers do.
+// init containers do. Only TestMain makes `legion` of a copy a test starts: in a build of these
+// tests without it, such a copy runs the tests, each of which starts copies that run them again.
+// Every copy is started from legionCopy, which refuses to start one in such a process
+// (legionCopyRefusal), and TestACopyStartedAsLegionRunsAsLegion fails in such a build by name.
+// Three tests set testMainEnv=1 in their own process:
+// TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound and
+// TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries, through pushVisibilityReadEnv, and
+// TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential. The `gh` wrapper they put
+// first on PATH must be exactly the script `legion gh` accepts (isGhWrapper), so it cannot set the
+// variable for the copy, which inherits it from the test. Each starts its copies before it sets it.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
@@ -141,6 +150,56 @@ func TestMain(m *testing.M) {
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).
 	os.Exit(testpg.Main("legion_cmd_test", func() int { return runWithoutTheOperatorsJJConfig(m) }))
+}
+
+// legionCopy is the path of this test binary, which a test runs as `legion` with testMainEnv=1 in
+// the copy's environment. It fails t where legionCopyRefusal refuses.
+func legionCopy(t testing.TB) string {
+	t.Helper()
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// legionCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has testMainEnv=1 was started as `legion`, and TestMain runs such a process as
+// `legion`, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again. The one other way a test process holds it is a test that set it and
+// then started a copy, which the message names too.
+func legionCopyRefusal() error {
+	if os.Getenv(testMainEnv) == "1" {
+		return fmt.Errorf("this process has %s=1: a test started it as legion, but it runs the tests, so this build of the tests has no TestMain that runs legion and a copy started here would run the tests again; or a test set %s=1 in its own process and then started a copy, which it must start before", testMainEnv, testMainEnv)
+	}
+	return nil
+}
+
+// A copy started with testMainEnv=1 runs as legion: on -h it prints legion's help. In a build
+// without TestMain, the testing package reads -h before any test runs, prints its own flag usage
+// and exits, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(legionCopy(t), "-h")
+	cmd.Env = append(os.Environ(), testMainEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if want := newRoot(io.Discard, io.Discard).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
+	}
+}
+
+// legionCopyRefusal, which legionCopy asks before any copy starts, refuses a process that has
+// testMainEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
+	fixtureenv.Unset(t, testMainEnv)
+	if err := legionCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", testMainEnv, err)
+	}
+	t.Setenv(testMainEnv, "1")
+	if err := legionCopyRefusal(); err == nil || !strings.Contains(err.Error(), testMainEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", testMainEnv, err)
+	}
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
@@ -428,7 +487,7 @@ func heldSocket(t *testing.T) (*os.File, int) {
 // and stderr once it exits. The test's copy of descriptor is closed once the process has started.
 func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, string) {
 	t.Helper()
-	command := exec.Command(os.Args[0], "start", "--config", config)
+	command := exec.Command(legionCopy(t), "start", "--config", config)
 	command.Env = append(os.Environ(), testMainEnv+"=1", "LEGION_LISTEN_FD=3")
 	command.ExtraFiles = []*os.File{descriptor}
 	var stderr bytes.Buffer

@@ -33,7 +33,7 @@ import (
 func trailerLegion(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion")
-	writeTrailerScript(t, path, testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
+	writeTrailerScript(t, path, testMainEnv+"=1 exec '"+legionCopy(t)+"' \"$@\"\n")
 	return path
 }
 
