@@ -364,7 +364,7 @@ export function legionToolDescription(host: {
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
+    "and the checking role's report on a look of its closed issue's production check, or the report of the retro Legion runs after the close, which only the retro's agent makes) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
@@ -388,6 +388,8 @@ export function legionToolDescription(host: {
     `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
+    "The report of a retro that Legion runs after the issue's close carries `summary`, `plan_rating` and `plan_reason` and no `verdict`: " +
+    "it needs no handoff and no commit, and the daemon refuses it when that retro is not open (RETRO_NOT_OPEN) or is another agent's (RETRO_AGENT_MISMATCH). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
@@ -564,17 +566,19 @@ export async function readBuild(runtime: {
  * `return_to` without the verdict `fail` or on a done issue), then a refused handoff report
  * (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
- * A completion is a phase's or a look's report on the closed issue's production check. The daemon
- * tells them apart by the caller's own live assignment (`api.handoffComplete`,
- * `supervise.Claim.ServingCheck`), which this tool cannot read: it shapes the call by the issue's
- * phase instead, a call on a `done` issue carrying what a check report carries and every other
- * call what its phase's completion carries, and the daemon's answer decides. A check report names
- * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
- * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
- * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
- * completion, and so is `wake_at`. A rating of the plan is sent as given on either: which
- * completion ends the retro, and so takes one, is the daemon's to say (`PLAN_RATING_UNEXPECTED`,
- * `PLAN_RATING_REQUIRED`).
+ * A completion is a phase's, a look's report on the closed issue's production check, or the
+ * report of the retro Legion runs after the close. The daemon tells them apart by the caller's own
+ * live assignment (`api.handoffComplete`, `supervise.Claim.ServingCheck` and `ServingRetro`), which
+ * this tool cannot read: it shapes the call by the issue's phase instead, a call on a `done`
+ * issue carrying what a check report or a retro's report carries and every other call what its
+ * phase's completion carries, and the daemon's answer decides. A check report names its verdict
+ * (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last the `wake_at`
+ * of its next look. A retro's report names the rating of the plan and no verdict, and the check
+ * the record shows, if it shows one, is not its own. No handoff was written and nothing pushed for
+ * either, so no record or commit is looked up and none is sent. `pending` is a check's verdict
+ * alone, refused on a phase completion, and so is `wake_at`. A rating of the plan is sent as given
+ * on any of them: which completion ends the retro, and so takes one, is the daemon's to say
+ * (`PLAN_RATING_UNEXPECTED`, `PLAN_RATING_REQUIRED`).
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -878,30 +882,38 @@ async function completeHandoff(
   const { daemon, claim } = runtime;
   // The record is read before anything is minted: it says what this call has to carry. An issue
   // no role works (`done`) has no handoff for anyone to write, so no record or commit is looked
-  // up, and the call carries what a check report carries; it is posted all the same where the
-  // record shows no open check, for the daemon's own answer. Which of the two the call is, is the
-  // daemon's to say, and it says it from the caller's own live assignment (`api/handoff.go`,
-  // `supervise.Claim.ServingCheck`), which the record does not show: a session working a look of
-  // its issue's production check reports on that look, and every other session's completion is
-  // its phase's, which the daemon refuses on a `done` issue whatever it carries
-  // (`CHECK_LOOK_NOT_SERVED`). So the two can disagree: a look's report from an issue back in
-  // the workflow is refused here as a phase completion, and a phase's completion that outlived
-  // the close is posted here as a report and refused `CHECK_LOOK_NOT_SERVED`, before the phase
-  // path.
-  // The report's own refusals apply while the record shows the check it is of: the record carries
+  // up, and the call carries what a check report or a retro's report carries; it is posted all
+  // the same where the record shows no open check, for the daemon's own answer. Which of the
+  // three the call is, is the daemon's to say, and it says it from the caller's own live
+  // assignment (`api/handoff.go`, `supervise.Claim.ServingCheck` and `ServingRetro`), which the
+  // record does not show: a session working a look of its issue's production check reports on
+  // that look, the agent of the retro Legion runs after the close reports that retro, and every
+  // other session's completion is its phase's, which the daemon refuses on a `done` issue
+  // whatever it carries (`CHECK_LOOK_NOT_SERVED`). So the three can disagree: a look's report
+  // from an issue back in the workflow is refused here as a phase completion, and a phase's
+  // completion that outlived the close is posted here as a report and refused
+  // `CHECK_LOOK_NOT_SERVED`, before the phase path.
+  // The check's own refusals apply while the record shows the check it is of: the record carries
   // that object only while the check is open. A refusal here posts nothing and mints nothing.
   const record = await recordFrom(daemon, claim.issue);
   if (record.phase === "done") {
-    // A completion on a done issue is a report on its production check or one the daemon refuses
-    // as a phase's (CHECK_LOOK_NOT_SERVED); neither names a step to return to, which the daemon
-    // refuses on a check report whatever its verdict (RETURN_TO_NEEDS_FAIL).
+    // A completion on a done issue is a report on its production check, the report of the retro
+    // Legion runs after the close, or one the daemon refuses as a phase's (CHECK_LOOK_NOT_SERVED);
+    // none names a step to return to, which the daemon refuses on a check report whatever its
+    // verdict and on a retro's report (RETURN_TO_NEEDS_FAIL).
     if (args.return_to !== undefined) {
       throw new Error(
-        "handoff_complete's return_to names the step a failed step's task returns to, and a report on a production check names none; send it again without return_to"
+        "handoff_complete's return_to names the step a failed step's task returns to, and a completion on a done issue names none; send it again without return_to"
       );
     }
+    // A rating of the plan and no verdict is the retro's report, whatever check the record shows
+    // (P12 of dispatch://INFRA-5602): the record shows the production check, not the retro, and a
+    // child whose pull request merged before its close keeps the tester for the check and the
+    // implementer for the retro. So the check's verdict, role and wake refusals below are not the
+    // retro's, and the daemon says from the claim's own assignment whether it serves that retro.
+    const retroReport = rating !== undefined && args.verdict === undefined;
     const check = record.check;
-    if (check !== undefined) {
+    if (check !== undefined && !retroReport) {
       if (args.verdict === undefined) {
         throw new Error(
           "handoff_complete on a production check names a verdict of pass, pending or fail"

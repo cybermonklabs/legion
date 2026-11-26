@@ -934,12 +934,12 @@ test("each wrong shape of a check report is refused before any call, nothing min
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
-    // A report on a production check names no step to return to, whatever its verdict, as the
-    // daemon refuses it (RETURN_TO_NEEDS_FAIL).
+    // A completion on a done issue names no step to return to, whatever its verdict, as the daemon
+    // refuses it on a check report (RETURN_TO_NEEDS_FAIL).
     [
       check.ops,
       { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
-      "handoff_complete's return_to names the step a failed step's task returns to, and a report on a production check names none; send it again without return_to",
+      "handoff_complete's return_to names the step a failed step's task returns to, and a completion on a done issue names none; send it again without return_to",
     ],
   ] as const) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));

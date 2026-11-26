@@ -244,11 +244,13 @@ const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
  * only while the role's phases row holds no completion of it and some role works the issue's
  * phase, so a finished role's is answered `409 HANDOFF_NOT_CURRENT_PHASE`, and so is every one
  * while no role works the issue's phase (admitted, awaiting_person, held, and integrating, which
- * the Go daemon has no phase for). Three answers come first: the completion route answers any
- * completion of a done issue from a session working no look `409 CHECK_LOOK_NOT_SERVED` (the
- * `legion` tool never asks this module there), one of an issue it does not record (`unrecorded`)
- * `404 ISSUE_NOT_FOUND`, and the engine answers every architect's `409 ACCEPTANCE_IS_SIGN_OFF`,
- * since the architect accepts with sign_off. A row that sends nothing makes no request.
+ * the Go daemon has no phase for). Three answers come first: the completion route answers a
+ * completion of a done issue from a session working neither a look nor the retro after the close
+ * `409 CHECK_LOOK_NOT_SERVED` (the `legion` tool never asks this module there, and the report the
+ * route takes from the retro's agent is no finished role's), one of an issue it does not record
+ * (`unrecorded`) `404 ISSUE_NOT_FOUND`, and the engine answers every architect's
+ * `409 ACCEPTANCE_IS_SIGN_OFF`, since the architect accepts with sign_off. A row that sends
+ * nothing makes no request.
  */
 const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, CompletionRow>>>> = {
   planner: {
