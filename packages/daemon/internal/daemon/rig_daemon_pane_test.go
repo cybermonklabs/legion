@@ -701,8 +701,10 @@ func TestRigDaemonLiveNeedsARequest(t *testing.T) {
 	env := func(set map[string]string) func(string) string {
 		return func(name string) string { return set[name] }
 	}
-	if _, err := rigDaemonLiveFiles(env(nil)); err == nil || !strings.Contains(err.Error(), "RIG_TEXTS_REQUEST") {
-		t.Errorf("no request is answered %v, want a refusal naming RIG_TEXTS_REQUEST", err)
+	// The refusal of a missing file's variable names RIG_TEXTS_REQUEST too, so the refusal of no
+	// request is told apart by its own words.
+	if _, err := rigDaemonLiveFiles(env(nil)); err == nil || !strings.HasPrefix(err.Error(), "RIG_TEXTS_REQUEST is unset") {
+		t.Errorf("no request is answered %v, want the refusal that RIG_TEXTS_REQUEST is unset", err)
 	}
 	all := map[string]string{"RIG_TEXTS_REQUEST": "/run/request.json", "RIG_TEXTS_READY": "/run/ready.json",
 		"RIG_TEXTS_STATUS": "/run/status.json", "RIG_TEXTS_RECORD": "/run/record.json"}
