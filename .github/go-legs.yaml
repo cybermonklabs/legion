@@ -122,6 +122,8 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/subreaper
+      - internal/startwalk
     3:
       - internal/workspace                      # 176 s
       - internal/runtime/sandbox                # 156 s
