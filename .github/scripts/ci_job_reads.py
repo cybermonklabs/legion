@@ -708,15 +708,15 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
 NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
-go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+{under_runner(ENVOY, 'go test -count=1 -tags natslive -run "$rig" ./internal/testnats/')}
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
-go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+{under_runner(ENVOY, 'go test -count=1 -timeout 5m -tags natslive -run "$cap" ./internal/bus/')}
 callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
-go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+{under_runner(ENVOY, 'go test -count=1 -timeout 5m -tags natslive -run "$callout" ./internal/cipher/natscallout/')}
 grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
-go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+{under_runner(ENVOY, 'go test -count=1 -timeout 5m -tags natslive -run "$grant" ./natsgrant/')}
 edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
-go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
+{under_runner(ENVOY, 'go test -count=1 -timeout 10m -tags natslive -run "$edge" ./cmd/listener/')}"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -865,10 +865,12 @@ def service_settings_reads(job, workflow="", step=SERVICE_SETTINGS_STEP):
 # copy of the workspace file or of the module's go.mod: a replacement outside the repository, of a
 # third-party module, so the first-party closure is the plain one under those tags. The check reads the step's run: line,
 # not what the script runs, so each such gate declares the script and the hooks it applies, and
-# the go test on the script's line FORCED_ORDER_GO_TEST, pinned as a Run per step.
+# the go test on the script's line FORCED_ORDER_GO_TEST, pinned as a Run per step. That go test
+# runs under .github/scripts/go-test.sh, which the job's go_test_runner reads declare.
 FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
 FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
-FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
+FORCED_ORDER_GO_TEST = ('"${go_env[@]}" "GO_TEST_JSONFILE=$jsonfile" "$scripts/go-test.sh" go test "${flags[@]}" '
+                        '-count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps, one per key, each with the packages it runs: one on the nats-server the
 # workspace links ("", no -server, so a go.mod that moves to a version with no hooks fails the
@@ -1405,9 +1407,9 @@ if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
 DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
-                                  f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
+                                  under_runner(DAEMON, f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"))
 DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB,
-                                 f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
+                                 under_runner(DAEMON, f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}"))
 
 
 def hold_supervise_table_tests():
@@ -1784,7 +1786,8 @@ ENVOY_GO_PACKAGES = go_legs.go_packages(ENVOY)
 ENVOY_UNIT_PACKAGES = leg_run_packages(ENVOY_LEGS, ENVOY_PLAIN_JOB, ENVOY_GO_PACKAGES)
 ENVOY_RACE_LEG_PACKAGES = go_legs.job_packages(ENVOY_LEGS[ENVOY_RACE_JOB])
 ENVOY_RACE_STEP = RACE_JOBS[ENVOY_RACE_JOB].step
-ENVOY_RACE_SCRIPT = legs_script(ENVOY, ENVOY_RACE_JOB, f"go test -count=1 -race -timeout {RACE_JOBS[ENVOY_RACE_JOB].timeout}")
+ENVOY_RACE_SCRIPT = legs_script(ENVOY, ENVOY_RACE_JOB,
+                                under_runner(ENVOY, f"go test -count=1 -race -timeout {RACE_JOBS[ENVOY_RACE_JOB].timeout}"))
 
 # envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
 # that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
@@ -1970,7 +1973,7 @@ def hold_unit_alone_tests(alone=None, packages=None, module=ENVOY):
 
 hold_unit_alone_tests()
 UNIT_ALONE_SCRIPT = "\n".join(
-    f"go test -count=1 -parallel 1 -timeout 10m -run {names_pattern(names)} ./{package}/"
+    under_runner(ENVOY, f"go test -count=1 -parallel 1 -timeout 10m -run {names_pattern(names)} ./{package}/")
     for package, names in sorted(UNIT_ALONE_TESTS.items()))
 UNIT_SKIP_TESTS = (WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts]
                    + [t for ts in UNIT_ALONE_TESTS.values() for t in ts])
@@ -2121,12 +2124,14 @@ TEXT_CHECK_TESTS = {
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
-# the search over every interleaving of the sender's own code, and the test that holds the rules
-# it restates to their SQL. Both carry `//go:build !race`, since the detector slows the search
-# about sevenfold, so the walk below would put them in envoy-go's plain step; they are left out of
-# it because the envoy-go-claim-model job runs them by name, alone on its runner, where the search
-# has every core and a deadline measured for it. They are held to the files they are about as
-# TEXT_CHECK_TESTS' are, by the same three refusals.
+# the search of the sender as built over every interleaving of its own code, and the test that
+# holds the rules it restates to their SQL. Both carry `//go:build !race`, since the detector slows
+# the search about sevenfold, so the walk below would put them in envoy-go's plain step; they are
+# left out of it because the envoy-go-claim-model job runs them by name, alone on its runner, where
+# the search has every core and a deadline measured for it. They are held to the files they are
+# about as TEXT_CHECK_TESTS' are, by the same three refusals. The model's controls
+# (comment_mention_claim_model_control_test.go) are not here: the walk puts them in the plain
+# step, envoy-go-race-impossible's, which runs at the same time as the claim model's job.
 CLAIM_MODEL_TESTS = {
     f"{ENVOY}/internal/dispatch/api/comment_mention_claim_model_search_test.go": {
         "TestTheMentionSenderClaimModel"},
@@ -2238,18 +2243,19 @@ def race_impossible_tests(root, packages=None) -> dict:
     return found
 
 
-def race_impossible_script(packages) -> str:
-    """A plain run of the tests the detector makes impossible: one `go test` per package
-    of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout. A package of CLEANUP_DETECTOR_PACKAGES runs
-    under the cleanup detector and with -v: go test prints a passing package's own output only
-    with -v, and the document service's is evidence - its TestMain's count of services left
-    alive, and the xid window rig's logs of which branch a load test reached
-    (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) - which the job that ran the
-    package plain under the detector alone printed for the same reason."""
+def race_impossible_script(workdir, packages) -> str:
+    """A plain run of the tests the detector makes impossible, from the module at `workdir`: one
+    `go test` per package of `packages` (race_impossible_tests) under .github/scripts/go-test.sh,
+    each naming that package's own tests, anchored and sorted, in its -run, under a 10-minute
+    timeout. A package of CLEANUP_DETECTOR_PACKAGES runs under the cleanup detector. gotestsum's
+    standard-verbose format prints a passing package's own output, and the document service's is
+    evidence - its TestMain's count of services left alive, and the xid window rig's logs of which
+    branch a load test reached (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) -
+    which the job that ran the package plain under the detector alone printed with -v for the same
+    reason."""
     return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
-                     f"go test{' -v' if under in CLEANUP_DETECTOR_PACKAGES else ''} -count=1 -timeout 10m "
-                     f"-run '^({'|'.join(sorted(names))})$' ./{under}"
+                     + under_runner(workdir, f"go test -count=1 -timeout 10m "
+                                             f"-run '^({'|'.join(sorted(names))})$' ./{under}")
                      for under, names in packages.items())
 
 
@@ -2295,8 +2301,8 @@ RACE_IMPOSSIBLE_ALONE_RUN = {under: {n for n in names if race_impossible_alone(u
 RACE_IMPOSSIBLE_PACKAGES = {under: {n for n in names if not race_impossible_alone(under, n)}
                             for under, names in RACE_IMPOSSIBLE_ALL.items()
                             if any(not race_impossible_alone(under, n) for n in names)}
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
-RACE_IMPOSSIBLE_ALONE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_ALONE_RUN)
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(ENVOY, RACE_IMPOSSIBLE_PACKAGES)
+RACE_IMPOSSIBLE_ALONE_SCRIPT = race_impossible_script(ENVOY, RACE_IMPOSSIBLE_ALONE_RUN)
 
 
 def daemon_race_packages() -> list:
@@ -2320,7 +2326,7 @@ def daemon_race_packages() -> list:
 # changes this text and ci-job-daemon-go.yaml stops matching it.
 DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
 DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_packages())
-DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
+DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON, DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
 # daemon-go's second run of internal/api's shape gate, stamped with HEAD's contract entries in
@@ -2332,10 +2338,10 @@ DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PA
 # check-ci-filters.sh reduces, so the gate step's whole script is pinned.
 DAEMON_CONTRACT_ORDER_STEP = "Stamp HEAD's contract entries in main's merge order"
 DAEMON_STAMPED_GATE_STEP = "Test the shape gate in main's merge order"
-DAEMON_STAMPED_GATE_SCRIPT = (
+DAEMON_STAMPED_GATE_SCRIPT = under_runner(DAEMON, (
     "go test -count=1 -timeout 1m ./internal/api/ "
     "\"-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}\" "
-    "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
+    "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'"))
 
 
 # The text-check job: the three modules' text checks, and the twenty-two tests of the Dispatch API's

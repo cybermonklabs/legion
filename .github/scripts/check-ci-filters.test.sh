@@ -95,7 +95,7 @@ def derived(root, lane):
     reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
         reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane.split())),)
     try:
-        return reads.race_impossible_script(reads.race_impossible_tests(root))
+        return reads.race_impossible_script(reads.ENVOY, reads.race_impossible_tests(root))
     except ValueError as refusal:
         return f"RAISED: {refusal}"
 
@@ -5508,17 +5508,17 @@ GO
 echo "case: the plain step's -run lists are what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
-check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
+check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, each under go-test.sh" \
   "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+    "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
+    "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

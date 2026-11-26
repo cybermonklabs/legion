@@ -96,6 +96,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The race step's go test and forced-order.sh's run under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -133,7 +135,7 @@ jobs:
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r ../../.github/scripts/go-test.sh go test -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -173,6 +175,11 @@ jobs:
         if: matrix.leg == 5
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-race-legs-${{ matrix.leg }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

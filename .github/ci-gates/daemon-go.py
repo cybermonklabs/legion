@@ -103,7 +103,8 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
-  + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
+  + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE)
+  + go_test_runner(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + go_test_runner(DAEMON_RACE_LEGS_JOB, DAEMON_FILE))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/cipher/policy/**', "filter daemon_go_tests held packages/envoy/internal/cipher/policy/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),

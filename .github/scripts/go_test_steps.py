@@ -223,8 +223,9 @@ UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLooku
              "TestTheWebFixtureFindsItsFilesFromAnyDirectory|"
              "TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'")
 
-# The forced-order run: every TestForcedOrder… test of the packages, with -tags odatrace and -race.
-FORCED_ORDER = "go test -tags odatrace -race -count=1 -v -timeout 10m -run '^TestForcedOrder'"
+# The forced-order run: every TestForcedOrder… test of the packages, with -tags odatrace and -race,
+# under .github/scripts/go-test.sh.
+FORCED_ORDER = "go test -tags odatrace -race -count=1 -timeout 10m -run '^TestForcedOrder'"
 
 # Each script a step of ci.yaml's jobs runs as its whole run: line, or as what a legs step pipes
 # its packages into, read by a person, with the one `go test` it runs for each argument list a step
@@ -290,11 +291,11 @@ AUDITED_SCRIPTS = {
     ),
     # It moves into the module its -C names, from the caller's directory (packages/envoy without
     # one), builds a hooked copy of nats-server, and runs one `go test -tags odatrace -race
-    # -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'` of the packages after
-    # its flags against that copy; -server picks the hooked version and -drop cuts a hook point,
-    # and neither changes a flag of the command. Its `go test -list` first runs no test. daemon-go's
-    # leg 2 passes the first argument list below, from the root; envoy-go-race's leg 5 the other
-    # two, from packages/envoy.
+    # -count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder'` of the packages after
+    # its flags against that copy, under .github/scripts/go-test.sh; -server picks the hooked
+    # version and -drop cuts a hook point, and neither changes a flag of the command. Its `go test
+    # -list` first runs no test. daemon-go's leg 2 passes the first argument list below, from the
+    # root; envoy-go-race's leg 5 the other two, from packages/envoy.
     "packages/envoy/scripts/forced-order.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -303,7 +304,7 @@ AUDITED_SCRIPTS = {
             "-server 2.10.29 ./internal/testnats/hooktest/": f"{FORCED_ORDER} ./internal/testnats/hooktest/",
         },
         modules={"-C packages/daemon ./internal/testnats/": "packages/daemon"},
-        sha256="5bedf28c08e009d7c6a028458c404ebc9a1b1e896aa228e9712c71c1ef6d75f9",
+        sha256="2d3891be59975ab79c860981e7f9b6fa7173fe0f013e079a546162c8d938e576",
     ),
     # forced-order.sh's own test, which envoy-go-race's leg 5 runs from packages/envoy with no
     # argument. Of its five cases one gets as far as a go test: forced-order.sh over the fixture

@@ -161,6 +161,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # Every go test of the legs runs under .github/scripts/go-test.sh, forced-order.sh's too.
+      - uses: ./.github/actions/install-gotestsum
 
       # go-daemon, shared with typecheck and pi-legion.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -232,7 +234,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r ../../.github/scripts/go-test.sh go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
@@ -264,7 +266,7 @@ jobs:
 
       - name: Test the shape gate in main's merge order
         if: matrix.leg == 3
-        run: go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
+        run: ../../.github/scripts/go-test.sh go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -278,7 +280,7 @@ jobs:
       - name: Test what the race build cannot run
         if: matrix.leg == 2
         run: |
-          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
@@ -304,6 +306,12 @@ jobs:
       - name: Stage 1 live proof
         if: matrix.leg == 2
         run: bash scripts/e2e/stage1-skeleton.sh
+
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: daemon-go-legs-${{ matrix.leg }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -424,6 +432,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The race step's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
 
       # go-daemon, which holds the race build of these five packages too (ci-caches.yaml).
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -540,7 +550,7 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r ../../.github/scripts/go-test.sh go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
 
       - name: Report the service's peak connections
@@ -552,6 +562,12 @@ jobs:
           else
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
           fi
+
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: daemon-go-race-legs-${{ matrix.leg }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

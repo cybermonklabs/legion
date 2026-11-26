@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - forces INFRA-3904's two timeout diagnostics at a base and a head when a person reruns #5655's control
 # Forces the two timeout diagnostics that INFRA-3904 records. At the merge base the runner copies
 # the head's two tests, so each reaches the old bounded-subprocess implementation; at the head it
 # runs the checked-in tests. The generic child and the public T5 relay hold then name their own

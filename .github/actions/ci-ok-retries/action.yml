@@ -8,13 +8,18 @@ description: >-
 runs:
   using: composite
   steps:
+    # No merge-multiple: each artifact is extracted into a directory named for it, since the legs
+    # of one job write the same jsonfile names (go-test.sh's <GITHUB_JOB>-<n>.json, GITHUB_JOB the
+    # job's id, which every leg shares), and merged into one directory they overwrote each other
+    # mid-extraction: dispatch run 45855357666's ci-ok could not read envoy-go-race-docs-legs-1.json,
+    # which all three race-docs legs uploaded. A lone matching artifact is extracted into the path
+    # itself; ci-ok-retries.sh reads jsonfiles at any depth, so it reads either layout.
     - name: Download the Go steps' gotestsum jsonfiles
       if: always()
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         pattern: go-test-*
         path: ${{ runner.temp }}/go-test-reports
-        merge-multiple: true
     - name: Name each Go test that passed only on its retry
       if: always()
       shell: bash

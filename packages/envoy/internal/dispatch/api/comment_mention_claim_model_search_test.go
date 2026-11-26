@@ -22,7 +22,9 @@ import (
 // The sender claim model's search (TestTheMentionSenderClaimModel; comment_mention_claim_model_test.go
 // and the run, steps and checks files beside it hold the model itself): the key a run's state is
 // known by, the breadth-first walk of every state a variant reaches, each run replayed in a bubble
-// of its own, and the test that runs the sender as built and its control.
+// of its own, the runs of the variants a test names, and the test that runs the sender as built.
+// Its controls are TestTheClaimModelCatchesEachBrokenSender's
+// (comment_mention_claim_model_control_test.go).
 
 // key is the run's state as the search keys on it: every claim in play named by its order among
 // them and its age up to a lease and a slot, then the model's rows, the sender's goroutines in the
@@ -311,26 +313,21 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	return result
 }
 
-// The sender's claim model: the sender as built must keep every claim it trusts in step with its
-// row, never let a send it holds go with its attempt pending, never report a held send behind no
-// event, and never let s1 take A-2 first or a comment twice - with any refresh's answer lost and
-// two re-reads failed, and, in the full run, with up to two refreshes failed before they commit,
-// so that a claim may lapse. Two controls show the model sees each failure: a sender whose re-reads
-// learn nothing of a lost refresh must trust a stale claim, and, in the full run, a refresh that
-// writes a claim even once the claim it names has lapsed and a take that counts the row's claim its
-// own only while the claim it carries is live, under the same failures, must trust a stale claim,
-// drop a send and let A-2 pass A-1. After a claim lapses the delivery sweep keeps no order between
-// two comments, which the spec puts outside this change: an A-2 the sweep sends first, or one the
-// lane sends after the sweep took A-1, is counted in its own column of the table, and fails
-// nothing.
-//
-// CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
-// and write a row between a try's answer and its park and for a send to park after a failed read;
-// the full run (ENVOY_MENTION_ORDER_MODEL=full) adds the outage pair at four periods, enough for a
-// claim to lapse and the sweep to hand its send back, and CI guards what only they reach with
-// TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
-// on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
-func TestTheMentionSenderClaimModel(t *testing.T) {
+// cmModelRun is one variant the claim model searches, at a number of periods, and what the search
+// must find: breaks is what a control must break; nil for the sender as built, which must break
+// none.
+type cmModelRun struct {
+	v       cmVariant
+	periods int
+	breaks  []string
+}
+
+// cmModelRuns searches each run's variant and holds the result to what the run must find, logging
+// the table of states and checks, a row per run. After a claim lapses the delivery sweep keeps no
+// order between two comments, which the spec puts outside this change: an A-2 the sweep sends
+// first, or one the lane sends after the sweep took A-1, is counted in its own column of the table,
+// and fails nothing.
+func cmModelRuns(t *testing.T, runs []cmModelRun) {
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",
 			cmLapsePeriods, model.DeliveryClaimLapse, mentionClaimRefresh)
@@ -340,25 +337,6 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 	logs := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(logs) })
-	type modelRun struct {
-		v       cmVariant
-		periods int
-		// breaks is what a control must break; nil for the sender as built, which must break none.
-		breaks []string
-	}
-	runs := []modelRun{
-		{v: cmAsBuilt, periods: 3},
-		{v: cmBlindRepair, periods: 3, breaks: []string{"stale"}},
-	}
-	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
-		// A claim lapses only after a lease with no committed refresh, and the sweep then takes
-		// its attempt: four periods reach that, the control's refresh writing the lapsed claim
-		// again, and a hand-off landing after a send's retry check.
-		runs = append(runs,
-			modelRun{v: cmOutage, periods: 4},
-			modelRun{v: cmLapseBlindStatements, periods: 4, breaks: []string{"stale", "dropped", "order"}},
-		)
-	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first after the sweep took a lapsed claim | time |")
 	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
@@ -383,4 +361,27 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 		}
 	}
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
+}
+
+// The sender's claim model: the sender as built must keep every claim it trusts in step with its
+// row, never let a send it holds go with its attempt pending, never report a held send behind no
+// event, and never let s1 take A-2 first or a comment twice - with any refresh's answer lost and
+// two re-reads failed, and, in the full run, with up to two refreshes failed before they commit,
+// so that a claim may lapse. TestTheClaimModelCatchesEachBrokenSender shows the model sees each
+// failure.
+//
+// CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
+// and write a row between a try's answer and its park and for a send to park after a failed read;
+// the full run (ENVOY_MENTION_ORDER_MODEL=full) adds the outage at four periods, enough for a
+// claim to lapse and the sweep to hand its send back, and CI guards what only it reaches with
+// TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
+// on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
+func TestTheMentionSenderClaimModel(t *testing.T) {
+	runs := []cmModelRun{{v: cmAsBuilt, periods: 3}}
+	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
+		// A claim lapses only after a lease with no committed refresh, and the sweep then takes
+		// its attempt: four periods reach that, and a hand-off landing after a send's retry check.
+		runs = append(runs, cmModelRun{v: cmOutage, periods: 4})
+	}
+	cmModelRuns(t, runs)
 }

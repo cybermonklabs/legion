@@ -5,7 +5,8 @@
 # on its retry, a flake the merge group did not stop on, and each package that failed with no
 # test failing (a TestMain check after its tests passed, or a wrapper's own exit), which
 # .github/scripts/go-test.sh fails its step on whatever a rerun did. It reads the files the Go
-# steps upload and ci-ok downloads into one directory:
+# steps upload and ci-ok downloads under one directory, each artifact in a directory named for it
+# (the legs of one job write the same jsonfile names):
 #
 #   ci-ok-retries.sh <directory>
 #

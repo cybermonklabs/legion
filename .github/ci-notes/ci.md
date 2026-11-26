@@ -2757,7 +2757,12 @@ natscred's, the auth service's and the code flow's tests open no store, so they 
 The mention sender's claim model alone, on a runner of its own: its search takes every core
 the runner has for as long as it runs, which beside envoy-go's other steps would put its
 minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
-carries a Postgres service.
+carries a Postgres service. The model's control, a sender broken on purpose whose break the
+search must find (TestTheClaimModelCatchesEachBrokenSender), is a test of its own and runs in
+envoy-go's race-impossible job, one line after another there, so it has that runner's cores
+while it runs and the claim model's job waits on the search of the sender as built alone: that
+search took 11 min 17 s of the 12 min 48 s the one test took in job 140032939278, and the
+control the other 1 min 31 s.
 
 ## Why the document service runs alone under the race detector
 

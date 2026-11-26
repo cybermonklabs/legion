@@ -34,17 +34,25 @@
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
 #
+# The forced-order run goes through .github/scripts/go-test.sh, as every Go test step's does: it
+# runs under gotestsum, whose log names each test's result, its jsonfile is kept for the job's
+# upload (`<GITHUB_JOB>-forced-order-<pid>.json` under go-test.sh's reports directory), and in a
+# merge group a failed test runs once more (go-test.sh's header says when).
+#
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
-# runs none (every one it declares skipped), so a step that names a package whose tests were
-# renamed, moved or skipped goes red rather than green with nothing held; such a package's `ok`
-# line is printed as a FAIL line. GO_TEST_TIMEOUT replaces go test's 10-minute -timeout, which the
-# CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
-# go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
-# never written. scripts/forced-order.test.sh holds it to these refusals.
+# runs none (every one it declares skipped, read off the jsonfile in the last attempt that ran
+# each test), so a step that names a package whose tests were renamed, moved or skipped goes red
+# rather than green with nothing held; such a package's `ok` line is printed as a FAIL line.
+# GO_TEST_TIMEOUT replaces go test's 10-minute -timeout, which the CI jobs that run this script
+# count in their time budgets. The copies of go.mod and go.sum, or of go.work and go.work.sum, may
+# gain the checksums the build needs; the repository's own files are never written.
+# scripts/forced-order.test.sh holds it to these refusals.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
+# go-test.sh and the go-test.jq it and this script read the jsonfile with.
+scripts="$(cd "$envoy/../../.github/scripts" && pwd)"
 hooked="$envoy/internal/testnats/testdata/hooked"
 nats_server='github.com/nats-io/nats-server/v2'
 
@@ -129,16 +137,17 @@ if [ -n "$in_workspace" ]; then
   for use in "${uses[@]}"; do
     go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
   done
-  go_cmd=(env "GOWORK=$work/go.work" go)
+  go_env=(env "GOWORK=$work/go.work")
   modflags=()
   build="a copy of $workspace"
 else
   cp go.mod "$work/go.mod"
   [ ! -f go.sum ] || cp go.sum "$work/go.sum"
-  go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
+  go_env=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod")
   modflags=(-modfile="$work/go.mod")
   build="a copy of $module/go.mod, with no workspace"
 fi
+go_cmd=("${go_env[@]}" go)
 flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
 # The version the build requires, and the module that replaces it, if any: for a replaced module
 # go list's .Version is the requirement, not what the build links, and the hooked copy's replace
@@ -232,26 +241,38 @@ empty="$(awk '
 ' "$work/list")"
 [ -z "$empty" ] || die "no TestForcedOrder test in: $empty"
 
-# Every package named must also run one. go test -v prints `--- PASS:` or `--- FAIL:` at the start
-# of a line for each top-level test that ran (`--- SKIP:` for one that skipped), and ends each
-# package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
-# package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
-# line instead, and the run fails. The go command stays a line of its own, the text
-# .github/scripts/ci_job_reads.py pins.
+# Every package named must also run one. go-test.sh prints gotestsum's log as the tests run, and
+# gotestsum prints each package's own `ok` or `FAIL` line, in no order this script can tie to the
+# package's tests, so the `ok` lines are held back until the run ends and the jsonfile says which
+# packages ran a forced-order test: a package whose every forced-order test skipped ends in `ok`,
+# its line is printed as a FAIL line instead, and the run fails. The go command stays a line of its
+# own, the text .github/scripts/ci_job_reads.py pins.
+jsonfile="${GITHUB_JOB:-local}-forced-order-$$.json"
+report="$("$scripts/go-test.sh" --path "$jsonfile")"
 run_forced_order_tests() {
-  "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  "${go_env[@]}" "GO_TEST_JSONFILE=$jsonfile" "$scripts/go-test.sh" go test "${flags[@]}" -count=1 -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
-run_forced_order_tests "$@" 2>&1 | awk '
-  /^--- (PASS|FAIL): TestForcedOrder/ { ran++ }
-  /^(ok|FAIL)[ \t]+[^ \t]/ {
-    if ($1 == "ok" && ran == 0) {
-      print "FAIL\t" $2 "\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)"
-      fflush()
-      skipped = skipped " " $2
-      next
-    }
-    ran = 0
-  }
+status=0
+run_forced_order_tests "$@" 2>&1 | awk -v held="$work/ok" '
+  /^ok[ \t]+[^ \t]/ { print >held; next }
   { print; fflush() }
-  END { if (skipped != "") { print "forced-order.sh: no TestForcedOrder test ran in:" skipped; exit 1 } }
-'
+' || status=$?
+# go-test.sh has said why a run left no jsonfile.
+[ -s "$report" ] || exit "$((status == 0 ? 1 : status))"
+# The packages that passed with no top-level forced-order test that passed or failed, each test
+# read in the last attempt that ran it.
+skipped="$(jq -n -r -L "$scripts" 'include "go-test"; [last_attempt_results(inputs)]
+  | (map(select(.Test != null and (.Test | test("^TestForcedOrder[^/]*$")) and (.Action == "pass" or .Action == "fail"))
+         | .Package) | unique) as $ran
+  | .[] | select(.Test == null and .Action == "pass" and (.Package as $p | $ran | index($p) | not)) | .Package' "$report")" ||
+  die "jq could not read the jsonfile $report"
+[ ! -e "$work/ok" ] || awk -v skipped="$skipped" '
+  BEGIN { n = split(skipped, names, "\n"); for (i = 1; i <= n; i++) none[names[i]] = 1 }
+  ($2 in none) { print "FAIL\t" $2 "\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)"; next }
+  { print }
+' "$work/ok"
+if [ -n "$skipped" ]; then
+  echo "forced-order.sh: no TestForcedOrder test ran in: $(paste -sd ' ' <<<"$skipped")"
+  exit 1
+fi
+exit "$status"

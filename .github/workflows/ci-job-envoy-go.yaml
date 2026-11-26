@@ -243,6 +243,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # Every go test below runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -284,34 +286,34 @@ jobs:
       # this step.
       - name: Test the rows whose bound is on time, alone
         run: |
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
+          ../../.github/scripts/go-test.sh go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
         working-directory: packages/envoy
       # The rows of the plain run the race build cannot make that measure time, alone for the same
       # reason (ci_job_reads.py's RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the
       # statement-free gaps of a window against a bound; the xid rig's own tests, which read the
       # thread clocks those gaps come from; the API's 200 ms bound on the issue list; and the auth
       # service's restart storm, whose five hundred connections must all be admitted within the
-      # callout's deadline. The documents package's line runs under Go's cleanup detector and with
-      # -v, as its line in envoy-go-race-impossible does. Each line's -run is derived from the race
-      # lane's packages and their files' //go:build !race and raceEnabled, as that step's are.
+      # callout's deadline. The documents package's line runs under Go's cleanup detector, as its
+      # line in envoy-go-race-impossible does. Each line's -run is derived from the race lane's
+      # packages and their files' //go:build !race and raceEnabled, as that step's are.
       - name: Test the xid window rows, the API's issue-list bound and the auth service's storm, alone
         run: |
-          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
-          go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
-          go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
+          GODEBUG=checkfinalizers=1 ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or
@@ -319,6 +321,11 @@ jobs:
         # passing them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-alone
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -331,9 +338,9 @@ jobs:
   envoy-go-race-impossible:
     name: envoy-go (race-impossible)
     runs-on: ubuntu-24.04-arm
-    # The step's two lines run one after another, each under its own 10-minute -timeout, after
-    # about 2 minutes of setup, so 25.
-    timeout-minutes: 25
+    # The step's three lines run one after another, each under its own 10-minute -timeout, after
+    # about 2 minutes of setup, so 35.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -352,7 +359,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -366,6 +373,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # Both go tests below run under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -391,17 +400,20 @@ jobs:
       # The tests the race detector makes impossible that measure no time, which the race job of
       # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
       # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; and the documents package measures the heap a room
-      # keeps, which the detector's shadow memory and instrumentation move. Those are out of the
-      # race build altogether (//go:build !race), and the two render-reuse storms run fewer seeds
-      # and fewer edits under it (raceEnabled), so this is their full-size run. The documents
+      # allocations would be counted into; the API's claim model searches its broken senders for
+      # the breaks they must show (TestTheClaimModelCatchesEachBrokenSender), which the detector
+      # slows about sevenfold; and the documents package measures the heap a room keeps, which the
+      # detector's shadow memory and instrumentation move. Those are out of the race build
+      # altogether (//go:build !race), and the two render-reuse storms run fewer seeds and fewer
+      # edits under it (raceEnabled), so this is their full-size run. The documents
       # package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
       # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
-      # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
-      # services left alive prints. The rows of that run that measure time (the xid window tests,
-      # the xid rig, the API's issue-list bound and the auth service's restart storm) run alone in
-      # envoy-go-alone. The API's mention sender claim model is out of the race build too, and
-      # runs in a job of its own, envoy-go-claim-model; the API's nine source guards, and
+      # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and under .github/scripts/go-test.sh, whose
+      # gotestsum log prints its TestMain's count of services left alive, as -v did. The rows of
+      # that run that measure time (the xid window tests, the xid rig, the API's issue-list bound
+      # and the auth service's restart storm) run alone in envoy-go-alone. The search of the API's
+      # mention sender as built is out of the race build too, and runs in a job of its own,
+      # envoy-go-claim-model, beside this one; the API's nine source guards, and
       # one_expression_guard_test.go beside them, carry that tag as well and are deliberately not
       # here: they read the module's source, the text-check job runs their twenty-two tests by
       # name, and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those
@@ -411,9 +423,15 @@ jobs:
       # ci-filters job naming this step. 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
-          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestTheClaimModelCatchesEachBrokenSender)$' ./internal/dispatch/api
+          GODEBUG=checkfinalizers=1 ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-race-impossible
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -587,6 +605,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The natslive step's and the integration step's go tests run under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -655,19 +675,19 @@ jobs:
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          ../../.github/scripts/go-test.sh go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 5m -tags natslive -run "$cap" ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
-          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 5m -tags natslive -run "$callout" ./internal/cipher/natscallout/
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
-          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 5m -tags natslive -run "$grant" ./natsgrant/
           edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
-          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
+          ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -tags natslive -run "$edge" ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
-        run: go test ./internal/integration/ -timeout 300s -count=1
+        run: ../../.github/scripts/go-test.sh go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
       # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
       # queue group), listener, Dispatch and nats-server behind the auth callout, built and started
@@ -679,6 +699,11 @@ jobs:
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-natslive
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
