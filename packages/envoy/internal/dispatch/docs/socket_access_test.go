@@ -281,6 +281,66 @@ func TestARevocableSocketWriterAnswersPlainTextBeforeUpgrade(t *testing.T) {
 	}
 }
 
+// TestARecheckAccessOnACancelledContextRevokesNoSocket: a server shutdown cancels the lifetime
+// context, which the access re-check runs under. If a cancelled context falls through into the
+// pass, readableRooms fails (the query's context is done), every socket of that person is marked
+// unread, and revokeUnless closes each one with errAccessRevoked, the close code that tells the
+// client its person lost the room, not that the server stopped. recheckAccess returns before the
+// loop when ctx.Err() is non-nil, so no socket is revoked.
+//
+// Control: with the ctx.Err() return deleted, the same cancelled context closes the socket with
+// DocumentAdmissionRevokedCloseCode.
+func TestARecheckAccessOnACancelledContextRevokesNoSocket(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	service := New(Deps{
+		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database),
+		Origins: text.NewOrigins("https://dispatch.example"),
+		Settle:  time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
+	})
+	testcleanup.Add(t, func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	service.srv.RoomIdleTimeout = time.Hour
+	ids := createDocuments(t, database, 1)
+	owner := model.Actor{Kind: "user", ID: "alice"}
+	writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := access.SetVisibility(ctx, tx, service.events, "DOC", model.ProjectPrivate, owner)
+		return err
+	})
+	writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := access.AddPrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, "alice@example.com", owner)
+		return err
+	})
+	runRoomSync(t, newRoomSync(service))
+	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	testcleanup.Add(t, server.Close)
+	peer := connectPeer(t, server.URL, ids[0], "alice@example.com")
+
+	// Cancel the context and run the re-check; no socket should be revoked.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	service.recheckAccess(cancelled)
+
+	// The socket is still alive: its Ended channel is not closed.
+	select {
+	case <-peer.Ended:
+		t.Fatalf("socket was revoked on a cancelled context (close code %d)", peer.CloseCode())
+	case <-time.After(time.Second):
+	}
+
+	// The room still reads: a live-context recheck keeps alice's socket because she is on the list.
+	service.recheckAccess(context.Background())
+	select {
+	case <-peer.Ended:
+		t.Fatalf("socket was revoked on a live context while alice is still on the list (close code %d)", peer.CloseCode())
+	case <-time.After(time.Second):
+	}
+	peer.Close()
+}
+
 // TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson: an access re-check walks the
 // sockets recorded when it begins, so a socket whose admission read its room before a re-check
 // began, and that is recorded only after it, is one that re-check never walked. Its admission reads

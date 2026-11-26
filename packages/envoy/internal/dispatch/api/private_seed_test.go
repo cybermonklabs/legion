@@ -28,11 +28,11 @@ import (
 // token, never as a session, because a session's own credential is the broker's
 // (stubBrokerTokens, S7).
 //
-// So privateCaller.sees() is the rule of the whole seed, which holds from S2. At this head every
+// The seed's rule, which holds from S2: a caller sees a project when their person sees it (the
+// membership answer) and their credential lists no projects or lists it. At this head every
 // caller is answered both projects by GET /api/v1/projects, PRIV included, with bob and carol
 // both on PRIV's list: the read binds an open viewer while the deployment holds no restricted
-// member, which is this slice's own premise. A scratch probe read all eight callers that way
-// (BuildS3a-evidence/seed-probe-with-list.log).
+// member, which is this slice's own premise.
 const (
 	seedPublic  = "PUB"
 	seedPrivate = "PRIV"

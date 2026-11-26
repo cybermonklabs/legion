@@ -300,6 +300,9 @@ func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 // every socket of theirs closed too, as recheckAdmission closes a socket whose read fails: the pass
 // cannot show they still read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	// hidden is each socket whose person's read answered that they no longer read its room, and
 	// unread each socket whose person's read failed.
 	hidden := make(map[*schemaAdmission]bool)

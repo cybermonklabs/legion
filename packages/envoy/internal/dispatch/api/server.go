@@ -137,10 +137,10 @@ type Deps struct {
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
 	// AccessAccounts are the service-account subjects that may read the routes of the read class
-	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
-	// caller with no credential, or one whose credential does not verify, is refused there as
-	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
-	// ACCESS_ACCOUNT_REQUIRED.
+	// accessAccount. S7 reads DISPATCH_ACCESS_ACCOUNTS and fills this list; until then the
+	// slice's own tests supply them. A caller with no credential, or one whose credential does
+	// not verify, is refused there as every route refuses it (401 NO_IDENTITY for none), and
+	// every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such

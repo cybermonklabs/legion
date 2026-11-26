@@ -228,15 +228,15 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
 // search past what the caller asked of. It reads every kind the index holds, as the question is
-// of all of them. It searches as the run's author, the credential that asked the question and the
-// only one the stream serves, so the answer is drawn from what that credential may read and no
-// more.
-func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
+// of all of them. It searches as the server until S3c-issues narrows it to the run's author, the
+// credential that asked the question and the only one the stream serves, so the answer is drawn
+// from what the server sees, and S3c-issues draws it from what that credential may read.
+func (s *server) goingSearch(project string, reader model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: reader}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err

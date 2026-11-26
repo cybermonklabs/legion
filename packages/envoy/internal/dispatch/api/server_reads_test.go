@@ -38,7 +38,7 @@ var serverReads = map[string]string{
 		"every reader of that document reads, which the document's own read gates by its project",
 	"comment_queries.go:answerCommentList": "the comment list is kept in listAnswers under its owner and its ETag and handed to the " +
 		"next reader whose request names the same pair, so its comments are read for no one reader; the owner's check runs " +
-		"before the kept answer is looked up, and the sessions a comment names are left out for the caller",
+		"before the kept answer is looked up. At S3ab answerCommentList leaves no session out; S3d leaves out the sessions a comment names for the caller",
 	"delivery_sweep.go:resumeOwedDelivery": "the delivery sweep resends an owed attempt of a comment or a message a writer already " +
 		"wrote, as that write's own send would, to the one session the attempt names; no caller reads what it loads, and it " +
 		"puts this reader in ctx so the session route it resolves is read as the server's (resolveDeliveryTarget)",
