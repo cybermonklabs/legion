@@ -1200,6 +1200,42 @@ test("a landing the view moved away from under the reader is shown whole again b
 // again from the rows the list holds now: the nearest row before it that the reader can see takes
 // the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
 // CORE-14's mark below it and cuts CORE-11's.
+// INFRA-3135, round 29 (the tester's red row `8b8476d5`, measured in WebKit in builds Job
+// `infra-3135-infra-3135-r29v-land-6wg77`): a write the press began can take the landing's own row
+// away after the bar has gone - the Inbox keeps a row a Snooze is over in its band until that
+// write lands, and its move into a folded Later takes the row with the focus in it. The place is
+// the reader's still, so it is handed off again from the rows the list holds then.
+test("a landing whose row leaves the list hands the place off again", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    // The bar goes with the marks and the landing stands on CORE-14, the row now at the place.
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(rowBox("CORE-14")).toHaveFocus();
+    // The write then takes CORE-14 itself away, and its going drops the focus to the page's body.
+    view.rerender(
+      <PlacedList
+        count={0}
+        last="CORE-13"
+        listed={without(PLACED_KEYS, "CORE-12", "CORE-13", "CORE-14")}
+      />
+    );
+    // CORE-15 stands at CORE-13's place now, so it takes the focus: the going dropped the focus to
+    // the page's body, and the reading of that commit hands the place on.
+    expect(focusedName()).toBe("Select CORE-15");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29: the readings are owed only until the reader's own next action
 // (`READER_ACTS`), because where they are then is theirs.
 test("a key of the reader's own ends the readings", async () => {
