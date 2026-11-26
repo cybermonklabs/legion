@@ -19,7 +19,7 @@ type Pending =
 
 /** The path from `node` down to the own row of the node `id`, its placement that is no
  *  transclusion (part T's second rows), or undefined where the tree under `node` holds none. */
-function ownPathTo(node: TreeNode, id: string): TreeNode[] | undefined {
+export function ownPathTo(node: TreeNode, id: string): TreeNode[] | undefined {
   if (node.id === id) return [node];
   for (const child of node.children) {
     if (child.transcluded) continue;

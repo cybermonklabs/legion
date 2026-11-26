@@ -1,17 +1,29 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { BlockSchemaRead, LensKindRead } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { EditorView } from "@milkdown/kit/prose/view";
+import { hashKey, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
-import type { ReactNode } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import * as Y from "yjs";
 
 import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
 import { answerRequests } from "../../../__tests__/network";
 import { api } from "../../../api/client";
 import { liveFeedUp, liveSocketFor } from "../../../api/live-socket";
-import type { IssueDetails } from "../../../api/types";
+import type { Artifact, IssueDetails } from "../../../api/types";
+import { bindRemoteMarks, createEditor, type EditorHandle } from "../../doc/editor";
+import { compiledBlockSchema } from "../../doc/schema";
 import { MarginProvider } from "../../margin/margin-context";
 import { NOTHING_PUBLISHED } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
@@ -19,17 +31,20 @@ import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { issueDetails, KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { DocumentAdmissionProvider } from "../document-admission";
-import { DocumentStages } from "../document-stage";
+import { DocumentStage, DocumentStages } from "../document-stage";
 import { FocusedNodeProvider } from "../focused-node";
 import { IssueTree } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree } from "../issue-tree";
+import { OutlineWriterProvider } from "../outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS, type Preset } from "../page-words";
+import { EditorBox } from "../StagedDocument";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { AppProviders, stubReads } from "../slots/stage-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
-import { treeReferences } from "../useIssueTree";
+import { issueAskThreadsQuery, treeReferences } from "../useIssueTree";
+import type { OnEditing, OnEditor } from "../useNodeEditing";
 import { fixture } from "./graph-edit-fixtures";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 
@@ -1286,4 +1301,561 @@ test("a delete waits for the node's moves", async () => {
   await waitFor(() => expect(real()).toHaveLength(1));
   // It carries the placement_seq the move's answer gave.
   expect(real()[0]?.ifMatch).toBe(`"${moved.indent.body.placement_seq}"`);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The keys of the moves in a row's editor (R4, R10; stage B's three cases of plan task t13): the
+// outline with a live room, as `IssueTree.test.tsx`'s `editLive` draws it.
+// ---------------------------------------------------------------------------------------------
+
+/** A block of a document as the room holds it, in ProseMirror's JSON (`IssueTree.test.tsx`'s
+ *  `LiveBlock`): its type, its attributes - its `blockId` among them - and what it holds. */
+interface LiveBlock {
+  readonly attrs?: Readonly<Record<string, string | number>>;
+  readonly content?: readonly (LiveBlock | { readonly text: string; readonly type: "text" })[];
+  readonly type: string;
+}
+
+/** `block` as the room holds it: a Yjs element of its type and attributes, holding its words and
+ *  its blocks, as y-prosemirror writes a document there. */
+function roomBlock(block: LiveBlock): Y.XmlElement {
+  const element = new Y.XmlElement(block.type);
+  const attributes = element as Y.XmlElement<Record<string, string | number>>;
+  for (const [name, value] of Object.entries(block.attrs ?? {})) {
+    attributes.setAttribute(name, value);
+  }
+  element.insert(
+    0,
+    (block.content ?? []).map((child) =>
+      "text" in child ? new Y.XmlText(child.text) : roomBlock(child)
+    )
+  );
+  return element;
+}
+
+/** A paragraph of `words`, whose `blockId` is `blockId` where it has one. */
+function paragraphOf(words: string, blockId?: string): LiveBlock {
+  return {
+    ...(blockId === undefined ? {} : { attrs: { blockId } }),
+    content: [{ text: words, type: "text" }],
+    type: "paragraph",
+  };
+}
+
+/** The words the fixture's read gives `node`: the text of the first paragraph of its text. */
+function wordsOfNode(node: TreeAnswerNode): string {
+  const found: string[] = [];
+  const walk = (each: unknown): void => {
+    if (found.length > 0 || typeof each !== "object" || each === null) return;
+    const { content, text } = each as { content?: unknown[]; text?: unknown };
+    if (typeof text === "string") found.push(text);
+    for (const child of content ?? []) walk(child);
+  };
+  walk(node.text_tree);
+  return found[0] ?? "";
+}
+
+const CHECK_AGENT = nodeOf(converted, "<check-agent>");
+const LIST = nodeOf(converted, "<tree/bullet_list>");
+const HEADING = nodeOf(converted, "<tree/heading>");
+
+/** The issue's own fragment: the tree artifact the read names (`tree`), whose blocks - prose - the
+ *  outline draws by their read ids and edits in that artifact of the issue's room
+ *  (`model-rows/room-target.ts`). */
+const TREE_ID = converted.tree ?? "";
+
+/** The id the outline gives the row of `node`: a block of a document its address in the issue
+ *  (`rowId`), a prose block of the issue's own fragment its read id. */
+function liveRowId(node: TreeAnswerNode): string {
+  return node.document === undefined || node.document === null ? node.id : rowId(node);
+}
+
+function liveRowOf(view: RenderResult, node: TreeAnswerNode): HTMLElement | null {
+  return view.container.querySelector<HTMLElement>(
+    `[data-node-row][data-node-id="${CSS.escape(liveRowId(node))}"]`
+  );
+}
+
+/** The row the page draws of `child` right under the row of `parent`, by its key, or null. */
+function liveRowUnder(
+  view: RenderResult,
+  parent: TreeAnswerNode,
+  child: TreeAnswerNode
+): HTMLElement | null {
+  const path = `>${liveRowId(parent)}>${liveRowId(child)}`;
+  const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+  return rows.find((row) => row.dataset.rowKey?.endsWith(path) === true) ?? null;
+}
+
+/** Holds every read of the tree out, answering none, so the outline stays as the held read and
+ *  the answers written into it draw it. */
+function holdTreeReads(): void {
+  spyOn(api, "getIssueTree").mockImplementation(() => NEVER);
+}
+
+/** The two documents the cases edit in, as their rooms hold them: the spec's statements, each
+ *  block by the block id the read gives its node, and the issue's own fragment's heading and list,
+ *  the list's two items holding a paragraph each. */
+const LIVE_DOCUMENTS: Readonly<Record<string, readonly LiveBlock[]>> = {
+  [SPEC_DOCUMENT.id]: [STATEMENT_1, STATEMENT_2, STATEMENT_3].map((node) =>
+    paragraphOf(wordsOfNode(node), node.block_id ?? undefined)
+  ),
+  [TREE_ID]: [
+    {
+      attrs: { blockId: HEADING.block_id ?? "", level: 2 },
+      content: [{ text: wordsOfNode(HEADING), type: "text" }],
+      type: "heading",
+    },
+    {
+      attrs: { blockId: LIST.block_id ?? "" },
+      content: [
+        { content: [paragraphOf("The first item of the list.")], type: "list_item" },
+        { content: [paragraphOf("The second item of the list.")], type: "list_item" },
+      ],
+      type: "bullet_list",
+    },
+  ],
+};
+
+/** The room's copy of a document and the browser's, each update to either relayed to the other,
+ *  and the row's editor of it, once made (`IssueTree.test.tsx`'s `LiveRoom`). */
+interface LiveRoom {
+  readonly browser: Y.Doc;
+  editor?: EditorHandle;
+  readonly server: Y.Doc;
+}
+
+function liveRoom(): LiveRoom {
+  const browser = new Y.Doc();
+  const server = new Y.Doc();
+  for (const [from, to] of [
+    [server, browser],
+    [browser, server],
+  ] as const) {
+    from.on("update", (update: Uint8Array, origin: unknown) => {
+      if (origin !== "relay") Y.applyUpdate(to, update, "relay");
+    });
+  }
+  return { browser, server };
+}
+
+/** The document's own editor (`doc/editor.ts`), made as `ProofDocument` makes it for the row, over
+ *  a room that holds `blocks` before it is made, handed to the row (`onEditor`) once made. */
+function LiveEditor({
+  blocks,
+  onEditor,
+  room,
+}: {
+  blocks: readonly LiveBlock[];
+  onEditor: OnEditor;
+  room: LiveRoom;
+}): ReactNode {
+  const root = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const parent = root.current;
+    if (parent === null) return;
+    let live = true;
+    let made: EditorHandle | undefined;
+    let unbindMarks = () => {};
+    const held = room.server.getXmlFragment("prosemirror");
+    if (held.length === 0) held.insert(0, blocks.map(roomBlock));
+    void createEditor(parent, {
+      awareness: null,
+      blockSchema: compiledBlockSchema,
+      onAskBlockHosts: () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      watchPicture: () => () => {},
+      ydoc: room.browser,
+    }).then((handle) => {
+      if (!live) {
+        void handle.destroy();
+        return;
+      }
+      made = handle;
+      room.editor = handle;
+      onEditor(handle);
+      unbindMarks = bindRemoteMarks(room.browser, handle);
+    });
+    return () => {
+      live = false;
+      if (made === undefined) return;
+      unbindMarks();
+      void made.destroy();
+      onEditor(undefined);
+    };
+  }, [blocks, onEditor, room]);
+  return <div ref={root} />;
+}
+
+/** What a live outline case reads: the page, the room of each document, and each document the
+ *  tree asked the page to draw the editor of (`onEditing`), `undefined` where it let one go. */
+interface LiveOutline {
+  readonly edited: (string | undefined)[];
+  readonly rooms: ReadonlyMap<string, LiveRoom>;
+  readonly view: RenderResult;
+}
+
+const ARTIFACTS: ReadonlyMap<string, Artifact> = new Map([[SPEC_DOCUMENT.slug, SPEC_DOCUMENT]]);
+
+const OUTLINE_HASH = hashKey(outlineQuery(KEY, "graph").queryKey);
+
+const handsNothing: OnEditor = () => {};
+
+/** The outline at the address the router holds, drawn from the outline read the page's client
+ *  holds, as the page's body draws it from its read (a write written into that read draws the tree
+ *  again), with the editor of the document a row is edited in drawn on that document's stage. */
+function HeldOutline({
+  edited,
+  rooms,
+}: {
+  edited: (string | undefined)[];
+  rooms: ReadonlyMap<string, LiveRoom>;
+}): ReactNode {
+  const client = useQueryClient();
+  const tree = useSyncExternalStore(
+    (changed) =>
+      client.getQueryCache().subscribe((event) => {
+        if (event.type === "updated" && event.query.queryHash === OUTLINE_HASH) changed();
+      }),
+    () => client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey) ?? converted
+  );
+  const root = useMemo(() => buildIssueTree({ issue: issueDetails(), tree }), [tree]);
+  const published = useMemo(
+    () => ({ ...NOTHING_PUBLISHED, asked: new Set(treeReferences(root)) }),
+    [root]
+  );
+  const [drawnDocument, setDrawnDocument] = useState<{
+    artifactId: string;
+    onEditor?: OnEditor;
+  }>();
+  const onEditing = useCallback<OnEditing>(
+    (artifactId, onEditor) => {
+      edited.push(artifactId);
+      setDrawnDocument(artifactId === undefined ? undefined : { artifactId, onEditor });
+    },
+    [edited]
+  );
+  const room = drawnDocument === undefined ? undefined : rooms.get(drawnDocument.artifactId);
+  return (
+    <>
+      <IssueScope />
+      <IssueTree
+        artifacts={ARTIFACTS}
+        context={new Set()}
+        emptyLine={undefined}
+        focusReveal={false}
+        holdsEscape={false}
+        isClosed={false}
+        onEditing={onEditing}
+        published={published}
+        readsHeld
+        readsSettled
+        reveal={undefined}
+        root={root}
+        rootRow
+      />
+      {drawnDocument === undefined || room === undefined ? null : (
+        <DocumentStage artifactId={drawnDocument.artifactId}>
+          <EditorBox>
+            <LiveEditor
+              blocks={LIVE_DOCUMENTS[drawnDocument.artifactId] ?? []}
+              onEditor={drawnDocument.onEditor ?? handsNothing}
+              room={room}
+            />
+          </EditorBox>
+        </DocumentStage>
+      )}
+    </>
+  );
+}
+
+/** The outline of the fixture's converted issue at `path` (Graph's where none is given), its read
+ *  held by a signed-in client under the page's row writer, so a row is edited in the issue's room
+ *  as the page edits it (`model-rows/room-target.ts`), with a live room for each document. */
+function drawLive(path = `/issues/${KEY}/graph`): LiveOutline {
+  const client = signedIn();
+  client.setQueryData(outlineQuery(KEY, "graph").queryKey, converted);
+  // The writer's own reads, answered empty, so it asks the network for nothing.
+  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  const edited: (string | undefined)[] = [];
+  const rooms = new Map(
+    [SPEC_DOCUMENT.id, TREE_ID].map((id): [string, LiveRoom] => [id, liveRoom()])
+  );
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <FocusedNodeProvider>
+              <DocumentAdmissionProvider>
+                <OutlineWriterProvider issueKey={KEY}>
+                  <DocumentStages>
+                    <HeldOutline edited={edited} rooms={rooms} />
+                  </DocumentStages>
+                </OutlineWriterProvider>
+              </DocumentAdmissionProvider>
+            </FocusedNodeProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { edited, rooms, view };
+}
+
+/** Where the selection's anchor and its focus stand, each as its block's id, the words of the
+ *  text it is in and its offset there (`IssueTree.test.tsx`'s `selected`, with the words, since the
+ *  items of a list carry no id of their own). No node is compared, only where it stands. */
+function caretPlace(): [anchor: string, focus: string] {
+  const selection = window.getSelection();
+  const placeOf = (node: Node | null | undefined, offset: number | undefined) => {
+    const element = node instanceof Element ? node : node?.parentElement;
+    const block = element?.closest("[data-block-id]")?.getAttribute("data-block-id") ?? "-";
+    const words = node instanceof Text ? node.data : "(element)";
+    return `${block}|${words}|${offset}`;
+  };
+  return [
+    placeOf(selection?.anchorNode, selection?.anchorOffset),
+    placeOf(selection?.focusNode, selection?.focusOffset),
+  ];
+}
+
+/** The first text of the item of the list or the block `blockId` of `editable` that reads
+ *  `words`, or of the block itself where no words are given. */
+function textIn(editable: HTMLElement, blockId: string, words?: string): Text {
+  const block = editable.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
+  if (block === null) throw new Error(`the editor draws no block ${blockId}`);
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node instanceof Text && (words === undefined || node.data === words)) return node;
+  }
+  throw new Error(`the block ${blockId} draws no text ${words ?? ""}`);
+}
+
+/** A move of the selection to `offset` in `text`, the browser reporting it. */
+function caretAt(text: Text, offset: number): Promise<void> {
+  return act(async () => {
+    window.getSelection()?.setBaseAndExtent(text, offset, text, offset);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+}
+
+/** Presses `key` in the row's `editable`, and answers whether it is left to the editor and the
+ *  browser: false where the row took it, or refused it. */
+function pressIn(editable: HTMLElement, key: string, modifiers: KeyboardEventInit = {}): boolean {
+  let left = true;
+  act(() => {
+    left = editable.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...modifiers })
+    );
+  });
+  return left;
+}
+
+/** Each block of `view`'s document, in order, with its depth, its id and its words: strings,
+ *  never nodes, are what a case compares (`IssueTree.test.tsx`'s `blocksOf`). */
+function blocksOf(view: EditorView): string[] {
+  const blocks: string[] = [];
+  const { doc } = view.state;
+  doc.descendants((node, position) => {
+    if (!node.isBlock) return false;
+    const id = typeof node.attrs.blockId === "string" ? node.attrs.blockId : "-";
+    const depth = doc.resolve(position).depth;
+    blocks.push(
+      `${depth} ${id} ${node.type.name}${node.isTextblock ? `: ${node.textContent}` : ""}`
+    );
+    return true;
+  });
+  return blocks;
+}
+
+/** Enter on the row of `node`, once the editor of the document `artifactId` has drawn its block
+ *  and the caret is in it. Answers the editor's editable and its view. The editor loads its library
+ *  on its first use, which can take more than a second. */
+async function editRow(
+  live: LiveOutline,
+  user: UserEvent,
+  node: TreeAnswerNode,
+  artifactId: string
+): Promise<{ readonly editable: HTMLElement; readonly view: EditorView }> {
+  const row = await waitFor(() => {
+    const drawn = liveRowOf(live.view, node);
+    if (drawn === null) throw new Error(`no row is drawn for ${node.id}`);
+    return drawn;
+  });
+  act(() => row.focus());
+  await user.keyboard("{Enter}");
+  const editable = await waitFor(
+    () => {
+      const found = liveRowOf(live.view, node)?.querySelector<HTMLElement>(
+        '[contenteditable="true"]'
+      );
+      if (found === null || found === undefined) throw new Error(`${node.id}'s row took no editor`);
+      const caret = window.getSelection()?.anchorNode ?? null;
+      const block = found.querySelector(`[data-block-id="${CSS.escape(node.block_id ?? "")}"]`);
+      expect(
+        document.activeElement === found && block !== null && block.contains(caret),
+        `Enter put no caret in ${node.id}`
+      ).toBe(true);
+      return found;
+    },
+    { timeout: 10_000 }
+  );
+  expect(row.contains(editable)).toBe(true);
+  const view = live.rooms.get(artifactId)?.editor?.view;
+  if (view === undefined) throw new Error(`the editor of ${artifactId} was never made`);
+  return { editable, view };
+}
+
+/** The documents the tree asked the page to draw the editor of, from `artifactId`'s on: the one
+ *  document alone where the editing never let its editor go. */
+function editorsFrom(live: LiveOutline, artifactId: string): (string | undefined)[] {
+  return live.edited.slice(live.edited.indexOf(artifactId));
+}
+
+/** The row under `parent` that holds the focus and the caret once a move has drawn `node` there,
+ *  with the document's editor in it. */
+async function editedUnder(
+  live: LiveOutline,
+  parent: TreeAnswerNode,
+  node: TreeAnswerNode
+): Promise<HTMLElement> {
+  return waitFor(() => {
+    const under = liveRowUnder(live.view, parent, node);
+    if (under === null) throw new Error(`no row of ${node.id} is drawn under ${parent.id}`);
+    const editable = under.querySelector<HTMLElement>('[contenteditable="true"]');
+    expect(editable, "the moved row does not hold the editor").not.toBeNull();
+    expect(document.activeElement, "the editor in the moved row lost the focus").toBe(editable);
+    return under;
+  });
+}
+
+// R4 and R10: in Graph, with the caret in a statement's text, Tab indents the statement - one
+// PATCH of the node, with its If-Match - and the editing goes on in the row the move draws it at
+// under the second statement, a row of another key under a parent that was folded, which unfolds:
+// the document's one editor, the focus and the caret where the reader left it, with no editor let
+// go. In Conversation and in a filter the keys are today's: Tab leaves the editor, Alt+Shift+Down
+// extends the selection to the block's end, and nothing is written.
+test("the keys of the moves are taken in Graph alone", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const sent = answerNodeRoutes({ patches: [moved.indent] });
+  const live = drawLive();
+  await focusRow(live.view, STATEMENT_2);
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() =>
+    expect(rowOf(live.view, CHECK_AGENT), "the statement is not folded").toBeNull()
+  );
+  const { editable } = await editRow(live, user, STATEMENT_3, SPEC_DOCUMENT.id);
+  const words = wordsOfNode(STATEMENT_3);
+  await caretAt(textIn(editable, "s3"), 5);
+  const before = caretPlace();
+  expect(before).toEqual([`s3|${words}|5`, `s3|${words}|5`]);
+  expect(pressIn(editable, "Tab"), "Tab was left to the editor or the browser").toBe(false);
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]).toEqual({
+    body: moved.indent.request.body,
+    dryRun: false,
+    expected: null,
+    id: "<statement-3>",
+    ifMatch: moved.indent.request.if_match,
+  });
+  const under = await editedUnder(live, STATEMENT_2, STATEMENT_3);
+  await waitFor(() => expect(caretPlace(), "the caret moved").toEqual(before));
+  expect(rowOf(live.view, CHECK_AGENT), "the folded new parent stayed folded").not.toBeNull();
+  expect(liveRowUnder(live.view, STATEMENT_2, STATEMENT_3)).toBe(under);
+  expect(editorsFrom(live, SPEC_DOCUMENT.id), "the move let the document's editor go").toEqual([
+    SPEC_DOCUMENT.id,
+  ]);
+  await letRequestsSettle();
+  expect(caretPlace(), "the caret moved once the move settled").toEqual(before);
+  live.view.unmount();
+
+  for (const preset of ["conversation", "spec"] as Preset[]) {
+    holdTreeReads();
+    const none = answerNodeRoutes();
+    const other = drawLive(presetPath(KEY, preset));
+    const edited = await editRow(other, user, STATEMENT_3, SPEC_DOCUMENT.id);
+    const end = words.length;
+    await caretAt(textIn(edited.editable, "s3"), 5);
+    pressIn(edited.editable, "ArrowDown", { altKey: true, shiftKey: true });
+    expect(caretPlace(), `Alt+Shift+Down in ${preset} is not today's`).toEqual([
+      `s3|${words}|5`,
+      `s3|${words}|${end}`,
+    ]);
+    await caretAt(textIn(edited.editable, "s3"), 5);
+    pressIn(edited.editable, "Tab");
+    await waitFor(() =>
+      expect(
+        edited.editable.contains(document.activeElement),
+        `Tab in ${preset} kept the focus`
+      ).toBe(false)
+    );
+    await letRequestsSettle();
+    expect(none.patches, `a key wrote in ${preset}`).toEqual([]);
+    other.view.unmount();
+  }
+});
+
+// R4: in Graph, with the caret in a list item of a prose block R2 admits, Tab indents the node -
+// one PATCH, under the heading above it - and the list keeps its items as they were, none sunk
+// into the one before it; the editing goes on in the row the move draws the list at, the caret in
+// the item where it was.
+test("in Graph Tab in a list item indents the node", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const placed = `${String(LIST.placement_seq)}@2`;
+  const sent = answerNodeRoutes({
+    patches: [{ body: { after: null, parent: HEADING.id, placement_seq: placed }, status: 200 }],
+  });
+  const live = drawLive();
+  const { editable, view } = await editRow(live, user, LIST, TREE_ID);
+  const second = "The second item of the list.";
+  await caretAt(textIn(editable, LIST.block_id ?? "", second), 4);
+  const before = caretPlace();
+  const blocks = blocksOf(view);
+  expect(pressIn(editable, "Tab"), "Tab was left to the editor").toBe(false);
+  expect(blocksOf(view), "Tab sank the list item").toEqual(blocks);
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]).toEqual({
+    body: { after: null, parent: HEADING.id },
+    dryRun: false,
+    expected: null,
+    id: LIST.id,
+    ifMatch: `"${String(LIST.placement_seq)}"`,
+  });
+  await editedUnder(live, HEADING, LIST);
+  await waitFor(() => expect(caretPlace(), "the caret moved").toEqual(before));
+  expect(blocksOf(view), "the list's items changed").toEqual(blocks);
+  expect(editorsFrom(live, TREE_ID), "the move let the document's editor go").toEqual([TREE_ID]);
+});
+
+// R4: at a grey edge the key writes nothing, the caret stays where it was with the focus, and the
+// row shows the entry's reason: the first statement has no sibling above to indent under, and is
+// the first to move up.
+test("a key at a grey edge writes nothing and shows the reason", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const sent = answerNodeRoutes();
+  const live = drawLive();
+  const { editable } = await editRow(live, user, STATEMENT_1, SPEC_DOCUMENT.id);
+  const words = wordsOfNode(STATEMENT_1);
+  await caretAt(textIn(editable, "s1"), 3);
+  for (const [name, key, modifiers, reason] of [
+    ["Tab", "Tab", {}, ANSWER_LINES.grey_no_sibling_above],
+    ["Alt+Shift+Up", "ArrowUp", { altKey: true, shiftKey: true }, ANSWER_LINES.grey_first],
+  ] as const) {
+    expect(pressIn(editable, key, modifiers), `${name} was left to the editor`).toBe(false);
+    await waitFor(() =>
+      expect(rowOf(live.view, STATEMENT_1)?.textContent, `${name} shows no reason`).toContain(
+        reason
+      )
+    );
+    expect(document.activeElement, `${name} took the focus`).toBe(editable);
+    expect(caretPlace(), `${name} moved the caret`).toEqual([`s1|${words}|3`, `s1|${words}|3`]);
+  }
+  await letRequestsSettle();
+  expect(sent.patches, "a key at a grey edge wrote").toEqual([]);
+  expect(editorsFrom(live, SPEC_DOCUMENT.id)).toEqual([SPEC_DOCUMENT.id]);
 });

@@ -21,6 +21,7 @@ import { focusOnDocument } from "../shell/roving";
 import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
+import { useMoveKeyBridge, useMoveKeys } from "./graph-edit/move-keys";
 import { useRowReveal } from "./graph-edit/row-reveal";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
@@ -322,9 +323,13 @@ export function IssueTree({
       words: editWords(block),
     };
   }, []);
+  // Graph's move keys in a row's editor, and the editing that follows a node they moved
+  // (`graph-edit/move-keys.ts`, below).
+  const moveKeys = useMoveKeyBridge();
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: body,
+    moveKeys,
     onEditing,
     onOwnEdit: noteEdit,
     onReport: reportHere,
@@ -571,6 +576,18 @@ export function IssueTree({
   // Graph's node menu takes the reader to a row through these: the row a taken move put under a
   // new parent, and the row a refusal's line names (`graph-edit/row-reveal.ts`).
   const rowReveal = useRowReveal({ body, reach, root, unfoldPath });
+  // In Graph, the keys of the moves with the caret in a block R2 admits, and the editing kept on
+  // a node they drew under another row's key, its folded new parent unfolded, in this render.
+  useMoveKeys({
+    bridge: moveKeys,
+    closed: shown.closed,
+    editing,
+    isClosed,
+    root,
+    rows,
+    unfoldPath,
+    zoomRoot,
+  });
 
   useEffect(() => {
     if (wanted === undefined) return;

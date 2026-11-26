@@ -682,55 +682,66 @@ export async function deleteRouteGate(page: Page): Promise<Gate> {
   };
 }
 
-/** How long `roomWriteGate` waits for Enter to open a document socket: Y's first Enter makes one
- *  read of the tree artifact and one socket, each a request of the real stack. */
+/** How long `roomWriteGate` waits for Enter's caret and its socket: Y's first Enter makes one read
+ *  of the fragment's artifact and one socket, each a request of the real stack. */
 const ROOM_SOCKET_MS = 15_000;
 
 /**
  * Part Y's editor, which writes through the issue's one room (gate G3: Y's branch holding T's):
  * on Graph, Enter on the third statement's row puts the caret in an editor on that row whose
- * document socket is the tree artifact's (`/ws/doc/<tree>`), the issue's one room. The base's
- * editor of a document writes through that document's own room, so a socket to the spec, or none
- * within `ROOM_SOCKET_MS`, is the gate not met. It loads Graph at the statement's own address and
- * leaves the caret with Escape; a row that goes on loads the page it reads itself.
+ * document socket is the statement's own fragment of the room - its document's
+ * (`/ws/doc/<spec>`), or the tree artifact's for a block no document holds - read from the
+ * statement's own `document` in the tree read, as `criterionEditorGate` reads the criterion's.
+ * The probe uses a separate signed-in page, so the row's own page, its watches and its listeners
+ * stay untouched. The gate is owed only where the base draws the converted statement without its
+ * edit cue, read once from the row Graph committed: where the row takes a caret, an Enter that
+ * puts none in it, or an editor that opens no socket on that fragment, fails the row - each
+ * polled until it holds or its wait ends, never read once at a moment that may come too early.
  */
 export async function roomWriteGate(page: Page, key: string): Promise<Gate> {
   const answer = await requestedTreeRead(page, key);
-  const room = `/ws/doc/${answer.tree ?? ""}`;
   const statement = ownBlock(answer, "s3", "requirement");
-  const sockets: string[] = [];
-  page.on("websocket", (socket) => {
-    sockets.push(new URL(socket.url()).pathname);
-  });
-  await landOn(page, key, statement.id, "the third statement");
-  const opened = page
-    .waitForEvent("websocket", {
-      predicate: (socket) => new URL(socket.url()).pathname.startsWith("/ws/doc/"),
-      timeout: ROOM_SOCKET_MS,
-    })
-    .then(
-      () => undefined,
-      () => undefined
-    );
-  await page.keyboard.press("Enter");
-  await opened;
-  // The socket has opened or its wait has ended, so one read of the caret is the gate's answer.
-  const editing = await page.evaluate(
-    (readId) =>
-      document.activeElement instanceof HTMLElement &&
-      document.activeElement.isContentEditable &&
-      document.activeElement.closest("[data-node-row]")?.getAttribute("data-node-read-id") ===
-        readId,
-    statement.id
-  );
-  await page.keyboard.press("Escape");
-  return {
-    met: sockets.includes(room) && editing,
-    owed:
-      "owed until part Y's editor writes through the issue's one room on this branch's base " +
-      `(roomWriteGate): Enter on a converted statement in Graph opens no editor on ${room} here; ` +
-      OWED_BY,
-  };
+  const artifact = statement.document?.artifact_id ?? answer.tree;
+  expect(artifact, "the seeded statement has a room fragment").toBeTruthy();
+  const room = `/ws/doc/${artifact}`;
+  const probe = await page.context().newPage();
+  try {
+    const sockets: string[] = [];
+    probe.on("websocket", (socket) => {
+      sockets.push(new URL(socket.url()).pathname);
+    });
+    await probe.setViewportSize(DESKTOP);
+    await gotoIssue(probe, presetPath(key, "graph"));
+    const row = readRow(probe, statement.id);
+    await expect(row.first(), "Graph drew no third statement row").toBeVisible();
+    const editable = await row.evaluateAll(([one]) => one?.hasAttribute("data-editable") ?? null);
+    if (editable !== true) {
+      return {
+        met: false,
+        owed:
+          "owed until part Y's editor writes through the issue's one room on this branch's base " +
+          "(roomWriteGate): Graph draws the converted statement without its edit cue here; " +
+          OWED_BY,
+      };
+    }
+    await focusOn(row.first(), "the third statement");
+    await probe.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(probe), {
+        message: "Enter does not put the caret in the third statement",
+        timeout: ROOM_SOCKET_MS,
+      })
+      .toBe(statement.id);
+    await expect
+      .poll(() => sockets, {
+        message: `the statement's editor opens no socket on ${room}, its fragment in the issue room`,
+        timeout: ROOM_SOCKET_MS,
+      })
+      .toContain(room);
+    return { met: true, owed: "" };
+  } finally {
+    await probe.close();
+  }
 }
 
 /**

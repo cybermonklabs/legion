@@ -169,6 +169,10 @@ export interface NodeWrites {
   /** The line of each row of the issue a refusal or a drop wrote, by read id, until the next act
    *  of that node. */
   readonly lines: ReadonlyMap<string, NodeLine>;
+  /** Draws `reason`, why a move key's entry is grey for the node of read id `node`, as the line
+   *  of its rows (R4: at a grey edge a key writes nothing, and the row shows the entry's reason),
+   *  until the node's next act. Nothing is sent or queued. */
+  readonly grey: (node: string, reason: GreyReason) => void;
 }
 
 /** What a move carries from its press to its turn. */
@@ -762,5 +766,10 @@ export function useNodeWrites({ key, status, zoomRoot }: NodeWritesIssue): NodeW
     },
     [key, queryClient]
   );
-  return useMemo(() => ({ count, lines, move, remove }), [count, lines, move, remove]);
+  const grey = useCallback(
+    (node: string, reason: GreyReason) =>
+      setLine(queryClient, key, node, { text: ANSWER_LINES[reason] }),
+    [key, queryClient]
+  );
+  return useMemo(() => ({ count, grey, lines, move, remove }), [count, grey, lines, move, remove]);
 }

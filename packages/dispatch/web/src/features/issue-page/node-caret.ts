@@ -5,6 +5,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import type * as YProseMirror from "y-prosemirror";
 
 import type { DisplayTree } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -62,7 +63,9 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
+  placingCaret += 1;
   selectInEditor(firstPlace(drawn.block));
+  placingCaret -= 1;
   return true;
 }
 
@@ -150,6 +153,29 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
 
+/** The four moves of a node that Graph's editor keys make (INFRA-5705's R4), as the node menu's
+ *  entries name them (`graph-edit/placement.ts`): Indent, Outdent, Move up and Move down. */
+export type MoveKey = "indent" | "move_down" | "move_up" | "outdent";
+
+/**
+ * The move `event` asks for, or undefined: Tab indents, Shift+Tab outdents, Alt+Shift+Up moves
+ * up and Alt+Shift+Down moves down (R4), each held with neither Ctrl nor Meta. The key catalogue
+ * of cybermonklabs/legion#4304 is not on this branch's base, so each binds as part I's keys do,
+ * by the key itself (R10, decision 470 (3)). A key of an input method's composition, or the one
+ * that ends it, asks for no move (`inputMethodKey`, and the `Process` key an input method sends),
+ * so the input method keeps it.
+ */
+export function moveKeyOf(event: KeyboardEvent): MoveKey | undefined {
+  if (event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process") {
+    return undefined;
+  }
+  if (event.key === "Tab" && !event.altKey) return event.shiftKey ? "outdent" : "indent";
+  if (!event.altKey || !event.shiftKey) return undefined;
+  if (event.key === "ArrowUp") return "move_up";
+  if (event.key === "ArrowDown") return "move_down";
+  return undefined;
+}
+
 /**
  * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
  * before the editor acts on it: called on the key in the capture phase, so before ProseMirror's
@@ -176,6 +202,14 @@ export type Point = readonly [node: Node, offset: number];
  * to the start of the line's paragraph (`prosemirror-commands`' `macBaseKeymap`), which stays in
  * the block, and is left to it.
  *
+ * In Graph, with the caret inside the block, the four keys of R4 (`moveKeyOf`) go first to
+ * `onMove`, which the page gives a row in Graph alone (`graph-edit/move-keys.ts`), after the editor
+ * has read the caret where it has not yet: one it takes - a move of the node, or an entry grey at
+ * its edge, whose reason the row shows - goes no further, so neither the editor (a list item's
+ * own sink and lift) nor the browser (the focus moving on) acts on it, and the caret stays where it
+ * is. One it does not take - a block R2 does not admit - goes on as every key does. Undefined
+ * everywhere else, Conversation and every filter among them, where the keys are today's.
+ *
  * `view` is that editor's view, as the page handed it to the row (`useNodeEditing.ts`), whose own
  * selection a key the editor answers acts on.
  */
@@ -183,6 +217,7 @@ export function confineKey(
   host: HTMLElement,
   blockId: string | undefined,
   event: KeyboardEvent,
+  onMove: ((move: MoveKey) => boolean) | undefined,
   view: EditorView | undefined
 ): void {
   if (event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
@@ -208,6 +243,17 @@ export function confineKey(
       event.preventDefault();
     }
     return;
+  }
+  const move = onMove === undefined ? undefined : moveKeyOf(event);
+  if (move !== undefined && onMove !== undefined) {
+    // The move keeps the caret the editor holds, which it reads now where the page's selection
+    // is not yet its own, as before any key it answers (below).
+    if (!holdsSelection(view, ...selected)) document.dispatchEvent(new Event("selectionchange"));
+    if (onMove(move)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
   }
   const taken = keyAtBlock(event, block, ...selected);
   if (taken === undefined) {
@@ -497,6 +543,13 @@ export function holdEditsToBlock(
         state: {
           apply: (transaction, start, _, { doc }) => {
             if (letGo) return undefined;
+            noteCaret(
+              view,
+              transaction,
+              heldBlock(),
+              start,
+              transaction.getMeta(sync.ySyncPluginKey) !== undefined
+            );
             // A transaction appended to another is read as that one.
             const root: Transaction = transaction.getMeta("appendedTransaction") ?? transaction;
             if (
@@ -556,6 +609,107 @@ function blockStart(
     return false;
   });
   return found;
+}
+
+/** The reader's caret in a held block, its anchor and its head each counted from the block's
+ *  start in the editor's document (`keptCaret`). */
+export interface KeptCaret {
+  readonly anchor: number;
+  readonly head: number;
+}
+
+/** The caret each editor's hold last saw the reader hold inside its block, by the editor's view,
+ *  with that block's id (`noteCaret`). */
+const keptCarets = new WeakMap<EditorView, KeptCaret & { readonly block: string }>();
+
+/** How many carets the page itself is putting in a row's editor at once (`caretInBlock`,
+ *  `selectionIntoBlock`, `putKeptCaret`): a selection the page makes is no caret of the reader's,
+ *  and the hold keeps none of it (`noteCaret`). */
+let placingCaret = 0;
+
+/**
+ * Keeps the reader's caret in the held block as `transaction` leaves it, from `guess`, the block's
+ * start before it: a selection inside the block, from the reader's own edit or move of the caret,
+ * or from one the collaboration brings (`remote`), which y-prosemirror keeps where the reader had
+ * it. A selection outside the block is kept nowhere: a change of the room that takes the reader's
+ * caret out of the block - a move of the node, whose text the server moves in the room - leaves
+ * the last caret kept, which the row puts back (`putKeptCaret`). Nor is one the page makes itself
+ * (`placingCaret`): the start of the block that `caretInBlock` puts the caret at, and the nearer
+ * end that `selectionIntoBlock` brings a stray end back to.
+ */
+function noteCaret(
+  view: EditorView,
+  transaction: Transaction,
+  blockId: string | undefined,
+  guess: number | undefined,
+  remote: boolean
+): void {
+  if (blockId === undefined || (placingCaret > 0 && !remote)) return;
+  const { doc, selection } = transaction;
+  const mapped =
+    transaction.docChanged && guess !== undefined ? transaction.mapping.map(guess, 1) : guess;
+  const start = blockStart(doc, blockId, mapped);
+  const block = start === undefined ? null : doc.nodeAt(start);
+  if (start === undefined || block === null) return;
+  if (selection.from <= start || selection.to >= start + block.nodeSize) return;
+  keptCarets.set(view, {
+    anchor: selection.anchor - start,
+    block: blockId,
+    head: selection.head - start,
+  });
+}
+
+/** The reader's caret in `blockId`'s block of the editor `view`, as its hold last saw it
+ *  (`noteCaret`), or undefined where it saw none there. */
+export function keptCaret(
+  view: EditorView | undefined,
+  blockId: string | undefined
+): KeptCaret | undefined {
+  const kept = view === undefined ? undefined : keptCarets.get(view);
+  return kept !== undefined && kept.block === blockId ? kept : undefined;
+}
+
+/**
+ * Puts the caret back at `kept` - by default the reader's caret its hold last saw
+ * (`keptCaret`) - in `blockId`'s block of the editor in `host`, wherever the block stands in the
+ * document now, as the editor's own at once (`selectInEditor`), giving the editable the focus
+ * where it does not hold it; and answers whether it did. Nothing where the editor draws no such
+ * block, keeps no caret for it, holds an input method's composition, or where the place no
+ * longer stands in the block's text: the caller then places the caret as it does without this.
+ */
+export function putKeptCaret(
+  host: HTMLElement,
+  blockId: string | undefined,
+  view: EditorView | undefined,
+  kept: KeptCaret | undefined = keptCaret(view, blockId)
+): boolean {
+  const drawn = drawnBlock(host, blockId);
+  if (drawn === null || view === undefined || kept === undefined) return false;
+  if (view.isDestroyed || view.composing) return false;
+  const { doc } = view.state;
+  const start = blockStart(doc, blockId, undefined);
+  const block = start === undefined ? null : doc.nodeAt(start);
+  if (start === undefined || block === null) return false;
+  const pointAt = (offset: number): Point | undefined => {
+    const at = Math.min(Math.max(start + offset, start + 1), start + block.nodeSize - 1);
+    if (!doc.resolve(at).parent.isTextblock) return undefined;
+    try {
+      const { node, offset: inNode } = view.domAtPos(at);
+      return drawn.block.contains(node) ? [node, inNode] : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const anchor = pointAt(kept.anchor);
+  const head = pointAt(kept.head);
+  if (anchor === undefined || head === undefined) return false;
+  if (!drawn.editable.contains(document.activeElement)) {
+    drawn.editable.focus({ preventScroll: true });
+  }
+  placingCaret += 1;
+  selectInEditor(anchor, head);
+  placingCaret -= 1;
+  return true;
 }
 
 /** Whether `transaction`, one of the editor's own in `state`, keeps to `blockId`'s block, found
@@ -699,7 +853,9 @@ export function selectionIntoBlock(host: HTMLElement, blockId: string | undefine
     if (block.contains(point[0])) return point;
     return compare(point, start) < 0 ? start : end;
   };
+  placingCaret += 1;
   selectInEditor(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
+  placingCaret -= 1;
 }
 
 /**
