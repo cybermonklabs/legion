@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The controller liveness probe's lines no longer print a credential that `envoy_url` carries in its
+  user information, where the configuration says to put the listener's credential. Each line (the
+  listener unreachable, a refusal, an answer it could not read, each 404) named the role lookup as
+  the URL joined onto `envoy_url`:
+  `url=http://user:password@envoy.example:8080/v1/roles/legion-DEMO-controller`. Each now names it
+  by its scheme, host and path alone:
+  `url=http://envoy.example:8080/v1/roles/legion-DEMO-controller`.
+time: 2026-11-26T04:06:48Z
+custom:
+    Issue: controller-liveness-lookup-name

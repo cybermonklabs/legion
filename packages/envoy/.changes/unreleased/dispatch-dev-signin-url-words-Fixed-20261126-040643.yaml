@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  Dev sign-in (`DISPATCH_DEV_SIGNIN=1`) no longer prints a credential that
+  `DISPATCH_GITHUB_API_BASE` or envoy.json's `dispatch.serverUrl` carries in its user information or
+  its query. The refusal of an App key that would sign calls to an API base not on a loopback host
+  quoted the base as written,
+  `DISPATCH_GITHUB_API_BASE="https://user:password@github.example/api?access_token=..."`, and the
+  warning a dev sign-in server starts with logged the server URL as written,
+  `origin=http://user:password@127.0.0.1:8799?access_token=...`.
+
+  Each now prints the URL through the URL rule, as the refusal of `DISPATCH_AGENT_SECRETS_URL`
+  beside them already did: a plain http(s) URL with no user information, query, fragment or escape
+  prints as it is, and any other as `(not printed: the value carries a credential or is not a plain
+  http(s) URL)`, for example `origin="(not printed: the value carries a credential or is not a plain
+  http(s) URL)"`.
+time: 2026-11-26T04:06:43Z
+custom:
+    Issue: dispatch-dev-signin-url-words

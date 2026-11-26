@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  A `DATABASE_URL` pgx cannot read is now refused as the setting's name and fixed words, never in
+  pgx's own words. pgx's error quotes the URL with its password masked but its user name and every
+  other query pair kept, and the error it wraps can quote a query key alone, where a credential
+  written as `?<token>` with no `=` sits. `envoy-dispatch census` (with or without `--store`),
+  `versions`, `redeliver-webhooks`, `stored-order`, the database subcommands (`backfill-block-ids`,
+  `backfill-graph-store`, `backfill-anchor-blocks`, `backfill-files` and `rebuild-refs`), the
+  server's `dispatch: open database` line and dev sign-in's check of `DATABASE_URL` printed it, for
+  example ``census: parse Postgres URL: cannot parse
+  `postgres://user:xxxxx@127.0.0.1:5432/dispatch?access_token=...&sslmode=verify`: failed to
+  configure TLS (sslmode is invalid)``.
+
+  Each now names the setting before the fixed words: `census: DATABASE_URL: parse Postgres URL: pgx
+  cannot read its connection settings`, `redeliver-webhooks: open database: DATABASE_URL: parse
+  Postgres URL: pgx cannot read its connection settings`, the server's `error="DATABASE_URL: parse
+  Postgres URL: pgx cannot read its connection settings"`, and dev sign-in's `DATABASE_URL: pgx
+  cannot read its connection settings`. dispatch-seed names its flag the same way: `dispatch-seed:
+  open database: --database-url: parse Postgres URL: pgx cannot read its connection settings`.
+  `versions` read the URL as it connected and reported a URL pgx cannot read as `versions: connect:
+  ...`; it now reads the URL first and reports it as `versions: DATABASE_URL: parse Postgres URL:
+  pgx cannot read its connection settings`. A failure to reach or to read the database prints as
+  before.
+time: 2026-11-26T04:06:47Z
+custom:
+    Issue: dispatch-database-url-pgx-words

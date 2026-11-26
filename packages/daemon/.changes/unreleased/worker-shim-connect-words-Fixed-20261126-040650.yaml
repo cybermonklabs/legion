@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `legion worker-shim --connect` no longer prints its value when it refuses it. A value that is
+  neither `unix:///<path>` nor `tcp://<host>:<port>`, such as one with user information or a query,
+  where the worker stream's credential would be, was refused quoting it: `legion worker-shim:
+  --connect must be unix:///<path> or tcp://<host>:<port>, got
+  "user:password@127.0.0.1:7000/?access_token=..."`. A value written with no `://` passed the output
+  rule whole. It is now refused as `legion worker-shim: --connect must be unix:///<path> or
+  tcp://<host>:<port> (the value given is not printed)`.
+time: 2026-11-26T04:06:50Z
+custom:
+    Issue: worker-shim-connect-words

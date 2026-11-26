@@ -1,0 +1,33 @@
+kind: Fixed
+body: |-
+  The broker (cipherd) no longer prints a credential that its URL settings carry:
+
+  - The edge's and the machine login's device-grant lines logged their login page as written. Each
+    now logs `verification_uri="(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)"`, or
+    the same words naming `BROKER_MACHINE_LOGIN_URL`.
+  - The judge's start line logged `BROKER_JUDGE_DISPATCH_URL` as written. It now prints it through
+    the URL rule: `dispatch=https://dispatch.example` for a plain URL, and `(not printed: the value
+    carries a credential or is not a plain http(s) URL)` for one with user information or a query.
+  - The NATS auth service's answering line and its connect error named each `BROKER_NATS_URLS` entry
+    whole, its query included: `natscallout: connect to nats://hub.example:4222/?token=...: ...`.
+    Each entry is now named by its host and port alone, `natscallout: connect to hub.example:4222:
+    ...`, and an entry that does not parse, names no host, or holds an `@` past its authority by
+    `BROKER_NATS_URLS` alone.
+  - A `BROKER_PROXY_PRIVATE_UPSTREAM` entry whose host an airlock proxy block cannot bind was
+    refused quoting the text before its first `=`, which for an entry written as a URL alone is its
+    scheme and user information. The refusal now quotes none of the entry:
+    `BROKER_PROXY_PRIVATE_UPSTREAM must name a host an airlock proxy block can bind before its first
+    =, and the text before it holds a scheme, ...`.
+  - An RDS IAM `BROKER_DATABASE_URL` pgx cannot read was refused with the error pgx's own error
+    wraps, which can quote a query key that has no `=` or the path of a file the URL names
+    (`... pgx cannot read it: ... "<token>"`). It is now refused in fixed words, `... pgx cannot
+    read its connection settings (pgx's own words are not printed: they can quote the URL); check
+    each query pair and the sslrootcert, sslcert and sslkey files it names`, and a file pgx could
+    not open by the call and the system's reason alone: `pgx cannot read a file its connection
+    settings name: open: no such file or directory`.
+  - The broker's database pool refused a `BROKER_DATABASE_URL` pgx cannot read in pgx's words. It
+    now prints `open the database BROKER_DATABASE_URL names: open Postgres pool: pgx cannot read its
+    connection settings`.
+time: 2026-11-26T04:06:45Z
+custom:
+    Issue: broker-url-setting-words

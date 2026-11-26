@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  `legion launcher --connect` no longer prints its value. A value with no `tcp://` scheme, or whose
+  host and port did not split, was refused quoting it (`launcher: connect
+  "user:password@127.0.0.1:7000/?access_token=..." is not tcp://host:port`), and a value it took was
+  dialed and logged as everything after `tcp://`, user information, path and query included:
+  `launcher: daemon connection: dial 127.0.0.1:7000/?access_token=...: ...; reconnecting`.
+
+  The launcher now takes `tcp://<host>:<port>` alone, with a port from 1 to 65535 and no user
+  information, query, fragment or path past `/`. It refuses any other value as `launcher: --connect
+  is not tcp://<host>:<port> (it is not printed)`, and dials and logs host:port alone: `launcher:
+  daemon connection: dial 127.0.0.1:7000: ...; reconnecting`. A value that ends in `/`, such as
+  `tcp://127.0.0.1:7000/`, is now dialed; before, it failed with `unknown port`.
+time: 2026-11-26T04:06:49Z
+custom:
+    Issue: launcher-connect-words
