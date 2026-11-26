@@ -136,7 +136,7 @@ func TestTheModelReaderGivesWhatTheWholeTimelineGives(t *testing.T) {
 			models := fittedModels(t, w)
 			tl := c.course(t, models)
 			whole := modelledSignals(t, models, tl)
-			reader, err := models.Reader(w.From, SetbackSources{})
+			reader, err := models.Reader(w.From, SetbackSources{}, 0)
 			if err != nil {
 				t.Fatalf("read the models: %v", err)
 			}
@@ -220,7 +220,7 @@ func TestADrawnIssuesKillsAreItsOwnInEveryCourse(t *testing.T) {
 	w := killWorkWindow(t)
 	models := fittedModels(t, w)
 	drawnKills := func(tl ReplayTimeline) []time.Time {
-		reader, err := models.Reader(w.From, SetbackSources{})
+		reader, err := models.Reader(w.From, SetbackSources{}, 0)
 		if err != nil {
 			t.Fatalf("read the models: %v", err)
 		}

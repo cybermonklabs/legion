@@ -135,8 +135,10 @@ func (m LoadModels) RecordTimeline() (ReplayTimeline, error) {
 var errNoModelRecord = errors.New("replay: the load models hold no window's record; fit them on the window with FitLoadModels")
 
 // Replay is each modelled signal of the replay whose timeline is tl (tokensForm, memoryForm,
-// queueForm). It refuses models that hold no window's record, steps of issues in flight out of
-// time order or below zero, and a drawn stretch that ends before it begins.
+// queueForm), each minute of the provider modelled against the limit the record holds, as R11's
+// daily test reads it, never a token limit a caller gives (Reader takes one). It refuses models
+// that hold no window's record, steps of issues in flight out of time order or below zero, and a
+// drawn stretch that ends before it begins.
 func (m LoadModels) Replay(tl ReplayTimeline) (*ModelledSignals, error) {
 	r := m.fit
 	if r == nil {
@@ -311,11 +313,13 @@ func (r *modelRecord) recordTimeline() ReplayTimeline {
 	return tl
 }
 
-// headroomLimit is the project's own limit in force in line's minute where the window holds a
-// record of the provider's headroom there, as providerAt reads it, and whether it does.
+// headroomLimit is the project's own limit the record holds in force in line's minute where the
+// window holds a record of the provider's headroom there, as providerAt reads it, and whether it
+// holds one: never a token limit a caller gives (assumption 49), so R11's daily test compares the
+// model with the record only in the minutes where the record holds the limit.
 func (r *modelRecord) headroomLimit(line ProviderMinute) (int64, bool) {
-	limit, ok := line.projectLimit()
-	return limit, ok && r.w.Recorded(SignalProvider, line.Minute)
+	limit, limited, _ := r.w.limitIn(line, 0)
+	return limit, limited
 }
 
 // killMoments is the moment of each recorded kill, and of each the record cannot place in a
@@ -388,10 +392,11 @@ func issuePods(t Trace) map[string]string {
 
 // replayTokens is each minute of the provider's record as the tokens model gives it at the
 // replay's issues in flight (tokensForm), by its Unix time, and each such minute the project's own
-// limit refuses. A minute's issues in flight, in the record and in the replay, are their average
-// over the whole minute. A refused minute counts the record's own refusals per refused minute,
-// rounded so that the first n refused minutes count round(n × rho) together; a minute with no
-// record of the headroom keeps its recorded refusals, since the model has no limit to read there.
+// limit refuses, each against the limit the record holds (headroomLimit). A minute's issues in
+// flight, in the record and in the replay, are their average over the whole minute. A refused
+// minute counts the record's own refusals per refused minute, rounded so that the first n refused
+// minutes count round(n × rho) together; a minute with no limit keeps its recorded refusals, since
+// the model has no limit to read there.
 func (r *modelRecord) replayTokens(flight stretchCount) (map[int64]signals.Minute, map[int64]bool) {
 	minutes := make(map[int64]signals.Minute, len(r.minutes))
 	refused := make(map[int64]bool)
@@ -399,7 +404,8 @@ func (r *modelRecord) replayTokens(flight stretchCount) (map[int64]signals.Minut
 	for _, key := range slices.Sorted(maps.Keys(r.minutes)) {
 		line := r.minutes[key]
 		start, end := line.Minute, line.Minute.Add(time.Minute)
-		minute, refuses := r.modelMinute(line, r.flight.hours(start, end), flight.hours(start, end), count)
+		limit, limited := r.headroomLimit(line)
+		minute, refuses := r.modelMinute(line, limit, limited, r.flight.hours(start, end), flight.hours(start, end), count)
 		if refuses {
 			count++
 			refused[key] = true
@@ -409,21 +415,20 @@ func (r *modelRecord) replayTokens(flight stretchCount) (map[int64]signals.Minut
 	return minutes, refused
 }
 
-// modelMinute is line's minute as the tokens model gives it (tokensForm), recorded and replayed
-// being the issue-hours in flight over the minute in the record and in the replay, and count the
-// refused minutes before it, and whether the project's own limit refuses it: its recorded tokens
-// scaled by replayed over recorded, kept as recorded where recorded is none; where the window
-// holds a record of the headroom in it, the limit in force, and, where the tokens pass that limit,
-// a refused minute whose own refusals the record's own per refused minute give, rounded so that the
-// first n refused minutes count round(n × rho) together. A minute with no record of the headroom
-// keeps its recorded refusals.
-func (r *modelRecord) modelMinute(line ProviderMinute, recorded, replayed float64, count int) (signals.Minute, bool) {
+// modelMinute is line's minute as the tokens model gives it (tokensForm), limit being the limit in
+// force in it where limited says it has one, recorded and replayed the issue-hours in flight over
+// the minute in the record and in the replay, and count the refused minutes before it, and whether
+// the project's own limit refuses it: its recorded tokens scaled by replayed over recorded, kept as
+// recorded where recorded is none; where it has a limit, that limit, and, where the tokens pass
+// it, a refused minute whose own refusals the record's own per refused minute give, rounded so that
+// the first n refused minutes count round(n × rho) together. A minute with no limit keeps its
+// recorded refusals.
+func (r *modelRecord) modelMinute(line ProviderMinute, limit int64, limited bool, recorded, replayed float64, count int) (signals.Minute, bool) {
 	tokens := float64(line.Uncached)
 	if recorded > 0 {
 		tokens *= replayed / recorded
 	}
 	minute := signals.Minute{Uncached: int64(math.Round(tokens)), Own: line.Own, Provider: line.Provider}
-	limit, limited := r.headroomLimit(line)
 	if !limited {
 		return minute, false
 	}

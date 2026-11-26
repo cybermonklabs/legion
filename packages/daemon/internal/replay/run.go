@@ -79,6 +79,14 @@ type RunConfig struct {
 	// Probes is each moment at which the run writes each limited signal's value, as it stands once
 	// every act at or before the moment has run (run.json's signalValues).
 	Probes []time.Time
+	// TokenLimit is the project's token limit, in uncached input tokens a minute, that the replay
+	// takes from its caller in each minute whose provider record holds no limit of the project's
+	// own, zero for none (assumption 49): the limit is a value of the deployment's configuration
+	// (spec R11). A limit the record holds stands, and a minute the record does not hold stays
+	// unrecorded (assumption 47). The tokens model then limits the provider's signal and its
+	// refusals where it passes R11's daily test, or gives no test only because the window records
+	// no limit of the project's own (givesSuppliedLimit). run.json names it (runRecord.TokenLimit).
+	TokenLimit int64
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
@@ -316,6 +324,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.IdleAfter < 0 {
 		return RunResult{}, fmt.Errorf("replay: a holder idle for %s: d is below zero", cfg.IdleAfter)
 	}
+	if cfg.TokenLimit < 0 {
+		return RunResult{}, tokenLimitBelowZero(cfg.TokenLimit)
+	}
 	in, err := cfg.readInputs()
 	if err != nil {
 		return RunResult{}, err
@@ -402,12 +413,16 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	d.traceAssumptions()
 	// What the replay's own passes judged names two more: 4 where an issue waited on another issue
 	// (a gate's closing names it as the replay writes it, observe), and 7 where a hold other than
-	// the cap held the first start of an issue not yet started.
+	// the cap held the first start of an issue not yet started. The load models name 49 where they
+	// modelled a minute against the token limit the run was given.
 	if d.snap.waitsOnIssues() {
 		d.used[4] = true
 	}
 	if d.snap.firstStartHeld {
 		d.used[7] = true
+	}
+	if d.sig.models != nil && d.sig.models.SuppliedMinutes > 0 {
+		d.used[assumeSuppliedTokenLimit] = true
 	}
 	result.Unplaced, result.Assumptions = d.unplaced, d.assumptionsUsed(len(Assumptions))
 	result.Conflicts = d.conflicts
@@ -604,11 +619,12 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 // time and peak memory, the issues the start state could not place, the segments it ran, its
 // divergence counters, the gap of each measure between its snapshot and line timelines, and the
 // conflict model it drew by. Of R11's signals it holds what the run admitted by and recorded:
-// its limits as given ({} for none), d, each signal whose model gives no limit with the model, the
-// ceiling (driver.ceiling), each slot each pass gave out or took back with the pass's kind, each
-// change of the deadline, and each limited signal's value at each probe; never under the key
-// signals, which a comparison's made-up runs use. It holds numbers and names alone, never an
-// assumption's text.
+// its limits as given ({} for none), the project's token limit it was given (TokenLimit, none
+// where it was given none, as a run.json written before it named one holds), d, each signal whose
+// model gives no limit with the model, the ceiling (driver.ceiling), each slot each pass gave out
+// or took back with the pass's kind, each change of the deadline, and each limited signal's value
+// at each probe; never under the key signals, which a comparison's made-up runs use. It holds
+// numbers and names alone, never an assumption's text.
 type runRecord struct {
 	Rule            string                         `json:"rule"`
 	RuleCommit      string                         `json:"ruleCommit"`
@@ -637,6 +653,7 @@ type runRecord struct {
 	GitLoopHours    map[string]GitLoopHours        `json:"gitLoopHours,omitempty"`
 	GitReadTable    map[string]GitReadTable        `json:"gitReadTable,omitempty"`
 	Limits          map[string]float64             `json:"limits"`
+	TokenLimit      int64                          `json:"tokenLimit,omitempty"`
 	IdleAfter       Duration                       `json:"idleAfter"`
 	Unlimited       map[string]string              `json:"unlimited"`
 	Ceiling         *int                           `json:"ceiling"`
@@ -660,7 +677,7 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts,
 		GitReads: result.GitReads, GitLoopHours: result.GitLoopHours, GitReadTable: result.GitReadTable,
-		Limits: d.sig.limits, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
+		Limits: d.sig.limits, TokenLimit: d.cfg.TokenLimit, IdleAfter: Duration(d.sig.idleAfter), Unlimited: d.sig.unlimited, Ceiling: d.ceiling(), SlotPasses: d.sig.passes,
 		Deadlines: d.sig.deadlines, SignalValues: d.sig.values}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")

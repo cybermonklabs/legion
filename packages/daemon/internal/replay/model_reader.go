@@ -38,12 +38,15 @@ import (
 // Its counts are LoadModels.Replay's: the kills the record could not place in a segment of their
 // issue, which are kept at their recorded times; the pull requests the record shows in no segment
 // of an issue, which enter at their recorded times; and the pull requests that no recorded exit and
-// no rate serves, which stand in the queue. Before the replay's start, the course is the record's own:
+// no rate serves, which stand in the queue. SuppliedMinutes counts the minutes it has modelled
+// against the project's token limit its caller gives, the record holding no limit of the
+// project's own there (assumption 49). Before the replay's start, the course is the record's own:
 // the record's issues in flight, and each segment where the record started it.
 type ModelReader struct {
-	KillsApart   int
-	EntriesApart int
-	Unserved     int
+	KillsApart      int
+	EntriesApart    int
+	Unserved        int
+	SuppliedMinutes int
 
 	r *modelRecord
 	// now is the latest moment fed or read. Nothing before it changes.
@@ -102,11 +105,16 @@ type SetbackSources struct {
 }
 
 // readerMinute is one minute of the provider's record as the reader holds it: whether the record
-// holds it, its line, and the record's issue-hours in flight over it.
+// holds it, its line, the record's issue-hours in flight over it, and the limit in force in it
+// where limited says it has one (Window.limitIn), assumed saying that limit is the caller's token
+// limit.
 type readerMinute struct {
 	held     bool
 	line     ProviderMinute
 	recorded float64
+	limit    int64
+	limited  bool
+	assumed  bool
 }
 
 // drawnAccrual is one drawn issue's accumulator: its sum, whether it stands in flight now, and from
@@ -152,9 +160,12 @@ type setbackFold struct {
 // threshold reads past it.
 const minuteThreshold = 1 << 20
 
-// Reader is a reader of the modelled signals of a replay that starts at from (ModelReader). Before
-// from, the reader holds the record's own course. It refuses models that hold no window's record.
-func (m LoadModels) Reader(from time.Time, sources SetbackSources) (*ModelReader, error) {
+// Reader is a reader of the modelled signals of a replay that starts at from (ModelReader), its
+// setbacks as sources lets them, tokenLimit being the project's token limit in uncached input
+// tokens a minute that it models a minute of the provider against where the record holds no limit
+// of the project's own, zero for none (assumption 49). Before from, the reader holds the record's
+// own course. It refuses models that hold no window's record.
+func (m LoadModels) Reader(from time.Time, sources SetbackSources, tokenLimit int64) (*ModelReader, error) {
 	r := m.fit
 	if r == nil {
 		return nil, errNoModelRecord
@@ -168,7 +179,7 @@ func (m LoadModels) Reader(from time.Time, sources SetbackSources) (*ModelReader
 		}
 		x.flight.from, x.flight.counts = append(x.flight.from, at), append(x.flight.counts, r.flight.counts[i])
 	}
-	x.readMinutes()
+	x.readMinutes(tokenLimit)
 	for _, segment := range r.segments {
 		if segment.start.Before(from) {
 			x.starts[segment.key()] = segment.start
@@ -205,11 +216,11 @@ func (m LoadModels) Reader(from time.Time, sources SetbackSources) (*ModelReader
 	return x, nil
 }
 
-// readMinutes reads the provider's record into the run of minutes, and the moments at which the
-// record begins or stops holding the minute before (as SignalRecord reads them). A line whose
-// moment is not the start of a whole minute is no minute a definition reads, and the run holds
-// none of it.
-func (x *ModelReader) readMinutes() {
+// readMinutes reads the provider's record into the run of minutes, each with the limit in force in
+// it, the record's or else tokenLimit (Window.limitIn), and the moments at which the record begins
+// or stops holding the minute before (as SignalRecord reads them). A line whose moment is not the
+// start of a whole minute is no minute a definition reads, and the run holds none of it.
+func (x *ModelReader) readMinutes(tokenLimit int64) {
 	r := x.r
 	var first, last time.Time
 	for _, line := range r.minutes {
@@ -231,7 +242,9 @@ func (x *ModelReader) readMinutes() {
 			continue
 		}
 		start := line.Minute
-		x.minutes[int(start.Sub(first)/time.Minute)] = readerMinute{held: true, line: line, recorded: r.flight.hours(start, start.Add(time.Minute))}
+		limit, limited, assumed := r.w.limitIn(line, tokenLimit)
+		x.minutes[int(start.Sub(first)/time.Minute)] = readerMinute{held: true, line: line, recorded: r.flight.hours(start, start.Add(time.Minute)),
+			limit: limit, limited: limited, assumed: assumed}
 	}
 	for i, minute := range x.minutes {
 		if !minute.held {
@@ -446,9 +459,10 @@ func insertTime(times *[]time.Time, at time.Time) {
 	*times = slices.Insert(*times, i, at)
 }
 
-// advance brings the reader to at: each minute that ended by at is modelled, each drawn kill due by
-// at is placed, each pull request that entered by at is served, and each wait that can no longer
-// count in the queue signal is let go.
+// advance brings the reader to at: each minute that ended by at is modelled, counted among
+// SuppliedMinutes where it takes the caller's token limit, each drawn kill due by at is placed, each
+// pull request that entered by at is served, and each wait that can no longer count in the queue
+// signal is let go.
 func (x *ModelReader) advance(at time.Time) {
 	if at.After(x.now) {
 		x.now = at
@@ -457,6 +471,9 @@ func (x *ModelReader) advance(at time.Time) {
 		minute, refuses := x.model(i)
 		if refuses {
 			x.refused++
+		}
+		if x.minutes[i].assumed {
+			x.SuppliedMinutes++
 		}
 		x.made = append(x.made, minute)
 	}
@@ -487,16 +504,16 @@ func (x *ModelReader) advance(at time.Time) {
 	x.waits = slices.DeleteFunc(x.waits, func(w signals.Wait) bool { return !w.Left.IsZero() && !w.Left.After(exitsFrom) })
 }
 
-// model is the minute at index i as the model gives it at the issues in flight as they stand, and
-// whether the project's own limit refuses it (modelRecord.modelMinute). A minute the record does not
-// hold is none.
+// model is the minute at index i as the model gives it at the issues in flight as they stand,
+// against the limit in force in it, and whether that limit refuses it (modelRecord.modelMinute). A
+// minute the record does not hold is none.
 func (x *ModelReader) model(i int) (signals.Minute, bool) {
 	minute := x.minutes[i]
 	if !minute.held {
 		return signals.Minute{}, false
 	}
 	start := x.minuteStart(i)
-	return x.r.modelMinute(minute.line, minute.recorded, x.flight.hours(start, start.Add(time.Minute)), x.refused)
+	return x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, x.flight.hours(start, start.Add(time.Minute)), x.refused)
 }
 
 // series is the provider's minutes as the definitions read them: each minute that ended by now as
@@ -636,9 +653,9 @@ func (x *ModelReader) NextQueueChange(after time.Time) (time.Time, bool) {
 }
 
 // NextRefusal is the end of the first minute after after that may hold a refusal, the issues in
-// flight standing as they do: one of the provider's, one of the project's own where the record
-// holds no headroom, or a minute whose modelled tokens pass the project's own limit. It answers
-// false where none comes. A minute's refusals are known at its end.
+// flight standing as they do: one of the provider's, one of the project's own in a minute with no
+// limit in force, or a minute whose modelled tokens pass the limit in force. It answers false where
+// none comes. A minute's refusals are known at its end.
 func (x *ModelReader) NextRefusal(after time.Time) (time.Time, bool) {
 	x.advance(after)
 	current := max(x.minuteIndex(after.Truncate(time.Minute)), len(x.made))
@@ -752,7 +769,7 @@ func (x *ModelReader) thresholds(holds func(signals.Minute, bool) bool) *minuteT
 		if !minute.held {
 			return false
 		}
-		modelled, refuses := x.r.modelMinute(minute.line, minute.recorded, float64(issues)*time.Minute.Hours(), 0)
+		modelled, refuses := x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, float64(issues)*time.Minute.Hours(), 0)
 		return holds(modelled, refuses)
 	}
 	counts := make([]int, len(x.minutes))

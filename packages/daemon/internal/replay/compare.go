@@ -294,8 +294,8 @@ func fullPlan() runPlan {
 
 // CompareConfig is a comparison of slot rules on two recorded windows (RunCompare): the windows,
 // the rules, the server the runs make their databases on, how many run at once, where they are
-// written, which part of the comparison this process runs, and the commit of the legion binary
-// that makes the runs.
+// written, which part of the comparison this process runs, the commit of the legion binary that
+// makes the runs, and the project's token limit each run takes (RunConfig.TokenLimit).
 type CompareConfig struct {
 	// Windows is the directory of each recorded window, the window before the change of the rule
 	// first.
@@ -323,6 +323,9 @@ type CompareConfig struct {
 	// BuildCommit is the commit of the legion binary that makes the runs, which each run's run.json
 	// names (RunConfig.BuildCommit).
 	BuildCommit string
+	// TokenLimit is the project's token limit each run takes where the record holds none
+	// (RunConfig.TokenLimit), zero for none.
+	TokenLimit int64
 
 	// plan, where set, replaces the comparison's plan: a test's smaller one.
 	plan *runPlan
@@ -382,7 +385,7 @@ func RunCompare(ctx context.Context, cfg CompareConfig) error {
 		specs = append(specs, spec)
 	}
 	return runWindows(ctx, specs, runOptions{root: cfg.Runs, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit})
+		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit, tokenLimit: cfg.TokenLimit})
 }
 
 // compareRules is the rules a comparison runs, in the order of record.SlotRules: named, main, and
@@ -438,8 +441,8 @@ func distinctNames(before, after string) error {
 // ValidateConfig is a validation of one window (RunValidate): the window, the rule its daemon ran,
 // the server the runs make their databases on, how many run at once, the directory of runs they
 // are written under, whether the main branch runs alone, whether the validation is the cap
-// backtest and at which flat cap, and the commit of the legion binary that makes them
-// (RunConfig.BuildCommit).
+// backtest and at which flat cap, the commit of the legion binary that makes them
+// (RunConfig.BuildCommit), and the project's token limit each run takes (RunConfig.TokenLimit).
 type ValidateConfig struct {
 	Window      string
 	Rule        record.SlotRule
@@ -449,6 +452,9 @@ type ValidateConfig struct {
 	KeepLogs    bool
 	Progress    func(RunDone)
 	BuildCommit string
+	// TokenLimit is the project's token limit each run takes where the record holds none
+	// (RunConfig.TokenLimit), zero for none.
+	TokenLimit int64
 	// MainOnly runs the main branch at f 1 alone (MainBranchAt), with its seeds, in place of every
 	// branch: the check that the replay of the recorded rule meets R5's gaps on the branch R5 judges
 	// a window by, at a fraction of the runs of every branch.
@@ -515,7 +521,7 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	}
 	plan := validatePlan(cfg)
 	options := runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw, keepLogs: cfg.KeepLogs, progress: cfg.Progress,
-		build: cfg.BuildCommit}
+		build: cfg.BuildCommit, tokenLimit: cfg.TokenLimit}
 	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches}}}
 	if err := runWindows(ctx, []windowSpec{spec}, options); err != nil {
 		return Validation{}, err
@@ -550,8 +556,9 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 
 // ForecastConfig is a forecast across a recorded change of the rule (RunForecast): the window
 // before the change, the window after it, the rule after it, the server the runs make their
-// databases on, how many run at once, the directory of runs they are written under, and the commit
-// of the legion binary that makes them (RunConfig.BuildCommit).
+// databases on, how many run at once, the directory of runs they are written under, the commit of
+// the legion binary that makes them (RunConfig.BuildCommit), and the project's token limit each
+// run takes (RunConfig.TokenLimit).
 type ForecastConfig struct {
 	Before      string
 	After       string
@@ -562,6 +569,9 @@ type ForecastConfig struct {
 	KeepLogs    bool
 	Progress    func(RunDone)
 	BuildCommit string
+	// TokenLimit is the project's token limit each run takes where the record holds none
+	// (RunConfig.TokenLimit), zero for none.
+	TokenLimit int64
 
 	// perDraw, where above zero, replaces SeedsPerDraw: a test's fewer seeds.
 	perDraw int
@@ -630,7 +640,7 @@ func RunForecast(ctx context.Context, cfg ForecastConfig) (ForecastResult, error
 		}
 	}
 	if err := runWindows(ctx, specs, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: cmp.Or(cfg.perDraw, SeedsPerDraw),
-		keepLogs: cfg.KeepLogs, progress: progress, build: cfg.BuildCommit, sameBuild: true}); err != nil {
+		keepLogs: cfg.KeepLogs, progress: progress, build: cfg.BuildCommit, tokenLimit: cfg.TokenLimit, sameBuild: true}); err != nil {
 		return ForecastResult{}, err
 	}
 	runs, err := ReadRuns(cfg.Out)

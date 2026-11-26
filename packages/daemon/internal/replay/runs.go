@@ -230,18 +230,20 @@ type RunDone struct {
 // database on, how many runs at once, the seeds of a branch with a draw, whether each run's log is
 // kept, who is told of each run as it ends, the commit of the legion binary that makes the runs
 // (RunConfig.BuildCommit), the cap every run serves under in place of the record's
-// (RunConfig.Cap, 0 for the record's), and whether a run there already is kept only where the same
+// (RunConfig.Cap, 0 for the record's), the project's token limit every run takes
+// (RunConfig.TokenLimit, 0 for none), and whether a run there already is kept only where the same
 // commit made it (sameBuild).
 type runOptions struct {
-	root      string
-	pgDSN     string
-	parallel  int
-	perDraw   int
-	keepLogs  bool
-	progress  func(RunDone)
-	build     string
-	cap       int
-	sameBuild bool
+	root       string
+	pgDSN      string
+	parallel   int
+	perDraw    int
+	keepLogs   bool
+	progress   func(RunDone)
+	build      string
+	cap        int
+	tokenLimit int64
+	sameBuild  bool
 }
 
 // runWindows runs every part of windows, one window at a time so one window's inputs are in memory
@@ -401,10 +403,12 @@ func runDir(root, window, rule string, at BranchAt, seed int64) string {
 }
 
 // runOne makes the run p plans of w, whose inputs inputs answers, under rule on opts.pgDSN's
-// server at opts.cap, unless its three files are there already, and deletes its log unless opts
-// keeps it: the run reads its log back for its line scorecard (Run), and a window's log is the
-// largest file a run writes. A run there already that ran at another cap is refused, and so, where
-// opts asks for the same build, is one that another commit of the legion binary made.
+// server at opts.cap and opts.tokenLimit, unless its three files are there already, and deletes its
+// log unless opts keeps it: the run reads its log back for its line scorecard (Run), and a window's
+// log is the largest file a run writes. A run there already that ran at another cap, or with
+// another token limit, is refused, a run.json that names no token limit, as one written before
+// runs named it holds, reading as none; and so, where opts asks for the same build, is one that
+// another commit of the legion binary made.
 func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error), window string, rule record.SlotRule, p planned,
 	opts runOptions) (RunDone, error) {
 	done := RunDone{Window: window, Rule: rule.Name, Branch: p.at, Seed: p.seed}
@@ -418,13 +422,16 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 		if ran.Cap != opts.cap {
 			return done, fmt.Errorf("replay: the run in %s ran at the cap %d (0 for the record's), and this one runs at %d", p.dir, ran.Cap, opts.cap)
 		}
+		if ran.TokenLimit != opts.tokenLimit {
+			return done, fmt.Errorf("replay: the run in %s ran with the token limit %d (0 for none), and this one runs with %d", p.dir, ran.TokenLimit, opts.tokenLimit)
+		}
 		if build := cmp.Or(opts.build, unknownBuild); opts.sameBuild && cmp.Or(ran.BuildCommit, unknownBuild) != build {
 			return done, fmt.Errorf("replay: the run in %s was made by the legion binary of %s, not this one's %s: delete it or give another directory of runs",
 				p.dir, cmp.Or(ran.BuildCommit, unknownBuild), build)
 		}
 	} else {
 		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir,
-			BuildCommit: opts.build, Cap: opts.cap, inputs: inputs}); err != nil {
+			BuildCommit: opts.build, Cap: opts.cap, TokenLimit: opts.tokenLimit, inputs: inputs}); err != nil {
 			return done, fmt.Errorf("replay: %s under %s on %s, seed %d: %w", window, rule.Name, p.at.Label(), p.seed, err)
 		}
 		if !opts.keepLogs {

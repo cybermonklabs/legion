@@ -100,7 +100,7 @@ func TestEverySignalOfR11HasOneDefinition(t *testing.T) {
 // signalRecordOf is w's record of the signals, d being idleAfter, which must read.
 func signalRecordOf(t *testing.T, w Window, idleAfter time.Duration) *SignalRecord {
 	t.Helper()
-	r, err := ReadSignalRecord(w, idleAfter)
+	r, err := ReadSignalRecord(w, idleAfter, 0)
 	if err != nil {
 		t.Fatalf("ReadSignalRecord: %v", err)
 	}

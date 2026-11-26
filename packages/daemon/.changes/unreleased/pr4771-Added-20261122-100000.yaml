@@ -40,7 +40,9 @@ body: |-
     hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
     signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
     each signal's limit, `--idle-after` the idle time that the idle share counts, and `--probe`
-    each moment at which `run.json` gives each limited signal's value. A replay reads the idle
+    each moment at which `run.json` gives each limited signal's value. `--token-limit` gives `run`,
+    `signals`, `validate`, `forecast` and `compare` the project's token limit, which a replay takes
+    in each minute whose provider record holds no limit of the project's own. A replay reads the idle
     share and the approvals from its own course, and the provider's headroom, its refusals, the
     kills and the merge queue from the load models, which move with the replay's work in flight.
     Under these two rules it runs an admission pass at each moment that a signal would cross its

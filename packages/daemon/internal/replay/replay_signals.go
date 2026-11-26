@@ -66,12 +66,23 @@ const (
 const allowanceCrossing = "allowance"
 
 // signalModels is the load model each modelled signal comes from (spec R11). A model that gives
-// no limit for its signal leaves the signal with no limit in a run.
+// no limit for its signal leaves the signal with no limit in a run, but where givesSuppliedLimit
+// says it limits its signal under the run's token limit.
 var signalModels = map[string]string{
 	SignalQueue:      ModelQueue,
 	SignalProvider:   ModelTokens,
 	signals.Refusals: ModelTokens,
 	SignalKills:      ModelMemory,
+}
+
+// givesSuppliedLimit says whether model limits its signal in a run given the project's token
+// limit (RunConfig.TokenLimit) though it gives no limit itself: the tokens model where it gives no
+// daily test only because the window records no limit of the project's own (assumption 48), the
+// run then modelling the project's own refused minutes against the token limit (assumption 49). A
+// model that fails gives none. Whether such a limit stands for a comparison is the limit test's to
+// say, over two records.
+func givesSuppliedLimit(model LoadModel) bool {
+	return model.Name == ModelTokens && model.Verdict == VerdictNoTest && model.Reason == reasonNoLimitSpan
 }
 
 // runSignals is what one run reads and records of R11's signals. It holds:
@@ -122,9 +133,13 @@ type standingDeadline struct {
 
 // setupSignals reads what the run reads of R11's signals (runSignals): its limits, d, its probes,
 // and, where it limits a modelled signal or backs off, the load models fitted on the window
-// (windowInputs.models), read from the window's start. The back-off folds the refusals and the
-// kills of a model that gives a limit alone. Where the run limits the approvals, the replay's copy
-// of Dispatch reads every ask, assignee and default assignee.
+// (windowInputs.models), read from the window's start. A model limits its signal where it gives a
+// limit, and, under a token limit (RunConfig.TokenLimit), where givesSuppliedLimit says it does. The
+// back-off folds the refusals and the kills of a model that limits its signal alone. The models
+// read the token limit only where the run reads the tokens model's signals, its headroom, its
+// refusals or their setbacks, so a run that reads none of them rests on no minute modelled against
+// it. Where the run limits the approvals, the replay's copy of Dispatch reads every ask, assignee
+// and default assignee.
 func (d *driver) setupSignals() error {
 	cfg, w := d.cfg, d.window
 	s := &runSignals{mode: d.rule.Signals, limits: maps.Clone(cfg.Limits), inForce: map[string]float64{}, unlimited: map[string]string{},
@@ -155,16 +170,22 @@ func (d *driver) setupSignals() error {
 		}
 		gives := map[string]bool{}
 		for _, model := range models.Models {
-			gives[model.Name] = model.GivesLimit
+			gives[model.Name] = model.GivesLimit || cfg.TokenLimit > 0 && givesSuppliedLimit(model)
 		}
+		readsTokens := s.mode == signals.Backoff
 		for name, limit := range s.limits {
 			if model := signalModels[name]; model != "" && !gives[model] {
 				s.unlimited[name] = model
 				continue
 			}
 			s.inForce[name] = limit
+			readsTokens = readsTokens || signalModels[name] == ModelTokens
 		}
-		if s.models, err = models.Reader(w.From, SetbackSources{Refusals: gives[ModelTokens], Kills: gives[ModelMemory]}); err != nil {
+		var tokenLimit int64
+		if readsTokens && gives[ModelTokens] {
+			tokenLimit = cfg.TokenLimit
+		}
+		if s.models, err = models.Reader(w.From, SetbackSources{Refusals: gives[ModelTokens], Kills: gives[ModelMemory]}, tokenLimit); err != nil {
 			return err
 		}
 	}

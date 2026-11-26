@@ -693,7 +693,7 @@ func (m LoadModels) Write(w io.Writer) error {
 		p.line("R11's test across two records compares the rate that each model rests on with the same rate on the record of %s from %s to %s, in the last section.",
 			m.Across.Project, stamp(m.Across.From), stamp(m.Across.To))
 	}
-	p.line("A model gives a limit for its signal only where it passes each test that runs.")
+	p.line("A model gives a limit for its signal only where it passes the daily test and, with `--against`, the test across two records.")
 	p.line("A model is fitted and tested only where the window holds its record (assumption 47), and the spans it skips are named with the reason.")
 	for _, model := range m.Models {
 		writeModel(p, model)

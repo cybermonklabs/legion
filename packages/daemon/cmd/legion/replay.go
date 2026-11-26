@@ -518,7 +518,11 @@ run keeps the project's one deadline, the next moment a signal would cross its l
 event, whose pass is a deadline's. A signal whose load model gives no limit has none in the run,
 which says so, and a signal rule's run with no limit is one in which no signal binds. --idle-after
 is d, how long a slot holder has been idle before the idle signal counts it. --probe, given once
-for each moment, has run.json give each limited signal's value there.
+for each moment, has run.json give each limited signal's value there. --token-limit is the
+project's token limit in uncached input tokens a minute, which the replay takes in each minute
+whose provider record holds no limit of the project's own (assumption 49); a limit the record
+holds stands. The tokens model then limits the provider's signal and its refusals where it passes
+R11's daily test or gives no test only because the window records no limit of the project's own.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
@@ -526,9 +530,9 @@ measures read from the states the daemon's own admission passes left), scorecard
 same measures read back from log.jsonl and the replay's Dispatch events, as a record's are),
 run.json (what ran, the commit this binary was built from, or unknown, and the run's start on
 the wall clock, what it counted, the gap of each measure between the two scorecards, the
-conflict model, the limits, d, the ceiling, each slot each pass gave out or took back with the
-pass's kind, each change of the deadline and each probe's values) and, with --trace-segments,
-segments.jsonl. The output names the branch, each
+conflict model, the limits, the token limit, d, the ceiling, each slot each pass gave out or took
+back with the pass's kind, each change of the deadline and each probe's values) and, with
+--trace-segments, segments.jsonl. The output names the branch, each
 assumption the run rests on and the scenario it gave the work of an issue that never started,
 and counts the issues admitted with no work with the slot-hours they hold and, under a drawn
 scenario, how many issues drew their work from their own tree, from their priority and
@@ -537,7 +541,7 @@ repository, or from the whole window.`
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--limit <signal>=<value>]... [--idle-after <duration>] [--probe <time>]... [--keep-db] [--trace-segments]",
+		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--limit <signal>=<value>]... [--idle-after <duration>] [--probe <time>]... [--token-limit <tokens a minute>] [--keep-db] [--trace-segments]",
 		Short: "replay a recorded window under a slot rule, in a database of its own, and write what it ran and counted",
 		Long:  replayRunLong,
 		Args:  noArguments,
@@ -556,6 +560,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	limitTexts := flags.StringArray("limit", nil, "a signal's limit as <signal>=<value>, the signal one of "+strings.Join(signals.Names(), ", ")+", given once for each signal")
 	idleAfter := flags.Duration("idle-after", signals.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
 	probeTexts := flags.StringArray("probe", nil, "a moment, in RFC 3339, at which run.json gives each limited signal's value, given once for each")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -602,6 +607,9 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			probes = append(probes, at)
 		}
+		if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+			return code
+		}
 		window, err := replay.ReadWindow(*windowDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
@@ -609,7 +617,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		}
 		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
 			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit(), Cap: *capOverride,
-			Limits: limits, IdleAfter: *idleAfter, Probes: probes})
+			Limits: limits, IdleAfter: *idleAfter, Probes: probes, TokenLimit: *tokenLimit})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
@@ -748,6 +756,11 @@ limit: the next moment after --at at which it would start or stop binding, recor
 above the limit, if no new event came, or none. approvals changes only at events, so it has no
 next crossing.
 
+--token-limit is the project's token limit in uncached input tokens a minute, which the
+provider's headroom reads in each minute whose record holds no limit of the project's own
+(assumption 49), as a replay given it does; a limit the record holds stands, and a minute outside
+the record of the provider stays unrecorded.
+
 Where the window holds the launcher's lines, it also prints the memory guard's kills of those
 lines matched with the daemon's lines of the kills, kill by kill, and each kill one of the two
 lacks.`
@@ -756,7 +769,7 @@ lacks.`
 // R11's signals of a recorded window at each moment named, read from its record with no replay.
 func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "signals --window <dir> --at <time>... [--limit <signal>=<value>...] [--idle-after <duration>]",
+		Use:   "signals --window <dir> --at <time>... [--limit <signal>=<value>...] [--idle-after <duration>] [--token-limit <tokens a minute>]",
 		Short: "print R11's signals of a recorded window at each moment named, with each one's next crossing of each limit given",
 		Long:  replaySignalsLong,
 		Args:  noArguments,
@@ -766,6 +779,7 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 	atTexts := flags.StringArray("at", nil, "a moment to read the signals at, in RFC 3339, given once for each (required)")
 	limitTexts := flags.StringArray("limit", nil, "a limit as <signal>=<value>, the signal one of "+strings.Join(signals.Names(), ", ")+", given once for each")
 	idleAfter := flags.Duration("idle-after", signals.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
 	cmd.RunE = runs(func(context.Context, []string) int {
 		if missing := missingFlag(cmd, "window", "at"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -793,12 +807,15 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 		if *idleAfter < 0 {
 			return refuse(cmd, "--idle-after %s is below zero", *idleAfter)
 		}
+		if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+			return code
+		}
 		window, err := replay.ReadWindow(*windowDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
 			return 1
 		}
-		signalRecord, err := replay.ReadSignalRecord(window, *idleAfter)
+		signalRecord, err := replay.ReadSignalRecord(window, *idleAfter, *tokenLimit)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
 			return 1
@@ -995,14 +1012,20 @@ and under --cap each span whose cap is not --cap more than 10% off, a span at --
 backtest that fails either says that the tool cannot tell a change of the cap. A span of fewer than
 10 slots fails on a miss of one slot, and the backtest names each such span.
 
+--token-limit gives every run the project's token limit in uncached input tokens a minute, which
+each takes in each minute whose provider record holds no limit of the project's own (legion replay
+run --token-limit, assumption 49); a run --out holds already that ran with another one, or with
+none, is refused.
+
 With --from-runs nothing runs: the validation is read from the directories of runs a validate or
 a compare wrote, --window naming the window by its directory's name (needed only where they hold
-more than one) and --rule defaulting to the rule its daemon ran.`
+more than one) and --rule defaulting to the rule its daemon ran. Each run keeps the token limit it
+ran with, in its run.json, so --token-limit does not apply.`
 
 // newReplayValidateCommand is `legion replay validate` (replay.RunValidate, replay.Runs.Validation).
 func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--main-only | --cap-backtest --cap <n>] | --from-runs <dir>... [--window <name>] [--rule <name>]",
+		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--main-only | --cap-backtest --cap <n>] [--token-limit <tokens a minute>] | --from-runs <dir>... [--window <name>] [--rule <name>]",
 		Short: "replay a window under the rule its daemon ran on every branch, and test each branch against the record",
 		Long:  replayValidateLong,
 		Args:  noArguments,
@@ -1018,11 +1041,12 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	capBacktest := flags.Bool("cap-backtest", false, "run the cap backtest: the main branch at f 1 at the recorded caps and at --cap, read in each span of one cap")
 	capFlat := flags.Int("cap", 0, "with --cap-backtest, the one admission cap the backtest replays the window at from its start to its end")
 	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the validation from, running nothing; repeat for more")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
 	asJSON := flags.Bool("json", false, "print the validation as JSON")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		var validation replay.Validation
 		if len(*fromRuns) > 0 {
-			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "main-only", "cap-backtest", "cap"); set != "" {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "main-only", "cap-backtest", "cap", "token-limit"); set != "" {
 				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
 			}
 			read, err := replay.ReadRuns(*fromRuns...)
@@ -1068,10 +1092,13 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			case !*capBacktest && cmd.Flags().Changed("cap"):
 				return refuse(cmd, "--cap is the cap backtest's alone; give --cap-backtest with it")
 			}
+			if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+				return code
+			}
 			var err error
 			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
 				Out: *out, KeepLogs: *keepLogs, MainOnly: *mainOnly, CapBacktest: *capBacktest, Cap: *capFlat, Progress: replayProgress(stderr, "validate"),
-				BuildCommit: binaryCommit()})
+				BuildCommit: binaryCommit(), TokenLimit: *tokenLimit})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
 				return 1
@@ -1114,16 +1141,19 @@ where the control too stands within twice its gap of the record after the change
 number, the forecast says that it cannot tell the two rules apart on it. It names the workflow
 commits between the two windows' daemons that the forecast carries beside the rule. A run --out
 holds already, a validate's or an earlier forecast's, is not run again where this binary made it,
-and is refused where another did; the forecast names each part it found whole.
+and is refused where another did; the forecast names each part it found whole. --token-limit
+gives every run the project's token limit (legion replay run --token-limit), and a run --out holds
+already that ran with another one, or with none, is refused.
 
 With --from-runs nothing runs: the forecast is read from the directories of runs a forecast or a
 compare wrote, --before and --after naming the windows by their directories' names and --rule
-defaulting to the rule the daemon of the window after ran.`
+defaulting to the rule the daemon of the window after ran. Each run keeps the token limit it ran
+with, in its run.json, so --token-limit does not apply.`
 
 // newReplayForecastCommand is `legion replay forecast` (replay.RunForecast, replay.Runs.Forecast).
 func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "forecast --before <dir> --after <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] | --from-runs <dir>... --before <name> --after <name> [--rule <name>]",
+		Use:   "forecast --before <dir> --after <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--token-limit <tokens a minute>] | --from-runs <dir>... --before <name> --after <name> [--rule <name>]",
 		Short: "replay the window before a recorded change of the rule under the rule after it, and compare it with the window after",
 		Long:  replayForecastLong,
 		Args:  noArguments,
@@ -1137,6 +1167,7 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 	parallel := flags.Int("parallel", 1, "how many runs run at once")
 	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
 	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the forecast from, running nothing; repeat for more")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
 	asJSON := flags.Bool("json", false, "print the forecast as JSON")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "before", "after"); missing != "" {
@@ -1144,7 +1175,7 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 		}
 		var forecast replay.ForecastResult
 		if len(*fromRuns) > 0 {
-			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs"); set != "" {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "token-limit"); set != "" {
 				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
 			}
 			read, err := replay.ReadRuns(*fromRuns...)
@@ -1174,9 +1205,13 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 			if *parallel < 1 {
 				return refuseParallel(cmd, *parallel)
 			}
+			if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+				return code
+			}
 			var err error
 			forecast, err = replay.RunForecast(ctx, replay.ForecastConfig{Before: *before, After: *after, Rule: rule, PGDSN: *dsn,
-				Parallel: *parallel, Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "forecast"), BuildCommit: binaryCommit()})
+				Parallel: *parallel, Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "forecast"), BuildCommit: binaryCommit(),
+				TokenLimit: *tokenLimit})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
 				return 1
@@ -1208,11 +1243,14 @@ break-even search. Up to --parallel runs run at once, each in a database of its 
 already is not run again, and each run's log is deleted once read unless --keep-logs. The
 document is then written to --out from the runs, and the issues file to --out's path with its
 extension replaced by -issues.md: --out comparison.md writes comparison-issues.md beside it.
+--token-limit gives every run the project's token limit (legion replay run --token-limit), and a
+run --runs holds already that ran with another one, or with none, is refused.
 
 The work splits by window and rule: --only-window <name> and --only-rule <name> run that part
 alone into --runs and write no document, so each pod of an indexed Job can run one part. Then
 --from-runs <dir>... --out <file> writes the document and its issues file from the directories
-the parts wrote, running nothing; they are the same files a single process writes.
+the parts wrote, running nothing; they are the same files a single process writes. Each run keeps
+the token limit it ran with, in its run.json, so --token-limit does not apply there.
 
 The document names the build commit of the runs it read, the commit of the legion binary that
 made them, with how many runs each made. It gives each window's scorecard read from its record;
@@ -1233,7 +1271,7 @@ main branch's seeds, "no slot" or "not done" where half the seeds or more give n
 // newReplayCompareCommand is `legion replay compare` (replay.RunCompare, replay.Runs.Comparison).
 func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "compare --window <dir> --window <dir> [--rule <name>]... --pg-dsn <dsn> --runs <dir> (--out <file> | --only-window <name> --only-rule <name>) [--parallel <n>] [--keep-logs] | --from-runs <dir>... --out <file>",
+		Use:   "compare --window <dir> --window <dir> [--rule <name>]... --pg-dsn <dsn> --runs <dir> (--out <file> | --only-window <name> --only-rule <name>) [--parallel <n>] [--keep-logs] [--token-limit <tokens a minute>] | --from-runs <dir>... --out <file>",
 		Short: "compare the slot rules on two recorded windows over every branch, and write the result as one document",
 		Long:  replayCompareLong,
 		Args:  noArguments,
@@ -1249,11 +1287,12 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 	onlyRule := flags.String("only-rule", "", "run the part of this rule alone, and write no document")
 	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
 	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to write the document from, running nothing; repeat for more")
+	tokenLimit := flags.Int64("token-limit", 0, tokenLimitUsage)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		part := *onlyWindow != "" || *onlyRule != ""
 		dirs := *fromRuns
 		if len(dirs) > 0 {
-			if set := changedFlag(cmd, "window", "rule", "pg-dsn", "runs", "parallel", "only-window", "only-rule", "keep-logs"); set != "" {
+			if set := changedFlag(cmd, "window", "rule", "pg-dsn", "runs", "parallel", "only-window", "only-rule", "keep-logs", "token-limit"); set != "" {
 				return refuse(cmd, "--from-runs writes the document from runs and makes none, so --%s does not apply", set)
 			}
 			if missing := missingFlag(cmd, "out"); missing != "" {
@@ -1274,6 +1313,9 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			case *parallel < 1:
 				return refuseParallel(cmd, *parallel)
 			}
+			if code := refuseTokenLimit(cmd, *tokenLimit); code != 0 {
+				return code
+			}
 			rules := make([]record.SlotRule, 0, len(*ruleNames))
 			for _, name := range *ruleNames {
 				rule, code := namedSlotRule(cmd, name)
@@ -1287,7 +1329,7 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			if err := replay.RunCompare(ctx, replay.CompareConfig{Windows: *windows, Rules: rules, PGDSN: *dsn, Parallel: *parallel, Runs: *runsDir,
 				OnlyWindow: *onlyWindow, OnlyRule: *onlyRule, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "compare"),
-				BuildCommit: binaryCommit()}); err != nil {
+				BuildCommit: binaryCommit(), TokenLimit: *tokenLimit}); err != nil {
 				fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
 				return 1
 			}
@@ -1347,6 +1389,19 @@ func changedFlag(cmd *cobra.Command, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// tokenLimitUsage is the help of --token-limit, which each command that runs or reads a signal
+// rule's run takes (replay.RunConfig.TokenLimit).
+const tokenLimitUsage = "the project's token limit in uncached input tokens a minute, read in each minute whose provider record holds no limit of the project's own (assumption 49); a whole number above zero"
+
+// refuseTokenLimit refuses a --token-limit that cmd was given at zero or below, naming it, and
+// answers 0 where it was given none or one above zero.
+func refuseTokenLimit(cmd *cobra.Command, limit int64) int {
+	if cmd.Flags().Changed("token-limit") && limit <= 0 {
+		return refuse(cmd, "--token-limit %d: the project's token limit is a whole number of tokens a minute above zero", limit)
+	}
+	return 0
 }
 
 // printReplayJSON prints v as indented JSON, answering the exit status.

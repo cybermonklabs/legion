@@ -32,8 +32,9 @@ type Assumption struct {
 // the slowdown factor's fit, work done outside Legion, main's base rules, answer offsets and the
 // noise of a validation's redrawn conflicts); then the four of R11's signals (45 to 48: the
 // models' forms, the refusals the record keeps as recorded, a signal with no record, and the
-// provider's limit between two observations of it, the architect's D13). A run names the ones its
-// measures rest on by these numbers.
+// provider's limit between two observations of it, the architect's D13); and the project's token
+// limit a replay takes from its caller where the record holds none (49: RunConfig.TokenLimit). A
+// run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -181,6 +182,9 @@ var Assumptions = []Assumption{
 	{Number: 48,
 		Text:      "The provider's limit holds from one observation to the next.",
 		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded and does not bind, and the tokens model tests no refused minute there. Check any recorded limit change against the next 429's N."},
+	{Number: assumeSuppliedTokenLimit,
+		Text:      "The project's token limit is the one the replay's caller gives (--token-limit) in each minute whose provider record holds no limit of the project's own.",
+		Direction: "Favours a signal rule: the window's work runs under a limit that the record did not have, and the replay keeps each work segment's recorded length, so it shows no slowdown that the refusals would have caused, and a signal rule's measures look better than they would by that slowdown; no record confirms the refused minutes it models there. A limit the record holds stands, and R11's daily test reads only the minutes where the record holds one. Check on a window that records the project's limit throughout."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -204,3 +208,9 @@ const assumeRootRanksByNextStart = 36
 // candidates built on it, which the daemon the replay runs leaves to the merger
 // (driver.conflictFor), and which a run names where it leaves one (Divergence.ConflictsToMerger).
 const assumeConflictToMerger = 37
+
+// assumeSuppliedTokenLimit is the assumption a run rests on where it models a minute of the
+// provider's record against the project's token limit its caller gives (RunConfig.TokenLimit),
+// the record holding no limit of the project's own there, which a run names where its load models
+// read one such minute (ModelReader.SuppliedMinutes).
+const assumeSuppliedTokenLimit = 49

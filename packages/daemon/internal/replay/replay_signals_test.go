@@ -355,8 +355,9 @@ func TestTheReplaysTicksAreTickPasses(t *testing.T) {
 	}
 }
 
-// Run refuses a limit that signals.CheckLimit refuses and a d below zero, naming it, before it
-// replays: each run is given the replay's own server, on which it would otherwise run.
+// Run refuses a limit that signals.CheckLimit refuses, a d below zero and a token limit below zero,
+// naming it, before it replays: each run is given the replay's own server, on which it would
+// otherwise run.
 func TestARunRefusesAnIllegalLimit(t *testing.T) {
 	t.Parallel()
 	w, _ := readFixture(t, "no-crossing-due")
@@ -369,11 +370,12 @@ func TestARunRefusesAnIllegalLimit(t *testing.T) {
 		{RunConfig{Limits: map[string]float64{"memory": 1}}, "no signal a limit can name"},
 		{RunConfig{Limits: map[string]float64{SignalIdle: 0}}, "not above 0"},
 		{RunConfig{IdleAfter: -time.Minute}, "d is below zero"},
+		{RunConfig{TokenLimit: -6000}, "token limit is -6000"},
 	} {
 		cfg := c.cfg
 		cfg.Window, cfg.Rule, cfg.Seed, cfg.Slowdown, cfg.PGDSN, cfg.Out = w, mainRule(t), 1, 1, dsn, t.TempDir()
 		if _, err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("Run with the limits %v and d %s answered %v, want a refusal naming %q", cfg.Limits, cfg.IdleAfter, err, c.want)
+			t.Errorf("Run with the limits %v, d %s and the token limit %d answered %v, want a refusal naming %q", cfg.Limits, cfg.IdleAfter, cfg.TokenLimit, err, c.want)
 		}
 	}
 }

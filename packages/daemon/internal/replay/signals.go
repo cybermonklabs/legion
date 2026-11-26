@@ -64,9 +64,11 @@ func SignalDefinitions() []SignalDefinition { return slices.Clone(signalDefiniti
 // SignalRecord is a window's record read for R11's signals (ReadSignalRecord): the slot holders
 // of its trace, the memory guard's kills, the merge queue's waits, the provider's minutes, and
 // each ask with the people it can wait on, so that each definition reads its signal at any moment.
+// tokenLimit is the project's token limit its caller gives, zero for none (assumption 49).
 type SignalRecord struct {
-	window    Window
-	idleAfter time.Duration
+	window     Window
+	idleAfter  time.Duration
+	tokenLimit int64
 
 	// holders is the index of each issue of the window's project, which the idle signal reads
 	// the slot holders and their states from.
@@ -89,17 +91,23 @@ type SignalRecord struct {
 }
 
 // ReadSignalRecord reads w's record of the signals, idleAfter being d, how long a holder has been
-// idle before the idle signal counts it. It refuses a d below zero, a window whose trace does not
-// build (BuildTrace), and a line of a signal's input that its definition cannot read.
-func ReadSignalRecord(w Window, idleAfter time.Duration) (*SignalRecord, error) {
+// idle before the idle signal counts it, and tokenLimit the project's token limit in uncached input
+// tokens a minute, which the provider's headroom reads in each minute whose record holds no limit
+// of the project's own, zero for none (assumption 49). It refuses a d below zero, a token limit
+// below zero, a window whose trace does not build (BuildTrace), and a line of a signal's input
+// that its definition cannot read.
+func ReadSignalRecord(w Window, idleAfter time.Duration, tokenLimit int64) (*SignalRecord, error) {
 	if idleAfter < 0 {
 		return nil, fmt.Errorf("replay: a holder idle for %s: d is below zero", idleAfter)
+	}
+	if tokenLimit < 0 {
+		return nil, tokenLimitBelowZero(tokenLimit)
 	}
 	trace, err := BuildTrace(w)
 	if err != nil {
 		return nil, err
 	}
-	r := &SignalRecord{window: w, idleAfter: idleAfter, minutes: make(map[int64]ProviderMinute, len(w.Provider))}
+	r := &SignalRecord{window: w, idleAfter: idleAfter, tokenLimit: tokenLimit, minutes: make(map[int64]ProviderMinute, len(w.Provider))}
 	for _, key := range slices.Sorted(maps.Keys(trace.Issues)) {
 		if iss := trace.Issues[key]; iss.Project == trace.Project {
 			r.holders = append(r.holders, indexIssue(iss, trace.GateLines))
@@ -325,19 +333,21 @@ func queueNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
 
 // series is the provider's minutes as the definitions read them: the minute that starts at start,
 // whether the record holds it, and the limit of the project's own in force in it where the headroom
-// is recorded there and one binds. The limit holds from one observation to the next (assumption 48,
-// the architect's D13), as the record writes it, so a minute before the first observation, a minute
-// of no limit (none, or 0, the limit taken away) and a minute of a limit of one model's own (any
-// scope but the project's, projectLimitScope) hold no record of the headroom, as does a minute
-// outside the record's span: there the headroom binds nothing (assumption 47). The refusals of a
-// minute are held wherever the record holds the minute, whatever the limit.
+// is recorded there and one binds (Window.limitIn). The limit holds from one observation to the
+// next (assumption 48, the architect's D13), as the record writes it, so a minute before the first
+// observation, a minute of no limit (none, or 0, the limit taken away) and a minute of a limit of
+// one model's own (any scope but the project's, projectLimitScope) hold no limit of the project's
+// own: there the headroom reads the token limit the caller gives (assumption 49), and with none it
+// holds no record and binds nothing. A minute outside the record's span holds no record of the
+// headroom whatever the caller gives (assumption 47). The refusals of a minute are held wherever
+// the record holds the minute, whatever the limit.
 func (r *SignalRecord) series(start time.Time) (signals.Minute, bool) {
 	line, held := r.minutes[start.Unix()]
 	if !held {
 		return signals.Minute{}, false
 	}
 	minute := signals.Minute{Uncached: line.Uncached, Own: line.Own, Provider: line.Provider}
-	if limit, limited := line.projectLimit(); limited && r.window.Recorded(SignalProvider, line.Minute) {
+	if limit, limited, _ := r.window.limitIn(line, r.tokenLimit); limited {
 		minute.Limit = limit
 	}
 	return minute, true
@@ -358,6 +368,26 @@ func (m ProviderMinute) projectLimit() (int64, bool) {
 		return 0, false
 	}
 	return *m.Limit, true
+}
+
+// limitIn is the limit of the project's own in force in line's minute, where w holds a record of
+// the provider's headroom there, and whether one is: the limit the record holds (projectLimit),
+// else supplied, the project's token limit the caller gives (RunConfig.TokenLimit, assumption 49),
+// where it is above zero; assumed says the limit is supplied. A minute outside the record's span
+// holds none, whatever the caller gives (assumption 47).
+func (w Window) limitIn(line ProviderMinute, supplied int64) (limit int64, limited, assumed bool) {
+	if !w.Recorded(SignalProvider, line.Minute) {
+		return 0, false, false
+	}
+	if limit, ok := line.projectLimit(); ok {
+		return limit, true, false
+	}
+	return supplied, supplied > 0, supplied > 0
+}
+
+// tokenLimitBelowZero is the refusal of a token limit below zero (RunConfig.TokenLimit).
+func tokenLimitBelowZero(limit int64) error {
+	return fmt.Errorf("replay: the project's token limit is %d tokens a minute; give one above zero, or zero for none", limit)
 }
 
 // providerNext is the headroom's next crossing of limit after at: the first minute boundary at
