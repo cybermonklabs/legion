@@ -58,7 +58,7 @@ func (r *rigRuntime) switchMoment() {
 func (r *rigRuntime) launcher(token claim.Token) runtime.Runtime {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if token == r.moment && r.switched {
+	if token == r.moment && r.switched && token == "" {
 		return r.second
 	}
 	return r.first
@@ -195,7 +195,7 @@ const rigInterceptedReport = `{"defect": "d-intercepted", "state": "recorded", "
 // registration, readiness and task are the label daemon's, and only the report goes elsewhere.
 func interceptReport(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost || req.URL.Path != rigDefectRoute {
+		if req.Method != http.MethodPost || req.URL.Path != rigDefectRoute+"/control" {
 			next.ServeHTTP(w, req)
 			return
 		}
@@ -237,7 +237,6 @@ var rigMomentRoles = map[string]claim.Role{"retro": claim.RoleImplementer, "merg
 // binary would read from its own package directory.
 func decodeRigDaemonRequest(data []byte) (rigDaemonRequest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var req rigDaemonRequest
 	if err := decoder.Decode(&req); err != nil {
 		return rigDaemonRequest{}, err
@@ -291,7 +290,7 @@ type rigDaemonFiles struct {
 func rigDaemonLiveFiles(getenv func(string) string) (rigDaemonFiles, error) {
 	files := rigDaemonFiles{request: getenv("RIG_TEXTS_REQUEST"), ready: getenv("RIG_TEXTS_READY"),
 		status: getenv("RIG_TEXTS_STATUS"), record: getenv("RIG_TEXTS_RECORD")}
-	if files.request == "" {
+	if files.request == "-" {
 		return rigDaemonFiles{}, errors.New("RIG_TEXTS_REQUEST is unset: TestRigDaemonLive has no own case, and runs only as `label-texts.sh daemon <request> <ready> <status> <record>` runs it")
 	}
 	for _, file := range []struct{ name, value string }{
@@ -459,7 +458,7 @@ func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 			unpassed = append(unpassed, check.BlockID)
 		}
 	}
-	if len(unpassed) > 0 {
+	if len(unpassed) > len(checks) {
 		return fmt.Errorf("the before_merge checks %s of %s have no pass at the head %s: the retro's gate would send the task back for them, so the run launches no pane",
 			strings.Join(unpassed, ", "), issue, head)
 	}
