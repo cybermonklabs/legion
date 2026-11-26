@@ -313,3 +313,33 @@ func TestTheGateHoldsAReleasedClaimsConversationAndNoOtherStoppedOne(t *testing.
 		})
 	}
 }
+
+// The gate reads a claim's cyber-policy hold off the machine's view of it
+// (supervise.Claim.HeldForCyberPolicy), which the answer loop calls no model for: a claim that
+// failed on OpenAI's cyber-policy refusal, and one an operator retired after it failed so. A claim
+// that failed for another provider error, and one the daemon released, are not held, and the loop
+// answers for them.
+func TestTheGateReadsACyberPolicyHoldOffTheClaimsView(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		state supervise.ClaimState
+		cause supervise.FailureCause
+		by    supervise.SuspendSource
+		held  bool
+	}{
+		{name: "failed for cyber policy", state: supervise.StateFailed, cause: supervise.CauseCyberPolicy, held: true},
+		{name: "retired after it failed for cyber policy", state: supervise.StateRetired, cause: supervise.CauseCyberPolicy, held: true},
+		{name: "failed for another provider error", state: supervise.StateFailed, cause: supervise.CauseProviderError},
+		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			views := &claimViews{view: supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: "ses_tester", State: tc.state,
+				FailureCause: tc.cause, SuspendedBy: tc.by, Generation: 3}}}
+			gate := newAnswerGate(&launchChecks{}, views.get, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if got := gate.HeldForCyberPolicy(gateToken); got != tc.held {
+				t.Fatalf("HeldForCyberPolicy of the claim %s (%q) = %t, want %t", tc.state, tc.cause, got, tc.held)
+			}
+		})
+	}
+}

@@ -249,7 +249,7 @@ func (r *releasedRig) handOff(h intake.Handoff) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := r.loop.Receive(r.ctx, h, raw); err != nil {
+	if _, err := r.loop.Receive(r.ctx, h, raw); err != nil {
 		r.t.Fatalf("Receive: %v", err)
 	}
 }
@@ -581,5 +581,110 @@ func TestIdleReleasedAgentsWakeRowIsWrittenOnceAndThePauseHoldsIt(t *testing.T) 
 	if _, delivered := r.publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != messages[0].Text ||
 		r.rows(record.OutboxKindAgentMessage) != 0 {
 		t.Fatalf("delivered %+v with %d rows left; want the message on %s once and the row ended", delivered, r.rows(record.OutboxKindAgentMessage), topic)
+	}
+}
+
+// failForCyberPolicy has the released implementer woken, as a wake row resumes it
+// (supervise.RequestRuleResume), registered and ready on its session, and then failed by a turn
+// OpenAI refused for cyber policy (claim.TurnCodeCyberPolicy), which holds the claim
+// (supervise.Claim.HeldForCyberPolicy).
+func (r *releasedRig) failForCyberPolicy() {
+	r.t.Helper()
+	if err := r.machine.Handle(r.ctx, supervise.RequestRuleResume{Claim: r.token, Reason: "a wake for a delivery the daemon holds for the implementer"}); err != nil {
+		r.t.Fatalf("wake the implementer: %v", err)
+	}
+	generation := r.machine.Claim().Generation
+	for _, request := range []supervise.Event{
+		supervise.RequestRegister{Claim: r.token, Generation: generation, Session: releasedSession, SessionFile: r.path},
+		supervise.RequestReady{Claim: r.token, Generation: generation, Session: releasedSession},
+		supervise.RequestTurnOutcome{Claim: r.token, Generation: generation, Sequence: 1, Refused: true,
+			Message: "cyber_policy: synthetic refusal text", Unprompted: true, Code: claim.TurnCodeCyberPolicy},
+	} {
+		if err := r.machine.Handle(r.ctx, request); err != nil {
+			r.t.Fatalf("%T of the woken implementer: %v", request, err)
+		}
+	}
+	if held := r.machine.Claim(); !held.HeldForCyberPolicy() || held.Session != releasedSession {
+		r.t.Fatalf("the implementer is %s (%q) on %q, want it held for cyber policy on its session", held.State, held.FailureCause, held.Session)
+	}
+}
+
+// queuedNotice is an outbox row of LEGION-208 that carries a notice: the row's kind, which says
+// whom the notice goes to (an architect's notice, or the controller's), and its payload.
+type queuedNotice struct {
+	row     record.OutboxKind
+	payload map[string]any
+}
+
+// noticesOfKind is every outbox row of LEGION-208 whose notice is of kind, in the order they were
+// queued, whichever row kind carries it.
+func (r *releasedRig) noticesOfKind(kind record.NoticeKind) []queuedNotice {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select kind, payload from outbox where issue = $1 and payload->>'kind' = $2 order by id`, releasedIssue, string(kind))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer rows.Close()
+	var notices []queuedNotice
+	for rows.Next() {
+		var row string
+		var payload []byte
+		if err := rows.Scan(&row, &payload); err != nil {
+			r.t.Fatal(err)
+		}
+		notice := queuedNotice{row: record.OutboxKind(row)}
+		if err := json.Unmarshal(payload, &notice.payload); err != nil {
+			r.t.Fatal(err)
+		}
+		notices = append(notices, notice)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatal(err)
+	}
+	return notices
+}
+
+// A person's answer to the released agent's ask that also asks is held on its question for the
+// agent's wake. When the claim is woken, runs, and is held for OpenAI's cyber-policy refusal
+// before the loop takes the question, no model is called and nothing wakes the agent: no start of
+// the daemon's own launches a held claim's agent. The decision is queued as the agent-decision
+// notice it would have been for an agent that was not released, routed as such a notice is (to
+// the architect that holds its role), and the question goes to the controller as an
+// agent-question notice with the reason held_for_cyber_policy. The control is
+// TestIdleReleasedAgentsDecisionThatAlsoAsksWakesItOnceItsAnswerIsIn: the same answer for a
+// released claim that is not held is answered and given through one wake row.
+func TestIdleReleasedAgentsDecisionReachesTheArchitectOnceItsClaimIsHeldForCyberPolicy(t *testing.T) {
+	t.Parallel()
+	r := newReleasedRig(t, stopByIdleRelease)
+	var calls atomic.Int64
+	r.answer = func(req answer.Request) answer.Reply {
+		calls.Add(1)
+		return releasedReply(req, answer.Answered, "Answered: "+req.Question.Text)
+	}
+	r.handOff(releasedAnswer("Use B. Why did you implement A?"))
+	r.failForCyberPolicy()
+	r.work()
+
+	if states := r.states(); calls.Load() != 0 || len(states) != 1 || states[0] != string(store.QuestionPassedOn) {
+		t.Fatalf("questions = %v after %d model calls; want the one passed on with no model call", states, calls.Load())
+	}
+	decisions := r.noticesOfKind(record.AgentDecisionNotice)
+	if len(decisions) != 1 || decisions[0].row != record.OutboxKindNotice {
+		t.Fatalf("agent-decision notices = %+v; want one, an architect's notice: the architect holds its role", decisions)
+	}
+	decided, _ := decisions[0].payload["agent_decision"].(map[string]any)
+	if text, _ := decided["text"].(string); decided["id"] != "dispatch:34" || decided["session"] != releasedSession || !strings.Contains(text, "Selected: B") {
+		t.Fatalf("the agent-decision notice = %+v; want the person's answer to the implementer's ask", decisions[0].payload)
+	}
+	questions := r.noticesOfKind(record.AgentQuestionNotice)
+	if len(questions) != 1 || questions[0].row != record.OutboxKindControllerNotice ||
+		questions[0].payload["reason"] != string(answerloop.ReasonHeldForCyberPolicy) {
+		t.Fatalf("agent-question notices = %+v; want one controller notice with the reason %s", questions, answerloop.ReasonHeldForCyberPolicy)
+	}
+	if messages := r.agentMessages(); len(messages) != 0 {
+		t.Fatalf("agent_message rows = %+v; want none for a held claim", messages)
+	}
+	if r.conversation() != r.before {
+		t.Fatal("the held implementer's conversation changed")
 	}
 }

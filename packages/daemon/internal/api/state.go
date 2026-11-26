@@ -187,9 +187,9 @@ const (
 // (`user:<login>`, or `session:<id>` with the asking session's title when known), where (a
 // dispatch:// reference, or `envoy:<event id>`), why it was passed on (`not_answered`,
 // `needs_work`, a bound or fault the answer met, `over_limit`, `unknown_format`, `no_provider`,
-// `no_price`, `unmetered`, `no_conversation`, `post_refused`), when, and every gh call that writes
-// which the loop ran for it (Writes, never null), each as the controller's agent-question notice
-// carries it (record.AgentQuestionWrite, ghtool.Writes).
+// `no_price`, `unmetered`, `no_conversation`, `post_refused`, `held_for_cyber_policy`), when, and
+// every gh call that writes which the loop ran for it (Writes, never null), each as the
+// controller's agent-question notice carries it (record.AgentQuestionWrite, ghtool.Writes).
 type QuestionForController struct {
 	ID       string                      `json:"id"`
 	Issue    string                      `json:"issue"`

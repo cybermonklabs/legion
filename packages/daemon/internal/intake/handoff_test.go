@@ -57,8 +57,8 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 	data := handoffJSON(t, captureToken, "ses_tester")
 	first := newDelivery(t, consumer, listenerwire.LegionHandoffSubject(captureToken, "ses_tester"), data, 41, now)
 
-	if deliverHandoff(context.Background(), first, run, func(context.Context, Handoff, []byte) error {
-		return errors.New("the store is down")
+	if deliverHandoff(context.Background(), first, run, func(context.Context, Handoff, []byte) (bool, error) {
+		return false, errors.New("the store is down")
 	}) {
 		t.Fatal("a hand-off the loop could not record left its consumer, want it naked")
 	}
@@ -72,9 +72,9 @@ func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
 	var got Handoff
 	var raw []byte
 	second := first.deliveredAgain(2)
-	if !deliverHandoff(context.Background(), second, run, func(_ context.Context, h Handoff, published []byte) error {
+	if !deliverHandoff(context.Background(), second, run, func(_ context.Context, h Handoff, published []byte) (bool, error) {
 		got, raw = h, published
-		return nil
+		return false, nil
 	}) {
 		t.Fatal("a hand-off the loop recorded did not leave its consumer")
 	}
@@ -112,9 +112,9 @@ func TestAHandoffTheDaemonCannotTrustIsGivenUpAsUndecodable(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			seq := uint64(60 + i)
 			delivery := newDelivery(t, consumer, listenerwire.LegionHandoffSubject(captureToken, row.session), row.data, seq, now)
-			left := deliverHandoff(context.Background(), delivery, run, func(context.Context, Handoff, []byte) error {
+			left := deliverHandoff(context.Background(), delivery, run, func(context.Context, Handoff, []byte) (bool, error) {
 				t.Fatal("the poison hand-off reached the loop")
-				return nil
+				return false, nil
 			})
 			if acks, terms, naks := delivery.asked(); !left || acks != 0 || terms != 1 || len(naks) != 0 {
 				t.Fatalf("asked %d acks, %d terms and naks %v of JetStream (left %t), want the hand-off terminated", acks, terms, naks, left)
@@ -160,9 +160,9 @@ func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
 		var got Handoff
 		reached := false
 		delivery := newDelivery(t, handoffConsumerName(captureToken), listenerwire.LegionHandoffSubject(captureToken, "ses_tester"), data, uint64(70+i), now)
-		deliverHandoff(context.Background(), delivery, run, func(_ context.Context, h Handoff, _ []byte) error {
+		deliverHandoff(context.Background(), delivery, run, func(_ context.Context, h Handoff, _ []byte) (bool, error) {
 			got, reached = h, true
-			return nil
+			return false, nil
 		})
 		if acks, _, _ := delivery.asked(); !reached || acks != 1 {
 			t.Errorf("a hand-off carrying %s reached the loop %v and was acknowledged %d times, want it handed to the loop and acknowledged", tc.wire, reached, acks)
@@ -197,9 +197,9 @@ func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
 	const seq = 81
 	stored := newDelivery(t, consumer, subject, data, seq, first)
 	calls := 0
-	failing := func(context.Context, Handoff, []byte) error {
+	failing := func(context.Context, Handoff, []byte) (bool, error) {
 		calls++
-		return errAlwaysFails
+		return false, errAlwaysFails
 	}
 	for delivered := uint64(1); ; delivered++ {
 		delivery := stored.deliveredAgain(delivered)
@@ -271,9 +271,9 @@ func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
 		t.Fatalf("a replay with the loop off = %+v, %v; want it failed, the record left open", answer, err)
 	}
 	var replayed Handoff
-	records.Handoff = func(_ context.Context, h Handoff, _ []byte) error {
+	records.Handoff = func(_ context.Context, h Handoff, _ []byte) (bool, error) {
 		replayed = h
-		return nil
+		return false, nil
 	}
 	on, err := NewGiveUps(records)
 	if err != nil {
@@ -288,6 +288,63 @@ func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
 	}
 	if closed, _ := intakeRecordOf(t, pool, consumer, seq); closed.ClosedHow != record.IntakeApplied || closed.ClosedBy != "operator" {
 		t.Fatalf("the record after the replay = %+v, want it closed as applied by the operator", closed)
+	}
+}
+
+// A replay of a given-up hand-off closes its record by what the loop's handler did with it: as no
+// fact when the loop dropped it with nothing recorded (a hand-off for a conversation the daemon
+// does not hold, or one that asks nothing and carries nothing the loop keeps), so the record never
+// says the loop recorded what it let go; and as applied when the loop recorded it, which is the
+// control. A live delivery the loop drops is acknowledged as one it records is.
+func TestAReplayedHandoffTheLoopDropsClosesAsNoFact(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
+	consumer := handoffConsumerName(captureToken)
+	subject := listenerwire.LegionHandoffSubject(captureToken, "ses_tester")
+	data := handoffJSON(t, captureToken, "ses_tester")
+
+	live := newDelivery(t, consumer, subject, data, 90, now)
+	if !deliverHandoff(ctx, live, run, func(context.Context, Handoff, []byte) (bool, error) { return true, nil }) {
+		t.Fatal("a hand-off the loop dropped did not leave its consumer")
+	}
+	if acks, terms, naks := live.asked(); acks != 1 || terms != 0 || len(naks) != 0 {
+		t.Fatalf("a dropped hand-off asked %d acks, %d terms and naks %v, want one ack", acks, terms, naks)
+	}
+
+	records := Records{Pool: pool, Spec: run.spec, Repositories: func() []ghrepo.Repository { return nil }}
+	for _, tc := range []struct {
+		seq     uint64
+		dropped bool
+		outcome ReplayOutcome
+		closed  record.IntakeClosedHow
+	}{
+		{seq: 91, dropped: true, outcome: ReplayNoFact, closed: record.IntakeNoFact},
+		{seq: 92, outcome: ReplayApplied, closed: record.IntakeApplied},
+	} {
+		if !deliverHandoff(ctx, newDelivery(t, consumer, subject, data, tc.seq, now), run, func(context.Context, Handoff, []byte) (bool, error) {
+			return false, errAlwaysFails
+		}) {
+			t.Fatalf("the hand-off at %d was not given up at its first failed delivery", tc.seq)
+		}
+		given, found := intakeRecordOf(t, pool, consumer, tc.seq)
+		if !found || !given.GivenUp() {
+			t.Fatalf("the record at %d = %+v (found %t), want the hand-off given up", tc.seq, given, found)
+		}
+		records.Handoff = func(context.Context, Handoff, []byte) (bool, error) { return tc.dropped, nil }
+		replays, err := NewGiveUps(records)
+		if err != nil {
+			t.Fatalf("NewGiveUps: %v", err)
+		}
+		answer, err := replays.Replay(ctx, record.IntakeSelector{ID: given.ID}, "operator")
+		if err != nil || len(answer.Replayed) != 1 || answer.Replayed[0].Outcome != tc.outcome || answer.Remaining != 0 {
+			t.Fatalf("a replay of the hand-off the loop dropped %t = %+v, %v; want it %s", tc.dropped, answer, err, tc.outcome)
+		}
+		if closed, _ := intakeRecordOf(t, pool, consumer, tc.seq); closed.ClosedHow != tc.closed || closed.ClosedBy != "operator" {
+			t.Fatalf("the record of the hand-off the loop dropped %t = %+v, want it closed as %s by the operator", tc.dropped, closed, tc.closed)
+		}
 	}
 }
 

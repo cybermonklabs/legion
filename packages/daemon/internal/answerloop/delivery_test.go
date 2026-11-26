@@ -149,7 +149,7 @@ func TestTheLoopsOwnAnswerReachesARunningAskerLive(t *testing.T) {
 	before := fileContent(t, path)
 	r.gate.set(r.gate.running, "ses_asker", true)
 	answer := "Plum.\n\n" + AnswerMarker + "k9 -->"
-	if err := r.loop.Receive(r.ctx, answerHandoff("ses_asker", "ses_tester", "evt-9", "agent.ses_asker.k9", answer), nil); err != nil {
+	if _, err := r.loop.Receive(r.ctx, answerHandoff("ses_asker", "ses_tester", "evt-9", "agent.ses_asker.k9", answer), nil); err != nil {
 		t.Fatalf("Receive = %v; want the answer given to the running asker", err)
 	}
 	sends := r.listener.posts()
@@ -185,7 +185,7 @@ func TestAnAskerThatStoppedAgainGetsTheAnswerInItsConversation(t *testing.T) {
 	r.gate.set(r.gate.running, "ses_asker", true)
 	answer := "Plum.\n\n" + AnswerMarker + "k9 -->"
 	handoff := answerHandoff("ses_asker", "ses_tester", "evt-9", "agent.ses_asker.k9", answer)
-	if err := r.loop.Receive(r.ctx, handoff, nil); err != nil {
+	if _, err := r.loop.Receive(r.ctx, handoff, nil); err != nil {
 		t.Fatalf("Receive = %v; want the refused answer written into the conversation", err)
 	}
 	after := fileContent(t, path)

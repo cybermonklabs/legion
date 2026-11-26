@@ -418,6 +418,83 @@ func TestIdleReleasedFollowerIsGivenAPersonsResolutionOfTheAskOnce(t *testing.T)
 	}
 }
 
+// A released agent that follows an ask another agent opened is woken for a person's answer to
+// that ask and for a person's reply on its thread, and each wake names the ask as one the agent
+// follows and did not open, never as its own: what was decided there is the other agent's, and an
+// agent told the ask was its own could act on a decision made for someone else. Nothing is
+// answered, recorded or decided for either. The control is the same answer on the agent's own
+// ask, a decision, which the wake names as the agent's ask.
+func TestIdleReleasedFollowerIsToldAFollowedAsksAnswerAndReplyAsOnAnAskItFollows(t *testing.T) {
+	const followed = "a0000000-0000-4000-8000-000000000003"
+	answer := dispatchHandoff("ses_tester", answeredEvent(37, person, followed, "question", []string{"B"}, new("Use B.")))
+	reply := dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
+		map[string]any{"id": "c-41", "issue_key": "LEGION-9", "body": "Why A?", "ask_id": followed}))
+
+	r, _ := releasedRig(t)
+	r.ask = map[string]any{"ask": map[string]any{"id": followed, "issue_key": "LEGION-9", "author": map[string]any{"kind": "session", "id": "ses_reviewer"}},
+		"replies": []any{}}
+	r.receive(answer)
+	r.receive(reply)
+	r.drain()
+	if all := r.questions(); len(all) != 0 || r.answerCount() != 0 || len(r.rec.decisions) != 0 || len(r.rec.passed) != 0 {
+		t.Fatalf("questions %+v after %d model calls, decisions %+v, passed %+v; want none", all, r.answerCount(), r.rec.decisions, r.rec.passed)
+	}
+	if len(r.rec.wakes) != 2 {
+		t.Fatalf("wakes = %+v; want one for the answer and one for the reply", r.rec.wakes)
+	}
+	where := "ask " + followed + " on LEGION-9, which the agent follows but did not open"
+	for i, want := range []string{
+		"user:person@example.com sent you, in an answer to " + where + " (dispatch://LEGION-9/ask/" + followed + "), while you were stopped:\nSelected: B\n\nUse B.",
+		"user:person@example.com sent you, in a reply on " + where + " (dispatch://LEGION-9/comment/c-41), while you were stopped:\nWhy A?",
+	} {
+		if got := r.rec.wakes[i].Text; got != want {
+			t.Errorf("wake %d tells the follower %q; want %q", i, got, want)
+		}
+	}
+
+	own, _ := releasedRig(t)
+	own.receive(dispatchHandoff("ses_tester", answeredEvent(38, person, askID, "question", []string{"B"}, nil)))
+	want := "user:person@example.com sent you, in an answer to the agent's ask " + askID + " on LEGION-9 (dispatch://LEGION-9/ask/" + askID +
+		"), while you were stopped:\nSelected: B"
+	if len(own.rec.wakes) != 1 || own.rec.wakes[0].Text != want {
+		t.Fatalf("wakes for an answer on the agent's own ask = %+v; want one telling it %q", own.rec.wakes, want)
+	}
+}
+
+// A released agent is woken by no act of its own session: its own reply in its comment thread and
+// its own hand-back of its approval request, which Dispatch routes back to their author, raise no
+// wake, record no question and leave the conversation as it was, however often they are handed
+// off. The control is another agent's reply in the same thread, which wakes the agent once.
+func TestIdleReleasedAgentIsWokenByNoActOfItsOwn(t *testing.T) {
+	self := intake.DispatchActor{Kind: "session", ID: "ses_tester"}
+	reviewer := intake.DispatchActor{Kind: "session", ID: "ses_reviewer"}
+	reply := func(actor intake.DispatchActor, id string) intake.Handoff {
+		return dispatchHandoff("ses_tester", bare("comment.created", actor, new("LEGION-9"),
+			map[string]any{"id": id, "issue_key": "LEGION-9", "body": "Still plum.", "ask_id": nil, "reply_to": threadRoot}))
+	}
+	ownReply := reply(self, "c-51")
+	ownHandBack := dispatchHandoff("ses_tester", bare("ask.handed_back", self, new("LEGION-9"), map[string]any{"id": askID}))
+
+	r, path := releasedRig(t)
+	before := fileContent(t, path)
+	for _, h := range []intake.Handoff{ownReply, ownHandBack, ownReply, ownHandBack} {
+		r.receive(h)
+	}
+	r.drain()
+	if all := r.questions(); len(all) != 0 || len(r.rec.wakes) != 0 || r.answerCount() != 0 || len(r.rec.decisions) != 0 {
+		t.Fatalf("questions %+v, wakes %+v, %d model calls, decisions %+v for the agent's own acts; want none", all, r.rec.wakes, r.answerCount(), r.rec.decisions)
+	}
+	if fileContent(t, path) != before {
+		t.Fatalf("the conversation changed:\n%s", fileContent(t, path)[len(before):])
+	}
+
+	r.receive(reply(reviewer, "c-52"))
+	want := "session:ses_reviewer sent you, in a reply in the comment thread of " + threadRoot + " on LEGION-9"
+	if len(r.rec.wakes) != 1 || !strings.HasPrefix(r.rec.wakes[0].Text, want) {
+		t.Fatalf("wakes after another agent's reply = %+v; want one telling the agent %q", r.rec.wakes, want)
+	}
+}
+
 // A message of a source no agent answers, a GitHub notification here, is given to a released
 // agent by its own source and topic: the wake does not tell it as an Envoy session's message.
 func TestIdleReleasedAgentIsToldAMessageOfAnotherSourceByItsSourceAndTopic(t *testing.T) {

@@ -554,8 +554,9 @@ var (
 // applies each once though the database already records a higher version. Every embedded migration
 // numbered above the pin is pending as well, so the upgrade applies it after the six, and the
 // store's highest version becomes the newest embedded one: the pin itself when nothing newer is
-// embedded.
-func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsBelowItsNewest(t *testing.T) {
+// embedded. The seed is a pin, not current main: a database current main migrated holds main's
+// migrations above the pin already, where this test applies them after the answer migrations.
+func TestAPinnedMainFixtureAppliesTheAnswerMigrationsAndThenThoseAboveThePin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)

@@ -93,9 +93,10 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
 // ReplayOutcome is how the replay of one give-up ended. Its fact applied, its fact was applied
-// already, or the message holds no fact, the handling acknowledging it with no transaction: each
-// closes the record as the record.IntakeClosedHow of the same name. Or it failed, which leaves the
-// record open or discarded as it stood, keeping the new error.
+// already, or the message holds no fact, the handling acknowledging it with no transaction, as a
+// hand-off the answer loop dropped with nothing recorded does: each closes the record as the
+// record.IntakeClosedHow of the same name. Or it failed, which leaves the record open or
+// discarded as it stood, keeping the new error.
 type ReplayOutcome string
 
 const (
@@ -207,8 +208,9 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 // replayHandoff replays given, a hand-off the answer loop's consumer gave up, as a live delivery
 // hands it over (consumeHandoff): decoded and held to its subject, then handed to the loop's
 // handler within AckWait. The loop records it in transactions of its own and takes one handed
-// off again as a repeat, so the record is closed as applied in a statement of its own after
-// (closeAlone). A daemon whose loop is off has no handler, and the replay fails.
+// off again as a repeat, so the record is closed in a statement of its own after (closeAlone): as
+// applied, or as no fact where the loop dropped the hand-off with nothing recorded
+// (HandoffHandler's dropped). A daemon whose loop is off has no handler, and the replay fails.
 func (g *GiveUps) replayHandoff(ctx context.Context, replayed ReplayedGiveUp, given record.IntakeFailure, caller string) ReplayedGiveUp {
 	handoff, err := handoffOn(given.Subject, g.token, given.Payload)
 	if err != nil {
@@ -218,17 +220,21 @@ func (g *GiveUps) replayHandoff(ctx context.Context, replayed ReplayedGiveUp, gi
 		return g.failed(ctx, replayed, errors.New("the answer loop is off, so nothing takes the hand-off"))
 	}
 	work, cancel := context.WithTimeout(ctx, g.spec.AckWait)
-	err = g.handoff(work, handoff, given.Payload)
+	dropped, err := g.handoff(work, handoff, given.Payload)
 	cancel()
 	if err != nil {
 		return g.failed(ctx, replayed, err)
+	}
+	if dropped {
+		return g.closeAlone(ctx, replayed, record.IntakeNoFact, caller)
 	}
 	return g.closeAlone(ctx, replayed, record.IntakeApplied, caller)
 }
 
 // closeAlone closes replayed's record as how, in a statement of its own: no fact's transaction
-// carries the close, since the replay found no fact in its message (record.IntakeNoFact), or the
-// answer loop applied a hand-off in transactions of its own (record.IntakeApplied).
+// carries the close, since the replay found no fact in its message, or the answer loop dropped
+// its hand-off (record.IntakeNoFact), or the loop applied a hand-off in transactions of its own
+// (record.IntakeApplied).
 func (g *GiveUps) closeAlone(ctx context.Context, replayed ReplayedGiveUp, how record.IntakeClosedHow, caller string) ReplayedGiveUp {
 	var closed bool
 	err := g.write(ctx, func(ctx context.Context, tx pgx.Tx) error {

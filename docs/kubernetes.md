@@ -1917,11 +1917,11 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   The loop answers a released agent's question from its conversation and posts the answer, as for any stopped agent, and a question it answered wakes nothing.
   Everything else that reached the agent and is the agent's own wakes it, through one outbox row of the kind `agent_message`, written once per message however often it is handed off:
   a person's decision on the agent's ask, an answer or a reply that hands the ask back, in place of the architect's or the controller's `agent-decision` notice;
-  a Dispatch message or comment that asks nothing;
+  every other Dispatch event that reached it and asks it nothing (a message, comment or reply, an edit or resolution of one, an answer, reply, resolution or edit on an ask it follows but did not open, named as one it follows, a claim, an issue event), and a message of a source no agent answers;
   a reply of kind `none`, for which nothing is appended to the conversation;
   every reply the controller would hear of (`not_answered`, `needs_work`, a fault, a day over `daily_usd`, a conversation the daemon cannot read, a post Dispatch or the listener refused), for which the loop posts nothing, appends nothing and tells the controller nothing, so no `agent-question` notice is queued and `questionsForController` lists nothing;
   and the loop's own answer to the agent as an asker, in place of writing it into the conversation.
-  The daemon's own notices and posts, the Envoy broker's own messages and anything carrying the loop's own marker are none of the agent's, and wake nothing.
+  The daemon's own notices and posts, the Envoy broker's own messages, anything carrying the loop's own marker, a person's review of the agent's own approval request and an event the agent's own session made wake nothing.
   The row's message is the original message as the agent would have read it: who sent it, where and under which reference, then its words.
   A question whose calls already ran a `gh` or `dispatch` write is given with one note after the message, apart from its words, naming each write as the reply of a fault does ("No answer", below).
   The note names a `gh` write's command, repository and exit and a `dispatch` write's command and exit, `no exit status` where the program answered none, and never a call's arguments or output; it tells the agent not to repeat a write and does not say the controller was told.
@@ -1957,6 +1957,8 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   — and a conversation its store no longer holds (`no_conversation`):
   the daemon replies in the agent's name, naming the bound or the fault and that it passed the question to the Legion controller, and passes it on.
   A reply Dispatch or the listener refuses for good is passed on as `post_refused`.
+  A question to an agent whose claim is held for OpenAI's cyber-policy refusal of its session's content (a claim that failed under the cause `cyber_policy`, or was retired after it) calls no model, since no action the daemon starts by itself may send that content to OpenAI again.
+  The daemon replies in the agent's name that its conversation is held, appends nothing, and passes the question on as `held_for_cyber_policy`, whatever the question carries: a question that came with a released agent's decision wakes nothing once its claim is held, since no start of the daemon's own launches a held claim's agent, and its decision goes on as the `agent-decision` notice it would have been for an agent that was not released.
   The reply also names each `gh` write the question's calls ran, this run's and an earlier run's, by its command, its repository and gh's exit, so an asker who reads that the agent could not answer also reads what it already merged, approved or posted:
   ``I could not answer within the bound of 8 model calls. I had already run these gh writes: `gh pr merge` on acme/widgets (exit 0). I passed your question to the Legion controller.``
   A write is every call but a read: a comment, a review, `pr merge`, `pr edit`, `run rerun`, `workflow run` and a `gh api` call of any method but `GET` and `HEAD`, among the rest.

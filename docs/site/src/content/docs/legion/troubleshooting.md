@@ -2102,10 +2102,12 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    Read the outcome of each record. `applied` (its fact applied now, or the answer loop recorded
    the hand-off), `already applied` (the daemon had applied the same fact before, so nothing
    changed) and `no fact` (the message holds nothing the daemon acts on now, such as an event of a
-   repository it no longer hears) each close the record. `failed`, with its error, leaves the
-   record as it was; a hand-off's replay fails while the answer loop is off. One call takes at
-   most 100 records, the lowest stream sequences first, and `remaining` counts the open records of
-   the selection left after it: make the same call again. A record that fails stays open and comes
+   repository it no longer hears, or a hand-off the answer loop dropped with nothing recorded,
+   such as one for a conversation the daemon does not hold, or one that asks nothing of an agent
+   the daemon did not release) each close the record. `failed`, with its error, leaves the record
+   as it was; a hand-off's replay fails while the answer loop is off. One call takes at most 100
+   records, the lowest stream sequences first, and `remaining` counts the open records of the
+   selection left after it: make the same call again. A record that fails stays open and comes
    first again at the next call, so once 100 records keep failing, no bulk call reaches the
    records after them. Discard those that can never apply, or replay a record after them by its
    id.

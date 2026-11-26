@@ -1786,12 +1786,15 @@ func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
 // AgentMessage is one message for an agent of the issue whose claim the daemon released (an idle
 // release of its issue pod, or a project's pause, which suspends a claim the same way), which the
 // answer loop does not answer for it (answerloop.Wakes, internal/daemon's releasedWakes): a
-// person's decision on its ask, a message, comment or reply that asks it nothing, a question
-// whose reply the loop does not post, and the loop's own answer to it as an asker. Role is the
-// agent's role on the row's issue, whose topic the runner publishes Text to, and Session the
-// session the message was handed off for, which the row's log lines name. Text is the whole of
-// what the agent is told: the message as it would have read it, and, when the loop already
-// answered a question in that message, the sentence that says where.
+// person's decision on its ask; every other Dispatch event that reached it, asks it nothing and is
+// no act of its own session (a message, comment or reply, an edit or resolution of one, the answer
+// to, a reply on, or the resolution or edit of an ask it follows but did not open, a hand-back, a
+// claim, an issue event or a delivery receipt: answerloop.Verdict.ForAgent); a message of a source
+// no agent answers; a question whose reply the loop does not post; and the loop's own answer to it
+// as an asker. Role is the agent's role on the row's issue, whose topic the runner publishes Text
+// to, and Session the session the message was handed off for, which the row's log lines name.
+// Text is the whole of what the agent is told: the message as it would have read it, and, when the
+// loop already answered a question in that message, the sentence that says where.
 //
 // Unlike RoleMessage it wakes a released claim, and it holds the message until a session of the
 // role takes it, as a merge-queue removal does (internal/daemon's outbox.agentMessage,

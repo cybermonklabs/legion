@@ -128,7 +128,7 @@ func TestAClaimStartedDuringAnAnswerGetsTheQuestionAndItsConversationNothing(t *
 			Topic: "notifications.agent.ses_tester", DedupeKey: "agent.ses_tester.0123456789abcdef0123456789abcdef", PayloadSummary: "Did it pass?", TraceID: "t"},
 	}
 	raw, _ := json.Marshal(handoff)
-	if err := loop.Receive(ctx, handoff, raw); err != nil {
+	if _, err := loop.Receive(ctx, handoff, raw); err != nil {
 		t.Fatal(err)
 	}
 	running, stop := context.WithCancel(ctx)
@@ -824,7 +824,7 @@ func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords
 			Topic: "notifications.agent.ses_tester", DedupeKey: "agent.ses_tester.0123456789abcdef0123456789abcdef", PayloadSummary: "Is PR 7 merged?", TraceID: "t"},
 	}
 	raw, _ := json.Marshal(handoff)
-	if err := loop.Receive(ctx, handoff, raw); err != nil {
+	if _, err := loop.Receive(ctx, handoff, raw); err != nil {
 		t.Fatal(err)
 	}
 	running, stop := context.WithCancel(ctx)

@@ -778,10 +778,11 @@ const legionQuestionWrite = z.object({
  * question's id, the agent's issue, role and session, who asked (`user:<login>` or `session:<id>`
  * with the asking session's title when known), where (a `dispatch://` reference or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
- * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), when, and every `gh`
- * write the loop ran for it (`writes`, never null), so the controller does not decide on the
- * question without knowing what the agent already merged, approved or posted. `asker` and `ref`
- * are empty for a question whose recorded hand-off no longer reads. The daemon writes every field;
+ * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`,
+ * `held_for_cyber_policy`), when, and every `gh` write the loop ran for it (`writes`, never null),
+ * so the controller does not decide on the question without knowing what the agent already
+ * merged, approved or posted. `asker` and `ref` are empty for a question whose recorded hand-off
+ * no longer reads. The daemon writes every field;
  * the reader takes each as optional, since no plugin code reads them (LEGION_ANSWER_READS). */
 const legionQuestionForController = z.object({
   id: nonEmptyString.optional(),

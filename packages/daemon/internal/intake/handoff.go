@@ -167,10 +167,13 @@ func DispatchOf(e HandoffEnvelope) (DispatchEvent, error) {
 	return event, nil
 }
 
-// HandoffHandler takes one hand-off: nil once it is recorded, so the delivery is acknowledged; an
-// error to have it delivered again at the delay its delivery count earns, and given up once the
-// intake's bound is reached (consumeHandoff). raw is the hand-off as published.
-type HandoffHandler func(ctx context.Context, handoff Handoff, raw []byte) error
+// HandoffHandler takes one hand-off: a nil error once it is handled, so the delivery is
+// acknowledged, with dropped true for one it logged and let go with nothing recorded (a hand-off
+// for a conversation the daemon does not hold, or one that asks nothing and carries nothing it
+// keeps), which a replay closes as no fact (replayHandoff); an error to have it delivered again
+// at the delay its delivery count earns, and given up once the intake's bound is reached
+// (consumeHandoff). raw is the hand-off as published.
+type HandoffHandler func(ctx context.Context, handoff Handoff, raw []byte) (dropped bool, err error)
 
 // Handoffs is the project's durable hand-off consumer: the Legion project token its subjects and
 // its hand-offs name (claim.ProjectToken of the intake's project), its stream and its consumer,
@@ -268,11 +271,11 @@ func (h *Handoffs) consume(ctx context.Context, handle HandoffHandler) error {
 // message's, on run, the consumer's: a hand-off that cannot be read, or that is not of project
 // token or not for the session its subject names (handoffOn), is given up at its first delivery as
 // a message that does not decode; one whose delivery before did not end is given up before handle
-// runs again once the bound is reached; one handle records is acknowledged, its open failure
-// deleted; and one handle fails on is recorded and delivered again at the delay its delivery count
-// earns, or given up once the bound is reached or the stream would delete it first
-// (consumerRun.failed). handle runs within AckWait, reported in progress meanwhile. It answers
-// whether the message left its consumer.
+// runs again once the bound is reached; one handle records, or drops, is acknowledged, its open
+// failure deleted; and one handle fails on is recorded and delivered again at the delay its
+// delivery count earns, or given up once the bound is reached or the stream would delete it
+// first (consumerRun.failed). handle runs within AckWait, reported in progress meanwhile. It
+// answers whether the message left its consumer.
 func consumeHandoff(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, token string, handle HandoffHandler) bool {
 	handoff, err := handoffOn(message.Subject(), token, message.Data())
 	if err != nil {
@@ -289,7 +292,7 @@ func consumeHandoff(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.AckWait)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
-	err = handle(work, handoff, message.Data())
+	_, err = handle(work, handoff, message.Data())
 	stop()
 	if err != nil {
 		return run.failed(ctx, message, metadata, decoded, nakOutcome("hand-off not recorded; it is delivered again", "nak hand-off", err))

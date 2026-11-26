@@ -46,8 +46,9 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 
 // generate answers q from its conversation, unless the conversation already holds the answer (an
 // earlier pass appended it and stopped before the question was marked appended: it is posted,
-// never answered again), its claim runs the conversation (forwarded) or the day's spend is over
-// the limit (the daemon's reply). It records the reply, adds the exchange to the conversation,
+// never answered again), its claim runs the conversation (forwarded), its claim is held for
+// OpenAI's cyber-policy refusal of its session's content, or the day's spend is over the limit
+// (the daemon's reply, for either). It records the reply, adds the exchange to the conversation,
 // then posts the reply. An answer the model gave none to is the daemon's reply naming the fault
 // and every gh and dispatch write the question's calls ran (faultText); when a model call
 // returned anything, the run's turns and that reply are the exchange it adds
@@ -63,6 +64,12 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 // A model call the provider fails while the project is paused keeps q for the resume
 // (keepForResume), whatever the agent: no reply is recorded, and nothing is appended, posted or
 // passed on.
+//
+// Every model call the loop makes is this one, so it is here that a claim held for OpenAI's
+// cyber-policy refusal (Gate.HeldForCyberPolicy) is refused one: no action the daemon starts by
+// itself may send that session's content to OpenAI again, and an answer from its conversation
+// would. Such a question goes to the controller with the daemon's reply naming the hold, and a
+// decision held on it for a wake goes where an unreleased agent's decision goes (passHeld).
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
 	if err != nil {
@@ -92,6 +99,9 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		l.cfg.Log.Info("answers: the agent's conversation already holds this answer; it is posted, not answered again",
 			"question", q.ID, "session", q.Session, "state", q.State)
 		return l.appended(ctx, q, origin)
+	}
+	if l.cfg.Gate.HeldForCyberPolicy(conv.Token) {
+		return l.passHeld(ctx, q, origin, conv)
 	}
 	// The day's limit is checked before each answer starts, and nothing is reserved: the answers
 	// already running when the day reaches it finish and add their cost, so the day can pass the
@@ -340,6 +350,48 @@ func (l *Loop) decideFault(ctx context.Context, q store.AnswerQuestion, origin O
 	return l.post(ctx, q, origin)
 }
 
+// passHeld ends q, a question to an agent whose claim is held for OpenAI's cyber-policy refusal
+// (Gate.HeldForCyberPolicy), with no model call: the daemon's reply naming the hold is posted and
+// q goes to the controller (decideFault, ReasonHeldForCyberPolicy), and it wakes nobody, since no
+// start of the daemon's own launches a held claim's agent and a wake would end undelivered (the
+// daemon's deliverHeld). A person's decision that Receive held on q for the agent's wake, its
+// claim released then (store.AnswerQuestion.Wake), is passed on first as the decision of an agent
+// that is not released is (Decisions): the agent-decision notice it would have been. Decisions
+// passes a decision once by its id, so a pass that stops between the two passes it again to no
+// effect.
+func (l *Loop) passHeld(ctx context.Context, q store.AnswerQuestion, origin Origin, conv store.AgentConversation) error {
+	if q.Wake {
+		decision, err := heldDecision(q, conv)
+		if err != nil {
+			return fmt.Errorf("read the decision held on %s for its agent's wake: %w", q.ID, err)
+		}
+		if err := l.cfg.Decisions.Decide(ctx, decision); err != nil {
+			return fmt.Errorf("pass on the decision %s of %s: %w", decision.ID, q.ID, err)
+		}
+		q.Wake = false
+	}
+	return l.decideFault(ctx, q, origin, ReasonHeldForCyberPolicy)
+}
+
+// heldDecision is the person's decision q's recorded hand-off carries for conv, read as Classify
+// read it when Receive held it on q (readDecision): Receive holds one on a question only for a
+// Dispatch event that carries a decision.
+func heldDecision(q store.AnswerQuestion, conv store.AgentConversation) (Decision, error) {
+	h, err := intake.DecodeHandoff(q.Handoff)
+	if err != nil {
+		return Decision{}, err
+	}
+	event, err := intake.DispatchOf(h.Envelope)
+	if err != nil {
+		return Decision{}, err
+	}
+	decision, err := readDecision(event, conv)
+	if err != nil {
+		return Decision{}, err
+	}
+	return *decision, nil
+}
+
 // wakes is whether q's agent is given its message through Wakes rather than told a reply the loop
 // would not post as its answer, or passed to the controller: its claim was released when the
 // loop received q with a decision (store.AnswerQuestion.Wake), or is released now that the loop
@@ -412,6 +464,8 @@ func (l *Loop) faultSentence(reason Reason) string {
 		return "My conversation is no longer kept, so I cannot answer from it."
 	case ReasonOverLimit:
 		return fmt.Sprintf("I am over the project's daily limit of $%s for answers.", strconv.FormatFloat(b.DailyUSD, 'f', -1, 64))
+	case ReasonHeldForCyberPolicy:
+		return "My conversation is held since OpenAI refused its content under its cyber policy, so the daemon sends it to no model and I cannot answer from it."
 	}
 	return "I could not answer (" + string(reason) + ")."
 }

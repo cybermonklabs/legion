@@ -54,6 +54,44 @@ func TestAHandoffForAnUnknownSessionIsDropped(t *testing.T) {
 	}
 }
 
+// Receive answers dropped for each hand-off it logs and lets go with nothing recorded, which a
+// replay of a given-up hand-off closes as no fact (intake's replayHandoff): one for a session the
+// daemon's history does not hold, one that asks nothing and carries no decision, and the loop's
+// own answer to an asker whose conversation is no longer kept. A question it records, and a
+// person's decision it passes on that asks nothing besides, are kept, and answer not dropped.
+func TestReceiveAnswersDroppedForAHandoffItRecordsNothingOf(t *testing.T) {
+	r := newRig(t)
+	r.conversation("ses_tester", testerToken, 0)
+	gone := r.conversation("ses_asker", testerToken, 1)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		handoff intake.Handoff
+		dropped bool
+	}{
+		{"a hand-off for a session the history does not hold", messageHandoff("ses_stranger", "m-1", 1, "Who are you?"), true},
+		{"an edit, which asks nothing", dispatchHandoff("ses_tester", bare("comment.edited", person, new("LEGION-9"),
+			map[string]any{"id": "c-6", "issue_key": "LEGION-9", "body": "edited"})), true},
+		{"the loop's own answer to an asker whose conversation is gone", answerHandoff("ses_asker", "ses_tester", "evt-9", "agent.ses_asker.k9",
+			"Plum.\n\n"+AnswerMarker+"k9 -->"), true},
+		{"a question", messageHandoff("ses_tester", "m-2", 1, "Why plum?"), false},
+		{"a decision that asks nothing besides", dispatchHandoff("ses_tester", answeredEvent(35, person, askID, "question", []string{"B"}, nil)), false},
+	} {
+		raw, err := json.Marshal(tc.handoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dropped, err := r.loop.Receive(r.ctx, tc.handoff, raw); err != nil || dropped != tc.dropped {
+			t.Errorf("Receive of %s = dropped %t, %v; want dropped %t", tc.name, dropped, err, tc.dropped)
+		}
+	}
+	if q := r.only(); q.Identity != "dispatch:m-2" || len(r.rec.decisions) != 1 {
+		t.Fatalf("question %+v, decisions %+v; want the question and the decision kept", q, r.rec.decisions)
+	}
+}
+
 // A message to a session answers from that session's conversation, an older one a newer session
 // of the role replaced included; a message to the role answers from the role's newest.
 func TestASessionAnswersFromItsOwnConversationAndARoleFromItsNewest(t *testing.T) {
@@ -598,6 +636,79 @@ func TestOverTheDailyLimitTheDaemonRepliesAndPassesTheQuestionOn(t *testing.T) {
 	q := r.only()
 	if q.State != store.QuestionPassedOn || len(r.rec.passed) != 1 || r.rec.passed[0] != (passed{q.ID, "over_limit", "user:person@example.com", "dispatch://LEGION-9/message/m-1"}) {
 		t.Fatalf("question = %s, passed on %+v; want passed on over_limit with the asker and where", q.State, r.rec.passed)
+	}
+}
+
+// heldReply is the daemon's reply, in the agent's name, to a question its claim's cyber-policy
+// hold leaves unanswered: the hold, and that the question went to the controller.
+const heldReply = "My conversation is held since OpenAI refused its content under its cyber policy, so the daemon sends it to no model " +
+	"and I cannot answer from it. I passed your question to the Legion controller."
+
+// A question to an agent whose claim is held for OpenAI's cyber-policy refusal of its session's
+// content makes no model call: no action the daemon starts by itself may send that content to
+// OpenAI again, and an answer from the conversation would. The daemon replies in the agent's name
+// that the conversation is held, appends nothing, and passes the question to the controller as
+// held_for_cyber_policy. A person's decision that also asks, received while the agent's claim was
+// released and so held on its question for the agent's wake, wakes nothing once the claim is held,
+// since no start of the daemon's own launches a held claim's agent: its question goes to the
+// controller the same way, and its decision to Decisions, once, as the decision of an agent that
+// is not released goes. The control is the same question to the agent of a claim that is not
+// held, which is answered and posted, and passed on to nobody.
+func TestACyberPolicyHeldClaimsQuestionCallsNoModelAndGoesToTheController(t *testing.T) {
+	held := newRig(t)
+	path := held.conversation("ses_tester", testerToken, 0)
+	before := fileContent(t, path)
+	held.gate.hold(testerToken)
+	held.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
+	held.drain()
+	q := held.only()
+	if posts := held.dispatch.posts(); held.answerCount() != 0 || len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), heldReply) {
+		t.Fatalf("after %d model calls, Dispatch posts = %s; want no model call and the daemon's reply naming the hold", held.answerCount(), describe(posts))
+	}
+	if want := (passed{q.ID, string(ReasonHeldForCyberPolicy), "user:person@example.com", "dispatch://LEGION-9/message/m-1"}); q.State != store.QuestionPassedOn ||
+		len(held.rec.passed) != 1 || held.rec.passed[0] != want {
+		t.Fatalf("question = %s, passed on %+v; want it passed on once as %+v", q.State, held.rec.passed, want)
+	}
+	if fileContent(t, path) != before {
+		t.Fatalf("the held claim's conversation changed:\n%s", fileContent(t, path)[len(before):])
+	}
+
+	woken, wokenPath := releasedRig(t)
+	wokenBefore := fileContent(t, wokenPath)
+	woken.receive(dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why did you test A?"))))
+	if q := woken.only(); !q.Wake {
+		t.Fatalf("question = %+v at the hand-off; want the released agent's decision held on its question", q)
+	}
+	woken.gate.set(woken.gate.released, "ses_tester", false)
+	woken.gate.hold(testerToken)
+	woken.drain()
+	q = woken.only()
+	if posts := woken.dispatch.posts(); woken.answerCount() != 0 || len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), heldReply) {
+		t.Fatalf("after %d model calls, Dispatch posts = %s; want no model call and the daemon's reply naming the hold", woken.answerCount(), describe(posts))
+	}
+	if q.State != store.QuestionPassedOn || q.Wake || len(woken.rec.passed) != 1 || woken.rec.passed[0].Reason != string(ReasonHeldForCyberPolicy) ||
+		len(woken.rec.wakes) != 0 {
+		t.Fatalf("question = %s (wake %t), passed on %+v, wakes %+v; want it passed on once as %s, with no wake",
+			q.State, q.Wake, woken.rec.passed, woken.rec.wakes, ReasonHeldForCyberPolicy)
+	}
+	if d := woken.rec.decisions; len(d) != 1 || d[0].ID != "dispatch:34" || !d[0].Answered || d[0].Ref != "dispatch://LEGION-9/ask/"+askID ||
+		d[0].Text != "Selected: B\n\nUse B. Why did you test A?" || d[0].Conversation.Session != "ses_tester" {
+		t.Fatalf("decisions = %+v; want the person's answer passed on once, as the decision of an agent that is not released", d)
+	}
+	if fileContent(t, wokenPath) != wokenBefore {
+		t.Fatalf("the held claim's conversation changed:\n%s", fileContent(t, wokenPath)[len(wokenBefore):])
+	}
+
+	control := newRig(t)
+	control.conversation("ses_tester", testerToken, 0)
+	control.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
+	control.drain()
+	if q := control.only(); q.State != store.QuestionPosted || control.answerCount() != 1 || len(control.rec.passed) != 0 {
+		t.Fatalf("for a claim that is not held: question = %s after %d model calls, passed on %+v; want it answered once and posted",
+			q.State, control.answerCount(), control.rec.passed)
+	}
+	if posts := control.dispatch.posts(); len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), "Plum, from Why plum?") {
+		t.Fatalf("for a claim that is not held: Dispatch posts = %s; want the answer", describe(posts))
 	}
 }
 

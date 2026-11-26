@@ -25,21 +25,30 @@ body: |-
   not that head.
 
   A question the loop cannot answer, or a request for work, goes to the controller once
-  (`agent-question`, and `questionsForController` in `legion state`). A person's decision on a
+  (`agent-question`, and `questionsForController` in `legion state`). So does a question to an
+  agent whose claim is held for OpenAI's cyber-policy refusal of its session's content
+  (`held_for_cyber_policy`), for which the loop calls no model. A person's decision on a
   stopped agent's ask goes to the running architect, else to the controller (`agent-decision`).
   The Envoy listener hands the message of a claim the daemon released (an idle release of its
   issue pod, or a project's pause) to the daemon as it hands any stopped agent's, with no wake.
   The loop answers such an agent's question from its conversation, and a question it answered
   wakes nothing. The loop gives the agent everything else that reaches it through one outbox row
   (`agent_message`) that wakes the claim and delivers the message once the woken session holds
-  its role, held during a pause and delivered after the resume: a person's decision on its ask, a
-  message that asks nothing, a person's resolution of or answer to an ask the agent follows but
-  did not open, a reply of kind `none`, and every reply the controller would hear of, for which
-  the loop posts nothing, appends nothing and tells the controller nothing. A person's review of
-  the agent's own approval request wakes nothing, since the design gate relays it to the
-  architect as the document's review. Where the question's calls already ran a `gh` or `dispatch`
-  write, the row names each after the message, so the agent does not repeat one. A decision that
-  also asks is answered, appended and posted first, and its row then says where the answer is.
+  its role, held during a pause and delivered after the resume: a person's decision on its ask;
+  every other Dispatch event that reached it, asks it nothing and is no act of its own session,
+  such as a message, comment or reply, an edit or resolution of one, the answer to, a reply on, or
+  the resolution or edit of an ask the agent follows but did not open, which the row names as an
+  ask it follows and not as its own, a hand-back, a claim, an issue event or a delivery receipt; a
+  message of a source no agent answers, such as a GitHub notification; a reply of kind `none`; and
+  every reply the controller would hear of, for which the loop posts nothing, appends nothing and
+  tells the controller nothing. A person's review of the agent's own approval request wakes
+  nothing, since the design gate relays it to the architect as the document's review, and neither
+  does the agent's own reply or its own hand-back of its approval request. Where the question's
+  calls already ran a `gh` or `dispatch` write, the row names each after the message, so the
+  agent does not repeat one. A decision that also asks is answered, appended and posted first, and
+  its row then says where the answer is. Once the claim is held for OpenAI's cyber-policy refusal,
+  such a decision wakes nothing and goes on as the `agent-decision` notice it would have been for
+  an agent that was not released.
 
   The daemon reads the messages the listener hands it through the durable consumer
   `legion-go-<project>-answers`, and a message whose handling keeps failing is retried, given up

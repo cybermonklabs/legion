@@ -27,9 +27,13 @@ const releasedAgentSource = string(record.OutboxKindAgentMessage)
 // A redelivery, and a restart's, finds the mark and queues nothing more. The outbox's records
 // wake the outbox once the transaction commits (projectRecords).
 //
-// The message is the agent's own: a person's decision on its ask, a message that asks it nothing,
-// a question whose reply the loop does not post, or the loop's own answer to it as an asker. So
-// the architect and the controller are told nothing of it, and the woken agent acts on it.
+// The message is the agent's own: a person's decision on its ask; every other Dispatch event that
+// reached it, asks it nothing and is no act of its own session, such as a message, comment or
+// reply, an edit or resolution of one, or the answer to, a reply on, or the resolution or edit of
+// an ask it follows but did not open (answerloop.Verdict.ForAgent); a message of a source no agent
+// answers; a question whose reply the loop does not post; or the loop's own answer to it as an
+// asker. So the architect and the controller are told nothing of it, and the woken agent acts on
+// it.
 type releasedWakes struct {
 	outbox *outbox
 	now    func() time.Time
