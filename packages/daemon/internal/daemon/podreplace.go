@@ -55,8 +55,9 @@ type replacementRecord struct {
 	heldRead
 }
 
-// heldRead is the read of the issue's workspace a record holds: what it found, or Failed, the error
-// it failed with as the store keeps a far side's error (storetext.FarSideErrorEnds).
+// heldRead is the stored form of the read of the issue's workspace a record holds: the fields its
+// JSON carries, what the read found, or Failed, the error it failed with as the store keeps a far
+// side's error (storetext.FarSideErrorEnds). work decodes it into a recordedRead.
 type heldRead struct {
 	Head    string   `json:"head,omitempty"`
 	Changed bool     `json:"changed,omitempty"`
@@ -135,8 +136,8 @@ func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod
 	return taken
 }
 
-// recordedRead is a read of the issue's workspace as a record holds it (replacementRecord.work):
-// what it found, or the error it failed with.
+// recordedRead is a record's read decoded from its stored form (heldRead.work): the work it found,
+// or the error it failed with, as a notice is weighed (weight) and told.
 type recordedRead struct {
 	work runtime.WorkspaceWork
 	err  error
@@ -174,10 +175,10 @@ func tellingRecord(records []store.PodReplacement) (at int, read recordedRead) {
 		if json.Unmarshal(r.Record, &rec) != nil {
 			continue
 		}
-		var held recordedRead
-		held.work, held.err = rec.work(r.PodUID)
-		if held.weight() > 0 && held.weight() >= read.weight() {
-			at, read = i, held
+		var decoded recordedRead
+		decoded.work, decoded.err = rec.work(r.PodUID)
+		if decoded.weight() > 0 && decoded.weight() >= read.weight() {
+			at, read = i, decoded
 		}
 	}
 	return at, read
