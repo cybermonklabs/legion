@@ -313,7 +313,7 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if head == "" || pr.CheckedHead != head {
 		return nil
 	}
-	runs, statuses := newObservations(before, pr, head)
+	runs, statuses := newObservations(record.PullRequest{}, pr, head)
 	if len(runs) == 0 && len(statuses) == 0 {
 		return nil
 	}
