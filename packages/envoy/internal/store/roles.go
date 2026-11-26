@@ -197,8 +197,10 @@ type roleScanSeams struct {
 	// watch wraps the role claim bucket's handle every run reads, so a test paces or stalls the
 	// runs' watches.
 	watch func(bus.KeyValue) bus.KeyValue
-	// run is called as each run starts, with the run's number, the first run's 1.
-	run func(n int)
+	// run is called as each run starts, with the run's number, the first run's 1, and the scan's
+	// deadline (roleClaimScan.deadline), so a test measures the scan's bounds from the one clock
+	// read the scan took for them rather than from a read of its own, which comes later.
+	run func(n int, deadline time.Time)
 	// handed is called on a run's own goroutine after each claim the run is handed, with the run's
 	// number and how many claims it has been handed, so a test acts at a point of a run. A run the
 	// scan ended can still call it while its teardown finishes (roleClaimScan.run).
@@ -371,7 +373,7 @@ type roleClaimRun struct {
 // reconnect that ends that state can raise the count before the run starts.
 func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 	if s.seams.run != nil {
-		s.seams.run(n)
+		s.seams.run(n, s.deadline)
 	}
 	var handed func(int)
 	if s.seams.handed != nil {

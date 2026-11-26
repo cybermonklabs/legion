@@ -618,6 +618,12 @@ func idleTimer(t *testing.T, fire func()) *time.Timer {
 // scanProbe counts the role claim scan's runs and records when the first started, when a run was
 // last handed a claim and when the scan first noticed a reconnect in each run, through the scan's
 // test seams, and runs onRun as each run starts.
+//
+// When the first run started is the scan's own reading, the deadline it hands the run seam less
+// roleClaimScanDeadline, and not a time.Now() of the probe's: the probe's read comes after the
+// scan's, so a bound measured from it ends early by the time between the two. Measured that way,
+// a start that failed at the deadline read as failing 1m9.99994128s after the first run started,
+// 60 µs inside the 70 s the scan had waited (envoy-go-race, job 139617513406).
 type scanProbe struct {
 	onRun func(run int)
 
@@ -633,11 +639,11 @@ type scanProbe struct {
 func (p *scanProbe) seams(watch func(bus.KeyValue) bus.KeyValue, handed func(run, claims int)) roleScanSeams {
 	return roleScanSeams{
 		watch: watch,
-		run: func(n int) {
+		run: func(n int, deadline time.Time) {
 			p.mu.Lock()
 			p.runs++
 			if n == 1 {
-				p.firstRun = time.Now()
+				p.firstRun = deadline.Add(-roleClaimScanDeadline)
 			}
 			p.mu.Unlock()
 			if p.onRun != nil {
