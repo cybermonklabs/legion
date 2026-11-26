@@ -27,7 +27,10 @@
 # ports; (f) each instance's broker trusts the dev-oidc-issuer that instance started, lists
 # its dev caller, its exchange account and its read entry (BROKER_EXCHANGE_READ_ACCOUNTS),
 # exports the caller token that issuer wrote, has that issuer write the read entry's pod token
-# at the exchange's audience, names that token's file in its banner, and stops the
+# at the exchange's audience, names that token's file in its banner, gives its broker the two job
+# entries (BROKER_EXCHANGE_JOB_ACCOUNTS and BROKER_EXCHANGE_JOB_WORKFLOWS) with that issuer as
+# the GitHub issuer, has the issuer write the job pod's token and the workflow run's request
+# token, names both files and the request URL in its banner, and stops the
 # issuer on exit; (g) that same issuer serves the code flow for the broker's own sign-in
 # client and signs the approver in, the broker's BROKER_SIGNIN_* naming that issuer, client,
 # domain and a 0600 secret file in the run's workdir, and the banner names the broker's own
@@ -143,8 +146,9 @@ chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake go: "go build -o <path> ./cmd/<pkg>" installs a stub executable at <path> instead of
 # compiling. The client stubs are never run by dev-broker.sh (it only prints their directory); the
-# broker stub logs the issuer, the callers, the exchange's account and read entries, the service
-# logins, the services, the pod registrars, the sign-in client and the metrics address it was
+# broker stub logs the issuer, the callers, the exchange's account, read and job entries, the
+# GitHub issuer, the service logins, the services, the pod registrars, the sign-in client and the
+# metrics address it was
 # configured with, then the JSON "broker listening" line with its addr field, exactly like the
 # real cmd/cipherd does once it binds — using its own PID as a stand-in for the kernel-assigned
 # port a real Listen would report, since two concurrently running stub processes always have
@@ -154,7 +158,9 @@ chmod +x "${fake_bin_dir}/psql"
 # binds a proxy only for a deployment whose profiles hold one, and then stays alive as the
 # backgrounded "server" process dev-broker.sh waits on and kills during cleanup. The
 # dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the mode of the
-# secret file it would read, its callback and the --sign-in-as person, then logs
+# secret file it would read, its callback and the --sign-in-as person, writes each
+# --actions-token's request token file and logs the line the real one logs for it, its request
+# URL on the issuer's own address, then logs
 # "issuer listening url=..." as the real one does, its own PID standing in for its port the
 # same way, and stays alive until cleanup kills it. The dev-airlock-stands stub serves its stands
 # and its front mode alike (below). Each build names its package in the caller's own
@@ -182,7 +188,7 @@ DEVRELAY
   */dev-oidc-issuer)
     cat >"$out" <<'ISSUER'
 #!/usr/bin/env bash
-client="" secret_file="" redirect_uri="" sign_in_as=""
+client="" secret_file="" redirect_uri="" sign_in_as="" actions_runs=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
@@ -203,6 +209,19 @@ while [[ $# -gt 0 ]]; do
       redirect_uri="${secret_and_uri#*=}"
       ;;
     --sign-in-as) sign_in_as="$2" ;;
+    --actions-token)
+      # <repository>=<workflow path>=<ref>=<request token file>, and the real issuer's own line
+      # for it, which dev-broker.sh reads the request URL out of.
+      actions_runs=$((actions_runs + 1))
+      repository="${2%%=*}"
+      rest="${2#*=}"
+      workflow="${rest%%=*}"
+      rest="${rest#*=}"
+      ref="${rest%%=*}"
+      request_token_file="${rest#*=}"
+      printf 'fake-request-token-for-%s\n' "$repository" >"$request_token_file"
+      echo "dev-oidc-issuer: ${request_token_file} holds the request token of ${repository}/${workflow}@${ref}'s Actions run (request URL http://127.0.0.1:$$/_actions/token/${actions_runs}?api-version=2.0)" >&2
+      ;;
     *)
       echo "fake dev-oidc-issuer: unexpected argument $1" >&2
       exit 2
@@ -295,6 +314,7 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} pod-registrars=${BROKER_POD_REGISTRARS:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
+echo "fake broker jobs: job-accounts=${BROKER_EXCHANGE_JOB_ACCOUNTS:-} job-workflows=${BROKER_EXCHANGE_JOB_WORKFLOWS:-} github-issuer=${BROKER_EXCHANGE_GITHUB_ISSUER:-} github-audience=${BROKER_EXCHANGE_GITHUB_AUDIENCE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
@@ -666,6 +686,40 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s has its issuer write the read entry'"'"'s pod token for the exchange and names that file in its banner\n' "$label"
+
+  # The two job entries. The job pod's account is a pod account of its own, whose token the
+  # issuer mints at the exchange's audience into the workdir's job-token; the workflow's run asks
+  # the issuer, standing in for GitHub, for its token with the request token the issuer wrote into
+  # actions-request-token, at the request URL the issuer logged. The broker is given both entries,
+  # each with the session it fixes, and that same issuer as GitHub's, with the audience the run
+  # asks for; the banner names both files and the request URL the issuer logged.
+  local job_account="system:serviceaccount:example-ns:example-job"
+  local job_token="${workdir}/job-token"
+  local request_token="${workdir}/actions-request-token"
+  local job_run="example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main"
+  local request_url="${issuer}/_actions/token/1?api-version=2.0"
+  if [[ "$(cat "$job_token" 2>/dev/null)" != "fake-token-for-${job_account}" ]] \
+    || ! grep -qF "dev-oidc-issuer: ${job_token} holds ${job_account}'s token for audience legion-broker-exchange (pod pod-uid-of-${job_account##*:})" "$log_file" \
+    || [[ "$(cat "$request_token" 2>/dev/null)" != "fake-request-token-for-example-org/example-repo" ]] \
+    || ! grep -qF "dev-oidc-issuer: ${request_token} holds the request token of ${job_run}'s Actions run (request URL ${request_url})" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's issuer does not write the job pod's token at the exchange's audience into ${job_token} and the workflow run's request token into ${request_token}" >&2
+    exit 1
+  fi
+  if ! grep -qxF "fake broker jobs: job-accounts=${job_account}=EXAMPLE=example-job-session job-workflows=example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=public=example-workflow-session github-issuer=${issuer} github-audience=legion-broker-github" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker is not given the job pod entry, the job workflow entry and its own issuer as GitHub's (want BROKER_EXCHANGE_GITHUB_AUDIENCE=legion-broker-github)" >&2
+    exit 1
+  fi
+  if ! grep -qxF "  job token:           ${job_token}  (${job_account}'s pod, audience legion-broker-exchange: a job entry, BROKER_EXCHANGE_JOB_ACCOUNTS, that exchanges under example-job-session for a token naming that account as its service, no person, and the project EXAMPLE)" "$log_file" \
+    || ! grep -qxF "  actions request URL: ${request_url}  (ACTIONS_ID_TOKEN_REQUEST_URL of ${job_run}'s run, served by dev-oidc-issuer in GitHub's place)" "$log_file" \
+    || ! grep -qxF "  actions request token: ${request_token}  (ACTIONS_ID_TOKEN_REQUEST_TOKEN of that run)" "$log_file" \
+    || ! grep -qF "  github audience:     legion-broker-github  (" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not name the job token file, the actions request URL and token file, and the GitHub audience" >&2
+    exit 1
+  fi
+  printf 'PASS: %s gives its broker both job entries with its own issuer as GitHub'"'"'s, has that issuer write the job pod'"'"'s token and the run'"'"'s request token, and names both files and the request URL in its banner\n' "$label"
 
   # The registered service's two halves. A stack that logs the daemon account in
   # (BROKER_SERVICE_LOGINS) and binds no pod account to that service (BROKER_SERVICES) serves no
