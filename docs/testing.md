@@ -260,7 +260,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 125 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
