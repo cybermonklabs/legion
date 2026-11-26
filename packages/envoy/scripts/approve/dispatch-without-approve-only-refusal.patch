@@ -1,11 +1,11 @@
---- a/packages/envoy/internal/dispatch/api/server.go	2026-11-25 10:48:15.855846727 +0000
-+++ b/packages/envoy/internal/dispatch/api/server.go	2026-11-25 10:49:11.831409338 +0000
-@@ -1658,7 +1658,7 @@
- // carried and resolves nothing of its own, for the reason refuseReadOnlyToken gives, and carries no
- // WWW-Authenticate challenge, since no scope makes such a route the token's to call.
- func refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
--	if listed {
-+	if true { // approve-check's control build: the approve-only refusal is removed
- 		return next
- 	}
- 	return func(w http.ResponseWriter, r *http.Request) {
+--- a/packages/envoy/internal/dispatch/api/server.go	2026-11-26 21:30:00.000000000 +0000
++++ b/packages/envoy/internal/dispatch/api/server.go	2026-11-26 21:30:00.000000000 +0000
+@@ -1716,7 +1716,7 @@
+ 			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal)
+ 			return
+ 		}
+-		if !approveListed && approveOnlyRequest(r) {
++		if false && !approveListed && approveOnlyRequest(r) { // approve-check's control build: the approve-only refusal is removed
+ 			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
+ 			return
+ 		}
