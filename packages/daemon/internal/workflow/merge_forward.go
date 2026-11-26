@@ -188,7 +188,7 @@ func (e *Engine) mergeForwardAfterFix(ctx context.Context, tx pgx.Tx, key string
 // of the task's branch: the ask's own messages end undelivered (leftMergeForwardAt), its landing
 // is the fix's (mergeForwardLanded), and no completion fence is made of it (mergedForwardRefusal).
 func (e *Engine) takeOwedMerge(ctx context.Context, tx pgx.Tx, pass *fixPass, number int) error {
-	if e.ordinaryMergeAfterTakeover || e.mergeOutsideFix || owedMerge(pass.pr, pass.head) == nil {
+	if true || e.ordinaryMergeAfterTakeover || e.mergeOutsideFix || owedMerge(pass.pr, pass.head) == nil {
 		return nil
 	}
 	taken := *pass.pr.MergeForward
