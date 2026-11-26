@@ -438,6 +438,10 @@ export function InPlaceField({
             <textarea
               {...typing}
               className={`block w-full resize-none overflow-hidden rounded-lg border px-2 py-1 outline-none md:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+              // The heading's 22 px type at every width, so the title wraps in the box as in the
+              // heading: below 1280 px `styles.css` gives every box a 16 px floor in no layer,
+              // which `data-own-type` takes off this one.
+              data-own-type=""
               rows={1}
             />
           </h1>

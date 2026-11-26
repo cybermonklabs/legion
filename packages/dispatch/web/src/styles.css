@@ -396,19 +396,26 @@ html:has([data-issue-page]) {
   textarea {
     font-size: 1rem;
   }
-  /* The new issue page's header draws its status and its title's editor in its own type at
-     every width, as the prototype does: the status at 12 px, sized to its value, so the header
-     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
-     waits, and the title's editor at the heading's own size, which it must match so ending an
-     edit moves nothing. This file's rules are in no cascade layer and Tailwind's are, so
-     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
-     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields.
-     The rule takes no `html:has()` scope, because under one each change of the page recalculated
-     the style of every control of the page (decision 176); its `[data-issue-page]` ancestor
-     keeps it to the new page. */
+  /* Some boxes are drawn in their own type at every width, which they keep below 1280 px. The
+     new issue page's header draws its status and its title's editor so, as the prototype does:
+     the status at 12 px, sized to its value, so the header at 390 px holds to eight lines and
+     250 px, nine lines and 280 px while an approval request waits, and the title's editor at the
+     heading's own size, which it must match so ending an edit moves nothing. A priority's title
+     box (`InPlaceField`'s `closed="heading"`) and today's issue page's title box
+     (`features/issue/IssueHeader.tsx`) are drawn in their heading's 22 px type, so a title is
+     written in the size it is read in, and a priority's wraps in its box as in its heading. Each
+     of the two carries `data-own-type`, an attribute that is there for this rule alone; only a
+     box whose own type is 16 px or more carries it, since the floor above keeps a phone from
+     zooming into a smaller one. This file's rules are in no cascade layer and Tailwind's are, so
+     `revert-layer` gives back the size the box's own classes set. A menu or a dialog a header
+     control opens keeps the 1rem floor, so a phone does not zoom into its fields. The rule takes
+     no `html:has()` scope, because under one each change of the page recalculated the style of
+     every control of the page (decision 176): the `[data-issue-page]` ancestor keeps the
+     header's part to the new page, and `data-own-type` is on the box itself. */
   [data-issue-page]
     [data-issue-header]
-    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *),
+  :is(input, textarea)[data-own-type] {
     font-size: revert-layer;
   }
 }

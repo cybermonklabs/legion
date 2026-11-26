@@ -589,6 +589,10 @@ export function IssueHeader({
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
                 className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                // The heading's 22 px type at every width, so the title is written in the size it
+                // is read in: below 1280 px `styles.css` gives every input a 16 px floor in no
+                // layer, which `data-own-type` takes off this one.
+                data-own-type=""
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
