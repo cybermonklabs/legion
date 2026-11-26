@@ -166,9 +166,9 @@ step through retro, register with `register_gate` each step your addressing line
 line names `spec` and not `criteria`, register a root's Verification document as `criteria` first.
 Register each on this issue's own document for that step. The tree's work waits for
 those gates, and when a gate's `design-approved` arrives, start nothing. In `merging` the work is
-already through every gate and may have merged, so register no document and
-ask no human to approve one: the merge closes the issue, and the production check after the close
-is the tester's, on the pull request, where the project opens one.
+already through every gate and may have merged, so register no document and ask no human to approve
+one. The merge puts the issue in `verifying`. Its first fresh read opens the production check in
+the tester's session, where the project opens one. The issue closes only after that check passes.
 
 Necessary work remains your responsibility until it is complete, and deferral is not allowed.
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.

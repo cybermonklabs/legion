@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -787,43 +786,5 @@ func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 		if !strings.Contains(text, token) {
 			t.Errorf("the composed %s prompt, the retro's, omits %s", retro, token)
 		}
-	}
-}
-
-// A production check opens at the issue's close, which comes at the merge or, for a merge that
-// waits on the issues beneath it, later, and its bound is counted from that close. So in the
-// composed prompt of each role a look reaches, the tester's and the implementer's, a clause naming
-// `production_check_hours` counts it from the close, never from the merge; a clause saying the
-// session is handed the check task names the close before it; and no clause says the merge closes
-// the issue, since in these two prompts the close is the moment the check task is handed and the
-// role's work ends. The architect's, the merger's and the reviewer's "the merge closes" name only
-// what causes the close, which is true, and no prompt this test reads holds them. This shows the
-// text is loaded, never that a role follows it.
-func TestTheComposedPromptsHandTheCheckAtTheClose(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	theClose := regexp.MustCompile(`\bclose\b`)
-	boundFromTheMerge := regexp.MustCompile("production_check_hours`? (after|from|since) the merge")
-	type text struct{ name, body string }
-	var texts []text
-	for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
-		texts = append(texts, text{"the composed " + string(role) + " prompt", composedText(t, composer, role, false)})
-	}
-	for _, tc := range texts {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, clause := range clauses(tc.body) {
-				if strings.Contains(clause, "`production_check_hours`") && (!theClose.MatchString(clause) || boundFromTheMerge.MatchString(clause)) {
-					t.Errorf("%s counts the check's bound from something other than the issue's close: %q", tc.name, clause)
-				}
-				if before, _, found := strings.Cut(clause, "hands this session"); found && !theClose.MatchString(before) {
-					t.Errorf("%s hands this session the check task at something other than the issue's close: %q", tc.name, clause)
-				}
-				if strings.Contains(strings.ToLower(clause), "merge closes") {
-					t.Errorf("%s says the merge closes the issue, which puts the check's hand-off and the end of this role's work at the merge, before the close for a merge that waits on the issues beneath it: %q", tc.name, clause)
-				}
-			}
-		})
 	}
 }
