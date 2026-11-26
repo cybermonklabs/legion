@@ -9,14 +9,15 @@ import {
   NODE_REFERENCES_WORDS,
   sentenceCase,
 } from "../web/src/features/issue-page/page-words";
-import { buildIssuePath } from "../web/src/features/refs/routes";
+import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { baseUrl, createComment, createIssue, createProject, userHeaders } from "./api";
 import { marginSection } from "./issue-page-h";
 import type { ApiRequests } from "./traffic";
 
 /**
  * What the rows of `e2e/issue-page-z.e2e.ts` seed and read: a command bar run that changed an
- * issue, the run's row in Details' Referenced by, and the run's own page.
+ * issue, the run's row in Details' Referenced by, the run's own page, and the reads that name
+ * what a run's words cite.
  *
  * This file is those rows' own: it imports `e2e/issue-page-h.ts` for Details' sections, its rows
  * open the page through `e2e/issue-page.ts`, and it copies none of their readers.
@@ -165,6 +166,72 @@ export async function seedRunIssue(): Promise<RunSeed> {
   };
 }
 
+/** The words of the three comments the run of `seedRunReferences` cites, each with no markdown
+ *  character, so the page names each comment by its words. */
+const CITED_WORDS = ["Warm the cache", "Check the logs", "Ship the build"] as const;
+
+/** The question the run of `seedRunReferences` asks, around the three references it cites, in
+ *  words with no markdown character, so Details draws it as typed but for each reference, which it
+ *  names. */
+function citingQuestion(cited: readonly string[]): string {
+  return `Should ${cited.join(" then ")} come before the release`;
+}
+
+/** The comment that run writes, around the same three references: one sentence with no markdown
+ *  character, under a line's 100 characters once named (`FIRST_LINE_LIMIT`), so the run's page
+ *  draws it whole as the comment's line. */
+function citingComment(cited: readonly string[]): string {
+  return `Ordered as ${cited.join(" then ")} for the release`;
+}
+
+/** What `seedRunReferences` wrote. */
+export interface RunReferencesSeed {
+  /** The `dispatch://<KEY>/comment/<id>` addresses of the three comments the run cites. */
+  readonly cited: readonly string[];
+  /** Those comments' ids, in the same order: what each comment's own read names. */
+  readonly ids: readonly string[];
+  /** The key of the issue the run changed. */
+  readonly key: string;
+  /** The run's comment as the run's page draws its line: each address named by its comment's
+   *  words. */
+  readonly namedComment: string;
+  /** The run's question as Details draws it: each address named by its comment's words. */
+  readonly namedQuestion: string;
+  /** The run's id. */
+  readonly run: string;
+}
+
+/**
+ * A run whose question and whose comment cite the same three comments, as alice: she opens an
+ * issue, opens a second issue holding three comments of words alone, and then asks the command bar
+ * a question that cites each of the three by its address. At once, inside the run's 30 s window,
+ * the run changes the first issue's labels, so the run is a row of that issue's Referenced by, and
+ * writes on the second issue a comment that cites the same three addresses, so its line on the
+ * run's page names them. The comment is on the second issue, not the first: the issue page's own
+ * names read asks for every reference its tree's comments cite (`useIssueTree.ts`'s
+ * `treeReferences`) and publishes the answers, so on the first issue the comment would have the
+ * issue's load name the three, and Details' run rows would then read none of them.
+ */
+export async function seedRunReferences(): Promise<RunReferencesSeed> {
+  await createProject({ key: PROJECT, name: "Core" });
+  const issue = await createIssue({ project: PROJECT, title: "Release checklist" });
+  const holder = await createIssue({ project: PROJECT, title: "Release steps" });
+  const ids: string[] = [];
+  for (const body of CITED_WORDS) ids.push((await createComment(holder.key, { body })).id);
+  const cited = ids.map((id) => buildDispatchReference({ id, key: holder.key, kind: "comment" }));
+  const run = await runAs("alice", citingQuestion(cited), PROJECT);
+  await patchIssueInRun(issue.key, run.id, { labels: FIRST_LABELS }, "alice");
+  await commentInRun(holder.key, run.id, citingComment(cited), "alice");
+  return {
+    cited,
+    ids,
+    key: issue.key,
+    namedComment: citingComment(CITED_WORDS),
+    namedQuestion: citingQuestion(CITED_WORDS),
+    run: run.id,
+  };
+}
+
 /** The address the run's page reads its run at (`run-page/run-page.ts`'s `runAddress`). */
 export function runReference(run: string): string {
   return `dispatch://interaction/${run}`;
@@ -274,6 +341,31 @@ export function referenceReads(traffic: ApiRequests): ReferenceRead[] {
       const query = new URL(path, baseUrl).searchParams;
       return { kind: query.get("kind"), to: query.get("to") };
     });
+}
+
+/** The route of the batched read of reference targets (`api.getReferenceTargets`), which names
+ *  each reference it reads in a `ref` of its query. */
+const REFERENCE_TARGETS_ROUTE = "/api/v1/reference-targets";
+
+/** For each batched read of reference targets `traffic` saw that names any of `addresses`, in the
+ *  order sent, the ones among `addresses` it names, in their order: one entry per such request. */
+export function targetReadsNaming(traffic: ApiRequests, addresses: readonly string[]): string[][] {
+  return traffic.requests.flatMap(({ path, route }) => {
+    if (route !== REFERENCE_TARGETS_ROUTE) return [];
+    const named = new URL(path, baseUrl).searchParams.getAll("ref");
+    const held = addresses.filter((address) => named.includes(address));
+    return held.length === 0 ? [] : [held];
+  });
+}
+
+/** The id of each comment among `ids` that a read of the comment alone (`api.getComment`,
+ *  `GET /api/v1/comments/{id}`) `traffic` saw names, one per request, in the order sent. */
+export function commentReads(traffic: ApiRequests, ids: readonly string[]): string[] {
+  return traffic.requests.flatMap(({ method, path }) => {
+    if (method !== "GET") return [];
+    const { pathname } = new URL(path, baseUrl);
+    return ids.filter((id) => pathname === routeUrl("/api/v1/comments/{id}", { id }));
+  });
 }
 
 /** The route of the issue's tree read (`GET /api/v1/issues/{key}/tree`), as `apiRoute` groups its

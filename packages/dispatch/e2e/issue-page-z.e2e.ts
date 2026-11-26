@@ -17,6 +17,7 @@ import { DESKTOP } from "./issue-page-g";
 import { marginSection } from "./issue-page-h";
 import { withIssuePage } from "./issue-page-option";
 import {
+  commentReads,
   follows,
   listedEdgesOf,
   listedRowsOf,
@@ -32,6 +33,8 @@ import {
   runReference,
   runRowsOf,
   seedRunIssue,
+  seedRunReferences,
+  targetReadsNaming,
   treeReadFailure,
 } from "./issue-page-z";
 import { expect, test } from "./test";
@@ -42,13 +45,14 @@ import { asUser } from "./users";
  * A command bar run that changed an issue is a row of its asker's Referenced by in Details, and
  * the run's own page at `/runs/<id>` is its asker's alone.
  *
- * Both rows seed the run through the server (`seedRunIssue`, `e2e/issue-page-z.ts`) and read it
- * on the real stack. The run's writes carry its header (`GOING_RUN_HEADER`), which links the
- * issue to the run. The tree read with no view (`GET /api/v1/issues/{key}/tree`) answers the run
- * to its asker alone, and Details draws it from that read as a row of the asker's Referenced by.
- * The run's page reads the run by its address
+ * Every row seeds the run through the server (`seedRunIssue` and `seedRunReferences`,
+ * `e2e/issue-page-z.ts`) and reads it on the real stack. The run's writes carry its header
+ * (`GOING_RUN_HEADER`), which links the issue to the run. The tree read with no view
+ * (`GET /api/v1/issues/{key}/tree`) answers the run to its asker alone, and Details draws it from
+ * that read as a row of the asker's Referenced by. The run's page reads the run by its address
  * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`), which the server
- * answers to the asker alone.
+ * answers to the asker alone. Details and the run's page each name what a run's words cite in one
+ * batched read of reference targets (`GET /api/v1/reference-targets`).
  */
 
 // SLOW(>=2s): three issues, a run and its three writes seeded, then four loads of the issue:
@@ -313,5 +317,87 @@ test("the run's page is its asker's alone", async ({ browser }) => {
     } finally {
       await today.close();
     }
+  });
+});
+
+// SLOW(>=2s): two issues, three comments, a run and its two writes seeded, then two loads in
+// alice's context: the issue's on Conversation, with Details and its Referenced by opened, and the
+// run's page.
+// A run's question and the line of the comment it wrote name the three comments they cite by their
+// words, each surface reading the three in one batched read of reference targets (decision 515)
+// and none in a read of the comment alone (`GET /api/v1/comments/{id}`), which the code before
+// that decision sent for each comment on each surface. Two choices keep each surface's batch its
+// own. The run writes its comment on the second issue (`seedRunReferences`): the issue page's own
+// tree read publishes the names of what its comments cite, so a comment on the issue whose Details
+// is read would have the load name the three, and the run's row would read none of them; the row
+// asserts that the load names none. And the row loads the address of the run's row's link, after
+// it asserts that address, rather than pressing the link: a move inside the app keeps the query
+// cache, and the run's page asks for the same three addresses under the key of the batch Details
+// read, so it would send no read of its own.
+test("a run's references are named in one batched read, on Details and on the run's page", async ({
+  browser,
+}) => {
+  await phase(browser, seedRunReferences, async (page, seeded) => {
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, buildIssuePath({ key: seeded.key, kind: "conversation" }));
+    await expectLoadSettled(traffic);
+    expect(
+      targetReadsNaming(traffic, seeded.cited),
+      "the issue's load read the names of the comments the run cites"
+    ).toEqual([]);
+    traffic.reset();
+    await openDetails(page);
+    await referencesControl(page).click();
+    const runRow = runRowsOf(page);
+    await expect(runRow.getByRole("link"), `the run's row reads ${RUN_WORD}`).toHaveText([
+      RUN_WORD,
+    ]);
+    await expect(
+      runRow,
+      "the run's row does not name each comment its question cites by the comment's words"
+    ).toContainText(seeded.namedQuestion);
+    await expect(runRow, "the run's row draws an address its question cites").not.toContainText(
+      "dispatch://"
+    );
+    await expectLoadSettled(traffic);
+    expect(
+      commentReads(traffic, seeded.ids),
+      "Details read a comment the run cites by a read of its own"
+    ).toEqual([]);
+    expect(
+      targetReadsNaming(traffic, seeded.cited),
+      "Details did not name the three comments in one batched read"
+    ).toEqual([seeded.cited]);
+
+    const address = buildRunPath(seeded.run);
+    await expect(runRow.getByRole("link")).toHaveAttribute("href", address);
+    traffic.reset();
+    await page.goto(address);
+    const changed = issuePage(page).getByRole("region", {
+      exact: true,
+      name: RUN_PAGE_WORDS.what_changed,
+    });
+    await expect(
+      changed.getByRole("listitem").filter({ hasText: seeded.namedComment }),
+      "the run's page does not name each comment the run's comment cites by the comment's words"
+    ).toHaveCount(1);
+    await expect(
+      changed,
+      "the run's page draws an address the run's comment cites"
+    ).not.toContainText("dispatch://");
+    await expectLoadSettled(traffic);
+    const reference = runReference(seeded.run);
+    expect(
+      referenceReads(traffic).filter(({ to }) => to === reference),
+      "the run's page did not read its run once, by its address and its kind"
+    ).toEqual([{ kind: "changed_by_run", to: reference }]);
+    expect(
+      commentReads(traffic, seeded.ids),
+      "the run's page read a comment the run cites by a read of its own"
+    ).toEqual([]);
+    expect(
+      targetReadsNaming(traffic, seeded.cited),
+      "the run's page did not name the three comments in one batched read"
+    ).toEqual([seeded.cited]);
   });
 });
