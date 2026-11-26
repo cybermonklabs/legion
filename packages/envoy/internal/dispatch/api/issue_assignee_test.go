@@ -475,15 +475,16 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 }
 
 // GET /whoami answers every caller the OAuth scopes its own credential holds, which is what
-// decides the routes it may call (gateRouteScopes): both for a person at a browser, the set its own
-// row names for a personal token, none at all for the two credentials a deployment
-// configures rather than a person, and legion-status alone for a Legion daemon's own broker
-// token, whose broker granted it. A named broker token that names a person and no project holds
-// none, even when its answer holds legion-status: Dispatch reads that scope only on a token
-// scoped to one project. A credential holding none is answered an empty array and
-// never null, so a reader need not tell "this credential holds no scope" from "this build does
-// not say". A personal token holding the person scope is still kind `agent`, since the kind
-// names the credential and the owner names the person it acts for. The server reads broker
+// decides the routes it may call (gateRouteScopes): every scope of a person's own credential for a
+// person at a browser, p0 among them, the set its own row names for a personal token, p0 where its
+// maker gave it, none at all for the two credentials a deployment configures rather than a person,
+// and legion-status alone for a Legion daemon's own broker token, whose broker granted it. No
+// broker token, shared token or service-account token holds p0. A named broker token that names a
+// person and no project holds none, even when its answer holds legion-status: Dispatch reads that
+// scope only on a token scoped to one project. A credential holding none is answered an empty
+// array and never null, so a reader need not tell "this credential holds no scope" from "this
+// build does not say". A personal token holding the person scope is still kind `agent`, since the
+// kind names the credential and the owner names the person it acts for. The server reads broker
 // tokens through a stub broker (newBrokerTokenRigOn), so one server answers every row.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	t.Parallel()
@@ -502,7 +503,7 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 				return dispatchRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, "alice")
 			},
 			kind:   "user",
-			scopes: []string{model.ScopePerson, model.ScopeApprove},
+			scopes: []string{model.ScopePerson, model.ScopeApprove, model.ScopeP0},
 		},
 		{
 			name: "a personal token holding both scopes",
@@ -521,6 +522,24 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			},
 			kind:   "agent",
 			scopes: []string{model.ScopePerson},
+		},
+		{
+			name: "a personal token holding p0 alone",
+			call: func() *httptest.ResponseRecorder {
+				token := personalTokenHolding(t, database, model.ScopeP0)
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+			},
+			kind:   "agent",
+			scopes: []string{model.ScopeP0},
+		},
+		{
+			name: "a personal token holding person, approve and p0",
+			call: func() *httptest.ResponseRecorder {
+				token := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove, model.ScopeP0)
+				return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+			},
+			kind:   "agent",
+			scopes: []string{model.ScopePerson, model.ScopeApprove, model.ScopeP0},
 		},
 		{
 			name: "the deployment's shared token",

@@ -23,6 +23,10 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
+	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
+	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
+	// personal token holds it only where its maker gave it.
+	ScopeP0 = "p0"
 )
 
 // ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
