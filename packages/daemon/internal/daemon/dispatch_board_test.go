@@ -3,12 +3,14 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/envoy/steprecord"
@@ -127,7 +129,7 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	key := issueOfDispatchPath(path)
 	switch {
 	case req.Method == http.MethodGet && path == "/api/v1/issues":
-		b.listIssues(w)
+		b.listIssues(req, w)
 	case req.Method == http.MethodGet && path == "/healthz":
 		_, _ = io.WriteString(w, `{"status":"ok","commit":null}`)
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/events"):
@@ -139,7 +141,7 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// answered with an issue body the caller would read as an empty field and carry on with. A
 	// broad arm answering a narrow route is worse than no arm at all, which at least fails here.
 	case req.Method == http.MethodGet && key != "" && path == "/api/v1/issues/"+key:
-		b.showIssue(key, w)
+		b.showIssue(key, req, w)
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/messages"):
 		b.record(liveDispatchWrite{Issue: key, Body: b.decode(req, w)}, w)
 	case req.Method == http.MethodPatch && key != "" && path == "/api/v1/issues/"+key:
@@ -151,7 +153,7 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		b.mu.Unlock()
 		b.record(write, w)
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/handoffs/"):
-		b.showHandoff(strings.TrimPrefix(path, "/api/v1/handoffs/"), w)
+		b.showHandoff(strings.TrimPrefix(path, "/api/v1/handoffs/"), req, w)
 	// The reconcile of a tree's news of its approved design reads what changed between two
 	// approved versions of a gated document (dispatch.Client's ArtifactChanges). This board keeps
 	// no document, so it answers as Dispatch answers for a document it does not hold, which the
@@ -178,7 +180,7 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // listIssues answers Dispatch's project listing: every issue the board holds when it lists, and
 // an empty list otherwise.
-func (b *liveDispatch) listIssues(w http.ResponseWriter) {
+func (b *liveDispatch) listIssues(req *http.Request, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	listed := make([]map[string]any, 0, len(b.issues))
@@ -187,14 +189,14 @@ func (b *liveDispatch) listIssues(w http.ResponseWriter) {
 			listed = append(listed, b.issueBody(key))
 		}
 	}
-	if err := json.NewEncoder(w).Encode(listed); err != nil {
+	if err := json.NewEncoder(w).Encode(listed); err != nil && !clientGone(req, err) {
 		b.t.Errorf("write the Dispatch issue list: %v", err)
 	}
 }
 
 // showIssue answers Dispatch's issue read of key from the board, and 404 for an issue it does not
 // hold.
-func (b *liveDispatch) showIssue(key string, w http.ResponseWriter) {
+func (b *liveDispatch) showIssue(key string, req *http.Request, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, ok := b.issues[key]; !ok {
@@ -202,7 +204,7 @@ func (b *liveDispatch) showIssue(key string, w http.ResponseWriter) {
 		_, _ = io.WriteString(w, `{"code":"NOT_FOUND","error":"no such issue"}`)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(b.issueBody(key)); err != nil {
+	if err := json.NewEncoder(w).Encode(b.issueBody(key)); err != nil && !clientGone(req, err) {
 		b.t.Errorf("write the Dispatch issue %s: %v", key, err)
 	}
 }
@@ -222,7 +224,7 @@ func (b *liveDispatch) issueBody(key string) map[string]any {
 
 // showHandoff answers the handoff record read a completion makes: the seeded record, or Dispatch's
 // 404 HANDOFF_NOT_FOUND.
-func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
+func (b *liveDispatch) showHandoff(id string, req *http.Request, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	handoff, ok := b.handoffs[id]
@@ -231,26 +233,26 @@ func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
 		_, _ = io.WriteString(w, `{"code":"HANDOFF_NOT_FOUND","error":"handoff `+id+` not found"}`)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(handoff); err != nil {
+	if err := json.NewEncoder(w).Encode(handoff); err != nil && !clientGone(req, err) {
 		b.t.Errorf("write the Dispatch handoff %s: %v", id, err)
 	}
 }
 
 // putStep takes one write of the step record id of key, as Dispatch's PUT
-// /api/v1/issues/{key}/steps/{id} does: only the session legion-daemon:<project> writes one (403
-// STEP_WRITER for any other writer), each field is written once and kept, a field a write leaves
-// out keeps what an earlier write gave it, and the answer is 200 with the record as it stands after
-// the write and its attempt: the place of the record among the issue's records of the same task,
-// kind and step, in the order of their first write. An id whose record is another issue's is
-// refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a rating to the rating route alone
-// and a variant to the experiment route alone (dispatch.HTTPClient.PutStepRating and
-// PutStepExperiment), so no write here carries either.
+// /api/v1/issues/{key}/steps/{id} does for a credential that proves no session: only the session
+// legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), each field is written
+// once and kept, a field a write leaves out keeps what an earlier write gave it, and the answer is
+// 200 with the record as it stands after the write and its attempt: the place of the record among
+// the issue's records of the same task, kind and step, in the order of their first write. An id
+// whose record is another issue's is refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a
+// rating to the rating route alone and a variant to the experiment route alone
+// (dispatch.HTTPClient.PutStepRating and PutStepExperiment), so no write here carries either.
 func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
 		return
 	}
-	b.writeStep(key, id, write, false, w)
+	b.writeStep(key, id, write, false, req, w)
 }
 
 // putRating takes the rating a retro gave the plan onto the step record id of key, as Dispatch's
@@ -268,7 +270,7 @@ func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.Respo
 	if !ok {
 		return
 	}
-	b.writeStep(key, id, write, true, w)
+	b.writeStep(key, id, write, true, req, w)
 }
 
 // putExperiment takes the experiment and the variant of key's issue onto the step record id of
@@ -283,12 +285,12 @@ func (b *liveDispatch) putExperiment(key, id string, req *http.Request, w http.R
 	if !ok {
 		return
 	}
-	b.writeStep(key, id, write, false, w)
+	b.writeStep(key, id, write, false, req, w)
 }
 
-// daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
-// makes (403 STEP_WRITER for any other writer, naming what), and answers its fields without the
-// actor.
+// daemonWrite decodes a write to a record of key and answers its fields without the actor. It
+// takes the write only from the session legion-daemon:<project>, as Dispatch does for a credential
+// that proves no session, and refuses any other writer 403 STEP_WRITER, naming what.
 func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.ResponseWriter) (map[string]any, bool) {
 	var write map[string]any
 	if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
@@ -313,12 +315,22 @@ func answerRefusal(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
 }
 
+// clientGone says whether err, the failed write of the board's answer to req, failed because the
+// daemon hung up: req's context is done, or the connection broke (EPIPE) or was reset
+// (ECONNRESET) under the write. The daemon cancels the reads it has in flight when it stops — a
+// controller tick's listing of the project's issues, say, which a board that lists answers with
+// every issue it holds — so a client gone that way is no defect of the daemon's or the board's,
+// and the failed write is no test error. Any other failure to write an answer still is.
+func clientGone(req *http.Request, err error) bool {
+	return req.Context().Err() != nil || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+}
+
 // writeStep writes the fields of write onto the step record id of key, each field once, and
 // answers the record with its attempt (putStep). rates is the rating route (putRating), which
 // takes a record of kind retro alone, judged by the kind the record holds where it holds one. An
 // id whose record is another issue's is refused 409 STEP_OTHER_ISSUE before that kind is read, as
 // Dispatch's store refuses it (workflowstore's putNode), and nothing of the write is kept.
-func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates bool, w http.ResponseWriter) {
+func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates bool, req *http.Request, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	stored, refused := nodeOf(b.steps, "step", steprecord.CodeOtherIssue, key, id, w)
@@ -354,7 +366,7 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 		}
 	}
 	answer["attempt"] = attempt
-	if err := json.NewEncoder(w).Encode(answer); err != nil {
+	if err := json.NewEncoder(w).Encode(answer); err != nil && !clientGone(req, err) {
 		b.t.Errorf("write the step record %s: %v", id, err)
 	}
 }
@@ -390,14 +402,16 @@ func setOnce(nodes map[string]map[string]any, key, id string, write map[string]a
 	return stored
 }
 
-// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
-// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan
-// names at least one task, each with at least one step (400 PLAN_INPUT otherwise, before the node
-// of its id is found, as the store checks a write's fields first), an id whose plan is another
-// issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field is set
-// once, and the answer is 200 with the plan as it stands after the write. It does not refuse a
-// plan for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names
-// the generation and the source on every write, the default plan names no document (workflow's
+// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does for a
+// credential that proves no session: only the session legion-daemon:<project> writes one (403
+// STEP_WRITER for any other writer), a plan names at least one task, each with at least one step
+// (400 PLAN_INPUT otherwise, before the node of its id is found, as the store checks a write's
+// fields first), an id whose plan is another issue's is refused 409 PLAN_OTHER_ISSUE and nothing
+// of the write is kept, and the answer is 200 with the plan as it stands after the write. It keeps
+// the first value written to each field (setOnce), where Dispatch replaces the plan on a write
+// whose version is above the one it holds (dispatch.HTTPClient.PutPlan). It does not refuse a plan
+// for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names the
+// generation and the source on every write, the default plan names no document (workflow's
 // defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
 // copy of Dispatch's rules here would refuse nothing that reaches it.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
@@ -423,7 +437,7 @@ func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.Respons
 		return
 	}
 	stored := setOnce(b.plans, key, id, write)
-	if err := json.NewEncoder(w).Encode(stored); err != nil {
+	if err := json.NewEncoder(w).Encode(stored); err != nil && !clientGone(req, err) {
 		b.t.Errorf("write the plan %s: %v", id, err)
 	}
 }

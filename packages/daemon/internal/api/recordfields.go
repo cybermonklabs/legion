@@ -144,7 +144,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
-		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
+		Reason: "the run of provider-error turns, which bounds nothing; the daemon sends the provider-errors notice once at six (providerErrorRunReached says to whom), so this key is the only surface that shows the count before or after that notice"},
 	{Field: "Step", Column: ColumnAgents, Keys: []string{"step"},
 		Reason: "what the daemon last saw the claim's agent do, which says whether a worker mid-turn is still moving"},
 	// The session's own report of what it is doing, which the daemon's minute sweep reads off
@@ -227,6 +227,12 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "ViewOf", Column: ColumnWithheld,
+		Reason: "the ancestor whose requirements the issue's spec is a view on, which reaches the issue's roles as a sentence of each phase task naming that ancestor (workflow's continueLine and checkTask) rather than as a key of the state"},
+	{Field: "ChildrenWait", Column: ColumnWithheld,
+		Reason: "the phase start a parent held when a child of it was open, and the children that held it (`children_wait_children`), which the daemon resumes it with when no open child is left, naming the children that merged during the wait: its own record of what to do at the return, which no surface carries"},
+	{Field: "ChildrenWaitedAt", Column: ColumnWithheld,
+		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
 	{Field: "MembersOwed", Column: ColumnWithheld,
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 }

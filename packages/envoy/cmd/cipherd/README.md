@@ -43,8 +43,12 @@ page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
 `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...']`
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
-the field, or the parse position, when the broker would not serve that file. A `proxy` block of
-any kind but `dpop` is refused, naming `kinds`, which replaced it.
+the field, or the parse position, when the broker would not serve that file. In a file that
+declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`, which replaced
+it. A file that declares no kind is read as the broker before the kinds read it, until every
+deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its profile's
+name behind the block's hosts, headers and `allow`, under a kind of its own that no `proxy` tag
+names, and a block's `judge` or `guidance` is refused, naming the source's tag that holds it now.
 On a file it would serve it prints every field of each kind and each profile the file adds and
 removes against the file `--against` names, and each field one both files hold changes: a kind's
 hosts, headers, variables, ways, `allow` rows, `placeholder_prefix` and `max_grant`; a profile's

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `plan-reviewer` and `plan-gap-analyst` agents ask for no task and no check of a requirement
+  whose text starts `Delivered by` after its number and any title and names the issue that
+  delivers it, whatever that issue's parent, since that issue's checks serve it.
+custom:
+    Issue: pr4592

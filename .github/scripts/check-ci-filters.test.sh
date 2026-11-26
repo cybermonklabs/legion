@@ -22,14 +22,15 @@
 # the shell's case-sensitive `=`, and a PUSH_WORKFLOWS workflow's
 # on.push.paths must equal its filter, no if: condition of ci.yaml may test for a push event or compare
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
-# it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
-# cache family must carry
+# it on a re-run attempt of a merge-group run and theirs must not, a fill workflow's
+# (ci-caches.yaml's or ci-caches-changes.yaml's) save of a cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry, every restore of any workflow must
+# saves under the commit, which download the newest entry, no family may be saved both under the
+# commit and without it, in one fill workflow or across two, every restore of any workflow must
 # name a family some workflow saves,
-# ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
-# DAEMON_RACE_PACKAGES names,
+# each race build of a ci-caches.yaml job ci_job_reads.py's RACE_FILLS names must compile
+# exactly the packages of that entry's lane (DAEMON_RACE_PACKAGES, ENVOY_RACE_LANE),
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads, every dorny/paths-filter
@@ -266,6 +267,9 @@ WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
 DAEMON_RACE_FILL_JOB = "fill"
 RACE_FILL_SCRIPTS = []
+RACE_FILLS = [(DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES],
+               "DAEMON_RACE_PACKAGES", ".github/workflows/ci.yaml's race step", ".github/workflows/ci.yaml",
+               ".github/workflows/ci.yaml's two race steps follow it already")]
 TAG_RUNS = []
 READ_SETS = {}
 GATES, EXCLUDED = load_gate_files(globals())
@@ -658,6 +662,60 @@ check "says the base tree's filters could not be computed" \
 check "every filter is every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
+
+# The base's filters as a push of that commit to main generated them
+# (.github/workflows/ci-caches-changes.yaml), which the changes job restores into the directory
+# CI_FILTERS_BASE_COMPUTED names: the script reads them only when the directory's commit file names
+# the base. The base tree's own generation fails in both cases below, so a run that generated it
+# would make every filter every path.
+# base_cache <root> <commit>: such a directory for <commit> beside the fixture, holding the filters
+# this head computes with the read of docs/** the base's shared helper gave app.
+base_cache() {
+  mkdir -p "$1.base-cache"
+  run_generate "$1"
+  awk '{ print } $0 == "app:" { print "  - '"'"'docs/**'"'"'" }' "$1.generated.computed.yaml" > "$1.base-cache/ci-filters.yaml"
+  printf '%s\n' "$2" > "$1.base-cache/commit"
+}
+# cached_fixture <name>: a fixture whose base commit cannot generate its filters and whose head
+# drops the shared read; echoes the root, and the base commit in $base_commit.
+cached_fixture() {
+  local root
+  root=$(fixture "$1")
+  shared_read "$root"
+  printf 'raise RuntimeError("broken on purpose")\n' >> "$root/.github/scripts/ci_job_reads.py"
+  commit_all "$root" base > "$root.base-commit"
+  replace "$root/.github/scripts/ci_job_reads.py" 'raise RuntimeError("broken on purpose")' ''
+  replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
+  commit_all "$root" head >/dev/null
+  echo "$root"
+}
+
+echo "case: the base's filters a push to main computed stand in for generating the base tree"
+root=$(cached_fixture base-cached)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes no every_filter output" "$(is "$(cat "$root.github-output")" "")"
+check "says it read the filters the push of the base computed" \
+  "$(contains "$out" "^the base tree's filters are the ones the push of $base_commit to main computed")"
+check "and generated no base tree" "$(is "$(grep -c "the base tree's filter generation took" <<<"$out" || true)" 0)"
+check "prints the filter and the pattern only the base has" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "and the filters no difference touches as computed" "$(is "$(filter_of site | tr '\n' ' ')" 'go.work mod/go.mod docs/** ')"
+
+echo "case: an entry whose commit file names another commit is not read (control)"
+root=$(cached_fixture base-cached-other)
+base_commit=$(cat "$root.base-commit")
+base_cache "$root" "$(git -C "$root" rev-parse HEAD)"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" CI_FILTERS_BASE_COMPUTED="$root.base-cache" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "generates the base tree" "$(contains "$out" "^the base tree's filter generation took [0-9]* s and exited 1$")"
+check "whose failure makes every filter every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
@@ -4276,6 +4334,55 @@ check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
+# changes_cache_workflow <root>: cache_workflow's shape with the second fill workflow,
+# ci-caches-changes.yaml, which alone saves the family go-changes, under the key ci.yaml's second
+# restore names followed by the commit, as that workflow saves changes-git. Rule 11 reads every
+# fill workflow's saves (CACHE_WORKFLOWS), so a drift of this one is refused naming its file.
+changes_cache_workflow() {
+  cache_workflow "$1"
+  cat > "$1/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .git
+          key: go-changes-${{ runner.os }}-${{ github.sha }}
+YAML
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: .git\n          key: go-changes-${{ runner.os }}\n      - name: Test the app'
+}
+
+echo "case: a family only ci-caches-changes.yaml saves, under the key and path ci.yaml restores"
+root=$(fixture cache-changes-round-trip)
+changes_cache_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a save of ci-caches-changes.yaml whose key drifted from the key ci.yaml restores"
+root=$(fixture cache-changes-key-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" 'key: go-changes-${{ runner.os }}-${{ github.sha }}' \
+  'key: go-changes-${{ runner.arch }}-${{ github.sha }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both keys" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes under key .*runner.arch.*, but job app of .github/workflows/ci.yaml restores it under ')"
+
+echo "case: a save of ci-caches-changes.yaml whose path drifted from the path ci.yaml restores"
+root=$(fixture cache-changes-path-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" '          path: .git' '          path: .git2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both paths" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes from .git2, but job app of .github/workflows/ci.yaml restores it into .git:')"
+
 # A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
 # family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above
 # read it as a family of its own, and they hold it to nothing.
@@ -4536,8 +4643,34 @@ cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
 YAML
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the family and what the bare entry does" \
-  "$(contains "$out" "this workflow saves family go-app both under \`-\\\${{ github.sha }}\` and without it: the entry under the restores' own key wins every restore")"
+check "names the family, the file of each save and what the bare entry does" \
+  "$(contains "$out" "family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches.yaml) and without it (in .github/workflows/ci-caches.yaml): the entry under the restores' own key wins every restore")"
+
+# The same hazard with the two saves in two fill workflows: rule 11 reads the saves of every one
+# (CACHE_WORKFLOWS), and the bare entry wins every restore whichever file saved it.
+echo "case: a family ci-caches.yaml saves without the commit and ci-caches-changes.yaml saves under it"
+root=$(fixture cache-both-across-files)
+cache_workflow "$root"
+cat > "$root/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app-${{ runner.os }}-${{ github.sha }}
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and both files" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::family go-app is saved both under \`-\\\${{ github.sha }}\` (in .github/workflows/ci-caches-changes.yaml) and without it (in .github/workflows/ci-caches.yaml)")"
 
 echo "case: a save of ci-caches.yaml under the key ci.yaml restores and another suffix"
 root=$(fixture cache-refill-other-suffix)
@@ -4707,6 +4840,35 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job, the table and what the race step then builds" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# A second fill, of another lane, is held to its own list: here a lane named as a tree
+# (./lib/...), as the envoy race lane names some of its packages. The control is the tree as
+# written, where the fill names ./lib/... and passes.
+second_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  second-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -count=1 -race -run '^$' ./lib/...
+        working-directory: mod
+YAML
+  cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
+RACE_FILLS.append(("second-fill", "SECOND_FILL_JOB", ["./lib/..."], "SECOND_LANE", "the second lane's step",
+                   "the second lane", "the second lane's steps follow it already"))
+PY
+}
+echo "case: a second lane's fill, held to its own list"
+root=$(fixture race-fill-second)
+cache_workflow "$root"
+second_fill "$root"
+run_check "$root"
+check "exits 0 as written" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci-caches.yaml" "-run '^\$' ./lib/..." "-run '^\$' ./lib/... ./other/"
+run_check "$root"
+check "fails once the fill names a package its lane does not" "$(is "$status" 1)"
+check "names that lane's list and the jobs that restore its cache" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's SECOND_LANE does not (./lib/..., ./other/ against ./lib/...)")"
+check "and not the daemon's" "$(is "$(contains "$out" "job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES")" false)"
 
 # script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
 # scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds
