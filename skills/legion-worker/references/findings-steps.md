@@ -9,7 +9,7 @@ Read this when `skill://legion-worker/references/findings.md` sends you here for
 3. Post the evidence on that issue, and mention the root's architect. `<project>` is the Legion project that runs the tree; for your own project it is the word after `legion-` in your role token.
 
    ```bash
-   dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
+   dispatch comment --issue '<that issue's KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
    Clear defect from <your role token>
    <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix>
    EOF
