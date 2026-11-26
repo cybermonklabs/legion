@@ -15,6 +15,7 @@ import {
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { answerRequests } from "../../../__tests__/network";
 import { api } from "../../../api/client";
+import { issueAskThreadsQuery } from "../../../api/queries";
 import type {
   Anchor,
   Comment,
@@ -52,7 +53,6 @@ import { AppProviders, inDocument, stubReads, treeOf } from "../slots/stage-fixt
 import { blockNodeId } from "../tree-drafts";
 import { commentNode, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, result, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import type { TreeAnchor } from "./on-text";
 import { TextMargin } from "./TextMargin";

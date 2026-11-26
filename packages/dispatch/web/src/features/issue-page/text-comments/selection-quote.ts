@@ -14,7 +14,7 @@ import { asRead, rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
  * The selection is read in the words the row draws (`row-text-runs.ts`), and the quote is taken
  * from the node's own text as the tree read answers it, at the place the selection names. Where
  * the row draws that text as it is - every node with a reading - the two are one string. Where it
- * draws it read to plain words (`lens-drafts.ts`' `storedWords`: a lens's verdict, a risk's
+ * draws it read onto one line (`lens-drafts.ts`' `codeOnlyRuns`: a lens's verdict, a risk's
  * heading, a constraint's words), it writes white space as one space and a store address as its
  * kind's word, so the place is found by reading the two side by side, and a selection over part
  * of that word quotes the whole address. Where the drawn words run on past the node's text, or
@@ -50,7 +50,7 @@ export interface TextQuote<Block extends ItemBlock = ItemBlock> {
  *  which `quoteAnchor` leaves out of a quote. */
 const HEADING_MARKER = /^#{1,6} +/u;
 
-/** One character of white space, as `storedWords` reads it. */
+/** One character of white space, as `lens-drafts.ts`' `oneLineRuns` reads it. */
 const SPACE = /\s/u;
 
 /**
@@ -234,7 +234,7 @@ interface Alignment {
 
 /**
  * The drawn words `drawn` read beside the node's text `source`, from their starts, as far as they
- * agree: a character the same in both, a run of white space in both (`storedWords` writes one
+ * agree: a character the same in both, a run of white space in both (`oneLineRuns` writes one
  * space for each run, and leaves out a run that opens the text), and a store address in `source`
  * that `drawn` writes as its kind's word (`storeKindText`). Past the first place they part, no
  * drawn character stands for any of the text.

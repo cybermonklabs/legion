@@ -3,7 +3,7 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { wordsOf } from "../../refs/tree-fragment";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
-import { storedWords } from "../lenses/lens-drafts";
+import { storedReading } from "../stored-reading";
 import type { Draft } from "../tree-drafts";
 import { readingOf, treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
@@ -146,13 +146,11 @@ export function textThreadsOf(
     if (at === undefined || record === undefined) continue;
     let held = words.get(at);
     if (held === undefined) {
-      // The node's words as a stored text's plain words read (`storedWords`): one space between
+      // The node's words on one line: its reading's, else its stored text's, one space between
       // words, each address as its author wrote it, as the server's quote holds it.
-      const reading = readingOf(at);
-      held =
-        reading === undefined
-          ? storedWords(at.text)
-          : wordsOf(reading).replace(/\s+/gu, " ").trim();
+      held = wordsOf(readingOf(at) ?? storedReading(at.text))
+        .replace(/\s+/gu, " ")
+        .trim();
       words.set(at, held);
     }
     const entries = (replies.get(id) ?? []).sort(
@@ -216,8 +214,14 @@ function placedThread(
       : place.kind === "node"
         ? place.orphaned
         : place.block.removed;
+  // A reply's words are counted from its quoted block, read onto one line as the node's words are.
   const from =
-    place.kind === "item" ? Math.max(0, words.indexOf(storedWords(place.block.text))) : 0;
+    place.kind === "item"
+      ? Math.max(
+          0,
+          words.indexOf(wordsOf(storedReading(place.block.text)).replace(/\s+/gu, " ").trim())
+        )
+      : 0;
   const at = orphaned ? undefined : quotedAt(words, quote, occurrence, from);
   const anchor = cardAnchorOf(place);
   const kind = root.supertag === "message" ? "message" : "comment";
@@ -430,8 +434,8 @@ function cardAnchorOf(place: TextPlace): Anchor {
 }
 
 /** Where match `occurrence` of `quote` starts in `words`, counting from `from` and overlapping
- *  matches included, as `quoteAnchor` counts, with the quote's white space read as `storedWords`
- *  reads it; undefined where there is no such match or the quote holds no words. */
+ *  matches included, as `quoteAnchor` counts, with the quote's white space read as a node's words
+ *  are read onto one line; undefined where there is no such match or the quote holds no words. */
 function quotedAt(
   words: string,
   quote: string,

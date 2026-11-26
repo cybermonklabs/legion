@@ -36,8 +36,8 @@ interface WindowStep {
 const WINDOW_STEPS: readonly WindowStep[] = [
   {
     file: "NodeRow.tsx",
-    lines: 9,
-    rule: "a phone row: its indent is 17 px a level, its guides, bullet and fold control sit closer, and its three columns are two, the margin under the words",
+    lines: 8,
+    rule: "a phone row: its indent is 17 px a level, its guides, bullet and fold control sit closer, and it is no grid: the bullet floats left, the words stand 22 px from the row's left, and the margin floats right at the row's top, two fifths of the row at most (part W, after B0)",
     token: "max-[761px]",
   },
   {

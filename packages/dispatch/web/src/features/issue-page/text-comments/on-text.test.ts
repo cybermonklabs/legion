@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import type { CommentNodeAnchor } from "@legion/contracts";
 
 import type { Anchor, Comment, IssueDetails, MessageRead } from "../../../api/types";
-import { withEntries } from "../../issue/decision-entries";
 import {
   DECISIONS_DOCUMENT,
   decision,
+  decisionsRead,
   issueDetails,
   KEY,
   SPEC_DOCUMENT,
@@ -278,10 +278,7 @@ test("a Change is on text", () => {
     ref: `dispatch://${KEY}/artifact/decisions-md#b-d2`,
     text: "## Draw it\n\nDraw it once.",
   });
-  const decisions = withEntries(
-    { decisions: [draw], document: `dispatch://${KEY}/artifact/decisions-md`, open_questions: [] },
-    KEY
-  );
+  const decisions = decisionsRead([draw], DECISIONS_DOCUMENT);
   const tree = treeAnswer([commentNode(change)]);
 
   expect(ruleOver(tree, { comments: [change] }, ["c-change"])).toMatchObject([

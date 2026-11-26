@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import {
+  issueAskThreadsQuery,
   issueCoverageQuery,
   issueQuery,
   issueResultsQuery,
@@ -24,7 +25,7 @@ import {
   type TreeAnswerNode,
   viewQuery,
 } from "../tree-read/tree-read";
-import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
 import { type OnTextReads, onTextReads } from "./on-text";
 import { type NodeThreads, textThreadsOf } from "./text-threads";
 

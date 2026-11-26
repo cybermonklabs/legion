@@ -13,7 +13,7 @@ import { answerRequests } from "../../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   artifactRecordHandler,
-  decisionsAndReadMarkHandlers,
+  readMarkHandlers,
 } from "../../../__tests__/proof-document";
 import { api } from "../../../api/client";
 import type { CreateEditor, EditorOptions } from "../../doc/editor";
@@ -126,7 +126,7 @@ beforeEach(() => {
   answerRequests(
     artifactRecordHandler((id) => (id === SPEC_DOCUMENT.id ? SPEC_DOCUMENT : undefined)),
     http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
 });
 afterEach(() => {

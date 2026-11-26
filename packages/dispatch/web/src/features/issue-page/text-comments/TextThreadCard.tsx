@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useContext, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useContext, useId, useMemo, useState } from "react";
 
 import type { WriteBounds } from "../../../api/client";
 import { whoAmIQuery } from "../../../api/queries";
@@ -24,7 +24,7 @@ import type { TreeNode } from "../issue-tree";
 import { LensChain } from "../lenses/LensChain";
 import { LensLines } from "../lenses/LensLines";
 import { LensActContext, LensMenu, lensActFor } from "../lenses/LensMenu";
-import { NODE_ROW_LAYOUT, RowMargin, type Tone } from "../NodeRow";
+import { NODE_ROW_LAYOUT, RowMargin, rowNameIds, type Tone } from "../NodeRow";
 import { authorText, pageChrome } from "../page-structure";
 import { authorKind, isReader, LENS_WORDS } from "../page-words";
 import { RowText } from "../RowText";
@@ -266,13 +266,17 @@ function ThreadLenses({ lenses }: { readonly lenses: readonly TreeNode[] | undef
  * lens's verdict, or the page's words where it holds none - its lines (`LensLines`), its chain
  * (`LensChain`), and beside them its kind's words, author, time and state (`RowMargin`); then each
  * node under it - a lens's findings and risks - whole, a level in. Its controls keep their place
- * in the tab order: no tree's keys reach the column.
+ * in the tab order: no tree's keys reach the column. The margin stands before the words in the
+ * DOM, as the outline's does, so that on a phone it floats at the right of the row's top
+ * (`NODE_ROW_LAYOUT`), and the row's name reads it after them (`rowNameIds`).
  */
 function LensRow({ node }: { readonly node: TreeNode }): ReactNode {
   const agentText = useAgentText();
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const ids = rowNameIds(useId());
   return (
     <li
+      aria-labelledby={ids.labelledBy}
       className="min-w-0"
       data-thread-lens={node.id}
       data-thread-lens-read={node.readId}
@@ -280,7 +284,19 @@ function LensRow({ node }: { readonly node: TreeNode }): ReactNode {
     >
       <div className={NODE_ROW_LAYOUT.box}>
         <span aria-hidden="true" className={NODE_ROW_LAYOUT.bullet} />
-        <div className={NODE_ROW_LAYOUT.content}>
+        <RowMargin
+          author={{
+            kind: authorKind(node.author),
+            name: agentText.author(node.author),
+            reader: isReader(node.author, reader),
+          }}
+          context={false}
+          id={ids.margin}
+          node={node}
+          tabStops
+          tone={toneOf(node)}
+        />
+        <div className={NODE_ROW_LAYOUT.content} id={ids.content}>
           {node.type === "lens" && node.text === "" ? (
             <p className="break-words" {...pageChrome}>
               {LENS_WORDS.no_verdict}
@@ -293,17 +309,6 @@ function LensRow({ node }: { readonly node: TreeNode }): ReactNode {
           <LensLines node={node} tabStops />
           <LensChain node={node} tabStops />
         </div>
-        <RowMargin
-          author={{
-            kind: authorKind(node.author),
-            name: agentText.author(node.author),
-            reader: isReader(node.author, reader),
-          }}
-          context={false}
-          node={node}
-          tabStops
-          tone={toneOf(node)}
-        />
       </div>
       {node.children.length === 0 ? null : (
         <ul className="ml-[18px] flex min-w-0 flex-col gap-1">
