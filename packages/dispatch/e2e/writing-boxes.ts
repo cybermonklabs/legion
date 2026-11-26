@@ -297,6 +297,7 @@ async function ownWordsOf(field: Locator): Promise<OwnWords | undefined> {
   for (const [box, own] of Object.entries(OWN_WORDS)) {
     const reach = rowsOfBox(box as DispatchWritingBox)[0]?.reach;
     if (own === undefined || reach === undefined) continue;
+    // Which box holds the field was fixed when the field was drawn, and no later frame changes it.
     if (await field.evaluate((node, selector) => node.closest(selector) !== null, reach)) {
       return own;
     }
