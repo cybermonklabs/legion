@@ -2162,6 +2162,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			PromptFailures: cfg.PromptFailureLimit,
 			PromptRetires:  cfg.PromptRetireLimit,
 		},
+		// The project controller's session age past which a daemon-driven relaunch starts a fresh
+		// session (supervise.Deps.ControllerSessionMaxAge, dispatch://INFRA-2045 R3).
+		ControllerSessionMaxAge: cfg.ControllerSessionMaxAge,
 		Timeouts: supervise.Timeouts{
 			Boot:                  cfg.WorkerBootTimeout,
 			RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
@@ -3122,7 +3125,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, cfg.ControllerTurnBound, s.log)
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the

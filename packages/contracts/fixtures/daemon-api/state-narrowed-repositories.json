@@ -1380,6 +1380,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"
