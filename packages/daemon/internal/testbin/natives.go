@@ -20,7 +20,7 @@ import (
 )
 
 // OMPHome puts in home, a fresh HOME a test runs omp under, the native module omp would otherwise
-// write there on its first run: one .node file of about 124 MiB at the pin, the variant the CPU
+// write there on its first run: one .node file of about 125 MiB at the pin, the variant the CPU
 // runs, which omp extracts from its own binary into .omp/natives/<version>-<digest prefix> (the
 // version and the first 12 hexadecimal digits of the embedded addons' digest) under any HOME that
 // lacks it. Oh My Pi reads that directory from elsewhere only under a variable a test would have to
@@ -164,7 +164,7 @@ func fillNativesCache(root, omp string) (string, error) {
 
 // embeddedNative is one native file omp embeds, as pi-natives' scripts/embed-native.ts writes each
 // into the compiled binary: `{ variant: "modern", filename: "pi_natives.linux-x64-modern.node",
-// size: 130426104, sha256: "c452fa13…", zstdPath: B0 }` at the pin. The scan finds each by its
+// size: 130705272, sha256: "ab410f59…", zstdPath: r0 }` at the pin. The scan finds each by its
 // marker with bytes.Index, since a regexp over the whole binary takes seconds, and reads no member
 // after `size`.
 var (
