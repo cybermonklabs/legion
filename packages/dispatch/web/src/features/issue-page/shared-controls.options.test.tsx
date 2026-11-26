@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
 import type { ArtifactRebuildReport } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   act,
   type BoundFunctions,
@@ -12,7 +12,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { type HeldNotifications, holdNotifications } from "../../__tests__/commits";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -4120,6 +4120,77 @@ test("inside NoTooltips the repository box's clear gives the focus to the row's 
       name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
     });
     expect(document.activeElement, "the landed clear left the focus off the row's None").toBe(none);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    notifications?.tell();
+    written.resolve({} as Issue);
+    patchIssue.mockRestore();
+    undraw(view);
+  }
+});
+
+// The rest of a clear's end hands the focus on once, in the commit that draws what Dispatch
+// answered for the clear (`landing`). Here the issue's parent holds a repository, so Dispatch
+// answers the clear with one the issue inherits: the text that took the focus from the box as the
+// clear ended draws that repository and keeps the focus, and nothing is drawn in its place.
+// Another session then clears the parent's repository, and "None" is drawn in the text's place:
+// no press of the reader's made that change, so the focus the text held stays on the page's body,
+// as for every change the reader did not make.
+test("inside NoTooltips a repository clear answered with an inherited repository hands nothing on when another session later draws None", async () => {
+  const user = userEvent.setup();
+  const stored: Pick<Issue, "repo" | "resolved_repo"> = {
+    repo: "acme/api",
+    resolved_repo: "acme/api",
+  };
+  const read = mock(async () => ({ key: "CORE-1", ...stored }));
+  const written = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+  // Reads the issue again, as the event of another session's change does.
+  let readAgain = (): Promise<void> => Promise.resolve();
+  function AnotherSession(): null {
+    const queryClient = useQueryClient();
+    useEffect(() => {
+      readAgain = () => queryClient.invalidateQueries({ queryKey: ["issue", "CORE-1"] });
+    }, [queryClient]);
+    return null;
+  }
+  const view = draw(
+    <>
+      <ReadRepositoryRow read={read} />
+      <AnotherSession />
+    </>,
+    "inside"
+  );
+  let notifications: HeldNotifications | undefined;
+  try {
+    const scope = within(view.container);
+    const text = await scope.findByRole("button", { name: "acme/api, Repository of CORE-1" });
+    await settleReads();
+    await user.click(text);
+    await user.click(scope.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    stored.repo = null;
+    stored.resolved_repo = "acme/web";
+    notifications = holdNotifications();
+    written.resolve({ ...marginIssue, key: "CORE-1", ...stored });
+    await waitFor(() => expect(scope.queryByRole("combobox")).toBeNull());
+    notifications.tell();
+    await settleReads();
+    expect(document.activeElement).toBe(
+      scope.getByRole("button", { name: "acme/web, Repository of CORE-1" })
+    );
+
+    stored.resolved_repo = null;
+    await act(() => readAgain());
+    await settleReads();
+    expect(
+      scope.getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-1` })
+    ).toBeInTheDocument();
+    expect(document.activeElement, "another session's change handed the focus on").toBe(
+      document.body
+    );
     expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     notifications?.tell();

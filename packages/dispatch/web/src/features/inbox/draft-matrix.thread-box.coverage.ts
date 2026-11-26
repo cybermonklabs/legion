@@ -404,6 +404,10 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[13],
   }),
   ...answers(
+    "usePaneSelection | - | form | if (!paneShown || selectedId === undefined || selectedId === handed) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
     "usePaneSelection | - | form | if (subject === undefined || rowId(subject.row) !== selectedId) return …",
     { reason: REASONS[13] }
   ),

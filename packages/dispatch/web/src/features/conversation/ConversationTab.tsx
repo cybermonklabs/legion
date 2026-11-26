@@ -25,6 +25,7 @@ import type {
   MessageWithTrees,
   UserState,
 } from "../../api/types";
+import { focusIntoView } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useFocusBack } from "../../hooks/useFocusBack";
@@ -72,6 +73,7 @@ import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { focusOnDocument } from "../shell/roving";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -123,6 +125,7 @@ import {
   ConversationTurns,
   type KeyedThread,
   REPLY_BOX,
+  ROOT_TURN,
   turnFocusRing,
   turnMarks,
   useTurnKeys,
@@ -1292,7 +1295,8 @@ export function ConversationTab({
   // (`redirectedReplyTarget`'s doc comment explains why a Reply elsewhere while it holds a
   // refusal redirects onto that comment or message instead of overwriting its draft). `from` is
   // the Reply pressed, which the composer's Cancel reply and its Escape give the focus back to
-  // as they end the reply (`beginDockedReply`).
+  // as they end the reply, while it is in the page (`beginDockedReply`); else the caret stays in
+  // the composer's field, where they put it first (`MentionComposer`'s `cancelReply`).
   const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
   const beginReply = (target: ReplyTarget, from: HTMLElement): boolean => {
     if (sendingNow()) return false;
@@ -1307,6 +1311,26 @@ export function ConversationTab({
     phoneThread !== undefined &&
     phone.replyTo?.id === phoneThread.root.id &&
     phone.parked === undefined;
+  const phoneBack = useRef<HTMLButtonElement>(null);
+  const phoneComposer = useRef<HTMLDivElement>(null);
+  /** The thread composer's Cancel reply, its Escape, its Discard and its Send end its reply and
+   *  take it out of the thread - unmounted, or hidden while it is put away (`parked`) - with the
+   *  focus it holds, while the thread stays open: the focus goes to the turn whose Reply started
+   *  the reply (`replyFrom`) where the thread draws that turn, else to the thread's Back, since a
+   *  Reply pressed in the list leaves its turn behind the thread, which covers it. Only while the
+   *  thread is open and the focus is in its composer, or on the page's body outside it: a send
+   *  that lands once the reader has moved on leaves the focus where they put it. The turn takes
+   *  the focus as a turn given back does (`focusIntoView`). */
+  const giveBackFromPhoneReply = () => {
+    const view = phoneThreadDialog.containerRef.current;
+    if (view === null || view.hidden) return;
+    if (!focusOnDocument() && phoneComposer.current?.contains(document.activeElement) !== true) {
+      return;
+    }
+    const turn = phone.replyFrom.current?.closest<HTMLElement>(ROOT_TURN) ?? null;
+    const to = turn !== null && view.contains(turn) ? turn : phoneBack.current;
+    if (to !== null) focusIntoView(to);
+  };
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
   // Reply. Once the list no longer holds the comment, or holds it deleted - which takes no
@@ -1775,6 +1799,7 @@ export function ConversationTab({
               <button
                 className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
                 {...heldPress(phone.cardReplySending, phone.leave)}
+                ref={phoneBack}
                 type="button"
               >
                 Back
@@ -1825,7 +1850,7 @@ export function ConversationTab({
               </ol>
             )}
             {phone.replyTo === null ? null : (
-              <div hidden={!phoneReplyTargetsThread}>
+              <div hidden={!phoneReplyTargetsThread} ref={phoneComposer}>
                 <MentionComposer
                   box="phone-thread-composer"
                   closed={isClosed}
@@ -1833,9 +1858,16 @@ export function ConversationTab({
                   intake={phone.threadIntake}
                   listed={listed}
                   mutationKey={phone.composerKey}
-                  onCancelReply={phone.cancelReply}
-                  onClose={phone.endReply}
+                  onCancelReply={(draft) => {
+                    giveBackFromPhoneReply();
+                    phone.cancelReply(draft);
+                  }}
+                  onClose={() => {
+                    giveBackFromPhoneReply();
+                    phone.endReply();
+                  }}
                   onSent={() => {
+                    giveBackFromPhoneReply();
                     phone.endReply();
                     setOwnSendCount((count) => count + 1);
                   }}

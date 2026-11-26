@@ -4582,6 +4582,50 @@ test("a closed suggestion composer shows only a send of its own still out, then 
   }
 });
 
+// A thread's box the Inbox keeps standing under its thread (`ThreadBody`), whose host's `onClose`
+// moves nothing: a reply Dispatch refused offers Discard draft beside the refusal, and the press
+// takes the refusal's row away with the button that held the focus. The box stays, so the caret
+// goes back to its field, as the Discard of `Discard draft?` puts it back.
+test("a refusal's Discard draft in a box that stays puts the caret back in its field", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(commentRefused);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          box="inbox-thread-reply"
+          inline
+          kind="comment"
+          mutationKey={["inbox-thread", "thread-1"]}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ issueKey: "CORE-1", kind: "issue" }}
+          replyTo={{ actor: plannerAuthor, excerpt: "", id: "comment-9", parentKind: "comment" }}
+          standing
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Reply");
+    await user.click(field);
+    await user.paste("A reply Dispatch refuses");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    await user.click(screen.getByRole("button", { name: "Discard draft" }));
+    expect(screen.queryByText(`Couldn't send — ${COMMENT_REFUSED}`)).not.toBeInTheDocument();
+    expect(field.value).toBe("");
+    expect(document.activeElement, `the focus is on ${focusedName()}`).toBe(field);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
 // An upload carries its target from the paste that starts it: a host move that re-addresses the
 // composer in the paste's own task - before React re-renders, and with no count in `ownMoves` -
 // moves where the next upload goes, never this one, and the reference names where the file went.

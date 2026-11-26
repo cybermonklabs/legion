@@ -255,7 +255,8 @@ interface MentionComposerProps {
   /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
    *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing
    *  box's does, and refused or stopped, in its held send - so the reply composer that mounts
-   *  when the thread opens again shows it, and the host decides where the reader goes. */
+   *  when the thread opens again shows it, and the host decides where the reader goes. The caret
+   *  is in the field by then (`cancelReply`), so a host that keeps the composer leaves it there. */
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
@@ -566,11 +567,23 @@ export function MentionComposer({
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
+  /** Puts the caret in the field ahead of a press that takes the control holding the focus away
+   *  with what it ends - Cancel reply with the reply, a refusal's Discard draft with the refusal -
+   *  as the Discard of `Discard draft?` puts it back (`focusAskedField`): a composer that stays
+   *  keeps it there - an Agents row's, the Inbox's standing box, the Conversation's docked one
+   *  once the Reply that started its reply has gone - and a host that ends the composer or moves
+   *  the focus on moves it from there. */
+  const focusField = () => {
+    const element = field.current?.textarea() ?? null;
+    if (element !== null) focusIntoView(element);
+  };
   /** Ends the reply, handing the host the draft as the field holds it. The draft stays where it
    *  is kept - the field, the unsent draft under the send name, the held send - so nothing the
    *  reader wrote goes with no word: the host moves the reader, and an own move carries the
-   *  draft's send with it (`ownMoves`). */
+   *  draft's send with it (`ownMoves`). The reply's controls go with it, Cancel reply among them,
+   *  so the caret goes to the field first (`focusField`). */
   const cancelReply = () => {
+    focusField();
     keepNothing();
     setCancels((count) => count + 1);
     onCancelReply?.({ body, replacement });
@@ -1373,7 +1386,16 @@ export function MentionComposer({
           inline ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
-              onClick={discard}
+              onClick={() => {
+                // The refusal's row goes with the refusal this drops, and with it this button
+                // and the focus it holds: the caret goes to the field first (`focusField`). A
+                // composer that goes `dormant` once the refusal has gone draws no field, and its
+                // host's `onClose` hands the focus on from there: the margin's compose to the
+                // words it was about (`closeComposer`), a decided suggestion's reply box to its
+                // card's preview or its thread's turn (`ThreadCard`'s `endReply`).
+                focusField();
+                discard();
+              }}
               type="button"
             >
               Discard draft

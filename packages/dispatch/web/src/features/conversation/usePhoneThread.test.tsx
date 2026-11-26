@@ -146,7 +146,7 @@ test("the thread composer's send out through a widening reopens the thread it an
 
   try {
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(true);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(true);
     });
     expect(view.result.current.id).toBe("comment-1");
     expect(view.result.current.replyTo).toBe(reply);
@@ -175,7 +175,7 @@ test("a Reply while the tab has a send out is refused and leaves the thread wher
   try {
     const answer = startSend(queryClient, sendKey);
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(false);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(false);
     });
     expect(view.result.current.id).toBeUndefined();
     expect(view.result.current.replyTo).toBeNull();
@@ -193,7 +193,7 @@ test("Back with the thread composer's refusal showing keeps the refusal and its 
 
   try {
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(true);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(true);
     });
     await refuseReply(queryClient, view.result.current.composerKey);
 
@@ -204,7 +204,7 @@ test("Back with the thread composer's refusal showing keeps the refusal and its 
     expect(view.result.current.holds("comment-1")).toBe(true);
 
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(true);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(true);
     });
     expect(view.result.current.id).toBe("comment-1");
     expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
@@ -220,7 +220,7 @@ test("Back from another thread keeps the thread composer's refusal for its own t
 
   try {
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(true);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(true);
     });
     await refuseReply(queryClient, view.result.current.composerKey);
 
@@ -241,7 +241,7 @@ test("ending the thread composer's reply drops a refusal it holds", async () => 
 
   try {
     act(() => {
-      expect(view.result.current.beginReply(reply)).toBe(true);
+      expect(view.result.current.beginReply(reply, document.createElement("button"))).toBe(true);
     });
     await refuseReply(queryClient, view.result.current.composerKey);
 

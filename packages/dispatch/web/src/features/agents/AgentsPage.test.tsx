@@ -3000,6 +3000,30 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
   }
 });
 
+// An Agents row's composer stays drawn under its row when the reply it took ends, and its Cancel
+// reply goes with the reply, the focus it holds with it: the caret is in the composer's field,
+// where Cancel reply put it first (`MentionComposer`'s `cancelReply`), with the row's issue picker
+// drawn again above it.
+test("Cancel reply in an Agents row's composer puts the caret in its field", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ messages: [{ message: message("Can this ship?"), replies: [] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await user.click(within(planner).getByRole("button", { name: "Reply" }));
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+    expect(within(planner).getByRole("button", { name: pickNamed("Choose issue") })).toBeTruthy();
+    expect(within(planner).getByRole("textbox", { name: "Comment" })).toHaveFocus();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // A reply turn quotes the message it answers, which the exchange's read carries with its tree:
 // the quote draws that tree (`excerptTree`) rather than a parse of the parent's markdown. The tree
 // reads differently from the markdown beside it, so a quote drawn from a parse would read

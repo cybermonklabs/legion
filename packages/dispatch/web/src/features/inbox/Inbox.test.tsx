@@ -4535,16 +4535,19 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
 // A Dismiss over a thread near the window's foot, with the row after it standing partly below
 // the window, 700 to 800 px down a 768 px window: the bar's Dismiss after a mark, or the thread's
 // own Dismiss below the column's width. That row takes the focus (R8: the item after the last of
-// the rows acted on is selected and its row has the keyboard focus) while the thread is still
-// drawn, and with no scroll: scrolled into sight where it stands then, below the thread, the view
-// would be carried past the thread's place by the thread's height once the thread goes. Measured
-// in the browser at 390x664 (table-controls.e2e.ts's bulk Dismiss deep in the list): the bar's own
-// focus scrolled the window to the row while the threads stood, and their going left it at the
-// window's top, or 1045 px above it for two. The thread goes, the row moves up into its place,
-// wholly in the reader's sight, and nothing has scrolled.
+// the rows acted on is selected and its row has the keyboard focus), and nothing scrolls: the
+// thread's own Dismiss gives it the focus while the thread is still drawn, and the bar's landing
+// keeps the focus on the thread's own mark while the thread stands and gives it to the row once
+// the thread has gone (`landAtPlace`). Scrolled into sight where it stands while the thread is
+// drawn, below the thread, the row would carry the view past the thread's place by the thread's
+// height once the thread goes. Measured in the browser at 390x664 (table-controls.e2e.ts's bulk
+// Dismiss deep in the list): the bar's own focus scrolled the window to the row while the
+// threads stood, and their going left it at the window's top, or 1045 px above it for two. The
+// thread goes, the row moves up into its place, wholly in the reader's sight, and nothing has
+// scrolled.
 for (const { name, pressOf } of [
   {
-    name: "a bulk Dismiss gives the row after the marked thread the focus with no scroll while the thread still stands above it",
+    name: "a bulk Dismiss gives the row after the marked thread the focus with no scroll once the thread has gone",
     pressOf: async (user: UserEvent, thread: string) => {
       await user.click(markOf(thread));
       await screen.findByText("1 selected");

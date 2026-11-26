@@ -2069,6 +2069,37 @@ test("on a phone, Discard my draft on a reply put away whose comment left the li
   }
 });
 
+// On a phone the thread composer's Cancel reply and Escape end its reply and take the composer,
+// with the focus it holds, out of the thread, which stays open. The focus goes to the turn whose
+// Reply started the reply where the thread draws it: a Reply pressed in the list, which the
+// thread covers, leaves no such turn in the thread, and the thread's Back takes the focus; the
+// Reply of the thread's own turn leaves that turn (`giveBackFromPhoneReply`).
+test("on a phone, the thread composer's Cancel reply and Escape give the focus to the turn whose Reply started the reply, else to the thread's Back", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Back" })).toHaveFocus();
+
+    const turn = dialog.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+    if (turn === null) throw new Error("expected comment-a's turn in the thread");
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    const field = await within(dialog).findByRole("textbox", { name: "Comment" });
+    await waitFor(() => expect(field).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(turn);
+    expect(createComment).not.toHaveBeenCalled();
+  } finally {
+    phone.restore();
+  }
+});
+
 /** What a send the reader stopped says in its composer at its own address: Dispatch has not
  *  confirmed it, and its Retry asks again under its own key. */
 const stoppedText = new SendStoppedError().message;
@@ -4037,6 +4068,37 @@ for (const [kind, turnId] of [
     }
   });
 }
+
+// A reply the docked composer took from a message's Reply, whose message has left the list since:
+// Cancel reply ends it and takes itself away with the focus it holds, and no Reply is left in the
+// page to give the focus back to (`giveBackFromDockedReply`). The composer stays, so the caret is
+// in its field, where Cancel reply put it first (`MentionComposer`'s `cancelReply`).
+test("Cancel reply in the Conversation's docked composer, once the message whose Reply started the reply has left the list, puts the caret in its field", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists(turnLists());
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="message:message-2"]');
+      if (found === null) throw new Error("expected the message:message-2 turn");
+      return found;
+    });
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await within(composer).findByRole("button", { name: "Cancel reply" });
+    stub.lists.messages = [];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(turn.isConnected).toBe(false));
+
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+    expect(within(composer).getByRole("textbox", { exact: true, name: "Comment" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
 
 // A turn the focus is given back to may stand anywhere in the list, far above the docked
 // composer or a long thread's box, and the browser's own scroll of a focused element centres one

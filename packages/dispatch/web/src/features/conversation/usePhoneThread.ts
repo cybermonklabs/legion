@@ -54,10 +54,15 @@ export interface PhoneThread {
   /** Whether the open thread's card has its own reply out: the view's Back holds for it. */
   readonly cardReplySending: boolean;
   readonly open: (commentId: string) => void;
-  /** Answers `target` in its thread, and says whether it did: a send the tab has out refuses it,
-   *  and a refusal the thread composer holds for another comment opens that comment's thread
-   *  instead, where the reader retries or drops it. A thread composer put away shows again. */
-  readonly beginReply: (target: ReplyTarget) => boolean;
+  /** Answers `target` in its thread from `from`, the Reply pressed (`replyFrom`), and says
+   *  whether it did: a send the tab has out refuses it, and a refusal the thread composer holds
+   *  for another comment opens that comment's thread instead, where the reader retries or drops
+   *  it. A thread composer put away shows again. */
+  readonly beginReply: (target: ReplyTarget, from: HTMLElement) => boolean;
+  /** The Reply the thread composer's reply started from (`beginReply`): a comment's Reply in the
+   *  list, which opens its thread, or the one of the thread's own turn. The host gives the focus
+   *  back by it as the reply ends (`ConversationTab`'s `giveBackFromPhoneReply`). */
+  readonly replyFrom: RefObject<HTMLElement | null>;
   /** The docked composer's field (`MentionComposer`'s `intake`), where the thread composer's
    *  Cancel reply puts its draft. */
   readonly dockedIntake: RefObject<DraftIntake | null>;
@@ -108,6 +113,7 @@ export function usePhoneThread({
   const [parked, setParked] = useState<SentDraft>();
   const dockedIntake = useRef<DraftIntake>(null);
   const threadIntake = useRef<DraftIntake>(null);
+  const replyFrom = useRef<HTMLElement | null>(null);
   // Set when the viewport widened past the phone layout while a send from the view was out - its
   // card's own reply, or the thread composer's: the view stays open, full-screen at any width,
   // until the reader leaves it with Back, so the send's draft and its refusal stay where the
@@ -165,8 +171,9 @@ export function usePhoneThread({
     setOutlived(false);
   };
   return {
-    beginReply: (target) => {
+    beginReply: (target, from) => {
       if (sendingNow()) return false;
+      replyFrom.current = from;
       const reply = redirectedReplyTarget(store, composerKey, target);
       setReplyTo(reply);
       setParked(undefined);
@@ -188,6 +195,7 @@ export function usePhoneThread({
     },
     open: setOpenId,
     parked,
+    replyFrom,
     replyTo,
     threadIntake,
   };

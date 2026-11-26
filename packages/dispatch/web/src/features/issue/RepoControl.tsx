@@ -557,15 +557,18 @@ function RepositoryBox({
   // such change that is the reader's is the rest of a clear's end (`landing`). The commit that
   // ends a clear made from the box draws, as the repository the issue resolves to, the one it
   // showed before, marked as not its own, until Dispatch's answer names the one it inherits
-  // (`useIssueRepo`), and the host draws that answer in a later commit: TanStack Query tells it a
-  // timer after the clear's answer. So the text that took the focus from the box as the clear
-  // ended hands it on to "None" or the text drawn in its place by the next change the row draws,
-  // while the focus is still that text's. Between the text and the box, only a focus still on the
-  // document is taken (`focusOnDocument`): anywhere else, the reader put it there.
+  // (`useIssueRepo`), and the host draws that answer in the commit after it: TanStack Query tells
+  // it a timer after the clear's answer. So the text that took the focus from the box as the
+  // clear ended hands it on to "None" or the text drawn in its place in that commit, while the
+  // focus is still that text's, and in no later one: an answer that leaves the issue a repository
+  // it inherits keeps the text, with that repository, and a change drawn after it, another
+  // session's, is no press of the reader's. Between the text and the box, only a focus still on
+  // the document is taken (`focusOnDocument`): anywhere else, the reader put it there.
   const focusHeld = useRef(false);
   const wasText = useRef(showsText);
   // Whether the last commit drew the box for a clear made from it that is out, and whether the
-  // text the row draws took the focus from the box as that clear ended.
+  // text the row draws took the focus from the box as that clear ended, through the commit after
+  // the clear's end alone.
   const clearOut = useRef(false);
   const landing = useRef(false);
   useEffect(() => {
@@ -581,8 +584,11 @@ function RepositoryBox({
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
     landing.current = showsText && clearOut.current;
   }, [showsNone, showsText]);
-  // Recorded after every commit, once the hand-off above has read what the commit before it left.
+  // Recorded after every commit, once the hand-off above has read what the commit before it left:
+  // a commit that follows one with no clear out follows no clear's end either, so the rest of an
+  // earlier clear's end is over.
   useEffect(() => {
+    if (!clearOut.current) landing.current = false;
     clearOut.current = write.pending && repo === null;
   });
   // What the row's text does, "None" and the repository alike: a press draws the box in its
