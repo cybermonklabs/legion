@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  Kubernetes issue pods now hold one clone with only the repository default branch and their own issue branches, without tags. Roles fetch any other branch or tag by name, and the leak guard can scan more commits for a push built on a branch the clone did not fetch.
+
+  Repository caches now hold the default branch alone. On their first start after this release, they narrow and repack an existing cache volume before they become ready or serve a pod.
+time: 2026-11-26T07:27:10Z
+custom:
+    Issue: INFRA-5887
