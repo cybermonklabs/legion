@@ -2366,6 +2366,13 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 		}
 		prefixes = append(prefixes, prefix)
 	}
+	if payload.Fix == 0 {
+		prefix, err := claim.BesideTaskPrefix(row.Issue, payload.Generation, payload.Task)
+		if err != nil {
+			return fmt.Errorf("outbox row %d: %w", row.ID, err)
+		}
+		fixes, prefixes = []int{0}, []string{prefix}
+	}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
