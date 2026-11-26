@@ -57,7 +57,7 @@ func TestTheHubsScrapeKeepsNoConsumerSeriesOnEveryRender(t *testing.T) {
 			rendered := stringList(t, dig(t, renderClusteredHubArgs(t, liveHubKeys{}, row.args()).container(t, "prom-exporter"), "args"))
 			require.Contains(t, rendered, "-jsz=all", "the exporter runs the chart's JetStream arguments")
 			served := serveExporter(t, exporter, rendered)
-			rules := hubMetricRelabeling(t, runClusteredHub(t, row.args()))
+			podMonitoring, rules := hubMetricRelabeling(t, runClusteredHub(t, row.args()))
 
 			// The control uses the same relabeling path, with no rules, before trusting a drop.
 			naming := seriesWhere(applyRelabeling(nil, served), namesConsumer)
@@ -74,7 +74,7 @@ func TestTheHubsScrapeKeepsNoConsumerSeriesOnEveryRender(t *testing.T) {
 			}
 			kept := applyRelabeling(rules, served)
 			if leaked := seriesWhere(kept, namesConsumer); len(leaked) > 0 {
-				t.Fatalf("the hub's scrape keeps %d series naming the consumer %q, %s among them", len(leaked), exporterTestConsumer, seriesText(leaked[0]))
+				t.Fatalf("the PodMonitoring %s keeps %d series naming the consumer %q at the hub's scrape, %s among them", podMonitoring, len(leaked), exporterTestConsumer, seriesText(leaked[0]))
 			}
 			want := seriesWhere(served, func(s promSeries) bool { return !namesConsumer(s) })
 			require.Equal(t, want, kept, "the scrape drops the consumer series and nothing else")
@@ -161,13 +161,16 @@ type relabelRule struct {
 	regex        *regexp.Regexp
 }
 
-// hubMetricRelabeling is the metricRelabeling of the one endpoint of the PodMonitoring the hub
-// registers under m, none when it has none. It fails the test on a rule applyRelabeling does not
-// apply as Prometheus does: an action other than drop or keep, a field other than action,
-// sourceLabels and regex, or a rule that leaves one of the three unset or its regex empty.
-func hubMetricRelabeling(t *testing.T, m *pulumitest.Mocks) []relabelRule {
+// hubMetricRelabeling is the namespace and name of the PodMonitoring the hub registers under m, as
+// <namespace>/<name>, and the metricRelabeling of its one endpoint, none when it has none. It
+// fails the test on a rule applyRelabeling does not apply as Prometheus does: an action other than
+// drop or keep, a field other than action, sourceLabels and regex, or a rule that leaves one of the
+// three unset or its regex empty.
+func hubMetricRelabeling(t *testing.T, m *pulumitest.Mocks) (string, []relabelRule) {
 	t.Helper()
-	endpoints, ok := dig(t, m.One(t, podMonitoringType).Inputs.Mappable(), "spec", "endpoints").([]any)
+	podMonitoring := m.One(t, podMonitoringType).Inputs.Mappable()
+	name := fmt.Sprintf("%v/%v", dig(t, podMonitoring, "metadata", "namespace"), dig(t, podMonitoring, "metadata", "name"))
+	endpoints, ok := dig(t, podMonitoring, "spec", "endpoints").([]any)
 	require.True(t, ok, "the PodMonitoring's endpoints are a list")
 	require.Len(t, endpoints, 1, "the PodMonitoring scrapes one endpoint")
 	endpoint, ok := endpoints[0].(map[string]any)
@@ -193,7 +196,7 @@ func hubMetricRelabeling(t *testing.T, m *pulumitest.Mocks) []relabelRule {
 		require.NoError(t, err, "the rule's regex compiles as the collectors anchor it: %v", fields)
 		rules = append(rules, relabelRule{drop: action == "drop", sourceLabels: stringList(t, fields["sourceLabels"]), regex: regex})
 	}
-	return rules
+	return name, rules
 }
 
 // applyRelabeling is the series of served that rules keep, as Managed Prometheus's collectors
