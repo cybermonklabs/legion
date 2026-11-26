@@ -1,0 +1,174 @@
+{
+  "schema": "prompt-render/2",
+  "layout": {
+    "repository": "cybermonklabs/legion",
+    "release": "legion-v23.27.3",
+    "commit": "0d710db5bc5beb53263975ae525d92ea615ce4d5",
+    "sha256": "523ba4aeb264d60f3ff2a14f2bb0f85879395f5a691b67320eec2f02efd51992"
+  },
+  "public": [
+    {
+      "repository": "cybermonklabs/legion",
+      "requested": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "commit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "parent": "d00ed2547ce52cb9c42fc333410b2ce7381630f0",
+      "branch": "sample-branch",
+      "branchHead": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "isBranchHead": true,
+      "problems": []
+    }
+  ],
+  "renders": [
+    {
+      "private": {
+        "label": "main",
+        "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "project": "ACME",
+      "publicCommit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "shared": {
+        "bytes": 31,
+        "sha256": "20f6dfa23e57f0fbad0dae547ea221a9bbbc96ef3c4eff759bff57c1aebae114"
+      },
+      "own": {
+        "bytes": 32,
+        "sha256": "49a88aed0f0187b1eea482fa43b87e7efe2753bd3a4981f38826c2b3dd427b1a"
+      },
+      "deployment": {
+        "bytes": 97,
+        "sha256": "b987dbac33ce210ba0f4543dc1851954806a0523e76eaba3e6736fd92042b0a2"
+      },
+      "composed": {
+        "bytes": 64,
+        "sha256": "64c50a724a832232cb01af1e43840d9d0ddf8f648c6becfa4c57806faf3ca296"
+      },
+      "references": [],
+      "requiredReadBytes": 0,
+      "facts": [],
+      "launches": [
+        {
+          "launch": "controller-daemon",
+          "role": "controller",
+          "backend": "omp",
+          "parts": [
+            {
+              "path": "packages/daemon/internal/prompts/roles/controller-root.md",
+              "bytes": 3693,
+              "sha256": "c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac"
+            },
+            {
+              "path": "packages/daemon/internal/prompts/go/controller-headless.md",
+              "bytes": 2830,
+              "sha256": "24660f30c9d5fab861c48458fcdc31226f27541d27329b8a9740d578e10e2f5b"
+            }
+          ],
+          "roleText": {
+            "bytes": 6522,
+            "sha256": "23ac2f8161fc300d8cab5c5e404b6e3651a6de4f73b79ef662a9ad76abd7d24b"
+          },
+          "memory": false,
+          "assembled": {
+            "bytes": 6621,
+            "sha256": "b7ae24d00690f205d236294c9a21e54a649cb35ebdb142f7873e403a03482a3c"
+          }
+        }
+      ],
+      "problems": [],
+      "gate": true
+    },
+    {
+      "private": {
+        "label": "main",
+        "commit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "project": "BETA",
+      "publicCommit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "shared": {
+        "bytes": 31,
+        "sha256": "20f6dfa23e57f0fbad0dae547ea221a9bbbc96ef3c4eff759bff57c1aebae114"
+      },
+      "own": {
+        "bytes": 32,
+        "sha256": "b410ce30a7c6b8e90d38d7bcfce099eb44af8c7fabf8733c7fe76640f3ff21b0"
+      },
+      "deployment": {
+        "bytes": 97,
+        "sha256": "b1f16ab358655010d839966995b2409d8aacc1cc3cbcb9413b28a02eeb850012"
+      },
+      "memory": {
+        "bytes": 57,
+        "sha256": "e88aae70ffdd80677d4e949aa7afb55862e982ee21841a33889ce022de6c8edf"
+      },
+      "composed": {
+        "bytes": 64,
+        "sha256": "1607592e9c1864ce582b48f356378ec79401c1343a7ad494404bb725fbc6bf80"
+      },
+      "memoryFile": {
+        "bytes": 28,
+        "sha256": "901fe75905d18a77a9853e87660bf2c0e3d5aeb25d0b1345e9e02b277311024d"
+      },
+      "references": [],
+      "requiredReadBytes": 0,
+      "facts": [],
+      "launches": [
+        {
+          "launch": "controller-daemon",
+          "role": "controller",
+          "backend": "omp",
+          "parts": [
+            {
+              "path": "packages/daemon/internal/prompts/roles/controller-root.md",
+              "bytes": 3693,
+              "sha256": "c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac"
+            },
+            {
+              "path": "packages/daemon/internal/prompts/go/controller-headless.md",
+              "bytes": 2830,
+              "sha256": "24660f30c9d5fab861c48458fcdc31226f27541d27329b8a9740d578e10e2f5b"
+            }
+          ],
+          "roleText": {
+            "bytes": 6522,
+            "sha256": "23ac2f8161fc300d8cab5c5e404b6e3651a6de4f73b79ef662a9ad76abd7d24b"
+          },
+          "memory": false,
+          "assembled": {
+            "bytes": 6621,
+            "sha256": "c2c2e2a4494f38598eb31a056b65c025b1f6ea43e07f483fabcc9c9e8cdfde06"
+          }
+        }
+      ],
+      "problems": [],
+      "gate": true
+    }
+  ],
+  "controls": [
+    {
+      "name": "wrong-project-override",
+      "outcome": "detected",
+      "detail": "ACME<-BETA BETA<-ACME"
+    },
+    {
+      "name": "missing-reference",
+      "outcome": "detected",
+      "detail": "ACME sample/page.md"
+    },
+    {
+      "name": "stale-revision",
+      "outcome": "detected",
+      "detail": "ecd967b17a4e527009dab56f459e0f4e76c0bd25 is the head of sample-branch; its parent d00ed2547ce52cb9c42fc333410b2ce7381630f0 is not"
+    },
+    {
+      "name": "layout-mismatch",
+      "outcome": "detected",
+      "detail": "packages/daemon/internal/prompts/roles/control-extra.md added, packages/daemon/internal/prompts/roles/controller-root.md removed"
+    },
+    {
+      "name": "composer-change",
+      "outcome": "detected",
+      "detail": "packages/daemon/internal/prompts/prompts.go Composer.Compose"
+    }
+  ],
+  "outcome": "pass",
+  "problems": []
+}

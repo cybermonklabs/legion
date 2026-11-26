@@ -1,0 +1,21 @@
+{
+  "base": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+  "base_launches": {
+    "controller-headless/omp": {
+      "Name": "controller-headless/omp",
+      "Role": "controller",
+      "Backend": "omp",
+      "Parts": ["roles/controller-root.md", "go/controller-headless.md"]
+    }
+  },
+  "codeowners_diff": "",
+  "subject_head": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+  "subject_launches": {
+    "controller-headless/omp": {
+      "Name": "controller-headless/omp",
+      "Role": "controller",
+      "Backend": "omp",
+      "Parts": ["roles/controller-root.md", "go/controller-headless.md"]
+    }
+  }
+}
