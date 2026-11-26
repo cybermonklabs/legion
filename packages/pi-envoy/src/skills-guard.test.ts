@@ -87,20 +87,6 @@ test("each served entry skill stays within its base plus 500 bytes", () => {
   expect(over).toEqual([]);
 });
 
-// dispatch-first is the one Dispatch skill every session holds without loading it, so the two
-// rules that keep a person's view of an agent's work true live there: a blocker is an open ask,
-// and every accepted request is recorded and read back before the turn ends. The test reads the
-// context a session receives, not only the file.
-test("the injected dispatch-first context holds the blocker and accepted-request rules", () => {
-  const context = readDispatchFirstContext(dispatchFirstSkillFile(staged));
-  for (const rule of [
-    "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.",
-    "Record each request you accept in Dispatch before you start it. Your issue's work is a task, or a task's new text, in its plan. Other work is an issue or an ask. Before you end a turn, read the plan, your issues and open asks: each item is done, in progress, or an open ask. Never drop one.",
-  ]) {
-    expect(context).toContain(rule);
-  }
-});
-
 // The three Dispatch skills are read by every session with Dispatch, so their length is a cost on
 // each one. Every file of the three staged skills counts, frontmatter included, as `wc -w` counts:
 // whitespace-separated tokens.

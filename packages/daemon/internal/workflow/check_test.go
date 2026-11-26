@@ -707,11 +707,10 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	}
 }
 
-// The check task is held to the retired phrases the composed prompts are held to
-// (internal/prompts' TestNoComposedPromptTeachesAnE2ELineOrAProofArray): what a look proves is a
-// result recorded against the issue's after_merge check, so each of the three verdicts asks for
-// `dispatch result` at the merge commit and none asks for the retired Production: line. The task
-// is prose for a pane, so it carries the phrases without their backticks.
+// What a look proves is a result recorded against the issue's after_merge check, so each of the
+// three verdicts of the check task asks for `dispatch result` at the merge commit and none asks for
+// the retired Production: line. The task is prose for a pane, so it carries the phrases without
+// their backticks.
 func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}

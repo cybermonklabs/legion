@@ -281,12 +281,9 @@ tests read outside the daemon: the contracts fixtures `packages/daemon/internal/
 `packages/daemon/internal/api/state_golden_test.go#golden`,
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
-stats, the tools skill `packages/daemon/internal/prompts/roles_test.go#TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI`
-holds roles/mechanics/headless.md to, the rule file
+stats, the rule file
 `packages/daemon/internal/prompts/roles_test.go#TestNoReusablePartNamesARepositoryOrLibrary`
-runs over each reusable role part, the merge gate
-`packages/daemon/internal/workflow/engine_test.go#TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries`
-holds the reviewer's prompt to, the GitHub App helper
+runs over each reusable role part, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
 docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test.go#stageShippedExample`,
 `packages/daemon/internal/config/controller_test.go#TestLoadControllerReadsTheShippedExample`,
@@ -294,8 +291,8 @@ docs its tests hold to the code (`packages/daemon/cmd/legion/config_example_test
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
-No bun_install and no skills/** - the two pages of skills/ this filter names are all
-this job reads of it: the tests of this suite that packed the two plugins - and so
+No bun_install and no skills/** - this job reads no page of skills/: the tests of
+this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
 this job installs nothing (dispatch://INFRA-1413, A4).
