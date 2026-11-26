@@ -212,7 +212,7 @@ export function duplicateRows<Row extends ListedRow>(
 /** The projects of the stubbed layer, which run a real browser against a recording of the API
  *  (`e2e/stub/`). They are named here rather than in the config so that the config, a bun test
  *  and a tool all read one list: a project added to the layer and missed in the budget test
- *  would leave that test measuring a lane the shard job does not run. */
+ *  would leave that test measuring a lane the pull-request lane does not run. */
 export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
 
 /** The projects the pull-request lane runs, which is what

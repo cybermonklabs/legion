@@ -465,6 +465,28 @@ test("a document whose live connection goes offline before it syncs ends the she
   }
 });
 
+// A first handshake to `/ws/doc` that fails - the room unreachable before the socket ever opened -
+// never goes offline: Hocuspocus reports `disconnected` only for a socket that had connected, so
+// the connection stays "connecting" and the close is all the page hears. That close ends the
+// shell's hold too, not the hold's limit.
+test("a document whose first socket closes before it ever connects ends the shell's hold, not at the hold's limit", async () => {
+  holdUntilContentDraws();
+  const { callbacks, connections, editors, toolbar, view } = renderProofDocument();
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(await holdWithin(0)).toBe("still on");
+    act(() => callbacks.at(-1)?.onClose?.());
+    expect(await act(() => holdWithin(HOLD_LIMIT_MS / 10))).toBe("ended");
+    // The connection never went offline and never synced: the close alone ended the hold.
+    expect(toolbar.current?.connection).toBe("connecting");
+    expect(editors).toHaveLength(0);
+  } finally {
+    view.unmount();
+    contentDrawn();
+    await whenContentDrawn();
+  }
+});
+
 test("the margin's wait for this browser's edits is answered by a report taken after it, and by its bound", async () => {
   const { margin, pending, sync, view } = renderProofDocument();
 

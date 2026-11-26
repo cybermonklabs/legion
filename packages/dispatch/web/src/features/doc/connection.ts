@@ -84,6 +84,12 @@ export interface ConnectionCallbacks {
    * schema. The connection has stopped reconnecting; a fresh read decides what comes next.
    */
   onOutsideSchema(): void;
+  /**
+   * Fires when the document socket closes on any close other than `DOCUMENT_SCHEMA_CLOSE_CODE`,
+   * including an initial handshake that never opened, where Hocuspocus emits no `disconnected`
+   * status.
+   */
+  onClose?(): void;
   onStatus(state: ConnectionState): void;
   /** Reports browser-held edits as IndexedDB changes or this admission's restore completes. */
   onPending(state: PendingState): void;
@@ -234,6 +240,10 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         if (event.code === DOCUMENT_SCHEMA_CLOSE_CODE) {
           provider.disconnect();
           callbacks.onOutsideSchema();
+          return;
+        }
+        if (!destroyed) {
+          callbacks.onClose?.();
         }
       },
       onMessage: ({ event }) => {

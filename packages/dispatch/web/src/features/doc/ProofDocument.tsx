@@ -944,6 +944,13 @@ export function ProofDocument({
               setConnection("connecting");
               refusalTimer = window.setTimeout(admit, delay);
             },
+            // `onStatus("offline")` below fires only for a socket that had connected: a first
+            // handshake that fails reaches the page as a close alone, and a document whose room
+            // is unreachable would otherwise hold the margin and the rest for `HOLD_LIMIT_MS`
+            // (`features/shell/content-drawn.ts`).
+            onClose: () => {
+              if (!failed) contentDrawn();
+            },
             onStatus: (status) => {
               if (!failed) {
                 setConnection(status);
