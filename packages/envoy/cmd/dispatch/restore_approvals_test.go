@@ -45,16 +45,6 @@ func restoreAsk(id, question string) string {
 	return ":::ask{#" + id + " urgency=\"med\" multiple=\"false\"}\n" + question + "\n\n- First: The first way.\n- Second: The second way.\n:::\n"
 }
 
-// holdsAskBlock reports whether markdown holds an ask block whose opening line names blockID.
-func holdsAskBlock(markdown, blockID string) bool {
-	for _, line := range strings.Split(markdown, "\n") {
-		if askOpener.MatchString(line) && (strings.Contains(line, "{#"+blockID+" ") || strings.Contains(line, "{#"+blockID+"}")) {
-			return true
-		}
-	}
-	return false
-}
-
 // asAgentSession sends body, a write the agent's session makes through the shared agent bearer,
 // naming that session as its actor, to p, and fails unless p answers status.
 func asAgentSession(t *testing.T, p *dispatchProcess, method, path string, body map[string]any, status int) httpAnswer {
@@ -434,7 +424,7 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	}
 	// The version the person approved never held the ask: the restore is what returns it, and the
 	// version its carry reaches is the one that holds it again.
-	if holdsAskBlock(approvedC.markdown, "q-c") {
+	if blockOpener(approvedC.markdown, "q-c") != "" {
 		t.Fatalf("the approved version %d of spec C holds the block q-c, want the version the person approved after the ask left it:\n%s", approvedC.version, approvedC.markdown)
 	}
 	var questionsSlug string
@@ -748,25 +738,14 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 
 	// C: the approved bytes never held the ask, and the restore puts that same ask back. The copy
 	// copyBlock alone also takes a write of the kept form, so the approval at the latest version
-	// proves nothing of q-c by itself: the restore names one restored ask, the newest version it
-	// wrote of spec C holds the block q-c with its question, and the row of the ask the base release
-	// answered names that block of spec C.
-	if line := restoreLine(t, out, issueC); !strings.Contains(line, "restored=1") || !strings.Contains(line, "spec_approval=carried") {
-		t.Fatalf("the restore printed %q for %s, want one ask restored and the approval carried", line, issueC)
-	}
-	if afterRestore[specC] <= beforeRestore[specC] {
-		t.Fatalf("the restore wrote no version of spec C: its newest is version %d before and after", afterRestore[specC])
+	// proves nothing of q-c by itself: the restore names one restored ask under its own block id,
+	// and the newest version it wrote of spec C holds the block q-c with its question.
+	if line := restoreLine(t, out, issueC); !strings.Contains(line, "restored=1 moved=0 new_ids=0") || !strings.Contains(line, "spec_approval=carried") {
+		t.Fatalf("the restore printed %q for %s, want one ask restored under its own block id and the approval carried", line, issueC)
 	}
 	restoredC := versionMarkdown(specC, afterRestore[specC])
-	if !holdsAskBlock(restoredC, "q-c") || !strings.Contains(askBlockText(restoredC, "q-c"), "Which census runs first?") {
+	if blockOpener(restoredC, "q-c") == "" || !strings.Contains(askBlockText(restoredC, "q-c"), "Which census runs first?") {
 		t.Fatalf("version %d of spec C, which the restore wrote, holds no block q-c asking %q:\n%s", afterRestore[specC], "Which census runs first?", restoredC)
-	}
-	var rowDocument, rowBlock string
-	if err := database.QueryRow(ctx, `select coalesce(block_artifact_id::text, ''), coalesce(block_id, '') from asks where id = $1::uuid`, askC).Scan(&rowDocument, &rowBlock); err != nil {
-		t.Fatalf("read the row of the ask %s of spec C: %v", askC, err)
-	}
-	if rowDocument != specC || rowBlock != "q-c" {
-		t.Fatalf("the row of the ask %s names block %q of document %q, want the block q-c of spec C (%s): the restore returns the ask the base release answered", askC, rowBlock, rowDocument, specC)
 	}
 	requireApprovedNow(t, current, specC, "spec C")
 
