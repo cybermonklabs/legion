@@ -4,14 +4,12 @@ import { Link } from "react-router-dom";
 import type { Actor, Artifact } from "../../../api/types";
 import {
   pageFocusedRow,
-  pageInkText,
   pageKindBullet,
   pageKindTag,
-  pageMutedText,
   pageOwnWordsRule,
-  pageQuietText,
   pageWordsText,
 } from "../../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText } from "../../../theme/shell-classes";
 import { useAgentText } from "../../refs/AgentName";
 import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";

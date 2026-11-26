@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 
 import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
-import { textPrimaryOnCanvas } from "../../theme/classes";
+import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";

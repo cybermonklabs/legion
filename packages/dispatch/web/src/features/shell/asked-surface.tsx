@@ -9,7 +9,7 @@ import {
 import { flushSync } from "react-dom";
 
 import { inputMethodKey } from "../../lib/input-method-key";
-import { inputClasses, surfaceBg } from "../../theme/classes";
+import { inputClasses, surfaceBg } from "../../theme/shell-classes";
 import { ChunkBoundary } from "./ChunkBoundary";
 import type { Chunk } from "./chunk-component";
 import { importWhenOnline, prefetchChunk, renderChunk } from "./chunk-loads";

@@ -38,6 +38,7 @@ import {
   projectDocumentRoute,
   projectKeyPattern,
 } from "./page-routes";
+import { partyReference, roleTokenOnlyPattern } from "./party-mention";
 import { pageInBound, routeInBound } from "./target-id";
 
 /** An artifact of an agent's conversation - a picture sent in a direct message on the Agents
@@ -132,13 +133,6 @@ const agentArtifactPathPattern = /^\/agents\/([^/]+)\/artifacts\/([^/]+)$/;
 /** A component's reference after `dispatch://<PROJECT>/`: the component id, the lowercase slug
  *  the server reads (`text.ComponentIDPattern`). */
 const componentReferencePattern = /^component\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
-/** A role's token, the charset a `role:<token>` delivery route is written in (the server's
- *  `model.ParseRoute`). */
-const roleTokenOnlyPattern = /^[a-z0-9-]+$/;
-/** A session id a `session:<id>` delivery route is written with, the server's `model.ParseRoute`
- *  again. It is narrower than the ids a reference may name (`SESSION_ID_PATTERN`, which takes
- *  `.` and `:` among the rest), so a body can write an agent address no route reaches. */
-const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
 /** A person's login: their email lowercased, the stored form of a login (the server's
  *  `model.CanonicalLogin`). A login written any other way names nobody Dispatch holds. */
 const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
@@ -449,15 +443,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
       return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
         route.version === undefined ? "" : `@v${route.version}`
       }`;
-    // A party is written as it is read, its name needing no encoding: a session id carries none
-    // of the characters a reference ends at, a role token is `[a-z0-9-]` and a login is a
-    // lowercased email.
     case "agent-session":
-      return `dispatch://agent/${route.session}`;
     case "role":
-      return `dispatch://role/${route.role}`;
     case "person":
-      return `dispatch://person/${route.login}`;
+      return partyReference(route);
     case "component":
       return `dispatch://${route.project}/component/${route.id}`;
   }
@@ -503,46 +492,6 @@ export function isAgentArtifact<T extends Pick<Artifact, "session_id">>(
   artifact: T
 ): artifact is T & { readonly session_id: string } {
   return artifact.session_id !== undefined && artifact.session_id !== null;
-}
-
-/** The session id a `session:<id>` delivery address names, or undefined for any other address
- *  (a `role:` address). */
-export function sessionOfAddress(address: string): string | undefined {
-  return address.startsWith("session:") ? address.slice("session:".length) : undefined;
-}
-
-/** The party a delivery address names, written out kind by kind: `session:<id>` an agent's
- *  session and `role:<token>` a role, as the server's `model.ParseRoute` reads them
- *  (`internal/dispatch/model/model.go`), the grammar it holds every mention target to
- *  (`api.checkMentionRoute`). Undefined for an address of any other form, which no route
- *  reaches. A body can name a party outside this grammar - an agent reference takes the wider
- *  `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
- *  rather than listing it as one who is told (`party-references.ts`). A kind added to this
- *  grammar is named here or it is no party, rather than falling to whichever arm is last. */
-export function partyOfAddress(address: string): PartyRoute | undefined {
-  const session = sessionOfAddress(address);
-  if (session !== undefined) {
-    return sessionRouteIDPattern.test(session) ? { kind: "agent-session", session } : undefined;
-  }
-  if (address.startsWith("role:")) {
-    const role = address.slice("role:".length);
-    return roleTokenOnlyPattern.test(role) ? { kind: "role", role } : undefined;
-  }
-  return undefined;
-}
-
-/** The delivery address a party is reached at, or undefined for one no address reaches: a
- *  person, who reads the record and is never a delivering party (R5), and an agent whose
- *  session id is outside the grammar above. */
-export function deliveryAddressOf(route: PartyRoute): string | undefined {
-  switch (route.kind) {
-    case "agent-session":
-      return sessionRouteIDPattern.test(route.session) ? `session:${route.session}` : undefined;
-    case "role":
-      return roleTokenOnlyPattern.test(route.role) ? `role:${route.role}` : undefined;
-    case "person":
-      return undefined;
-  }
 }
 
 /** The route a document is referenced and linked by: an issue's primary document is its `spec`,

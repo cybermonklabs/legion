@@ -4,15 +4,14 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { primaryButtonDisabled, textMutedOnCanvas } from "../../theme/classes";
 import {
   dangerText,
   inputClasses,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";

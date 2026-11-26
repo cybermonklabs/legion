@@ -2,7 +2,8 @@ import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { IssueChild } from "../../api/types";
-import { pageInkText, pageKindTag, pageQuietText } from "../../theme/classes";
+import { pageKindTag } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/page-routes";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";

@@ -2,7 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
 import { draftReading, parsedLinkWords } from "./parsed-references";
-import { partyMention } from "./party-references";
+import { partyLink, partyMention } from "./party-mention";
 import {
   applyInsertion,
   groupRows,
@@ -11,7 +11,6 @@ import {
   kindOrder,
   matchesQuery,
   orderedRows,
-  partyLink,
   REF_PICKER_HEADINGS,
   type RefPickerRow,
   readTrigger,

@@ -2,16 +2,15 @@ import type { ReactNode } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
+import { pageStateText, pageWaitingChip } from "../../theme/classes";
 import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
-  pageStateText,
-  pageWaitingChip,
   textMutedOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { sessionOfAddress } from "../refs/routes";
+import { sessionOfAddress } from "../refs/party-mention";
 
 // Inside `NoTooltips` every marker here is the new issue page's warning, the waiting orange of
 // what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach

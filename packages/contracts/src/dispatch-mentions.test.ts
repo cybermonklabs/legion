@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
+import { MENTION_SIGN, mentionName } from "./dispatch-mention-sign";
 import {
   HARD_BREAK_PIECE,
   isMentionWords,
-  MENTION_SIGN,
   mentionDrawn,
-  mentionName,
   referenceReading,
   type WordsFormatting,
   wordsFormatting,

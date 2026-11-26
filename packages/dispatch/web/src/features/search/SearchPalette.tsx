@@ -16,24 +16,26 @@ import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
-  backdrop50,
   badgeLow,
-  borderDefault,
-  card,
-  inputClasses,
-  kbdHint,
   searchHitBg,
   searchHitText,
   selectedCardBg,
   selectedCardBorder,
-  surfaceMutedBg,
   textMutedOnSelectedCard,
-  textMutedOnSurface,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import {
+  backdrop50,
+  borderDefault,
+  card,
+  inputClasses,
+  kbdHint,
+  surfaceMutedBg,
+  textMutedOnSurface,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";

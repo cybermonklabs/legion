@@ -4,19 +4,21 @@ import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { DataTableGroupRow, drawsPinnedDivider } from "../../components/DataTable";
 import {
-  borderDefault,
-  focusVisibleRing,
   issueStatusScale,
-  linkHoverText,
-  linkText,
   selectedCardBg,
-  surfaceBg,
-  surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnCanvas,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  focusVisibleRing,
+  linkHoverText,
+  linkText,
+  surfaceBg,
+  surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { buildIssuePath } from "../refs/page-routes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { Popover } from "./issues-table-controls";

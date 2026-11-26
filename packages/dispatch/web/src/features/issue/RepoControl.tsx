@@ -6,19 +6,21 @@ import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
-  dangerText,
   focusBorder,
-  focusVisibleRing,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
+  pagePaperBg,
+  textSecondaryHoverToPrimary,
+} from "../../theme/classes";
+import {
+  dangerText,
+  focusVisibleRing,
+  inputClasses,
   pageInkText,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
-  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import type { EVENT_FRESH } from "../refs/reference-target";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";

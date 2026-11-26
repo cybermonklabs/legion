@@ -2,30 +2,32 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState 
 
 import { focusOnDocument } from "../features/shell/roving";
 import {
-  borderDefault,
-  borderStrong,
-  card,
   cardHoverBorder,
-  dangerText,
   focusBorder,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
-  pageInkText,
-  pageLineBorder,
   pageMarkBg,
-  pageMutedText,
   pagePaneBg,
   pagePaperBg,
-  pageQuietText,
   pageRowHoverBg,
   selectedCardBg,
   selectedCardBorder,
+} from "../theme/classes";
+import {
+  borderDefault,
+  borderStrong,
+  card,
+  dangerText,
+  inputClasses,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
   surfaceMutedBg,
   textMutedOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";

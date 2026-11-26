@@ -8,7 +8,7 @@ import { QueryError } from "../../components/QueryError";
 import { Tabs, tabButtonId } from "../../components/Tabs";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { useSearchParamsUpdate } from "../../lib/url-array-params";
-import { textPrimaryOnCanvas } from "../../theme/classes";
+import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import { IssuesTable } from "../project/IssuesTable";
 import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";

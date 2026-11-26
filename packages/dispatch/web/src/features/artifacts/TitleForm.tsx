@@ -1,7 +1,7 @@
 import type { FormEvent, ReactNode } from "react";
 
 import { RefusableButton } from "../../components/RefusableButton";
-import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
+import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/shell-classes";
 
 /**
  * The strip one title control holds, in both its states: closed it shows `idle`, the single

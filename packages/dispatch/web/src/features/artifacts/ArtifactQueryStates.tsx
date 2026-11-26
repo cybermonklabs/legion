@@ -3,12 +3,8 @@ import { Link } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
-import {
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { linkHoverText, linkText, textPrimaryOnCanvas } from "../../theme/shell-classes";
 
 /** The part of an artifact query its page's loading and failure states read. */
 interface ArtifactQueryState {

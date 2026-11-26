@@ -44,17 +44,19 @@ import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
+  quoteAccentBorder,
+  quoteBodyText,
+  textMutedOnCanvas,
+  textPrimaryOnSurfaceMuted,
+} from "../../theme/classes";
+import {
   borderDefault,
   dangerText,
   linkHoverText,
   linkText,
-  quoteAccentBorder,
-  quoteBodyText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";

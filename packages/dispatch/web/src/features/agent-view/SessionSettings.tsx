@@ -10,7 +10,8 @@ import {
 
 import { pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
-import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { inputClasses } from "../../theme/shell-classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { textSourceOf } from "../refs/text-references";
 import type { SessionSettingsView } from "./conversation";

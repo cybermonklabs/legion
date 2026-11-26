@@ -9,19 +9,18 @@ import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
+import { enabledCardHoverBorder, textPrimaryOnSurfaceMuted } from "../../theme/classes";
 import {
   borderDefault,
   borderStrong,
-  enabledCardHoverBorder,
   pageInkText,
   pageLineBorder,
   pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";

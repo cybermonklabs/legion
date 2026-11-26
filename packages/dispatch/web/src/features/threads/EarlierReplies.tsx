@@ -1,6 +1,6 @@
 import { type ReactNode, useId } from "react";
 
-import { linkHoverText, linkText } from "../../theme/classes";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
 import { earlierRepliesLabel } from "./thread-layout";
 
 /**

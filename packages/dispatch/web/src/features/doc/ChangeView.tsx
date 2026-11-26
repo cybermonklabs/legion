@@ -1,14 +1,8 @@
 import { type ReactNode, useMemo, useState } from "react";
 
 import { DisclosureToggle } from "../../components/DisclosureToggle";
-import {
-  card,
-  diffAddedBg,
-  diffAddedText,
-  diffRemovedBg,
-  diffRemovedText,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { diffAddedBg, diffAddedText, diffRemovedBg, diffRemovedText } from "../../theme/classes";
+import { card, textSecondaryOnSurface } from "../../theme/shell-classes";
 import {
   type ChangeKind,
   type ChangePair,

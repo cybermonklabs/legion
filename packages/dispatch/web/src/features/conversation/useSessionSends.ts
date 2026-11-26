@@ -2,6 +2,7 @@ import type { MessageDeliveryMode } from "@legion/contracts";
 import type { MutationKey } from "@tanstack/react-query";
 
 import { newSendKey } from "../../lib/send-key";
+import { outgoingDraft } from "../refs/party-references";
 import { type HeldSend, useHeldSendOutcomes, useHeldSends, useHeldSendsTo } from "./held-sends";
 
 export interface SessionSends {
@@ -59,7 +60,7 @@ export function useSessionSends(sessionId: string, landed?: () => void): Session
       store.send([...name, sendKey], {
         anchor: undefined,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body, replacement: "" },
+        draft: outgoingDraft({ body, replacement: "" }),
         edit: undefined,
         kind: "comment",
         owner: { kind: "session", sessionId },

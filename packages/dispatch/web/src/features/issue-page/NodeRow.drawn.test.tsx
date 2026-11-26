@@ -3088,7 +3088,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "A reply on its way", replacement: "" },
+    draft: { body: "A reply on its way", namesParty: false, replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

@@ -152,6 +152,12 @@ export default defineConfig({
       "@legion/contracts/dispatch-href": fileURLToPath(
         new URL("../../contracts/src/dispatch-href.ts", import.meta.url)
       ),
+      "@legion/contracts/dispatch-issue-tabs": fileURLToPath(
+        new URL("../../contracts/src/dispatch-issue-tabs.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-mention-sign": fileURLToPath(
+        new URL("../../contracts/src/dispatch-mention-sign.ts", import.meta.url)
+      ),
       "@legion/contracts/dispatch-mentions": fileURLToPath(
         new URL("../../contracts/src/dispatch-mentions.ts", import.meta.url)
       ),

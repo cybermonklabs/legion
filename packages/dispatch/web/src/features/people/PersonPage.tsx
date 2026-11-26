@@ -8,15 +8,15 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
   dangerText,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { parseIssuePath } from "../refs/page-routes";

@@ -9,7 +9,7 @@ import {
   pageMutedText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip, approvalVersion } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";

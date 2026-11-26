@@ -17,12 +17,16 @@ import { agentMessagesQuery } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { outgoingDraft } from "../refs/party-references";
 import {
   FIRST_BACKOFF_MS,
   SEND_DEADLINE_MS,
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
+// Every kind the app's take-up waits for, the composer's among them as the kinds chunk finishes
+// it: the one that reads a send an older build kept (`kinds.ts`).
+import "../writes/kinds";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
 import { carriedIdsOf } from "./block-spans";
 import { type HeldSend, type HeldSends, heldSends, stoppable } from "./held-sends";
@@ -48,7 +52,7 @@ const sentMessage = {
  *  default save. */
 const editSend: SentRequest = {
   ...request,
-  draft: { body: "Alpha\n\nBeta", replacement: "" },
+  draft: { body: "Alpha\n\nBeta", namesParty: false, replacement: "" },
   edit: {
     carried: carriedIdsOf(
       {
@@ -202,12 +206,15 @@ test("a keep of the draft a refused send holds already writes nothing, and a cha
       options: [{ description: "Before the cut", label: "Ship it" }, { label: "Hold it" }],
       urgency: "high",
     },
-    draft: { body: "Ship the relay?", replacement: "" },
+    draft: { body: "Ship the relay?", namesParty: false, replacement: "" },
     kind: "ask",
     sendKey: "send-ask",
   };
   const name: MutationKey = ["conversation-composer", "CORE-1"];
-  const changed = { ask: asked.ask, draft: { body: "Ship the relay today?", replacement: "" } };
+  const changed = {
+    ask: asked.ask,
+    draft: { body: "Ship the relay today?", namesParty: false, replacement: "" },
+  };
   const told = jest.fn();
   const store = heldOf(tab).held;
   const stop = store.subscribe(told);
@@ -390,9 +397,10 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
-// A record the build before this one wrote keeps a `mentions` array beside a body holding only
-// the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
-// written back into the body as the party link naming it: the draft reads as who it addresses
+// A record an older build wrote keeps a `mentions` array beside a body holding only the cosmetic
+// `@Planner` that build drew, and no answer of whether the text names a party, which only the
+// kinds chunk's composer kind reads (`kinds.ts`). A mention is a reference now, so each of those
+// is written back into the body as the party link naming it: the draft reads as who it addresses
 // and resends to them, where dropping the array would deliver it to nobody.
 test("a send kept with the old build's mentions restores them as the mentions that name them", async () => {
   const tab = keptTab();
@@ -402,7 +410,7 @@ test("a send kept with the old build's mentions restores them as the mentions th
   const key: MutationKey = ["conversation", "CORE-1"];
   const seeded: SentRequest = {
     ...request,
-    draft: { body: "@Planner please look, @Gone.", replacement: "" },
+    draft: { body: "@Planner please look, @Gone.", namesParty: false, replacement: "" },
     sendKey: "send-old",
   };
   try {
@@ -411,8 +419,10 @@ test("a send kept with the old build's mentions restores them as the mentions th
     const kept = tab.kept("send-old") as {
       detail: { draft: { draft: object }; request: { draft: object } };
     };
+    // That build kept no answer of the draft's parties (`OutgoingDraft.namesParty`).
     const withMentions = (draft: object) => ({
       ...draft,
+      namesParty: undefined,
       mentions: [
         { end: 8, start: 0, target: "session:planner-session", text: "Planner" },
         // A span the reader has since edited is their prose, and a target naming no party is
@@ -438,8 +448,13 @@ test("a send kept with the old build's mentions restores them as the mentions th
     await settle();
     // Each old `@Name` comes back as the party's mention, which reads as its current name.
     const restored = "[@Planner](dispatch://agent/planner-session) please look, @Gone.";
-    expect(after.get(key)?.request.draft.body).toBe(restored);
+    expect(after.get(key)?.request.draft).toEqual({
+      body: restored,
+      namesParty: true,
+      replacement: "",
+    });
     expect(after.get(key)?.draft.draft.body).toBe(restored);
+    expect(after.get(key)?.draft.draft.namesParty).toBe(true);
   } finally {
     createComment.mockRestore();
     tab.close();
@@ -447,9 +462,9 @@ test("a send kept with the old build's mentions restores them as the mentions th
 });
 
 /** The body a send comes back with when the record kept beside it holds `mentions`: the draft is
- *  seeded, its record rewritten as the build before this one wrote it, and the send put back far
- *  enough that the page does not make it again. The request's body and the composer's are the
- *  same restore, so the caller reads one and the test reads both. */
+ *  seeded, its record rewritten as an older build wrote it, with no answer of its parties, and
+ *  the send put back far enough that the page does not make it again. The request's body and the
+ *  composer's are the same restore, so the caller reads one and the test reads both. */
 async function restoredBody(
   tab: KeptTab,
   key: MutationKey,
@@ -457,12 +472,16 @@ async function restoredBody(
   body: string,
   mentions: readonly object[]
 ): Promise<{ draft: string | undefined; request: string | undefined }> {
-  heldOf(tab).held.send(key, { ...request, draft: { body, replacement: "" }, sendKey });
+  heldOf(tab).held.send(key, {
+    ...request,
+    draft: { body, namesParty: false, replacement: "" },
+    sendKey,
+  });
   await settle();
   const kept = tab.kept(sendKey) as {
     detail: { draft: { draft: object }; request: { draft: object } };
   };
-  const withMentions = (draft: object) => ({ ...draft, mentions });
+  const withMentions = (draft: object) => ({ ...draft, mentions, namesParty: undefined });
   tab.storage.setItem(
     `dispatch.write:${sendKey}`,
     JSON.stringify({
@@ -842,7 +861,7 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
       await settle();
       first.held.send(aheadKey, {
         ...agentSend,
-        draft: { body: "Ahead", replacement: "" },
+        draft: { body: "Ahead", namesParty: false, replacement: "" },
         sendKey: "send-ahead",
       });
       await settle();
@@ -883,4 +902,69 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
       expect(kept).toMatchObject({ carried: "POST", request: null, sent: false });
     }
   });
+});
+
+/** A comment that names the Planner's session, as a composer writes the mention (`partyLink`). */
+const NAMES_PLANNER = "[@Planner](dispatch://agent/planner-session) please look";
+
+// The store's own Retry - a session row's, the margin's re-send - sends what the reader wrote
+// over the refusal, which their composer kept with whether that text names a party, read where
+// the grammar of references is loaded (`outgoingDraft`, `useKeptDrafts`): the store reads none.
+// So an edit that adds a mention goes out in the mode the mentioned party is told in.
+test("the store's Retry of a refused comment whose draft the reader edited to mention a party sends it in the mode that party is told in", async () => {
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(verdict)
+    .mockResolvedValue({} as never);
+  const { held } = heldOf();
+  const name: MutationKey = ["conversation-composer", "CORE-1"];
+  try {
+    held.send(name, request);
+    await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
+    held.keep(name, {
+      ask: request.ask,
+      draft: outgoingDraft({ body: NAMES_PLANNER, replacement: "" }),
+    });
+    retryHeld(held, name);
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map((call) => call[1])).toEqual([
+      { body: "Held" },
+      { body: NAMES_PLANNER, delivery: "steer" },
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
+});
+
+// A Retry of a refused comment the reader left as it was sends the request the press made, with
+// the answer of its parties the press stored, which the send reads rather than its text. The
+// second send's stored answer says it names nobody, though its text names the Planner: it goes
+// with no mode, as the press made it.
+test("the store's Retry of a refused comment left as it was sends the answer of its parties its press stored, not one read again from its text", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const { held } = heldOf();
+  const sends = [
+    { name: ["conversation-composer", "CORE-1"], namesParty: true },
+    { name: ["conversation-composer", "CORE-2"], namesParty: false },
+  ] as const;
+  try {
+    for (const [at, { name, namesParty }] of sends.entries()) {
+      held.send(name, {
+        ...request,
+        draft: { body: NAMES_PLANNER, namesParty, replacement: "" },
+        sendKey: `send-${at}`,
+      });
+      await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
+      retryHeld(held, name);
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2 * (at + 1)));
+      await waitFor(() => expect(held.get(name)?.status).toBe("refused"));
+    }
+    expect(createComment.mock.calls.map((call) => call[1])).toEqual([
+      { body: NAMES_PLANNER, delivery: "steer" },
+      { body: NAMES_PLANNER, delivery: "steer" },
+      { body: NAMES_PLANNER },
+      { body: NAMES_PLANNER },
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
 });

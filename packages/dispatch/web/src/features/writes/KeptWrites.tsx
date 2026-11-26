@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 
-import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../../theme/classes";
+import {
+  dangerText,
+  secondaryButtonCompact,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import type { KeptWrite } from "./write-storage";
 import { useWrites, type Write } from "./write-store";
 

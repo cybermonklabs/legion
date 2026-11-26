@@ -3,15 +3,13 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import type { Ask } from "../../api/types";
+import { askBlockPill, badgeLow, textPrimaryOnSurface } from "../../theme/classes";
 import {
-  askBlockPill,
   badgeBlocking,
-  badgeLow,
   dangerText,
   surfaceBg,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AskCard } from "../inbox/AskCard";
 import { AskCompletionCard } from "../inbox/AskCompletionCard";
 import { AskOptionList } from "../inbox/AskOptionList";

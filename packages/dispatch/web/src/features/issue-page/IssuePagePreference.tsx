@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect } from "react";
 
-import { checkboxAccent, textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
+import { checkboxAccent } from "../../theme/classes";
+import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/shell-classes";
 import { prefetchChunk } from "../shell/chunk-loads";
 import { useIssuePageChoice } from "./choice";
 import { loadFrame } from "./frame-chunk";

@@ -26,11 +26,11 @@
  *
  * Which address names a party is the reader's own grammar, so each caller says that much
  * (`WrittenReference.party`); everything else about the rule is here, so a reader that drew a
- * mention one way and an editor that offered it another cannot both compile.
+ * mention one way and an editor that offered it another cannot both compile. The sign and the
+ * words a mention draws (`MENTION_SIGN`, `mentionName`) are a module of their own
+ * (`dispatch-mention-sign.ts`), which a writer of mentions reads without the rest of this one.
  */
-
-/** The sign a mention's words open with. */
-export const MENTION_SIGN = "@";
+import { MENTION_SIGN, mentionName } from "./dispatch-mention-sign";
 
 /** What a reference reads as, by the one rule every record is read under (R8):
  *  - `name`: the target's current name - an address standing on its own, and a link whose words
@@ -144,11 +144,6 @@ export function referenceReading({
     return "name";
   }
   return party && isMentionWords(words, formatting) ? "mention" : "words";
-}
-
-/** The words a mention of a party named `name` draws: the mention sign, then the name. */
-export function mentionName(name: string): string {
-  return `${MENTION_SIGN}${name}`;
 }
 
 /** What a party's target answered, as far as a mention of it reads: its current name, and

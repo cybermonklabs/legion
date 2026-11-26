@@ -12,16 +12,18 @@ import {
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
+  surfaceMutedStrongBg,
+  textMutedOnCanvas,
+  textSecondaryHoverToPrimary,
+} from "../../theme/classes";
+import {
   borderDefault,
   dangerText,
   surfaceMutedBg,
-  surfaceMutedStrongBg,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-  textSecondaryHoverToPrimary,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { BlockedOnYou } from "../inbox/BlockedOnYouLink";
 import { buildProjectPath, parseProjectPath } from "../refs/page-routes";

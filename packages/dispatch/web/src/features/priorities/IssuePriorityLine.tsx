@@ -9,18 +9,20 @@ import type { Issue, PriorityRow } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
-  dangerText,
-  focusVisibleRing,
   pageFailedText,
-  pageInkText,
-  pageMutedText,
   pagePaneBg,
-  pageQuietText,
-  secondaryButtonBorder,
   secondaryButtonGroupDisabledText,
   secondaryButtonGroupHoverBorder,
-  secondaryButtonText,
 } from "../../theme/classes";
+import {
+  dangerText,
+  focusVisibleRing,
+  pageInkText,
+  pageMutedText,
+  pageQuietText,
+  secondaryButtonBorder,
+  secondaryButtonText,
+} from "../../theme/shell-classes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";

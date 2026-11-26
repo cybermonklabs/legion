@@ -15,7 +15,7 @@ import {
   primaryButtonHoverBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../../theme/classes";
+} from "../../../theme/shell-classes";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
 import { buildIssuePath } from "../../refs/page-routes";

@@ -19,18 +19,17 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { capSearchQuery } from "../../lib/query-param";
+import { checkboxAccent, textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
-  checkboxAccent,
   dangerText,
   focusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";

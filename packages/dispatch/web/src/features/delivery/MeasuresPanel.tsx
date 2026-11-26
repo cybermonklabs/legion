@@ -13,18 +13,20 @@ import { Link } from "react-router-dom";
 import type { DeliveryMeasuresResponse } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import {
-  borderDefault,
-  dangerText,
-  linkText,
   successText,
-  surfaceBg,
-  surfaceMutedBg,
   textMutedOnCanvas,
-  textMutedOnSurface,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  dangerText,
+  linkText,
+  surfaceBg,
+  surfaceMutedBg,
+  textMutedOnSurface,
+  textMutedOnSurfaceMuted,
+} from "../../theme/shell-classes";
 import { buildIssuePath } from "../refs/page-routes";
 import { formatMinutes, pct } from "./lib/format";
 import { Sparkbars } from "./Sparkbars";

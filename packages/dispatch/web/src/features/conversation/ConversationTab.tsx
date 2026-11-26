@@ -21,6 +21,12 @@ import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
+  surfaceMutedHoverBg,
+  textMutedOnCanvas,
+  textPrimaryOnSurface,
+  textPrimaryOnSurfaceMuted,
+} from "../../theme/classes";
+import {
   borderDefault,
   card,
   dangerText,
@@ -29,15 +35,11 @@ import {
   primaryButtonHoverBg,
   secondaryButtonBorder,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
-  textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
@@ -57,8 +59,9 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { PostBody } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
 import { buildIssuePath } from "../refs/page-routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import { documentItemPath, sessionOfAddress } from "../refs/routes";
+import { documentItemPath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";

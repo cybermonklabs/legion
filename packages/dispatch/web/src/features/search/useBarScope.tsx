@@ -1,7 +1,11 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { useLocation } from "react-router-dom";
 
-import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
+import {
+  borderDefault,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { documentRouteOf, routeProjectOf } from "../refs/page-routes";
 import { KeyHints } from "../shell/ShortcutHelp";

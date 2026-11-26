@@ -6,7 +6,7 @@ import {
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
-import { textMutedOnSurfaceMuted } from "../../theme/classes";
+import { textMutedOnSurfaceMuted } from "../../theme/shell-classes";
 import { useTableLayout } from "../project/issues-table-layout";
 import { NOTHING_KEPT, usedOn } from "./field-arrival";
 import { ChangedMeanwhile } from "./InPlaceField";

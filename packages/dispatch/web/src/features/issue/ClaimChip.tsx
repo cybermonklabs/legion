@@ -6,7 +6,7 @@ import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName, usePillWrapped } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import { pageInkText } from "../../theme/classes";
+import { pageInkText } from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { exactTimeLabel, Timestamp } from "../refs/Timestamp";

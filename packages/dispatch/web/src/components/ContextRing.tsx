@@ -1,15 +1,17 @@
 import { type ReactNode, useRef } from "react";
 
 import {
-  card,
   inlineWarningText,
   progressTrack,
   surfaceMutedHoverBg,
-  textMutedOnSurface,
   textPrimaryOnSurface,
+} from "../theme/classes";
+import {
+  card,
+  textMutedOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { usePanelDismiss } from "./usePanelDismiss";
 
 /** The two figures a session's `context` frame carries (INFRA-812). */

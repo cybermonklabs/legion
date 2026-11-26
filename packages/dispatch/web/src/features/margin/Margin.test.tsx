@@ -1889,7 +1889,7 @@ test("a stopped compose that gives way to a newer one is offered saying it may h
       heldSends(queryClient).send(marginComposeSendKey(specArtifact.id), {
         anchor: markComposerAnchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "Stopped words", replacement: "" },
+        draft: { body: "Stopped words", namesParty: false, replacement: "" },
         edit: undefined,
         kind: "comment",
         owner,

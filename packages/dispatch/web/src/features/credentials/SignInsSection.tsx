@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 import { shortThumbprint, signInsQuery } from "./signins";

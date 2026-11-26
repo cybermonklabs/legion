@@ -2,7 +2,7 @@ import { type ReactNode, useId, useState } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
-import { linkHoverText, linkText } from "../../theme/classes";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";

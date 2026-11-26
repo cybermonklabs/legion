@@ -49,6 +49,16 @@
       "bun": "./src/dispatch-href.ts",
       "default": "./dist/dispatch-href.js"
     },
+    "./dispatch-issue-tabs": {
+      "types": "./src/dispatch-issue-tabs.ts",
+      "bun": "./src/dispatch-issue-tabs.ts",
+      "default": "./dist/dispatch-issue-tabs.js"
+    },
+    "./dispatch-mention-sign": {
+      "types": "./src/dispatch-mention-sign.ts",
+      "bun": "./src/dispatch-mention-sign.ts",
+      "default": "./dist/dispatch-mention-sign.js"
+    },
     "./dispatch-mentions": {
       "types": "./src/dispatch-mentions.ts",
       "bun": "./src/dispatch-mentions.ts",
@@ -147,8 +157,8 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/dispatch-tools-constants.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/actor-label.ts src/agent-stream.ts src/claim-holds.ts src/dispatch-api.ts src/dispatch-api-constants.ts src/dispatch-api-graph.ts src/dispatch-block-ref.ts src/dispatch-href.ts src/dispatch-mentions.ts src/dispatch-text-references.ts src/dispatch-text-rules.ts src/dispatch-writing-boxes.ts src/legion-roles.ts src/related-forms.ts src/reference-spans.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts --root src --outdir dist --target bun --format esm",
-    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/dispatch-tools-constants.ts src/actor-label.ts src/agent-stream.ts src/claim-holds.ts src/dispatch-api-constants.ts src/dispatch-api-graph.ts src/dispatch-block-ref.ts src/dispatch-href.ts src/dispatch-mentions.ts src/dispatch-text-references.ts src/dispatch-text-rules.ts src/dispatch-writing-boxes.ts src/legion-roles.ts src/related-forms.ts src/reference-spans.ts --root src --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/dispatch-tools-constants.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/actor-label.ts src/agent-stream.ts src/claim-holds.ts src/dispatch-api.ts src/dispatch-api-constants.ts src/dispatch-api-graph.ts src/dispatch-block-ref.ts src/dispatch-href.ts src/dispatch-issue-tabs.ts src/dispatch-mention-sign.ts src/dispatch-mentions.ts src/dispatch-text-references.ts src/dispatch-text-rules.ts src/dispatch-writing-boxes.ts src/legion-roles.ts src/related-forms.ts src/reference-spans.ts src/log-text.ts src/held-secrets.ts src/daemon-contract.ts src/daemon-api-records.ts --root src --outdir dist --target bun --format esm",
+    "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/dispatch-tools-constants.ts src/actor-label.ts src/agent-stream.ts src/claim-holds.ts src/dispatch-api-constants.ts src/dispatch-api-graph.ts src/dispatch-block-ref.ts src/dispatch-href.ts src/dispatch-issue-tabs.ts src/dispatch-mention-sign.ts src/dispatch-mentions.ts src/dispatch-text-references.ts src/dispatch-text-rules.ts src/dispatch-writing-boxes.ts src/legion-roles.ts src/related-forms.ts src/reference-spans.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"

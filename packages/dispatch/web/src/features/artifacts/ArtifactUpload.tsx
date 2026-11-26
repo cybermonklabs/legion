@@ -24,9 +24,8 @@ import type { Artifact, Version } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { calloutInfoBg, calloutInfoBorder } from "../../theme/classes";
 import {
-  calloutInfoBg,
-  calloutInfoBorder,
   dangerText,
   inputClasses,
   linkHoverText,
@@ -36,7 +35,7 @@ import {
   secondaryButtonText,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
 import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";

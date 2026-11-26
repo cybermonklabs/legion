@@ -14,18 +14,20 @@ import {
 import {
   badgeHigh,
   badgePrimary,
+  pageFailedText,
+  pageLabelChip,
+  pageWaitingChip,
+} from "../../theme/classes";
+import {
   dangerText,
   linkHoverText,
   linkText,
-  pageFailedText,
   pageInkText,
-  pageLabelChip,
   pageMutedText,
   pageQuietText,
-  pageWaitingChip,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/page-routes";

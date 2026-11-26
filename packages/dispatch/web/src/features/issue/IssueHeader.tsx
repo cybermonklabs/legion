@@ -38,15 +38,22 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
-  borderDefault,
   borderStrongHover,
+  focusBorder,
+  statusPill,
+  statusPillDot,
+  surfaceMutedStrongBg,
+  textPrimaryOnSurface,
+  textSecondaryHoverToPrimary,
+} from "../../theme/classes";
+import {
+  borderDefault,
   borderTransparent,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
   card,
   dangerText,
-  focusBorder,
   focusVisibleRing,
   inputClasses,
   linkHoverText,
@@ -55,15 +62,10 @@ import {
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  statusPill,
-  statusPillDot,
-  surfaceMutedStrongBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
@@ -71,8 +73,9 @@ import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath } from "../refs/page-routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference, sessionOfAddress } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

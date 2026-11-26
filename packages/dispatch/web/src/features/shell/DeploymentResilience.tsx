@@ -10,7 +10,7 @@ import {
   primaryButtonBg,
   primaryButtonHoverBg,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { onlyPrefetchesOut, prefetchChunk } from "./chunk-loads";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk

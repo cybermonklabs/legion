@@ -8,17 +8,19 @@ import { QueryError } from "../../components/QueryError";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import {
   badgeMed,
+  successText,
+  textMutedOnCanvas,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
   borderDefault,
   card,
   dangerText,
-  successText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type StepRow, stepTasks, stepVariant } from "./steps-model";
 
 const COLUMNS = [

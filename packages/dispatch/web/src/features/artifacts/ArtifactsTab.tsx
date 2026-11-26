@@ -8,8 +8,8 @@ import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/t
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
+import { badgePrimary } from "../../theme/classes";
 import {
-  badgePrimary,
   borderDefault,
   dangerText,
   inputClasses,
@@ -17,7 +17,7 @@ import {
   linkText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";

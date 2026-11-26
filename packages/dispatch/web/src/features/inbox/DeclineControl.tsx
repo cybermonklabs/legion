@@ -8,21 +8,19 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { backdrop40, cardHoverBorder, primaryButtonDisabled } from "../../theme/classes";
 import {
-  backdrop40,
   borderDefault,
   card,
-  cardHoverBorder,
   dangerText,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

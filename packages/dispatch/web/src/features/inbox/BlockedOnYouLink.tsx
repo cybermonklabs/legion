@@ -3,13 +3,11 @@ import { Link } from "react-router-dom";
 
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import {
-  borderDefault,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
   textSecondaryHoverToPrimary,
-  textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import { borderDefault, surfaceMutedBg, textSecondaryOnSurface } from "../../theme/shell-classes";
 import { formatAskAge } from "./ask-age";
 import { needsYou } from "./BlockedOnYou";
 

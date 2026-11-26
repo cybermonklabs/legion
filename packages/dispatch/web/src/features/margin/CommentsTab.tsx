@@ -4,12 +4,8 @@ import type { Ask } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useSending } from "../../hooks/useSending";
-import {
-  borderDefault,
-  highlightRing,
-  textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { highlightRing, textPrimaryOnSurface } from "../../theme/classes";
+import { borderDefault, textMutedOnSurfaceMuted } from "../../theme/shell-classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
 import { useHeldSend, useHeldSends } from "../conversation/held-sends";
 import { DraftOffer, KIND_WORDS } from "../conversation/KeptDraftOffers";

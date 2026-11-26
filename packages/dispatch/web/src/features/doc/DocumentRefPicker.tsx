@@ -10,7 +10,8 @@ import type {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTooltips } from "../../components/tooltips";
-import { pageQuietText, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { pageQuietText } from "../../theme/shell-classes";
 import { RefPickerList } from "../refs/RefPickerList";
 import { type RefPickerInsertion, readTrigger } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";

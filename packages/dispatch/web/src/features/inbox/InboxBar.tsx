@@ -7,7 +7,7 @@ import {
   focusVisibleRing,
   surfaceMutedBg,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { INBOX_FILTER_FIELDS, type InboxFilterField } from "../refs/page-routes";
 import {
   INBOX_PRIORITY_VALUES,

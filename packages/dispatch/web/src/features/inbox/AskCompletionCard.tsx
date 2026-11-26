@@ -15,14 +15,11 @@ import {
   calloutSuccessBorder,
   calloutSuccessText,
   calloutSuccessTimestampText,
-  card,
   inlineWarningText,
-  linkHoverText,
-  linkText,
-  textMutedOnSurface,
   textPrimaryOnSuccessCallout,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { card, linkHoverText, linkText, textMutedOnSurface } from "../../theme/shell-classes";
 import { AgentName, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";

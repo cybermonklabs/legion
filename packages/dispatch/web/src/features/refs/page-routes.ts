@@ -13,7 +13,7 @@
  * comes into the entry.
  */
 import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
-import { PLAIN_ISSUE_TABS } from "@legion/contracts/dispatch-text-rules";
+import { PLAIN_ISSUE_TABS } from "@legion/contracts/dispatch-issue-tabs";
 import { matchPath } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";

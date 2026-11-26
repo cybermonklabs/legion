@@ -10,24 +10,26 @@ import {
 
 import type { Actor, CheckBlock } from "../../../api/types";
 import {
-  focusVisibleRing,
   pageFailedText,
   pageGuideBg,
   pageHairBg,
   pageHairBorder,
   pageInkBorder,
-  pageInkFill,
-  pageInkText,
   pageKindBullet,
   pageKindTag,
-  pageLineBorder,
-  pageMutedText,
   pagePaneBg,
   pagePaperBg,
-  pageQuietText,
   pageStateText,
   pageWordsText,
 } from "../../../theme/classes";
+import {
+  focusVisibleRing,
+  pageInkFill,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+} from "../../../theme/shell-classes";
 import { useAgentText } from "../../refs/AgentName";
 import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";

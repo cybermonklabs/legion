@@ -18,18 +18,16 @@ import {
   pageFocusedRow,
   pageFoldedHalo,
   pageGuideLineBg,
-  pageInkText,
   pageKindBullet,
   pageKindTag,
-  pageMutedText,
   pageOwnWordsRule,
-  pageQuietText,
   pageRowAct,
   pageRowActs,
   pageRowOption,
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText } from "../../theme/shell-classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { EditedMark } from "../refs/PostMarks";

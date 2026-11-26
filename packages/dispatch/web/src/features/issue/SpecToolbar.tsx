@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 
+import { successText } from "../../theme/classes";
 import {
   dangerText,
   inputClasses,
@@ -7,8 +8,7 @@ import {
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  successText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { CopyRefButton } from "../refs/CopyRefButton";

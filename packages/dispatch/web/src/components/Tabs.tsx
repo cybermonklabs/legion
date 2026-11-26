@@ -5,10 +5,9 @@ import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
-  borderDefault,
   scrollFadeTrailingPx,
-  textSecondaryOnCanvas,
 } from "../theme/classes";
+import { borderDefault, textSecondaryOnCanvas } from "../theme/shell-classes";
 import { Pill } from "./Pill";
 
 export interface TabDefinition<Id extends string> {

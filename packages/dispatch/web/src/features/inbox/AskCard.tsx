@@ -27,35 +27,37 @@ import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
-  badgeBlocking,
   badgeHigh,
   badgeLow,
   badgeMed,
-  borderDefault,
-  card,
   cardHoverBorder,
   focusBorder,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   pageFailedText,
   pageHairBorder,
+  pagePaperBg,
+  pageStateText,
+  primaryButtonDisabled,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  badgeBlocking,
+  borderDefault,
+  card,
+  linkHoverText,
+  linkText,
   pageInkFill,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
-  pageStateText,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { AgentName, useAgentText } from "../refs/AgentName";

@@ -15,12 +15,12 @@ import {
   useState,
 } from "react";
 
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   inputClasses,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";

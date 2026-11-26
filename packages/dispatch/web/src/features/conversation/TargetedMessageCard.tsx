@@ -2,13 +2,12 @@ import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts/dispatch-api-cons
 import type { ReactNode } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
+import { surfaceMutedHoverBg, textPrimaryOnSurface } from "../../theme/classes";
 import {
   secondaryButtonBorder,
   secondaryButtonText,
-  surfaceMutedHoverBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import type { PostDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";

@@ -4,15 +4,8 @@ import { type ReactNode, useState } from "react";
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
-import {
-  badgeLow,
-  badgePrimary,
-  pageAvatar,
-  pageInkText,
-  pageLabelChip,
-  pagePaneBg,
-  pageQuietText,
-} from "../../theme/classes";
+import { badgeLow, badgePrimary, pageAvatar, pageLabelChip, pagePaneBg } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import {
   badgeSelectBadge,
   badgeSelectHeaderWrapper,

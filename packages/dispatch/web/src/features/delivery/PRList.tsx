@@ -2,18 +2,20 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 
 import type { DeliveryPR, DeliverySessionGroup } from "../../api/types";
 import {
+  inlineWarningText,
+  successText,
+  surfaceMutedHoverBg,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
   borderDefault,
   dangerText,
-  inlineWarningText,
   linkText,
-  successText,
   surfaceBg,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import {
   buildPRListRows,

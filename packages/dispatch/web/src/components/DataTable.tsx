@@ -30,17 +30,15 @@ import { useRowKeymap } from "../features/project/issues-table-keys";
 import type { TableLayoutModel } from "../features/project/issues-table-layout";
 import { reorder } from "../features/project/issues-table-model";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
+import { tableResizeActive, tableResizeHover, textMutedOnCanvas } from "../theme/classes";
 import {
   borderDefault,
   surfaceBg,
   surfaceMutedBg,
-  tableResizeActive,
-  tableResizeHover,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};

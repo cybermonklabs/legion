@@ -1,7 +1,7 @@
 import type { ReactNode, RefObject } from "react";
 
+import { badgeLow } from "../../theme/classes";
 import {
-  badgeLow,
   borderDefault,
   dangerText,
   focusVisibleRing,
@@ -9,7 +9,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import type { InboxShow } from "../refs/routes";
 import { SNOOZE_PRESETS } from "./snooze";

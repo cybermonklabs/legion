@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
+import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/shell-classes";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";

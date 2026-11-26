@@ -6,7 +6,7 @@ import { api } from "../../api/client";
 import { artifactQueryOptions, whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { borderDefault } from "../../theme/classes";
+import { borderDefault } from "../../theme/shell-classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
 import { scrollElementToTop } from "../doc/scroll-block";

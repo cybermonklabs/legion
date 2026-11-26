@@ -26,7 +26,9 @@ import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
-import * as theme from "../../theme/classes";
+import * as classes from "../../theme/classes";
+import { PAGE_COLORS, pageStateText, pageWaitingChip } from "../../theme/classes";
+import * as shellClasses from "../../theme/shell-classes";
 import {
   calloutWarningBg,
   calloutWarningBorder,
@@ -34,13 +36,10 @@ import {
   focusVisibleRing,
   linkHoverText,
   linkText,
-  PAGE_COLORS,
   pageInkText,
-  pageStateText,
-  pageWaitingChip,
   secondaryButtonCompact,
   textMutedOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -97,6 +96,10 @@ import {
   tokens,
   undraw,
 } from "./shared-controls-fixture";
+
+/** Every export of the theme's two modules of classes, by name: a class string a file names is
+ *  in `classes.ts`, or in `shell-classes.ts` where the entry chunk draws it. */
+const theme: Readonly<Record<string, unknown>> = { ...classes, ...shellClasses };
 
 /**
  * The shared controls on the new issue page's surface: inside `NoTooltips` each shared control
@@ -2198,7 +2201,7 @@ function tableEntries(
       }
     }
   }
-  const exported: unknown = (theme as Readonly<Record<string, unknown>>)[name];
+  const exported: unknown = theme[name];
   if (entries.size === 0 && typeof exported === "object" && exported !== null) {
     for (const [key, value] of Object.entries(exported)) {
       if (typeof value === "string") entries.set(key, [value]);
@@ -2247,7 +2250,7 @@ function classStrings(node: ts.Expression, file: ParsedSource, depth = 0): strin
   if (ts.isIdentifier(expression)) {
     const declared = file.declarations.get(expression.text);
     if (declared !== undefined) return [...new Set(declared.flatMap(made))];
-    const exported: unknown = (theme as Readonly<Record<string, unknown>>)[expression.text];
+    const exported: unknown = theme[expression.text];
     return typeof exported === "string" ? [exported] : [""];
   }
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
@@ -2428,10 +2431,10 @@ function groundsOf(
 /** Whether `CONTRAST_CHECKS` holds `text` on `ground` as words, at 4.5:1: a check of the same
  *  swatches at 3:1 is a shape's (a row's twisty), which no word may lean on. */
 function registeredAsText(text: string, ground: string): boolean {
-  const colours: Readonly<Partial<Record<string, theme.ColorPair>>> = PAGE_COLORS;
+  const colours: Readonly<Partial<Record<string, classes.ColorPair>>> = PAGE_COLORS;
   const foreground = colours[text];
   const background = colours[ground];
-  return theme.CONTRAST_CHECKS.some(
+  return classes.CONTRAST_CHECKS.some(
     (check) =>
       check.minRatio === 4.5 &&
       check.foreground.light.name === foreground?.light.name &&
@@ -2767,13 +2770,13 @@ test("inside NoTooltips the repository's clear control is described by what its 
       const refusal = scope.getByRole("alert");
       expect(refusal.textContent).toBe("Write the repository as owner/name.");
       if (surface === "inside") {
-        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(classes.pageFailedText)));
         expect(
-          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
+          classOf(refusal).filter((token) => tokens(shellClasses.dangerText).includes(token))
         ).toEqual([]);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
       } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal.getAttribute("class")).toBe(shellClasses.dangerText);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
       }
     } finally {

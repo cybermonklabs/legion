@@ -3,6 +3,8 @@ import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants
 
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, type WriteMethod } from "../../api/client";
+import { type ComposerSend, composerSend } from "../conversation/held-sends";
+import { request } from "../conversation/held-sends-fixture";
 import { SendExpiredError, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import {
   KEPT_SEND_RESUME_MS,
@@ -353,4 +355,43 @@ test("a page with no storage keeps nothing and still asks before the tab is clos
   expect(page.load("alice")).toEqual([]);
   page.forget("out");
   expect(asks()).toBe(false);
+});
+
+// A composer's send is kept with whether each of its drafts names a party (`OutgoingDraft`), the
+// answer its composer read at the press, so the send a reload makes needs no grammar of
+// references. The format keeps the kind's record as it was written and hands it back whole, and
+// the composer's kind reads it back with that answer. A record a build before this one wrote holds
+// no such answer: the format hands it back all the same, and the entry's composer kind refuses
+// it, which leaves it to the kinds chunk's, which works the answer out (`kinds.ts`,
+// `held-sends.test.ts`).
+test("a composer send's answer of its parties round-trips through the kept format, and one kept without it is the kinds chunk's to read", () => {
+  const named = "[@Planner](dispatch://agent/planner-session) please look";
+  const sent: ComposerSend = {
+    draft: { ask: request.ask, draft: { body: named, namesParty: true, replacement: "" } },
+    mutationKey: ["conversation-composer", "CORE-1"],
+    request: { ...request, draft: { body: named, namesParty: true, replacement: "" } },
+  };
+  const detail = composerSend.keep?.(sent);
+  const older = JSON.parse(JSON.stringify(detail), (key, value) =>
+    key === "namesParty" ? undefined : value
+  );
+  const tab = keptTab();
+  try {
+    tab.page().keep(kept("this-build", { detail, kind: "composer", request: null }));
+    tab.page().keep(kept("older-build", { detail: older, kind: "composer", request: null }));
+    const loaded = tab.page().load("alice");
+    const mine = loaded.find((write) => write.key === "this-build");
+    const theirs = loaded.find((write) => write.key === "older-build");
+    expect(mine?.detail).toEqual(detail);
+    expect(JSON.stringify(mine?.detail)).toContain('"namesParty":true');
+    expect(composerSend.kept(mine?.detail)).toBe(true);
+    const restored = composerSend.restore?.(mine?.detail as never);
+    expect(restored?.request.draft.namesParty).toBe(true);
+    expect(restored?.draft.draft.namesParty).toBe(true);
+    expect(theirs?.detail).toEqual(older);
+    expect(JSON.stringify(theirs?.detail)).not.toContain("namesParty");
+    expect(composerSend.kept(theirs?.detail)).toBe(false);
+  } finally {
+    tab.close();
+  }
 });

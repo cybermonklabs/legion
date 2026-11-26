@@ -2,16 +2,14 @@ import { type ReactNode, useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import {
-  card,
   decisionUnsureBorder,
   decisionUnsureText,
-  linkHoverText,
-  linkText,
   selectedCardBg,
   selectedCardBorder,
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { card, linkHoverText, linkText } from "../../theme/shell-classes";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";

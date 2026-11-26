@@ -25,7 +25,7 @@ import {
   railNeedsYouBadgeBg,
   railNeedsYouBadgeText,
   railSecondaryText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useLiveViewState } from "../agent-view/live-views";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";

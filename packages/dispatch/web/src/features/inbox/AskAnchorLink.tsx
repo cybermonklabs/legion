@@ -4,13 +4,12 @@ import { Link } from "react-router-dom";
 import type { Ask } from "../../api/types";
 import {
   calloutSuccessBodyText,
-  linkHoverText,
-  linkText,
   quoteAccentBorder,
   quoteBodyText,
   successQuoteAccentBorder,
   textPrimaryOnSuccessCallout,
 } from "../../theme/classes";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
 import { blockFragment } from "../refs/block-reference";
 import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 

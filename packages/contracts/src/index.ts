@@ -5,6 +5,8 @@ export * from "./claim-holds";
 export * from "./dispatch-api";
 export * from "./dispatch-block-ref";
 export * from "./dispatch-href";
+export * from "./dispatch-issue-tabs";
+export * from "./dispatch-mention-sign";
 export * from "./dispatch-mentions";
 export * from "./dispatch-reading-surfaces";
 export * from "./dispatch-snippet";

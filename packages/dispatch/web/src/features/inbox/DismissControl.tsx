@@ -1,7 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
-import { linkHoverText, linkText } from "../../theme/classes";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
 import type { InboxShow } from "../refs/routes";
 import { ThreadLine } from "./ThreadTitle";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";

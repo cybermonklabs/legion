@@ -10,8 +10,8 @@ import type {
 } from "../../api/types";
 import { StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
+import { badgeHigh, textPrimaryOnSurface } from "../../theme/classes";
 import {
-  badgeHigh,
   borderDefault,
   card,
   dangerText,
@@ -19,9 +19,8 @@ import {
   linkText,
   secondaryButtonCompact,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
 import { type IssueComponentsWrite, useIssueComponents } from "../issue/useIssueComponents";
 import { statusText } from "../project/board-model";

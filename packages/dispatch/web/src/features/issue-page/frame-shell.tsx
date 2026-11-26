@@ -1,6 +1,7 @@
 import type { ComponentProps, ReactNode } from "react";
 
-import { borderDefault, pagePaperBg, skeletonBg } from "../../theme/classes";
+import { pagePaperBg } from "../../theme/classes";
+import { borderDefault, skeletonBg } from "../../theme/shell-classes";
 import { parseIssuePath } from "../refs/page-routes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { IconRail } from "./IconRail";

@@ -34,37 +34,39 @@ import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
-  borderDefault,
-  borderStrong,
   calloutInfoBg,
   calloutInfoBorder,
+  checkboxAccent,
+  dangerHoverBorder,
+  focusRing,
+  hoverToDangerText,
+  quoteAccentBorder,
+  quoteBodyText,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  borderStrong,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
-  checkboxAccent,
-  dangerHoverBorder,
   dangerText,
   dismissButtonText,
-  focusRing,
-  hoverToDangerText,
   linkHoverText,
   linkText,
   primaryButtonBg,
-  quoteAccentBorder,
-  quoteBodyText,
   secondaryButtonText,
   surfaceBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
-import { draftParties } from "../refs/party-references";
+import { draftParties, outgoingDraft } from "../refs/party-references";
 import { postDeletion } from "../refs/post-marks";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -734,14 +736,16 @@ export function MentionComposer({
     setConfirmingDiscard(false);
   };
   /** The send as the composer's own state addresses and shapes it: what Send puts on the wire,
-   *  and what a held send is compared with to tell an untouched draft from an edited one. */
+   *  and what a held send is compared with to tell an untouched draft from an edited one. Its
+   *  draft carries whether its text names a party, read here from the text it sends, where the
+   *  grammar of references is loaded (`outgoingDraft`), so the send needs none. */
   const composedRequest = (
     sentBody = body,
     sentReplacement = replacement
   ): Omit<SentRequest, "sendKey"> => ({
     anchor,
     ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-    draft: { body: sentBody, replacement: sentReplacement },
+    draft: outgoingDraft({ body: sentBody, replacement: sentReplacement }),
     edit:
       edit === undefined
         ? undefined

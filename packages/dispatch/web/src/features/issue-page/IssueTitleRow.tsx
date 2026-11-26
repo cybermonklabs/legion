@@ -2,13 +2,8 @@ import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { inputMethodKey } from "../../lib/input-method-key";
-import {
-  bgTransparent,
-  borderStrongHover,
-  borderTransparent,
-  focusBorder,
-  pageInkText,
-} from "../../theme/classes";
+import { bgTransparent, borderStrongHover, focusBorder } from "../../theme/classes";
+import { borderTransparent, pageInkText } from "../../theme/shell-classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";

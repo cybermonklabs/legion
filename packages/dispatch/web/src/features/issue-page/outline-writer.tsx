@@ -9,8 +9,9 @@ import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/page-routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { parseNodeReference, sessionOfAddress } from "../refs/routes";
+import { parseNodeReference } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
 import { issueMessagesQuery } from "./useIssueTree";
 

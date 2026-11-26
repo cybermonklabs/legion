@@ -9,16 +9,30 @@ import type {
   EditCommentInput,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
-import { draftParties } from "../refs/party-references";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
  *  what a refusal hands back. Who it addresses is in its text, written there as a reference
- *  (R4), so there is nothing beside the words to keep in step with them. */
+ *  (R4), so nothing beside the words names them; what a send keeps beside them is one answer
+ *  read from them (`OutgoingDraft`). */
 export interface SentDraft {
   readonly body: string;
   readonly replacement: string;
+}
+
+/** A draft the held-send store holds to send (`SentRequest.draft`, `HeldDraft.draft`): its text,
+ *  and whether that text names a party, read from it once by the composer that hands the draft
+ *  over - at the press, and as it keeps what the reader wrote over a refusal - where the grammar
+ *  of references is loaded (`party-references.ts`'s `outgoingDraft`). The send reads that
+ *  answer, so the entry chunk, which makes a kept send's attempt and a Retry's, holds none of the
+ *  grammar. The answer is made with the copy of the text it was read from and never apart from
+ *  it, so the two cannot drift. */
+export interface OutgoingDraft extends SentDraft {
+  /** Whether the text names a party, a person among them (`draftParties`'s `named`): what sends
+   *  a comment in the mode its parties are told in, and makes a typed `/btw` the command it
+   *  looks like rather than the reader's own first word. */
+  readonly namesParty: boolean;
 }
 
 /** The block ids an edit's save carries (`PATCH /api/v1/comments/{id}`): the revision the blocks
@@ -55,7 +69,7 @@ export interface SentRequest {
     readonly options: readonly AskOption[];
     readonly urgency: AskUrgency;
   };
-  readonly draft: SentDraft;
+  readonly draft: OutgoingDraft;
   readonly edit:
     | {
         /** The comment's body the edit was written over, as the editor last saw it at the press:
@@ -348,12 +362,13 @@ function attempt(
       bounds
     );
   }
-  // Who this comment addresses is in its own words (`draftParties`), so nothing names them
-  // beside the body: the request carries the mode they are told in and no `mentions` array. A
-  // draft that names nobody leaves a typed `/btw` the reader's own first word.
-  const parties = draftParties(body);
+  // Who this comment addresses is in its own words, so nothing names them beside the body: the
+  // request carries the mode they are told in and no `mentions` array. Whether the words name
+  // anybody is the answer the composer read from them as it handed the draft over
+  // (`OutgoingDraft.namesParty`), so this attempt reads no grammar of references, wherever it is
+  // made. A draft that names nobody leaves a typed `/btw` the reader's own first word.
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
-  const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
+  const plan = deliveryPlan(baseBody, draft.namesParty ? plainDelivery : undefined);
   // A reply under an ask names the ask (`ask_id`), and a reply to a comment names the comment
   // (`reply_to`): the server reads `reply_to` as a comment's id alone.
   const comment: CreateCommentInput = {
@@ -364,7 +379,7 @@ function attempt(
         ? { ask_id: replyTo.id }
         : { reply_to: replyTo.id }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
-    ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
+    ...(draft.namesParty ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };
   const input = replyTo === null ? { ...comment, anchor: selection } : comment;
   return owner.kind === "issue"

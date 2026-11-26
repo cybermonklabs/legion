@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 
 import type { IssueProgress, ProgressCount } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
-import { progressBarFill, surfaceMutedStrongBg, textSecondaryOnSurface } from "../../theme/classes";
+import { progressBarFill, surfaceMutedStrongBg } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 
 /** The noun a count is written with: `1/1 task`, `3/7 tasks`, `0/1 child`, `2/5 children`. */
 function countNoun(total: number, noun: "tasks" | "children"): string {

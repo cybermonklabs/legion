@@ -13,13 +13,13 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
+import { textMutedOnCanvas } from "../../../theme/classes";
 import {
   focusVisibleRing,
   pageInkText,
   pageMutedText,
   pageQuietText,
-  textMutedOnCanvas,
-} from "../../../theme/classes";
+} from "../../../theme/shell-classes";
 import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,

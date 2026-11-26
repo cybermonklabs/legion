@@ -1,5 +1,6 @@
 import { type ReactNode, useRef, useState } from "react";
 
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
@@ -7,8 +8,7 @@ import {
   inputClasses,
   kbdHint,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   ALT_KEY_LABEL,
   type KeyBindingDescription,

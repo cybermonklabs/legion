@@ -14,11 +14,10 @@ import {
   pageAvatar,
   pageFailedText,
   pageHeaderControl,
-  pageInkText,
   pageLabelChip,
-  pageQuietText,
   pageRowHoverBg,
 } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";

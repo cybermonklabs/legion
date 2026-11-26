@@ -2,16 +2,18 @@ import type { ReactNode } from "react";
 
 import {
   askBlockPill,
+  controlHoverBorder,
+  surfaceMutedStrongBg,
+  toolbarControlHeight,
+} from "../theme/classes";
+import {
   borderDefault,
   borderStrong,
   borderTransparent,
-  controlHoverBorder,
   surfaceMutedBg,
-  surfaceMutedStrongBg,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
-  toolbarControlHeight,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { TruncatedText } from "./TruncatedText";
 
 /** The fill a chip takes while selected: the neutral strong surface, or an ask urgency's badge

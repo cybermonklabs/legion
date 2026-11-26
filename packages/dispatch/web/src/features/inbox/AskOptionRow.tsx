@@ -2,14 +2,13 @@ import type { ReactNode } from "react";
 
 import type { AskOptionWithTrees } from "../../api/types";
 import {
-  borderDefault,
   cardHoverBorder,
-  linkText,
   selectedCardBg,
   selectedCardBorder,
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { borderDefault, linkText } from "../../theme/shell-classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import type { TextSource } from "../refs/text-references";
 

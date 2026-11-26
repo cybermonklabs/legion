@@ -12,14 +12,13 @@ import type {
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
+import { textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   card,
-  textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 

@@ -24,19 +24,21 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
 import {
+  cardHoverBorder,
+  selectedCardBorder,
+  textMutedOnCanvas,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
   borderDefault,
   borderStrong,
   card,
-  cardHoverBorder,
   focusVisibleRing,
   linkHoverText,
   linkText,
-  selectedCardBorder,
   surfaceMutedBg,
-  textMutedOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";

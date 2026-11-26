@@ -5,14 +5,8 @@ import { usersQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
-import {
-  badgeLow,
-  badgePrimary,
-  pageLabelChip,
-  pagePaneBg,
-  pageQuietText,
-  textMutedOnSurface,
-} from "../../theme/classes";
+import { badgeLow, badgePrimary, pageLabelChip, pagePaneBg } from "../../theme/classes";
+import { pageQuietText, textMutedOnSurface } from "../../theme/shell-classes";
 import {
   badgeSelectBadge,
   badgeSelectOverlay,

@@ -10,21 +10,20 @@ import type { CreateIssueInput, Issue } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { primaryButtonDisabled, textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
   card,
   inputClasses,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
 import { buildIssuePath, routeProjectOf } from "../refs/page-routes";
 import { useDialog } from "../shell/useDialog";

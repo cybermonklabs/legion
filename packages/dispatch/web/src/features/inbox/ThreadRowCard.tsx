@@ -7,13 +7,8 @@ import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import {
-  borderDefault,
-  card,
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, card, linkHoverText, linkText } from "../../theme/shell-classes";
 import { storeAgentState } from "../agents/unread";
 import { Timestamp } from "../refs/Timestamp";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";

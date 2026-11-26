@@ -6,15 +6,14 @@ import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
+import { badgeLow, pageLabelChip } from "../../theme/classes";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
   pageInkText,
-  pageLabelChip,
   pageQuietText,
   textMutedOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 
 interface GitHubReference {
   head?: { sha?: string };

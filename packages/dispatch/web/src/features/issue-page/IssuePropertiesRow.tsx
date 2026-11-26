@@ -14,18 +14,20 @@ import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
   bgTransparent,
-  focusVisibleRing,
-  pageInkText,
   pageLabelChip,
-  pageLineBorder,
-  pageMutedText,
-  pageQuietText,
   pageSegmentBg,
-  pageSegmentDoneBg,
   pageSegmentProgressBg,
   pageWaitingBg,
   pageWaitingChip,
 } from "../../theme/classes";
+import {
+  focusVisibleRing,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+  pageSegmentDoneBg,
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";

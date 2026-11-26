@@ -2,14 +2,8 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import type { DeliveryTimelineWithMeasures } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
-import {
-  borderStrong,
-  inputClasses,
-  linkText,
-  surfaceBg,
-  textMutedOnCanvas,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
+import { borderStrong, inputClasses, linkText, surfaceBg } from "../../theme/shell-classes";
 import {
   DEPLOYED_LABELS,
   type DeployedFacet,

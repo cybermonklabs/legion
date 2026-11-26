@@ -3,22 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { highlightRing, textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   card,
   dangerText,
-  highlightRing,
   inputClasses,
   linkHoverText,
   linkText,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";

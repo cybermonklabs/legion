@@ -18,13 +18,12 @@ import {
 
 import { TruncatedText } from "../../components/TruncatedText";
 import {
-  card,
   cardHoverBorder,
   selectedCardBg,
   selectedCardBorder,
-  textMutedOnSurface,
   textOptionDescription,
 } from "../../theme/classes";
+import { card, textMutedOnSurface } from "../../theme/shell-classes";
 import { RefKindIcon } from "../refs/kind-icons";
 import { RefPartsControl, RefPickerNotes, RefRowDetail, RefRowLabel } from "../refs/RefPickerList";
 import {

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { borderStrong, surfaceMutedBg, textMutedOnSurfaceMuted } from "../theme/classes";
+import { borderStrong, surfaceMutedBg, textMutedOnSurfaceMuted } from "../theme/shell-classes";
 
 export function EmptyState({
   action,

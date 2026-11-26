@@ -5,7 +5,7 @@ import {
   dangerText,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 
 interface ErrorBoundaryProps {
   children: ReactNode;

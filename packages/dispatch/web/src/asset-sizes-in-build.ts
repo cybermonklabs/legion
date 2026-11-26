@@ -90,6 +90,20 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * of the default branch's `479c1460` the same day took it to 492,868 bytes, 7,132 under this
  * budget: its new event type (`project.access_changed`, #4674) is a member of the list of event
  * types (`packages/contracts/src/dispatch-api-constants.ts`) that the entry reads.
+ * The forward merge of the default branch's `70835597` (2026-11-25, one framework of references,
+ * #3125) wrote 535,818 bytes, over this budget again: a kept draft's rewrite and a send's reading
+ * of who its draft names put the grammar of references back in the entry through
+ * `features/refs/party-references.ts`. Four moves the same day, none a new lazy load, took it
+ * back under: a party's mention is written by a module that imports no grammar
+ * (`features/refs/party-mention.ts`), and a send reads whether its draft names a party from the
+ * answer its composer stored at the press (`OutgoingDraft`, `features/conversation/send-request.ts`),
+ * 504,720 bytes; the plain tabs of an issue's page and the mention's sign are subpaths of their
+ * own (`@legion/contracts/dispatch-issue-tabs`, `@legion/contracts/dispatch-mention-sign`),
+ * 502,859; and the class strings the entry draws are a module of their own
+ * (`theme/shell-classes.ts`), apart from the pairs and contrast checks `theme/classes.ts` builds
+ * as it loads, 491,648. The line in the pending-writes indicator's place that counts what a
+ * reload kept while the kinds of write cannot load (`features/writes/write-hosts.tsx`) then took
+ * it to 492,510 bytes, each with a 39-character build id, 7,490 under this budget.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

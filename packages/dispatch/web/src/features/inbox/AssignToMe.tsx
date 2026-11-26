@@ -6,7 +6,7 @@ import {
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 

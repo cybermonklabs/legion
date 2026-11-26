@@ -6,6 +6,7 @@ import { ApiError } from "../api/client";
 import type { ReplyTarget } from "../features/conversation/composer-model";
 import { heldSends } from "../features/conversation/held-sends";
 import type { SentRequest } from "../features/conversation/send-request";
+import { outgoingDraft } from "../features/refs/party-references";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { writesOf } from "../features/writes/write-store";
 import { onFakeClock, onRealTurns, tick } from "./fake-clock";
@@ -60,7 +61,7 @@ export function sentRequest(
   return {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body, replacement: "" },
+    draft: outgoingDraft({ body, replacement: "" }),
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

@@ -17,12 +17,8 @@ import type {
   DecisionKeep,
   IssueDecisions,
 } from "../../../api/types";
-import {
-  pageFocusedRow,
-  pageInkText,
-  pageOwnWordsRule,
-  pageStateText,
-} from "../../../theme/classes";
+import { pageFocusedRow, pageOwnWordsRule, pageStateText } from "../../../theme/classes";
+import { pageInkText } from "../../../theme/shell-classes";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { PublishedReferences } from "../../refs/reference-names";

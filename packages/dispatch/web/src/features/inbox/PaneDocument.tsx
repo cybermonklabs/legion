@@ -19,7 +19,8 @@ import {
 } from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
+import { quoteAccentBorder } from "../../theme/classes";
+import { focusVisibleRing } from "../../theme/shell-classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";

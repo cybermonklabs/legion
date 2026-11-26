@@ -19,7 +19,7 @@ import {
   pageSegmentDoneBg,
   stalledDotBorder,
   unknownDotBorder,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./page-routes";
 import { relativeTimeLabel } from "./relative-time";

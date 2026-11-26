@@ -2,16 +2,8 @@ import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "re
 
 import { focusOnDocument } from "../features/shell/roving";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
-import {
-  dangerText,
-  linkHoverText,
-  linkText,
-  pageFailedText,
-  pageMutedText,
-  pageRowAct,
-  pageStatusDoneText,
-  successText,
-} from "../theme/classes";
+import { pageFailedText, pageRowAct, pageStatusDoneText, successText } from "../theme/classes";
+import { dangerText, linkHoverText, linkText, pageMutedText } from "../theme/shell-classes";
 import { useTooltips } from "./tooltips";
 
 /** Copies `value` to the clipboard and confirms inline for 1.5 s ("Copied") or reports the

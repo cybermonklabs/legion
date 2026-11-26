@@ -50,7 +50,8 @@ import type {
   ReferenceTargets,
   UserState,
 } from "../../api/types";
-import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
+import { pageFailedText, pageHeaderControl } from "../../theme/classes";
+import { linkText, pageInkText } from "../../theme/shell-classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";

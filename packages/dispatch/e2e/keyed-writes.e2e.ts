@@ -2009,6 +2009,215 @@ test("Sign out pressed while the take-up waits for the kinds of write names the 
   }
 });
 
+/** A party's mention as a composer writes it (`partyLink`): the Planner's session. A comment
+ *  that holds it names a party, so it goes in the mode its parties are told in (`delivery`). */
+const NAMES_PLANNER = "[@Planner](dispatch://agent/planner-session)";
+
+/** Presses Send on the issue's Conversation composer with `body`. */
+async function sendComment(page: Page, body: string): Promise<void> {
+  const composer = page.getByRole("form", { name: "Comment composer" }).last();
+  await composer.getByLabel("Comment").fill(body);
+  await composer.getByRole("button", { exact: true, name: "Send" }).click();
+}
+
+/** The body a recorded comment went out with. */
+function bodyOf(post: { input: unknown }): unknown {
+  return typeof post.input === "object" && post.input !== null && "body" in post.input
+    ? post.input.body
+    : undefined;
+}
+
+/** Rewrites the one composer send `page`'s tab keeps as a build before this one kept it: no
+ *  answer of whether each draft's text names a party (`OutgoingDraft.namesParty`), and no request
+ *  of its own - none of its attempts had gone out - so the reloaded page makes its attempt from
+ *  the record (`composerSend`'s `resume`). */
+async function keptAsAnOlderBuild(page: Page): Promise<void> {
+  const rewritten = await page.evaluate(() => {
+    let count = 0;
+    for (const [name, value] of Object.entries(window.sessionStorage)) {
+      if (!name.startsWith("dispatch.write:")) continue;
+      const kept = JSON.parse(value);
+      if (kept.kind !== "composer") continue;
+      for (const draft of [
+        kept.detail.draft.draft,
+        kept.detail.request.draft,
+        kept.detail.stoppedSend?.draft,
+      ]) {
+        if (draft !== undefined) delete draft.namesParty;
+      }
+      window.sessionStorage.setItem(
+        name,
+        JSON.stringify({ ...kept, carried: null, request: null, sent: false })
+      );
+      count += 1;
+    }
+    return count;
+  });
+  expect(rewritten, "the tab keeps no one composer send to rewrite").toBe(1);
+}
+
+/** Opens `issue`'s Conversation with every comment it posts held at the network, out and never
+ *  answered, presses `body` there, and rewrites what the tab keeps of it as a build before this
+ *  one kept it (`keptAsAnOlderBuild`). */
+async function keepAnOlderBuildsComment(page: Page, issue: string, body: string): Promise<void> {
+  const path = `/api/v1/issues/${issue}/comments`;
+  await page.route(`**${path}`, (route) =>
+    route.request().method() === "POST" ? undefined : route.fallback()
+  );
+  const posts = watchWrites(page, "POST", path);
+  await page.goto(`/issues/${issue}/conversation`);
+  await sendComment(page, body);
+  await expect.poll(() => posts.length, "the comment never went out").toBeGreaterThan(0);
+  await keptAsAnOlderBuild(page);
+}
+
+// A comment a build before this one kept, with no request of its own - the reload came before
+// its first attempt went out - holds no answer of whether its text names a party
+// (`OutgoingDraft.namesParty`). Working it out takes the grammar of references, which the entry
+// leaves out, so the kinds chunk's composer kind does it (`web/src/features/writes/kinds.ts`),
+// and the take-up waits for that chunk (`Writes.resume`). While the chunk is held on the wire the
+// comment stays kept in the tab, and nothing of it goes out; once the chunk lands it goes out
+// once, in the mode the party its text names is told in. A comment pressed while the chunk is
+// held waits behind it with the answer its composer read at the press, and goes out once too.
+// Every comment is held at the network, so each stays out, and the row reads what went out.
+// SLOW(>=2s): the kept comment is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("a comment an older build kept with no request of its own waits kept while the kinds of write are held, then goes out once in its party's mode, and one pressed meanwhile goes out once behind it", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A comment an older build kept" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    page.on("dialog", (dialog) => void dialog.accept());
+    const kept = `Kept by an older build, ${NAMES_PLANNER}.`;
+    await keepAnOlderBuildsComment(page, issue.key, kept);
+
+    const held = await reloadWithKindsHeld(page);
+    const reloaded = watchWrites(page, "POST", path);
+    expect(await keptWrites(page)).toBe(1);
+    const pressed = `Pressed while the kinds load, ${NAMES_PLANNER}.`;
+    await sendComment(page, pressed);
+    await expect.poll(() => keptWrites(page)).toBe(2);
+    expect(reloaded, "a comment went out before the kinds of write were in").toEqual([]);
+
+    await held.continue();
+    await expect
+      .poll(() => new Set(reloaded.map(bodyOf)), {
+        message: "the kept comment and the one pressed meanwhile went out once the kinds landed",
+      })
+      .toEqual(new Set([kept, pressed]));
+    expect(bodyOf(reloaded[0] ?? { input: undefined }), "the kept comment goes first").toBe(kept);
+    for (const body of [kept, pressed]) {
+      const sent = reloaded.filter((post) => bodyOf(post) === body);
+      expect(new Set(sent.map((post) => post.key)).size, `${body} went out twice`).toBe(1);
+      for (const post of sent) {
+        expect(post.input).toEqual(expect.objectContaining({ body, delivery: "steer" }));
+      }
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// The same comment, with the kinds of write failing online at every ask and the tab's three
+// reloads spent, so no reload follows and the take-up waits on. The comment is no row of the
+// store's, and a composer's send is shown in its composer, never by the pending-writes indicator
+// (`presentation: "composer"`); what the reload kept is read from its records alone
+// (`Writes.notTakenUp`). So the line in the indicator's place counts it while the kinds' load has
+// failed (`ChangesNotSent`, `Writes.kindsFailed`), it stays kept in the tab, and Sign out names it
+// (`Writes.unsent`). Once the chunk can come down, the next press asks for it again - here another
+// comment, which the indicator does not show either - and the take-up sends the kept comment in
+// its party's mode, and the line goes. Leaving still asks for the comments, which are out.
+// SLOW(>=2s): the kept comment is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("a comment an older build kept, while the kinds of write fail online with no reload to follow, is counted on the line in the pending-writes indicator's place and named by Sign out, and the line goes once a later load takes it up", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A comment kept through a failure" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const questions: string[] = [];
+    page.on("dialog", (dialog) => {
+      // Sign out's question is cancelled, so it discards nothing; the reload's own "leave this
+      // page?" is accepted.
+      if (dialog.type() === "confirm") {
+        questions.push(dialog.message());
+        void dialog.dismiss();
+        return;
+      }
+      void dialog.accept();
+    });
+    const kept = `Kept through a failed download, ${NAMES_PLANNER}.`;
+    await keepAnOlderBuildsComment(page, issue.key, kept);
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    let failing = true;
+    await page.route(WRITE_KINDS_CHUNK, (route) => (failing ? route.abort() : route.fallback()));
+    await page.reload();
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const reloaded = watchWrites(page, "POST", path);
+
+    await expect(changesNotSent(page)).toHaveText("1 change not sent");
+    expect(await tabReloads(page), "the kinds' failed download reloaded the page").toEqual(spent);
+    expect(await keptWrites(page)).toBe(1);
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect
+      .poll(() => questions, { message: "Sign out did not name the comment the reload kept" })
+      .toEqual(["Sign out and discard 1 unsent change?\n\n• Message"]);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    expect(reloaded, "the kept comment went out with no kinds of write in").toEqual([]);
+
+    failing = false;
+    const later = `Pressed once the kinds can load, ${NAMES_PLANNER}.`;
+    await sendComment(page, later);
+    await expect(changesNotSent(page)).toHaveCount(0);
+    await expect
+      .poll(() => new Set(reloaded.map(bodyOf)), {
+        message: "the later load took the kept comment up and sent it",
+      })
+      .toEqual(new Set([kept, later]));
+    for (const post of reloaded.filter((sent) => bodyOf(sent) === kept)) {
+      expect(post.input).toEqual(expect.objectContaining({ body: kept, delivery: "steer" }));
+    }
+    expect(await asksBeforeLeaving(page), "leaving asks nothing for the comments out").toBe(true);
+  } finally {
+    await alice.close();
+  }
+});
+
+// With nothing kept there is no take-up to wait for the kinds of write, so their download
+// failing online with no reload to follow leaves no line in the indicator's place: the line
+// counts only changes not sent (`ChangesNotSent`).
+test("the kinds of write failing online with no reload to follow and nothing kept draw no line in the pending-writes indicator's place", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Nothing kept" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    await page.route(WRITE_KINDS_CHUNK, (route) => route.abort());
+    const failed = page.waitForEvent("requestfailed", (request) =>
+      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
+    );
+    await page.reload();
+    await failed;
+    await nextFrames(page);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    await expect(changesNotSent(page)).toHaveCount(0);
+    expect(await tabReloads(page)).toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
 // A sign-out needs no kind of write, so it goes out at once while the store's take-up of what a
 // reload kept still waits for the kinds (`Writes.run`): only sending a kept write waits for them.
 // Alice has two tabs, a status change of hers held at the network in each, out and kept. The

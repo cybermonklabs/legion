@@ -6,7 +6,8 @@ import {
 import type { ReactNode } from "react";
 
 import type { SearchOperator } from "../../api/types";
-import { badgeLow, surfaceMutedBg, textMutedOnSurface } from "../../theme/classes";
+import { badgeLow } from "../../theme/classes";
+import { surfaceMutedBg, textMutedOnSurface } from "../../theme/shell-classes";
 
 /** The three operator forms the search reads, each as a person writes it and what it does to
  *  the list. They are offered while the query is typed, so nobody has to know them already. */

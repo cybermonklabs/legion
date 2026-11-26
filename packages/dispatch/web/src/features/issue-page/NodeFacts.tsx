@@ -1,13 +1,8 @@
 import { type ReactNode, useRef } from "react";
 
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
-import {
-  pageFailedText,
-  pageMarkBg,
-  pageMutedText,
-  pageQuietText,
-  pageStateText,
-} from "../../theme/classes";
+import { pageFailedText, pageMarkBg, pageStateText } from "../../theme/classes";
+import { pageMutedText, pageQuietText } from "../../theme/shell-classes";
 import { DispatchPicture } from "../refs/DispatchPicture";
 import { parseNodeReference } from "../refs/routes";
 import type { NodeFact } from "./issue-tree";

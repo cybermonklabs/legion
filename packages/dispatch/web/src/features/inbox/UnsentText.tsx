@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
-import { borderDefault, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
+import { textPrimaryOnSurface } from "../../theme/classes";
+import { borderDefault, textMutedOnSurface } from "../../theme/shell-classes";
 
 /**
  * Text the reader wrote under an ask that no form there will send any more, drawn read-only

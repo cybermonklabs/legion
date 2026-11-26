@@ -1,20 +1,22 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  borderTransparent,
-  focusVisibleRing,
   pageDecisionText,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
-  pageInkText,
   pageMenu,
   pageMenuItem,
-  pageMutedText,
   pagePaperBg,
-  pageQuietText,
 } from "../../theme/classes";
+import {
+  borderTransparent,
+  focusVisibleRing,
+  pageInkText,
+  pageMutedText,
+  pageQuietText,
+} from "../../theme/shell-classes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";

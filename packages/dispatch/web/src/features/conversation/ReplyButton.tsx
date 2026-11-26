@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { linkHoverText, linkText } from "../../theme/classes";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
 
 /** The Reply action on a message turn: an icon-only button whose 44 px tap target shrinks to
  *  32 px on desktop like the copy-reference and pin controls beside it. `disabled` holds it while

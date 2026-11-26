@@ -4,20 +4,18 @@ import type { ReactNode } from "react";
 import type { WriteBounds } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { hoverToDangerText, textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   dangerText,
-  hoverToDangerText,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { settingsTableWrapper } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { machineLoginsQuery, machineName } from "./machineLogins";

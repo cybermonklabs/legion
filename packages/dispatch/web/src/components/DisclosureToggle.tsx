@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { disclosureButtonText, textSecondaryOnCanvas } from "../theme/classes";
+import { disclosureButtonText, textSecondaryOnCanvas } from "../theme/shell-classes";
 
 /** The fold glyph: a chevron pointing down at rest and up once `expanded`. */
 export function ChevronIcon({ expanded }: { expanded: boolean }): ReactNode {

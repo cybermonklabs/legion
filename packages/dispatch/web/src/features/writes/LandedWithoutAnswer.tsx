@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 
 /**
  * The one line a create form shows when Dispatch made what it asked for and has no answer to give

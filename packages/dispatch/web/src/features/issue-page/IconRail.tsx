@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 
 import type { AuthenticatedUser } from "../../api/types";
 import {
-  focusVisibleRing,
   iconRailAccentBg,
   iconRailActive,
   iconRailBg,
   iconRailHoverBg,
   iconRailText,
 } from "../../theme/classes";
+import { focusVisibleRing } from "../../theme/shell-classes";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
 import { buildProjectPath } from "../refs/page-routes";
 

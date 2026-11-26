@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 
 // The frame and the status line of the pending-writes indicator (`PendingWritesIndicator.tsx`),
 // which the line that stands in the indicator's place while its chunk cannot load draws too

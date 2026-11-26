@@ -41,10 +41,10 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
+import { checkboxAccent, textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
-  checkboxAccent,
   dangerText,
   disclosureButtonText,
   focusVisibleRing,
@@ -55,11 +55,10 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedHoverToSecondary,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { replyParentOf } from "../conversation/composer-model";
 import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";

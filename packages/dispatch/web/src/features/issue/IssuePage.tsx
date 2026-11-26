@@ -14,14 +14,14 @@ import type { Artifact, IssuePriority } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   dangerText,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";

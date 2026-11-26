@@ -135,7 +135,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
   textTransparent,
-} from "./theme/classes";
+} from "./theme/shell-classes";
 
 /** The three route chunks a cold landing can need, each named once: the router's `lazyChunk`
  *  below and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the

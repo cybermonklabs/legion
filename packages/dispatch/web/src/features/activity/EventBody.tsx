@@ -3,7 +3,8 @@ import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { DispatchEvent, DisplayTree } from "../../api/types";
-import { linkText, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
+import { textPrimaryOnSurface } from "../../theme/classes";
+import { linkText, textMutedOnSurface } from "../../theme/shell-classes";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { eventDescription } from "../issue/event-description";
 import { AskResolutionLine } from "../refs/AgentName";

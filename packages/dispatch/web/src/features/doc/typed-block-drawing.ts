@@ -10,13 +10,8 @@ import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
-import {
-  askBlockTint,
-  askUrgencyAccent,
-  borderDefault,
-  textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { askBlockTint, askUrgencyAccent, textPrimaryOnSurface } from "../../theme/classes";
+import { borderDefault, textMutedOnSurfaceMuted } from "../../theme/shell-classes";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 

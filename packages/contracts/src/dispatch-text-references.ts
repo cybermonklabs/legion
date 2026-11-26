@@ -1,6 +1,6 @@
+import { PLAIN_ISSUE_TABS } from "./dispatch-issue-tabs";
 import { CODE_CONTEXT } from "./dispatch-text-references-code";
 import { IN_CODE } from "./dispatch-text-references-in-code";
-import { PLAIN_ISSUE_TABS } from "./dispatch-text-rules";
 
 /** The questions the `#id` rows below belong to, each block id to its ask's reference. */
 const QUESTIONS = {

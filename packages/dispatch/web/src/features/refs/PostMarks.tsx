@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect } from "react";
 
-import { textMutedOnSurface } from "../../theme/classes";
+import { textMutedOnSurface } from "../../theme/shell-classes";
 import { AgentName } from "./AgentName";
 import { POST_MARK_WORDS, type PostDeletion } from "./post-marks";
 import { Timestamp } from "./Timestamp";

@@ -16,18 +16,16 @@ import type {
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
+import { decisionUnsureAccent, primaryButton, textPrimaryOnSurface } from "../../theme/classes";
 import {
   card,
   dangerText,
-  decisionUnsureAccent,
   linkHoverText,
   linkText,
-  primaryButton,
   secondaryButtonCompact,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";

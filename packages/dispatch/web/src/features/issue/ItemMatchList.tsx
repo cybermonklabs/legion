@@ -2,14 +2,13 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { IDCandidate } from "../../api/types";
+import { badgeLow, textMutedOnCanvas } from "../../theme/classes";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { PlainText } from "../refs/plain-text";
 import { postDeletion } from "../refs/post-marks";

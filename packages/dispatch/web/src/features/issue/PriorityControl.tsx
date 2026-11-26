@@ -3,14 +3,8 @@ import type { ReactNode } from "react";
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
-import {
-  badgeLow,
-  pageInkText,
-  pageLabelChip,
-  pagePaneBg,
-  pageQuietText,
-  priorityBadge,
-} from "../../theme/classes";
+import { badgeLow, pageLabelChip, pagePaneBg, priorityBadge } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import {
   badgeSelectBadge,
   badgeSelectHeaderWrapper,

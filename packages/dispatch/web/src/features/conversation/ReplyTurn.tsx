@@ -2,7 +2,7 @@ import type { MessageDeliveryMode } from "@legion/contracts";
 import type { ReactNode } from "react";
 
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
-import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
+import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/shell-classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
 import { EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";

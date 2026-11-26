@@ -7,7 +7,8 @@ import type {
   DeliveryRun,
   DeliverySessionGroup,
 } from "../../api/types";
-import { borderDefault, brushBand, surfaceBg, textMutedOnCanvas } from "../../theme/classes";
+import { brushBand, textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, surfaceBg } from "../../theme/shell-classes";
 import { renderChunk } from "../shell/chunk-loads";
 import { useMediaQuery } from "../shell/useDialog";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";

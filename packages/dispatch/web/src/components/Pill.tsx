@@ -5,20 +5,22 @@ import {
   approvalPill,
   pageFailedText,
   pageHairBorder,
-  pageInkText,
   pageLabelChip,
   pageMarkBg,
-  pageMutedText,
   pagePaperBg,
   pageStatusDoneText,
   pageWaitingChip,
   statusPill,
   statusPillDot,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
+} from "../theme/classes";
+import {
+  pageInkText,
+  pageMutedText,
+  surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { usePageWords } from "./tooltips";
 
 export type PillTone = "label" | "selected-label" | "status";

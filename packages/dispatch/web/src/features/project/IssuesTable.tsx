@@ -5,13 +5,13 @@ import { userStateQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   dangerText,
   focusVisibleRing,
-  textMutedOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";

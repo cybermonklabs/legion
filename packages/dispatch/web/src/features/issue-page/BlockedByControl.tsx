@@ -2,13 +2,8 @@ import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } fro
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
-import {
-  pageFailedText,
-  pageField,
-  pageHeaderControl,
-  pageInkText,
-  pageQuietText,
-} from "../../theme/classes";
+import { pageFailedText, pageField, pageHeaderControl } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { buildIssuePath } from "../refs/page-routes";
 import { focusOnDocument } from "../shell/roving";
 import { blockedByControlName } from "./details-names";

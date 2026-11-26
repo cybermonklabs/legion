@@ -2,13 +2,8 @@ import { useDroppable } from "@dnd-kit/core";
 import type { ReactNode } from "react";
 
 import { Pill } from "../../components/Pill";
-import {
-  borderDefault,
-  focusVisibleRing,
-  selectedCardBorder,
-  surfaceMutedBg,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { selectedCardBorder, textPrimaryOnSurface } from "../../theme/classes";
+import { borderDefault, focusVisibleRing, surfaceMutedBg } from "../../theme/shell-classes";
 import {
   type BoardColumn,
   laneColumnId,

@@ -1,19 +1,18 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
+import { pageHairBorder, pagePaperBg } from "../../theme/classes";
 import {
   borderDefault,
   focusVisibleRing,
-  pageHairBorder,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   railBg,
   railBorder,
   railHoverBg,
   railText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
 import { routeHasMargin } from "../refs/page-routes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";

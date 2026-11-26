@@ -10,7 +10,7 @@ import {
   inputClasses,
   surfaceMutedBg,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useUserPreference } from "../shell/userPreference";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";

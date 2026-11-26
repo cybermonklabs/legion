@@ -5,12 +5,8 @@ import { type ReactNode, useContext, useEffect, useId, useRef, useState } from "
 import type { Doc } from "yjs";
 import { whoAmIQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
-import {
-  borderDefault,
-  dangerText,
-  hasFocusVisibleRing,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+import { hasFocusVisibleRing, textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, dangerText } from "../../theme/shell-classes";
 import { colorForLogin } from "../doc/connection";
 import { DocumentRefPicker } from "../doc/DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "../doc/document-references";

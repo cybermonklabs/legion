@@ -521,6 +521,80 @@ test("the line in a pending-writes indicator's place stays while the browser is 
   }
 });
 
+// A kept record whose kinds of write failed to download online stays counted on the line in the
+// indicator's place (`ChangesNotSent`) even once a live indicator write mounts the indicator from
+// a loaded chunk, and after that live write settles and the indicator draws nothing (its host
+// keeps the indicator mounted from the first row on, `reset !== ""`): mounting the indicator must
+// never hide the kept record for the life of the page. Once the kinds land and take the record
+// up, the line goes.
+test("the line counting a kept record while kinds of write failed stays drawn beside a loaded indicator, after its write settles, and goes once the kinds land", async () => {
+  const kept = keyMinted(Date.now());
+  keepWrite(window.sessionStorage, kept, { presentation: "composer" });
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const send = spyOn(api, "send").mockResolvedValue(null as never);
+  const writes = writesOf(client);
+  const { downloads, end, Host } = indicatorChunk();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Host />
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    await drawTheIndicator(downloads[0]);
+    // The host's initial prefetch of the kinds has settled before this take-up begins, so only
+    // the explicit `kindsRegistered()` below ends it.
+    await waitFor(() => expect(chunkLoadsOut()).toBe(0));
+
+    act(() => {
+      writes.resume("alice", () =>
+        Promise.reject(new TypeError("Failed to fetch dynamically imported module"))
+      );
+    });
+    expect(await screen.findByText("1 change not sent")).toBeVisible();
+
+    // A live indicator write mounts the already-loaded indicator beside the standalone line; the
+    // take-up holds it queued (`Waiting to send`), so Discard settles it while the kinds stay out.
+    act(() => {
+      writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          request: { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" },
+        })
+        .catch(() => undefined);
+    });
+    const indicator = await screen.findByRole("region", { name: "Pending changes" });
+    expect(indicator).toHaveTextContent("CORE-1 set to done — Waiting to send");
+    expect(
+      screen.getByText("1 change not sent"),
+      "mounting the indicator hid the kept record waiting on failed kinds"
+    ).toBeVisible();
+
+    await userEvent.setup().click(within(indicator).getByRole("button", { name: "Discard" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument()
+    );
+    expect(
+      screen.getByText("1 change not sent"),
+      "settling the indicator's write hid the kept record waiting on failed kinds"
+    ).toBeVisible();
+
+    act(() => kindsRegistered());
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText(/\bnot sent\b/u)).not.toBeInTheDocument());
+  } finally {
+    view.unmount();
+    end();
+    kindsRegistered();
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    send.mockRestore();
+  }
+});
+
 // A page that loads signed out takes up nothing until someone signs in (`app.tsx`), so the
 // sign-in page lists what the reload kept from each write's own record, with no kind of write in
 // and no chunk: the list is in the entry. A record kept as refused reads "Not saved" and offers

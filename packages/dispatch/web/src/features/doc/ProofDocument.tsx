@@ -30,22 +30,19 @@ import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
+import { badgeMed, pageFailedText, pageLabelChip, pagePaperBg } from "../../theme/classes";
 import {
-  badgeMed,
   dangerText,
   linkHoverText,
   linkText,
-  pageFailedText,
   pageInkText,
-  pageLabelChip,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import {
   ArtifactDropZone,

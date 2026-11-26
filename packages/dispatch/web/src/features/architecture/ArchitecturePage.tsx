@@ -15,26 +15,28 @@ import { TruncatedText } from "../../components/TruncatedText";
 import {
   badgeHigh,
   badgeLow,
-  borderStrong,
-  calloutDangerBg,
-  calloutDangerBorder,
-  card,
   cardHoverBorder,
-  dangerText,
-  focusVisibleRing,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   progressFill,
   progressFillDone,
   progressTrack,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnSurface,
-  textSecondaryOnCanvas,
-  textSecondaryOnSurface,
   trustWarningBorder,
 } from "../../theme/classes";
+import {
+  borderStrong,
+  calloutDangerBg,
+  calloutDangerBorder,
+  card,
+  dangerText,
+  focusVisibleRing,
+  linkHoverText,
+  linkText,
+  textMutedOnSurface,
+  textSecondaryOnCanvas,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { ARCHITECTURE_COMPONENT_PARAM } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap, useKeymapScope } from "../shell/keymap";

@@ -5,16 +5,15 @@ import { replyPrefill, seededDraft } from "../conversation/composer-draft";
 
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
 import { draftReading, parsedLinkWords } from "./parsed-references";
+import { partyMention, partyOfAddress } from "./party-mention";
 import {
   draftParties,
   inLinkWords,
   inlineLinks,
   isPartyRoute,
   linkOf,
-  partyMention,
   partyMentionSpan,
 } from "./party-references";
-import { partyOfAddress } from "./routes";
 import { readTextReferences } from "./text-references";
 
 beforeAll(async () => {

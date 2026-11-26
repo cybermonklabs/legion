@@ -1,7 +1,8 @@
 import { flexRender, type Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
 import { drawsPinnedDivider, type LineProps } from "../../components/DataTable";
-import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
+import { selectedCardBg } from "../../theme/classes";
+import { borderDefault, focusVisibleRing, surfaceBg } from "../../theme/shell-classes";
 
 /**
  * One row of the priorities table: its cells, and, while the table's order is the reader's to

@@ -9,14 +9,13 @@ import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { priorityBadge, textPrimaryOnSurface } from "../../theme/classes";
 import {
   card,
   linkText,
-  priorityBadge,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";

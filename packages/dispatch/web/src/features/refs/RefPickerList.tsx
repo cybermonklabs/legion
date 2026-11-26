@@ -3,14 +3,13 @@ import { type ReactNode, useId } from "react";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
-  dangerText,
   selectedCardBg,
   surfaceMutedHoverBg,
   surfaceRecessedBg,
-  textMutedOnSurface,
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { dangerText, textMutedOnSurface } from "../../theme/shell-classes";
 import { AgentName } from "./AgentName";
 import { RefKindIcon } from "./kind-icons";
 import { PlainText } from "./plain-text";

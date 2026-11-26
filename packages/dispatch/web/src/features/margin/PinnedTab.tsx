@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import type { DispatchEvent } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
-import { borderDefault, textMutedOnSurface } from "../../theme/classes";
+import { borderDefault, textMutedOnSurface } from "../../theme/shell-classes";
 import { EventBody, EventEditedMark, isAskEvent } from "../activity/EventBody";
 import { AgentName } from "../refs/AgentName";
 import { PostBody } from "../refs/PostBody";

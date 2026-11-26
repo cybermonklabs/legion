@@ -6,14 +6,13 @@ import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
+import { checkboxAccent, textMutedOnCanvas } from "../../theme/classes";
 import {
-  checkboxAccent,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";

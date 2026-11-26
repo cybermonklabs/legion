@@ -1,13 +1,12 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { type ReactNode, useState } from "react";
+import { surfaceMutedHoverBg, toolbarControlHeight } from "../../theme/classes";
 import {
   borderDefault,
   focusVisibleRing,
   surfaceBg,
-  surfaceMutedHoverBg,
   textPrimaryOnCanvas,
-  toolbarControlHeight,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { usePriorityWrites } from "./priority-writes";
 
 /** Each button here, in the classes of the Issues table toolbar's own button (`Clear filters`,

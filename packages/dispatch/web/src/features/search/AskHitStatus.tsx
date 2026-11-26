@@ -2,12 +2,8 @@ import { actorActText } from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
-import {
-  badgeLow,
-  textMutedOnSelectedCard,
-  textPrimaryOnSurface,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { badgeLow, textMutedOnSelectedCard, textPrimaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { AskResolutionLine } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";

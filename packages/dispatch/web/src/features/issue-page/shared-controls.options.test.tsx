@@ -43,20 +43,22 @@ import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
-  borderDefault,
-  focusVisibleRing,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
+  pagePaperBg,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  focusVisibleRing,
+  inputClasses,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";

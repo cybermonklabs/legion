@@ -2,7 +2,8 @@ import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import { pageLabelChip, pageMutedText, textSecondaryOnSurface } from "../../theme/classes";
+import { pageLabelChip } from "../../theme/classes";
+import { pageMutedText, textSecondaryOnSurface } from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { Timestamp } from "../refs/Timestamp";

@@ -17,17 +17,19 @@ import { Link, useNavigate } from "react-router-dom";
 import { artifactBlocksQuery } from "../../../api/queries";
 
 import {
-  focusVisibleRing,
   pageHairBorder,
   pageInkBorder,
+  pagePaperBg,
+  textMutedOnCanvas,
+} from "../../../theme/classes";
+import {
+  focusVisibleRing,
   pageInkFill,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
-  textMutedOnCanvas,
-} from "../../../theme/classes";
+} from "../../../theme/shell-classes";
 import {
   type KnownReferences,
   namesBlockByLine,

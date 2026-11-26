@@ -33,18 +33,17 @@ import type {
   DeliveryTimingDay,
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   dangerText,
   linkText,
   surfaceBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";

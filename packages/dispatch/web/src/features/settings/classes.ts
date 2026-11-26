@@ -1,3 +1,4 @@
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   card,
@@ -5,10 +6,9 @@ import {
   primaryButtonBg,
   primaryButtonHoverBg,
   surfaceMutedBg,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 
 /** The recipes every Settings section's table and form share, so the sections stay in step. */
 /** `relative` is load-bearing: a table's `sr-only` header cell is absolutely positioned, and

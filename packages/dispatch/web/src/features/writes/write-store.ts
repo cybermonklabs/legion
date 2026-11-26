@@ -134,8 +134,8 @@ export type Attempt<T> = (bounds: WriteBounds) => Promise<T>;
 
 /**
  * A kind of write: what its record is (`D`) and how it is kept (`K`), checked as a reload reads it
- * (`kept`), and what the store does for it beyond making it. Every kind is defined once
- * (`defineWriteKind`), so a reload finds any kept write's kind by its `name`.
+ * (`kept`), and what the store does for it beyond making it. Every kind is defined by its `name`
+ * (`defineWriteKind`), so a reload finds any kept write's kind by that name.
  */
 export interface WriteKind<D, K = D> {
   readonly name: string;
@@ -220,12 +220,16 @@ const kinds = new Map<string, AnyKind>();
  *  kind defined after a store was made is opened on it here (`defineWriteKind`). */
 const madeStores = new Set<WeakRef<Writes>>();
 
-/** Defines a kind of write, once, so a reload finds it by name, and opens it (`opened`) on every
+/** Defines a kind of write by its name, so a reload finds it, and opens it (`opened`) on every
  *  store already made, as each store opens the kinds defined before it. The app's kinds come in a
  *  chunk of their own, after its store was made (`kinds.ts`), and a kind opened only on the
  *  stores made after it would miss the app's one store: the issue-field kind's watch, which keeps
  *  what Dispatch last confirmed from every read since the store was made, would begin only at the
- *  first pick (`issue-field-writes.ts`). */
+ *  first pick (`issue-field-writes.ts`). A second definition under a name already defined
+ *  replaces the first for every store, one made before it too, since a store reads a write's
+ *  kind by its name each time it needs one (`kinds.get`); it is opened on no store, as the first
+ *  was already. The composer's kind is the one defined twice: in the entry, and again in the
+ *  kinds chunk with a reader of the sends an older build kept (`held-sends.ts`, `kinds.ts`). */
 export function defineWriteKind<D, K = D>(kind: WriteKind<D, K>): WriteKind<D, K> {
   const known = kinds.has(kind.name);
   kinds.set(kind.name, kind);
@@ -398,6 +402,9 @@ interface TakeUp {
   readonly login: string;
   readonly ask: () => void;
   readonly pressedMeanwhile: Entry[];
+  /** Whether a load of the kinds it asked for has failed, and none has answered since
+   *  (`Writes.kindsFailed`). */
+  failed: boolean;
 }
 
 /** What ends each take-up still waiting for the kinds of write (`kindsRegistered`). */
@@ -552,6 +559,14 @@ export class Writes {
    *  before the kinds of write are in (`KeptWrites.tsx`). */
   readonly notTakenUp = (): readonly KeptWrite[] => this.#notTakenUp;
 
+  /** Whether the take-up still waits for the kinds of write after a load of them failed - online,
+   *  since the app loads them under `importWhenOnline`, which an offline failure only waits out -
+   *  and no later load has answered: the page may never get them, with no recovery reload to
+   *  follow, so the line in the pending-writes indicator's place counts what the reload kept that
+   *  the store has not taken up (`ChangesNotSent`, `write-hosts.tsx`). False once the take-up
+   *  ends, and before one begins. */
+  readonly kindsFailed = (): boolean => this.#takingUp?.failed === true;
+
   /** What of `login`'s a sign-out would discard here: every write of theirs they can see that
    *  Dispatch has not made - out, waiting its turn, or refused and holding their draft - by its
    *  key and name. That is every such write the store holds, and every one of theirs the reload
@@ -683,7 +698,8 @@ export class Writes {
     // `#keep`, `#landed` and `#refused` read its kind through `kinds.get(...)?.`, which leaves a
     // missing kind to the store's defaults. And every caller passes `spec.kind` as the constant
     // `defineWriteKind` made as its own module loaded, so the kind is registered before that
-    // chunk is in.
+    // chunk is in. The composer's kind the chunk defines again replaces it by name with the same
+    // hooks (`kinds.ts`), so a press before the chunk and one after are made the same way.
     if (
       takingUp === undefined ||
       entry.endsWithSession ||
@@ -1149,19 +1165,22 @@ export class Writes {
    * kind, found by the name it was kept under, and one whose kind no module has registered is
    * dropped. The app's kinds are a chunk of their own (`kinds.ts`), so the app passes what loads
    * them (`loadKinds`), and the take-up waits until they are in, whichever load brought them
-   * (`kindsRegistered`). Every write pressed meanwhile (`run`) but a sign-out stays out of its
-   * line while the page stays, and joins it once the take-up is done, behind every write the
-   * take-up put there, in press order, whatever order the page's effects pressed it in. When the
-   * page goes (`pagehide`), each write waiting in `pressedMeanwhile` - and any pressed during
-   * `pagehide` itself (`run`) - whose line holds no kept write this take-up will send on its own
-   * (`#keptAhead`) joins its line at once and goes out as the page goes (`keepalive`,
-   * `api/client.ts`), in press order, so a tab closing then loses none of them; one whose line
-   * holds such a kept write stays out of its line, kept in the tab behind that write for the next
-   * load (`WriteStorage.load` sorts by `pressedAt`). A `pageshow` changes nothing already
-   * released, and the take-up goes on. A load that fails ends nothing here: the next press asks
-   * again, and the failure of a load a reader waits on reloads the page while the tab's reload
-   * budget lasts (`loadWriteKinds`), whose own take-up finds every write pressed meanwhile here
-   * kept in the tab. Without `loadKinds` - every unit test's store - the take-up runs at once.
+   * (`kindsRegistered`). The composer's kind there is the one that reads a send a build before
+   * this one kept, which holds no answer of whether its text names a party and so needs the
+   * grammar of references the entry leaves out (`held-sends.ts`'s `composerSend`). Every write
+   * pressed meanwhile (`run`) but a sign-out stays out of its line while the page stays, and
+   * joins it once the take-up is done, behind every write the take-up put there, in press order,
+   * whatever order the page's effects pressed it in. When the page goes (`pagehide`), each write
+   * waiting in `pressedMeanwhile` - and any pressed during `pagehide` itself (`run`) - whose line
+   * holds no kept write this take-up will send on its own (`#keptAhead`) joins its line at once
+   * and goes out as the page goes (`keepalive`, `api/client.ts`), in press order, so a tab
+   * closing then loses none of them; one whose line holds such a kept write stays out of its
+   * line, kept in the tab behind that write for the next load (`WriteStorage.load` sorts by
+   * `pressedAt`). A `pageshow` changes nothing already released, and the take-up goes on. A load
+   * that fails ends nothing here: the next press asks again, and the failure of a load a reader
+   * waits on reloads the page while the tab's reload budget lasts (`loadWriteKinds`), whose own
+   * take-up finds every write pressed meanwhile here kept in the tab. Without `loadKinds` - every
+   * unit test's store - the take-up runs at once.
    *
    * Nothing else waits for the kinds. With nothing kept for the person there is nothing to take
    * up: the take-up ends at once and loads no kinds, and every press goes straight to its line.
@@ -1209,9 +1228,13 @@ export class Writes {
           () => registered.resolve(),
           () => {
             asking = false;
+            if (this.#takingUp !== takingUp || takingUp.failed) return;
+            takingUp.failed = true;
+            this.#notify();
           }
         );
       },
+      failed: false,
       login,
       pressedMeanwhile: [],
     };
@@ -1244,6 +1267,7 @@ export class Writes {
     const takingUp = this.#takingUp;
     if (takingUp === undefined) return;
     this.#takingUp = undefined;
+    if (takingUp.failed) this.#notify();
     if (typeof window !== "undefined") {
       window.removeEventListener("pagehide", this.#letInAsPageGoes);
     }
@@ -1996,4 +2020,11 @@ export function useWriteSelection<R>(key: string, select: (rows: readonly Write[
 export function useNotTakenUp(): readonly KeptWrite[] {
   const store = useWrites();
   return useSyncExternalStore(store.subscribe, store.notTakenUp);
+}
+
+/** Whether the take-up still waits after a load of the kinds of write failed
+ *  (`Writes.kindsFailed`), re-rendering only when that changes. */
+export function useKindsFailed(): boolean {
+  const store = useWrites();
+  return useSyncExternalStore(store.subscribe, store.kindsFailed);
 }

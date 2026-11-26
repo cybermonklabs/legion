@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { borderDefault, linkHoverText, linkText } from "../theme/classes";
+import { borderDefault, linkHoverText, linkText } from "../theme/shell-classes";
 
 /** The button at the foot of an offset-paged list: it reads the next page and says so while that
  *  read is in flight. A list with no next page renders none, so a caller hands it the infinite

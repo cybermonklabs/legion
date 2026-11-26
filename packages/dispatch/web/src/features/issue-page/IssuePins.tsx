@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { ownerAsksQuery, ownerCommentsQuery } from "../../api/queries";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
-import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText } from "../../theme/shell-classes";
 import { EventEditedMark } from "../activity/EventBody";
 import { SentenceParts } from "../activity/SentenceParts";
 import { eventDescription } from "../issue/event-description";

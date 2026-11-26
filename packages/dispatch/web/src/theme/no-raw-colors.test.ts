@@ -3,15 +3,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * The mechanical half of the dark-mode palette contract: `classes.ts` is the only place a
- * component-facing color className gets built, and `palette.test.ts` verifies every role it
- * exports. Neither guarantees anything about the *components* unless nothing outside `theme/`
- * can write a color utility literal directly — this test is that guarantee. A component that
- * writes `className="bg-white ..."` instead of importing `surfaceBg` from `classes.ts` compiles
- * fine and fails only here. Scans every `.ts`/`.tsx` source file in `web/src` (outside `theme/`)
- * and every `.ts` file in `e2e/` — Playwright specs and helpers are just as capable of writing
- * a raw Tailwind color utility (e.g. as a `page.locator` selector or a `toHaveClass` pattern) as
- * a component is.
+ * The mechanical half of the dark-mode palette contract: `classes.ts` and `shell-classes.ts` are
+ * the only places a component-facing color className gets built, and `palette.test.ts` verifies
+ * every role they export. Neither guarantees anything about the *components* unless nothing
+ * outside `theme/` can write a color utility literal directly — this test is that guarantee. A
+ * component that writes `className="bg-white ..."` instead of importing `surfaceBg` from
+ * `shell-classes.ts` compiles fine and fails only here. Scans every `.ts`/`.tsx` source file in
+ * `web/src` (outside `theme/`) and every `.ts` file in `e2e/` — Playwright specs and helpers are
+ * just as capable of writing a raw Tailwind color utility (e.g. as a `page.locator` selector or
+ * a `toHaveClass` pattern) as a component is.
  */
 const COLOR_FAMILIES = [
   "slate",
@@ -100,8 +100,9 @@ describe("no raw Tailwind color utilities outside theme/", () => {
  * any source file, so Tailwind's scanner cannot see it and silently drops it from the built
  * stylesheet (see `classes-in-build-css.ts`). This rejects the construction pattern itself
  * — a hyphen glued directly onto a template-literal expression, with no whitespace between them
- * — inside `classes.ts`, the one file allowed to compose Tailwind classes at all. Comments are
- * stripped first so this test can describe the pattern in prose without failing on itself.
+ * — inside `classes.ts` and `shell-classes.ts`, the two files allowed to compose Tailwind classes
+ * at all. Comments are stripped first so this test can describe the pattern in prose without
+ * failing on itself.
  */
 const DYNAMIC_CLASS_CONSTRUCTION_PATTERN = /\$\{[^}]+\}-|-\$\{[^}]+\}/;
 
@@ -109,13 +110,14 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
-describe("no dynamic Tailwind class construction in classes.ts", () => {
-  test("classes.ts never glues a hyphen directly onto a template expression", () => {
-    const source = stripComments(readFileSync(join(WEB_SRC_ROOT, "theme", "classes.ts"), "utf8"));
-    const lines = source.split("\n");
-    const offenders = lines
-      .map((line, index) => ({ line, number: index + 1 }))
-      .filter(({ line }) => DYNAMIC_CLASS_CONSTRUCTION_PATTERN.test(line));
+describe("no dynamic Tailwind class construction in classes.ts or shell-classes.ts", () => {
+  test("neither module of classes glues a hyphen directly onto a template expression", () => {
+    const offenders = ["classes.ts", "shell-classes.ts"].flatMap((file) =>
+      stripComments(readFileSync(join(WEB_SRC_ROOT, "theme", file), "utf8"))
+        .split("\n")
+        .map((line, index) => ({ file, line, number: index + 1 }))
+        .filter(({ line }) => DYNAMIC_CLASS_CONSTRUCTION_PATTERN.test(line))
+    );
     expect(offenders).toEqual([]);
   });
 });

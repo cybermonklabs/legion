@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import { DisclosureToggle } from "../../components/DisclosureToggle";
-import { borderDefault, linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, linkHoverText, linkText } from "../../theme/shell-classes";
 import type { InboxGroup } from "./grouping";
 import type { InboxListRow } from "./list-row";
 

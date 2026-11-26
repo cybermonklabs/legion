@@ -6,14 +6,16 @@ import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInse
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
+  dragHandleBg,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
   backdrop50,
   borderDefault,
   card,
-  dragHandleBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";

@@ -15,19 +15,21 @@ import { issueDecisionsQuery } from "../../api/queries";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
-  borderDefault,
-  dangerText,
   focusBorder,
   pageFailedText,
   pageHairBorder,
-  pageInkText,
-  pageLineBorder,
-  pageMutedText,
   pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  dangerText,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";

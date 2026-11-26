@@ -5,6 +5,7 @@ import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   borderStrong,
@@ -14,8 +15,7 @@ import {
   secondaryButtonCompact,
   surfaceBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

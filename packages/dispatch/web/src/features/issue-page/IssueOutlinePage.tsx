@@ -6,13 +6,13 @@ import { ApiError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type IssueRoute, parseIssuePath } from "../refs/page-routes";
 import { ReferenceNamesProvider } from "../refs/reference-names";
 import { NotFoundPage } from "../shell/NotFoundPage";

@@ -5,6 +5,7 @@ import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import type { Sending } from "../../hooks/useSending";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   dangerText,
@@ -13,9 +14,8 @@ import {
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import type { ListedReplies, ReplyParent, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";

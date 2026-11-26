@@ -4,7 +4,8 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
-import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
+import { pagePaperBg } from "../../../theme/classes";
+import { pageLineBorder } from "../../../theme/shell-classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";

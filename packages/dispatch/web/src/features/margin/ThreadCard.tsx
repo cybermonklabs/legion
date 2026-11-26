@@ -7,15 +7,9 @@ import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
-  borderDefault,
-  calloutDangerBorder,
   calloutSuccessBorder,
-  card,
   dangerHoverText,
-  dangerText,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   quoteAccentBorder,
   quoteBodyText,
   selectedCardBg,
@@ -26,10 +20,18 @@ import {
   suggestionAddedText,
   suggestionRemovedBg,
   suggestionRemovedText,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  calloutDangerBorder,
+  card,
+  dangerText,
+  linkHoverText,
+  linkText,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { composerNameOf } from "../conversation/composer-names";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";

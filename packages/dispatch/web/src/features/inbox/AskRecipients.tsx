@@ -13,7 +13,7 @@ import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { textMutedOnSurface } from "../../theme/classes";
+import { textMutedOnSurface } from "../../theme/shell-classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";

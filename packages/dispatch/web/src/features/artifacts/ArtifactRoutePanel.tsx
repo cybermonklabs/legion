@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
-import { dangerText, linkHoverText, linkText } from "../../theme/classes";
+import { dangerText, linkHoverText, linkText } from "../../theme/shell-classes";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath, type DispatchRoute } from "../refs/page-routes";
 import { ArtifactDetails } from "./ArtifactDetails";

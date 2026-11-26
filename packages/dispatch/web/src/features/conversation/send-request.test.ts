@@ -15,7 +15,7 @@ beforeAll(async () => {
 const refused: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Status please", replacement: "" },
+  draft: { body: "Status please", namesParty: false, replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { kind: "session", sessionId: "planner-session" },

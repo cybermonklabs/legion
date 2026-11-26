@@ -6,7 +6,7 @@ import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
 import { ownerSubscribersQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { dangerText } from "../../theme/classes";
+import { dangerText } from "../../theme/shell-classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { ArtifactQueryStates } from "../artifacts/ArtifactQueryStates";

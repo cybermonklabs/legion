@@ -5,15 +5,14 @@ import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
+import { newDividerLine, textMutedOnCanvas } from "../../theme/classes";
 import {
   dangerText,
   linkText,
-  newDividerLine,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { AgentName, useAgentText } from "../refs/AgentName";

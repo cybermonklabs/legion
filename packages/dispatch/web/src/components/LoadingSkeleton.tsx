@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { borderDefault, card, skeletonBg } from "../theme/classes";
+import { borderDefault, card, skeletonBg } from "../theme/shell-classes";
 
 export function LoadingSkeleton({ label }: { label: string }): ReactNode {
   return (

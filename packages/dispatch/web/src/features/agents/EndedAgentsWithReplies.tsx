@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
-import { borderDefault, card, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, card } from "../../theme/shell-classes";
 import { AgentName } from "../refs/AgentName";
 
 import { unreadRepliesLabel } from "./unread";

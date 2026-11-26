@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
-import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
+import { textMutedOnCanvas, unreadDotBg } from "../../theme/classes";
+import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { EditedMark } from "../refs/PostMarks";

@@ -2,14 +2,13 @@ import type { MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
+import { quoteAccentBorder, quoteBodyText } from "../../theme/classes";
 import {
   dangerText,
   linkHoverText,
   linkText,
-  quoteAccentBorder,
-  quoteBodyText,
   textMutedOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { composerNameOf } from "./composer-names";

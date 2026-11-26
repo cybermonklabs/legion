@@ -17,7 +17,7 @@ import {
   dangerText,
   secondaryButtonCompact,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { focusOnDocument } from "../shell/roving";
 import { conflictWords } from "./conflicts";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";

@@ -13,18 +13,20 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import {
   bgTransparent,
   borderStrongHover,
+  focusBorder,
+  surfaceMutedStrongBg,
+  textPrimaryOnSurface,
+  textSecondaryHoverToPrimary,
+} from "../../theme/classes";
+import {
   borderTransparent,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
-  focusBorder,
   focusVisibleRing,
   inputClasses,
-  surfaceMutedStrongBg,
-  textPrimaryOnSurface,
-  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in

@@ -3,12 +3,8 @@ import type { ReactNode } from "react";
 import { priorityHistoryQuery } from "../../api/queries";
 import type { PriorityAct } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import {
-  borderDefault,
-  dangerText,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, dangerText, textSecondaryOnCanvas } from "../../theme/shell-classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";

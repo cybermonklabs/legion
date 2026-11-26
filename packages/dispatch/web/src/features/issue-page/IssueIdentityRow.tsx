@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { linkHoverText, pageHeaderControl, pageInkText, pageQuietText } from "../../theme/classes";
+import { pageHeaderControl } from "../../theme/classes";
+import { linkHoverText, pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath } from "../refs/page-routes";
 import { type IssueAction, IssueActionsMenu } from "./IssueActionsMenu";

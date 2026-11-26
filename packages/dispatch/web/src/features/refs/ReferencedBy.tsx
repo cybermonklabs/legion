@@ -10,7 +10,7 @@ import {
   linkText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { MarkdownBody } from "./MarkdownBody";

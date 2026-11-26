@@ -1,19 +1,18 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
 import { inputMethodKey } from "../../lib/input-method-key";
+import { backdrop40, primaryButtonDisabled } from "../../theme/classes";
 import {
-  backdrop40,
   card,
   dangerText,
   inputClasses,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
