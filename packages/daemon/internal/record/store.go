@@ -1656,7 +1656,8 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 // the counters of one still open, its design gate, what its holders took of the approved design
 // and its recorded handoffs. now is when the publication a cleared gate queues is due.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
+	return s.clearGeneration(ctx, tx, "issue = $2 and state <> 'open'", "issue = $1", "key = $1", issue,
+		fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
@@ -1670,29 +1671,38 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 	if _, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree); err != nil {
 		return fmt.Errorf("%s: raise its tree generation: %w", describe, err)
 	}
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $2) and state <> 'open'",
+		"issue in (select key from issues where tree = $1)", "tree = $1", tree, describe, now)
 }
 
 // ClearChangeGeneration empties one issue's facts of the generation a next change leaves: its
-// merged pull request, with its clock kept, the counters of one still open, and its recorded
-// handoffs (clearRun), as ClearGeneration empties them. It keeps the design gate and what each
-// holder took of it (design_news_told), so the change asks no person for a new approval and owes
-// nobody news of a design that did not change. For a tree root it keeps the tree's architect's
-// phases row whole too: the tree's architect runs on the tree's generation, which a next change
-// leaves, so its entry's task and its counts are of a run that goes on. It touches no other
-// issue's rows.
+// merged pull request, with its clock kept (clearPullRequests), the counters of one still open, and
+// its recorded handoffs (clearRun), as ClearGeneration empties them. It keeps the design gate and
+// what each holder took of it (design_news_told), so the change asks no person for a new approval
+// and owes nobody news of a design that did not change. For a tree root it keeps the tree's
+// architect's phases row whole too: the tree's architect runs on the tree's generation, which a
+// next change leaves, so its entry's task and its counts are of a run that goes on. It touches no
+// other issue's rows.
 func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	describe := fmt.Sprintf("clear the generation of %s for its next change", issue)
+	if err := s.clearPullRequests(ctx, tx, now, "issue = $2 and state <> 'open'", issue); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
 	return clearRun(ctx, tx, "issue = $1",
 		"issue = $1 and not (role = '"+string(claim.RoleArchitect)+"' and exists (select 1 from issues root where root.key = $1 and root.tree = root.key))",
-		issue, fmt.Sprintf("clear the generation of %s for its next change", issue), now)
+		issue, describe)
 }
 
-// clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table. The run's facts go
-// first (clearRun). The design gates go with them, in a statement of their own (clearGates), and
-// the rows of what each issue's holders took of those gates go beside them.
-func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
-	if err := clearRun(ctx, tx, where, where, key, describe, now); err != nil {
+// clearGeneration deletes the pull requests pullRequests selects, with key as $2
+// (clearPullRequests), and runs each other statement with key as $1: where selects the cleared
+// issues' rows by their issue column, and issues selects the same issues in the issues table. The
+// run's facts go first (clearRun). The design gates go with them, in a statement of their own
+// (clearGates), and the rows of what each issue's holders took of those gates go beside them.
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, pullRequests, where, issues, key, describe string, now time.Time) error {
+	if err := s.clearPullRequests(ctx, tx, now, pullRequests, key); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := clearRun(ctx, tx, where, where, key, describe); err != nil {
 		return err
 	}
 	// What each holder took of the approved design goes with the gate it was taken from: the
@@ -1717,31 +1727,41 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	return s.clearGates(ctx, tx, where, key, describe, now)
 }
 
-// clearRun empties the facts one run of the issues where selects owns, with key as $1: a pull
-// request that is not open, the last run's reading of one still open, and the handoffs, rounds
-// and counts of the phases rows phases selects.
+// clearPullRequests deletes the pull request rows where selects, and keeps each deleted row's
+// clock, in one statement. It binds now as $1, and where names its own arguments, args, from $2.
+// It is the one writer of a clear's clocks: each clear calls it with its whole predicate, which
+// takes only the rows that are not open (state <> 'open'), so the clock of a deleted row is
+// recorded one way whichever clear deleted it.
 //
-// A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
-// event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
-// every clear's, with the issue whose row the latest clear deleted: GitHub can deliver an opened
-// or a reopen of it after the clear, late or replayed from a message the intake gave up on,
-// however late, and the workflow records such an event only when it is newer than that clock
-// (workflow's pullRequestOpened, ClearedPullRequestClock). The row is never deleted: a pull
-// request recorded again is fenced by its own row from then on. The one-time rename pass moves it
-// to a configured rename's new name with the issue's other rows, and where it merges the moved row
-// into one the new name already holds, that row names the moved row's issue
-// (RenameIssueRepository). The issue's merge snapshot is on its own row (Issue.Merge), which no
-// clear touches, so the merge outlives the row this deletes.
-func clearRun(ctx context.Context, tx pgx.Tx, where, phases, key, describe string, now time.Time) error {
+// The clock — the updated_at of the newest lifecycle event the row applied — is kept in
+// cleared_pull_requests at its repository and number, the latest of every clear's, with the issue
+// whose row the latest clear deleted: GitHub can deliver an opened or a reopen of the pull request
+// after the clear, late or replayed from a message the intake gave up on, however late, and the
+// workflow records such an event only when it is newer than that clock (workflow's
+// pullRequestOpened, ClearedPullRequestClock). The row is never deleted: a pull request recorded
+// again is fenced by its own row from then on. The one-time rename pass moves it to a configured
+// rename's new name with the issue's other rows, and where it merges the moved row into one the
+// new name already holds, that row names the moved row's issue (RenameIssueRepository). The
+// issue's merge snapshot is on its own row (Issue.Merge), which no clear touches, so the merge
+// outlives the row this deletes.
+func (s *Postgres) clearPullRequests(ctx context.Context, tx pgx.Tx, now time.Time, where string, args ...any) error {
 	if _, err := tx.Exec(ctx, `with cleared as (
-			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
+			delete from pull_requests where `+where+` returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
-		select distinct on (repo, number) repo, number, issue, head_updated_at, $2::timestamptz from cleared order by repo, number, head_updated_at desc
+		select distinct on (repo, number) repo, number, issue, head_updated_at, $1::timestamptz from cleared order by repo, number, head_updated_at desc
 		on conflict (repo, number) do update set issue = excluded.issue,
 			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
-		key, now); err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		append([]any{now}, args...)...); err != nil {
+		return fmt.Errorf("delete the pull requests and keep their clocks: %w", err)
 	}
+	return nil
+}
+
+// clearRun empties the facts one run of the issues where selects owns, with key as $1: the last
+// run's reading of a pull request still open, and the handoffs, rounds and counts of the phases
+// rows phases selects. A pull request that is not open is the clear's to delete first
+// (clearPullRequests).
+func clearRun(ctx context.Context, tx pgx.Tx, where, phases, key, describe string) error {
 	for _, statement := range []string{
 		// An open pull request is kept across a new generation, but the last one's reading of it is
 		// not: its checks settlement is of a head nobody has judged since, and the
