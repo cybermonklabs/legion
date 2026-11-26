@@ -266,7 +266,8 @@ type IdleDecision struct {
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
 //
 //   - no task, notice, message or start waits for delivery to a role of the pod, but a start
-//     queued for news alone, which wakes the claim a release suspends (pods.IdleView.Waiting);
+//     queued for news alone, or a worker start that waits for an admission slot its issue does not
+//     hold, each of which wakes the claim a release suspends when it runs (pods.IdleView.Waiting);
 //
 //   - each live role's session reported, after its last turn, that it runs no background work. A
 //     claim with no report, or one whose report predates its last turn, is never released: that

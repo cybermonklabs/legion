@@ -282,9 +282,10 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //     queue itself. One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
-//     goes rather than the pod. A start queued for news alone is not such a row (idleWaitingRow),
-//     as it holds no pod: it wakes the claim the release suspends, and the role comes back with
-//     its news.
+//     goes rather than the pod. A start queued for news alone, and a worker start that waits for
+//     an admission slot its issue does not hold, are not such rows (idleWaitingRow), as they hold
+//     no pod: each wakes the claim the release suspends when it runs, and the role comes back
+//     with its news or its task.
 //
 // The mark stands through a cancel decided here: the caller carries the cancel out whole
 // (CancelIssueRelease), and a cancel that did not finish — a resume refused, the daemon stopped
@@ -479,9 +480,10 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// rows, is the pod being used again: the teardown would take a pod with a live role in
 		// it, and the stop that would have caught it has already run. The start rows read here
 		// are those that wait for a role of the pod, the one rule the idle hold and the boundary
-		// read too (idleWaitingRow), so a start queued for news alone does not cancel the
-		// teardown: it wakes the claim this release suspended, as any start wakes one, and the
-		// role comes back with its news in the pod that replaces this one. The release reads
+		// read too (idleWaitingRow), so neither a start queued for news alone nor a worker start
+		// that waits for an admission slot its issue does not hold cancels the teardown: each
+		// wakes the claim this release suspended when it runs, as any start wakes one, and the
+		// role comes back with its news or its task in the pod that replaces this one. The release reads
 		// every other queued start row where IssueSuspension reads only a production check's
 		// look, and needs no other narrowing: the read above has already returned a cancel for
 		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an

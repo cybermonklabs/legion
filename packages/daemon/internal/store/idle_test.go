@@ -652,6 +652,50 @@ func TestAStartQueuedForNewsAloneHoldsNoPodAndCancelsNoRelease(t *testing.T) {
 	}
 }
 
+// A worker start that waits for its issue's admission slot (record.SuperviseRequest.NeedsSlot)
+// holds no pod and cancels no release while no slot of its issue stands (idleWaitingRow). The
+// outbox holds such a start back until then (record's outboxInOrder), and an issue whose work came
+// back waits in the admission line for as long as its blocker stays open or the line is ahead of
+// it: hours, and for a blocked issue days. A pod held for it would stand idle all that time. Once
+// the slot comes the start runs, and it wakes the claim a release suspended as any start does. So
+// with the slot given, the same row holds the pod and cancels a release at its boundary, as any
+// start that carries a task does.
+func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+		Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"phase":"implementing","task":"Continue.","needsSlot":true}', 0, now(), '')`,
+		rootIssue); err != nil {
+		t.Fatal(err)
+	}
+
+	if view := idleViewOf(t, st, rootIssue); view.Waiting {
+		t.Fatal("the view reads a row waiting for a role of the pod, though the only one queued is a start that waits for an admission slot the issue does not hold")
+	}
+	_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+	decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+	if err != nil || decision.Act != ReleaseActs {
+		t.Fatalf("the boundary = %s for %s, %v with only a start waiting for its slot queued, want %s", decision.Act, decision.Cause, err, ReleaseActs)
+	}
+
+	if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+		t.Fatal("the view reads nothing waiting, though the issue now holds its slot and its start is due for a role of the pod")
+	}
+	decision, err = st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+	if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+		t.Fatalf("the boundary = %s for %s, %v once the slot came, want %s for %s", decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+	}
+}
+
 // A step record is history: its row reaches no session of the pod, so a record Dispatch has not
 // taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
 // standing and cancels no release at its boundary, whether it was queued before the release's rows

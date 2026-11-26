@@ -41,15 +41,27 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
 // (readIdleView, IssueReleaseStop), and, where it is a start, at the teardown (IssueRelease): a
-// row of one of those kinds, but a start queued for news of the approved design alone
-// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
-// reaches only a claim already given its phase's entry, and the claim an idle release suspended
-// is one: the start resumes it as any start does, so a release under the start loses nothing, and
-// the role comes back with its news. And such a start can wait a long time. A merger's waits for
-// its tree's design gate for the whole time the gate stays closed (the daemon's
-// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
-// (supervise's queue). A pod held for it would stand idle for all that time.
-const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
+// row of one of those kinds, but two kinds of start that can wait a long time and that a release
+// under them loses nothing of. Each reaches its role only when it runs, and the claim an idle
+// release suspended comes back when it does: the start resumes it as any start does.
+//
+//   - A start queued for news of the approved design alone (record.SuperviseRequest.News, which
+//     its payload writes as `"news": true`). Such a start reaches only a claim already given its
+//     phase's entry, and the claim an idle release suspended is one, so the role comes back with
+//     its news. A merger's waits for its tree's design gate for the whole time the gate stays
+//     closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim
+//     has not finished (supervise's queue).
+//   - A worker start that waits for its issue's admission slot (record.SuperviseRequest.NeedsSlot,
+//     `"needsSlot": true`) while no slot of the issue stands: the outbox holds it back until one
+//     does (record's outboxInOrder, whose rule this repeats). Its issue gave its slot back or had
+//     its work come back, and it waits in the admission line for as long as its blocker stays
+//     open or the line is ahead of it. Once the slot stands the start is due, and it holds the pod
+//     as any start does.
+//
+// A pod held for either would stand idle for all that time.
+const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
+	and not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
+		and not exists (select 1 from slots where slots.issue = outbox.issue))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed
