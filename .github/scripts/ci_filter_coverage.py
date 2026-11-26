@@ -1990,6 +1990,16 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     units = step_holders(documents)
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     refused = set()
+    # Rule 25: what claims each gated job and step. A filter's read set is computed from the
+    # gates that declare it, and each gate names one job (and, for a step's gate, one step), so a
+    # job gated on a filter that only another job's gate declares runs on a filter computed from
+    # that other job's reads: it passes every other rule while nothing holds its own reads, which
+    # is what deleting one of two gate files that declare one filter leaves (tool-fallback.py and
+    # tool-fallback-arm.py both declare tool_fallback). A step is held to a gate of its filter on
+    # its own job, not on itself: the steps that ready a gated step (a cache restore, a sysctl, a
+    # fetch) share its gate and read nothing the gated step's gate does not declare.
+    claimed_jobs = {(g.filter, g.job) for g in data.GATES if not g.step}
+    claimed_steps = {(g.filter, g.job, g.workflow) for g in data.GATES if g.step}
     for own, path, job_id, _, job in units:
         for step, condition in conditions(job):
             resolved = resolve_condition(condition, inputs_of.get((path, own), {}))
@@ -2010,6 +2020,23 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                     problems.append(error(path, f"{where} is gated on filter {name}, which no file of "
                                                 f"{GATES_DIR} declares as a gate or as EXCLUDED; add the gate "
                                                 f"with its reads"))
+                    continue
+                if name not in gates or (path, where, name, "claim") in refused:
+                    continue
+                if step is None and path == WORKFLOW and (name, job_id) not in claimed_jobs:
+                    refused.add((path, where, name, "claim"))
+                    declaring = sorted({f"{g.job}" + (f' step "{g.step}"' if g.step else "")
+                                        for g in data.GATES if g.filter == name})
+                    problems.append(error(path, f"{where} is gated on filter {name}, but no file of {GATES_DIR} "
+                                                f"declares a gate of {name} for job {job_id} (the gates of {name} "
+                                                f"name {', '.join(declaring)}), so nothing holds what job {job_id} "
+                                                f"reads; add its gate file with its reads"))
+                elif step is not None and (name, own, path) not in claimed_steps and (name, own) not in claimed_jobs:
+                    refused.add((path, where, name, "claim"))
+                    problems.append(error(path, f"{where} is gated on filter {name}, but no file of {GATES_DIR} "
+                                                f"declares a gate of {name} for job {own}'s steps in {path}, so "
+                                                f"nothing holds what the step reads; add its gate file with its "
+                                                f"reads"))
     # Rule 23's spelling half over the values ci.yaml's jobs hand the workflows they call, which
     # are what a called file's conditions are resolved through.
     for job_id, job in caller_jobs.items():
@@ -3103,6 +3130,135 @@ def check_dead_patterns(data, expander: Expander, problems: list[Annotation]) ->
                                           f"filter to nothing; correct the globs or drop the line"))
 
 
+# Rule 26, what a Go test reads through `..`. A string of a Go file: a double-quoted literal with
+# its escapes, or a raw one.
+GO_STRING = r'"(?:[^"\\\n]|\\.)*"|`[^`]*`'
+# A filepath.Join or path.Join whose leading arguments are string literals, the first of them `..`
+# or `../...`: the literal prefix of the path it builds.
+GO_JOIN = re.compile(rf"\b(?:filepath|path)\.Join\(\s*((?:(?:{GO_STRING})\s*,\s*)*(?:{GO_STRING}))")
+# A string literal that is a path up out of its directory, `"../..."`.
+GO_UP_LITERAL = re.compile(r'"(\.\./(?:[^"\\\n]|\\.)*)"|`(\.\./[^`]*)`')
+
+
+def go_without_comments(text: str) -> str:
+    """Go source with every comment blanked and its strings, runes and newlines kept, so a path a
+    comment mentions is no read and a `//` inside a string is no comment."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            end = i + 1
+            while end < n and text[end] != c and not (c != "`" and text[end] == "\n"):
+                end += 2 if c != "`" and text[end] == "\\" else 1
+            out.append(text[i:end + 1])
+            i = end + 1
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            out.append("\n" * text.count("\n", i, end))
+            i = end
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def go_up_reads(path: str, text: str) -> list:
+    """The paths a Go file reads up out of its own directory, as (the repository-relative path,
+    the source text it was read from): each filepath.Join or path.Join whose leading arguments are
+    string literals starting with `..`, taken as far as its literals go, and each `"../..."`
+    literal. A path the file then extends with a value it computes is read here as the directory
+    its literals reach, which is all the source says of it."""
+    code, here, found = go_without_comments(text), os.path.dirname(path), []
+    for match in GO_JOIN.finditer(code):
+        parts = [part[1:-1] for part in re.findall(GO_STRING, match.group(1))]
+        if parts and (parts[0] == ".." or parts[0].startswith("../")):
+            found.append((os.path.normpath(os.path.join(here, *parts)), f"filepath.Join({match.group(1)})"))
+    for match in GO_UP_LITERAL.finditer(code):
+        literal = match.group(1) or match.group(2)
+        found.append((os.path.normpath(os.path.join(here, literal)), f'"{literal}"'))
+    return found
+
+
+def go_module_roots(files: list) -> list:
+    """The directory of every go.mod of the repository, the deepest first, so a nested module
+    (packages/envoy/infra) is found before the one around it."""
+    return sorted({os.path.dirname(f) or "." for f in files if os.path.basename(f) == "go.mod"},
+                  key=lambda d: (-d.count("/"), d))
+
+
+def under(path: str, directory: str) -> bool:
+    return directory == "." or path == directory or path.startswith(directory + "/")
+
+
+def directive_covers(d, path: str, files: set, expander: Expander) -> bool:
+    """Whether one //ci: line of a file declares a read of `path`, a file or a directory: a reads
+    or reads-set line whose files include it or one under it, or a builds line whose go build
+    runs in it, builds a package at or above it, or builds a package under it (a directory the
+    source finishes with the name of the command it builds)."""
+    for entry in d.entries:
+        if isinstance(entry, Run):
+            for package in entry.pkgs:
+                built = os.path.normpath(os.path.join(entry.workdir, package.removesuffix("/...")))
+                if under(path, built) or under(built, path) or path == entry.workdir:
+                    return True
+        else:
+            declared = set(read_files(entry, expander))
+            if any(c in path for c in "*?["):
+                if declared & set(expander.expand(path)):
+                    return True
+            elif any(f == path or f.startswith(path + "/") for f in declared):
+                return True
+    return False
+
+
+def check_declared_reads(data, expander: Expander, files: list, problems: list[Annotation]) -> None:
+    """Rule 26: a test that reads a file outside its Go module through `..` names it in a //ci: line
+    of its own file, since go list sees no such read and the filters are computed from those lines:
+    a line taken out leaves the read in no filter, and a change to that file then starts no job that
+    runs the test (packages/daemon/internal/prompts/roles_test.go's three lines are the case this
+    rule was written for). It reads each Go test file, and each Go file that holds a //ci: line, for
+    the paths go_up_reads finds, and keeps those outside the file's module that name a file or a
+    directory of the repository and are not the module's own root or a directory around it (a path
+    the source finishes with a value it computes cannot be named from the source). A read inside
+    the file's module is left to the go list closure of the packages the job compiles. A path none
+    of the file's //ci: lines covers fails, naming the file, the path and the source text it came
+    from."""
+    roots = go_module_roots(files)
+    known = set(files)
+    lines = defaultdict(list)
+    for d in getattr(data, "DIRECTIVES", ()):
+        lines[d.path].append(d)
+    for path in files:
+        if not path.endswith(".go") or not (path.endswith("_test.go") or path in lines):
+            continue
+        try:
+            text = (REPO / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        module = next((root for root in roots if under(path, root)), None)
+        if module is None:
+            continue
+        seen = set()
+        for read, source in go_up_reads(path, text):
+            if read in seen or read.startswith("..") or under(read, module) or under(module, read):
+                continue
+            seen.add(read)
+            if not (read in known or expander.expand(f"{read}/**") or
+                    (any(c in read for c in "*?[") and expander.expand(read))):
+                continue  # a path the test makes up (an escape it refuses, a fixture it writes)
+            if any(directive_covers(d, read, known, expander) for d in lines[path]):
+                continue
+            suggested = read if read in known or any(c in read for c in "*?[") else f"{read}/**"
+            problems.append(error(path, f"{path} reads {read} through {source}, outside its module {module}, and no "
+                                        f"//ci:reads, //ci:reads-set or //ci:builds line of the file names it, so a "
+                                        f"change to it starts no job that runs this test; add `//ci:reads "
+                                        f"{suggested} <the test that reads it>` to the file's //ci: block"))
+
+
 def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
     """What the tag step of a TAG_RUNS entry reads, which rule 15 holds the filter of the job that
     runs the package's untagged tests to, as (the files, sorted; how the report counts them; how a
@@ -3708,6 +3864,7 @@ def check() -> int:
             problems.append(error(GATES_DIR, f"filter {name} has {unread_filter_patterns(filters[name])[0]}, "
                                              f"a brace picomatch expands and this check does not read"))
     check_dead_patterns(data, expander, problems)
+    check_declared_reads(data, expander, files, problems)
     if mode == "generate":
         out = os.environ.get("CI_FILTERS_OUT", "")
         problems = list(dict.fromkeys(problems))

@@ -1,5 +1,7 @@
 package store
 
+//ci:reads packages/contracts/fixtures/subject-project.json readLegacyFixture reads it under ../../..
+
 import (
 	"encoding/json"
 	"os"

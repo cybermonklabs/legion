@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/pi-shared/src/workspace-recreated.ts TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays reads it under ../../..
+
 import (
 	"context"
 	"os"

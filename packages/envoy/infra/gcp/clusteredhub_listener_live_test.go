@@ -2,6 +2,8 @@
 
 package gcp_test
 
+//ci:builds packages/envoy ./cmd/listener buildLiveListener builds . in ../../cmd/listener (root go.work)
+
 import (
 	"fmt"
 	"io"

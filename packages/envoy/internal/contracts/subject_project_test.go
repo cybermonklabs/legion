@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/subject-project.json readSubjectProjectFixture reads it under ../../..
+
 import (
 	"encoding/json"
 	"os"

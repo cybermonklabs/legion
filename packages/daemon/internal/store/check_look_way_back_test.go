@@ -1,5 +1,7 @@
 package store
 
+//ci:reads docs/kubernetes.md TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone reads it under ../../../..
+
 import (
 	"context"
 	"os"
