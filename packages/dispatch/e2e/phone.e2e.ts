@@ -23,6 +23,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { openIssueDetails } from "./issue-details";
 import { expectConsecutiveLinksClear } from "./layout";
 import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
@@ -308,6 +309,59 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
     refuse();
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
     await expect(body).toHaveValue("Keep this draft");
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The selection bar's bottom edge and the expanded sheet's top edge, in viewport px. */
+async function barAndSheetEdges(page: Page): Promise<{ barBottom: number; sheetTop: number }> {
+  // Each caller has seen the bar and the sheet drawn first, so one reading of each box is enough.
+  const bar = await actionBar(page).boundingBox();
+  // The sheet, which each caller has seen expanded, is read once by the same rule as the bar.
+  const sheet = await page.getByTestId("margin-sheet").boundingBox();
+  if (bar === null || sheet === null) throw new Error("expected the bar and the sheet on screen");
+  return { barBottom: bar.y + bar.height, sheetTop: sheet.y };
+}
+
+// With the review panel open, the selection bar docks above the sheet's top edge by the height
+// the sheet publishes (`MarginSheet.tsx`, `styles.css`). The sheet's height follows its content
+// with no render of the sheet - here a block that arrives in it, as a picture loading would - and
+// the bar follows it, so it never comes to cover the sheet's handle, its toggle or its tabs
+// (dispatch://INFRA-5200).
+test("on a phone the selection bar stays above an open review panel that grows @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: initialMarkdown,
+    title: "A bar above a growing sheet",
+  });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const sheet = page.getByTestId("margin-sheet");
+    await sheet.getByRole("button", { name: /Open review panel/ }).click();
+    await expect(sheet).toHaveAttribute("data-expanded", "true");
+    await selectEditorText(page, "brown");
+    await expect(actionBar(page)).toBeVisible();
+    const before = await barAndSheetEdges(page);
+    expect(before.barBottom).toBeLessThanOrEqual(before.sheetTop + 0.5);
+
+    await sheet.evaluate((element) => {
+      const block = document.createElement("div");
+      block.style.height = "240px";
+      element.append(block);
+    });
+    await expect
+      .poll(async () => (await barAndSheetEdges(page)).sheetTop)
+      .toBeLessThan(before.sheetTop - 100);
+    const after = await barAndSheetEdges(page);
+    expect(after.barBottom).toBeLessThanOrEqual(after.sheetTop + 0.5);
   } finally {
     await alice.close();
   }
@@ -735,13 +789,17 @@ async function expectEllipsis(link: Locator): Promise<void> {
         container === undefined || node.getBoundingClientRect().right > container.right + 0.5,
     };
   });
-  expect.soft(state.overflowsContainer).toBe(false);
-  expect.soft(state.clipperStyles.length).toBeGreaterThan(0);
+  // Each failure names what it read: this helper is called on a dozen links and controls, and a
+  // bare "0 clippers" says nothing about which.
+  const said = (await link.textContent())?.trim().slice(0, 60) ?? "";
+  expect.soft(state.overflowsContainer, `${said} stays inside its container`).toBe(false);
+  expect.soft(state.clipperStyles.length, `${said} is cut by something`).toBeGreaterThan(0);
   for (const style of state.clipperStyles) {
-    expect.soft(style).toMatch(/^((block|inline-block)\/ellipsis|clamp\/\d+)$/);
+    expect
+      .soft(style, `what cuts ${said} draws an ellipsis`)
+      .toMatch(/^((block|inline-block)\/ellipsis|clamp\/\d+)$/);
   }
 }
-
 /** A control whose lines are meant to stack: each child starts at the same left edge, below the
  *  one before it. Below 1280 px `styles.css` makes every link and button an inline-flex row,
  *  which puts a `block` control's lines side by side. */
@@ -773,7 +831,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
   const longQuestion =
     "Which checkpoint gates the sandbox tree before the daemon restarts mid-tree: the fence, the node release, or the linger close that follows both of them?";
   const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints`;
-  const longRoute = "role:merge-queue-controller-for-legion";
+  // Long enough that it does not fit the Message route row of the header's Details at either
+  // width (dispatch://INFRA-5200), so the control still has a name to cut here.
+  const longRoute = "role:merge-queue-controller-for-legion-and-every-queued-fork-of-it";
   // A label's 40-character cap is still wider than the label picker's 256 px popover.
   const longLabel = "sandbox-tree-checkpoint-evidence-runbook";
   const longBroadcast =
@@ -879,6 +939,11 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .toHaveAttribute("title", `${longTitle} · e2e-long-title`);
 
     await navigateInApp(page, `/issues/${issue.key}`);
+    // The issue's links and its message route are rows of the header's Details, which the reader
+    // opens (dispatch://INFRA-5200); the decisions are drawn beside the document itself.
+    await openIssueDetails(page);
+    // In a row of Details the address is capped at the cell as well as at 32ch, so it ends in an
+    // ellipsis there rather than running past its row (dispatch://INFRA-5200).
     await expectEllipsis(page.getByRole("link", { name: longUrl }));
     await expectEllipsis(
       page
