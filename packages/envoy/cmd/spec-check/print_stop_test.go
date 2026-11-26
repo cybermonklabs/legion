@@ -23,7 +23,7 @@ import (
 // A stop of print after each call by which it changes the file system leaves the spec files as they
 // were before the run or as the run leaves them, byte for byte, and tree takes them; the next run of
 // print ends as a run with no stop ends, and leaves the tree as a run with no stop leaves it, each
-// entry that is no spec file the same inode, and nothing beside the directory (D5). Each change
+// entry that is no spec file the same inode, and nothing beside the directory. Each change
 // that print makes goes through one seam, fileSystem, so the test stops a run as a kill stops it:
 // after the stop, each call changes nothing and fails. The run with no stop counts the calls. Then a
 // run stops after each prefix of its calls: after 0 calls, after 1, and on to the whole run. In each

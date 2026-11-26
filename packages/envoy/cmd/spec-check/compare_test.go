@@ -558,11 +558,11 @@ func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
 // noComparison is the last line of compare for files that it does not compare, after the directory.
 const noComparison = ": the files do not parse, or are not as print writes them, so no comparison was made\n"
 
-// compare makes no comparison of a file that is not in its printed form (B3 and B4 of the review):
+// compare makes no comparison of a file that is not in its printed form:
 // the printed form is the one form that each YAML library reads alike, because the printer writes
 // it, and two libraries can read another form as two texts, so a comparison of the tree that
-// yaml.v3 reads from it could pass a text that the approved spec never held. The rows are the files
-// of the review, each with the approved text that yaml.v3 reads from it as Print writes it: a plain
+// yaml.v3 reads from it could pass a text that the approved spec never held. The rows are files
+// that two YAML libraries read as two texts, each with the approved text that yaml.v3 reads from it as Print writes it: a plain
 // date, as a name and as a line of a definition; a !!binary; a merge key; an alias; and each of
 // U+2028, U+2029 and U+0085, which a YAML 1.1 library such as yaml.v3 reads as a line break and a
 // YAML 1.2 library as a character, in a text in double quotes, in single quotes and in a block; and

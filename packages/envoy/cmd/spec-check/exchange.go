@@ -248,8 +248,9 @@ const (
 // for a directory that is a mount point; and EINVAL (Linux) and ENOTSUP (macOS), which a file
 // system that does not exchange two directories answers. A copy of the directory in its place,
 // made in the container, or a mount of the checkout, or of the directory above the mount point,
-// lets print run there (measured in a container; the pull request says how); a checkout on a local
-// file system gives the exchange.
+// lets print run there, since each puts the spec directory and the new directory beside it on one
+// file system and under one parent that the exchange can move them in; a checkout on a local file
+// system gives the exchange.
 func exchangeRefusal(err error) error {
 	var wayOut string
 	switch {

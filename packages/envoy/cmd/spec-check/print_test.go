@@ -287,8 +287,8 @@ func TestPrintRefusesANodeHeldTwoTimes(t *testing.T) {
 }
 
 // print never exits 0 with a node lost or changed that the run does not name, whatever line breaks
-// a file holds: the two files of the red team of print (three terms with CR line ends, and three
-// terms whose first name holds 30 U+2028 in single quotes), then each other line break that yaml.v3
+// a file holds: three terms with CR line ends, and three terms whose first name holds 30 U+2028 in
+// single quotes, then each other line break that yaml.v3
 // reads as one (U+0085, U+2028, U+2029, CR LF and CR) in a quoted key, after a key, in a quoted
 // text, in a block text and between two documents, and a CR at the end of the file. A run of print
 // of the third term, and one of the first, each either exits 2 with the file as it was, or exits 0
@@ -354,7 +354,7 @@ func TestPrintLosesNoNodeOfAFileWithOtherLineBreaks(t *testing.T) {
 // A file whose documents the reader cannot say for certain is refused by its name, and print
 // writes nothing: a file whose reading stops at a fault of the YAML, beside a valid file that the
 // run would write into, and a file that starts with the directive %YAML 1.2, which yaml.v3 does
-// not read (F1 of the second red team). R1 gives the files to a standard YAML library, and R2 has
+// not read. R1 gives the files to a standard YAML library, and R2 has
 // the tree checker refuse each document that is not as the printer writes it, so print takes no
 // such file; the refusal names the file, the library's own words for the fault, and the way out.
 func TestPrintRefusesAFileItCannotCut(t *testing.T) {
@@ -388,7 +388,7 @@ func TestPrintRefusesAFileItCannotCut(t *testing.T) {
 
 // A print of some of the nodes of a file changes only those nodes, so it cannot write in the
 // printed form a node that it is not named: a comment before the first node, or a folded text in
-// it (F2 of the second red team). R2 has the tree checker refuse a document that is not as the
+// it. R2 has the tree checker refuse a document that is not as the
 // printer writes it, and print writes nothing that tree refuses, so the run is refused; the line
 // names the file, the cause and the way out, each node of the file by its id. A run that names
 // each node of the file writes it, and tree takes it.
@@ -633,4 +633,56 @@ func yamlNodes(t *testing.T, files map[string][]byte) map[string][]string {
 		}
 	}
 	return nodes
+}
+
+// TestTheWayOutOfPrintNamesAWholeID holds that a line of spec-check does not cut an id of the way
+// out of print, a value that the line tells the reader to type: print refuses a run over a file
+// that holds a node that is not in its printed form and a node whose id is longer than the cut of
+// 100 bytes, and a run of print with exactly the --id words of that line exits 0.
+func TestTheWayOutOfPrintNamesAWholeID(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	longID := "w-" + strings.Repeat("a", 150) + "-z"
+	check := func(id, serves, claim string) string {
+		return "---\ntype: check\nid: " + id + "\nserves: " + serves + "\nsubject: code\nprocedure: program\ntest:\n  runner: go\n" +
+			"  selector: example.com/acme/orders TestEachOrderIsKept\n  job: go-checks\nclaim: " + claim + "\n" +
+			"procedure_text:\n  - The program stores one order and reads the orders.\n  - It must find the order.\n" +
+			"failing_example:\n  - An order service that keeps no order.\n"
+	}
+	documents := map[string]string{
+		"acme-keeps-each-order":     "---\ntype: requirement\nid: acme-keeps-each-order\nkind: behavior\ntext:\n  - ACME keeps each order that a customer sends.\n",
+		"each-order-is-kept":        check("each-order-is-kept", "acme-keeps-each-order", "The order service keeps each order."),
+		longID:                      "---\ntype: requirement\nid: " + longID + "\nkind: behavior\nparent: acme-keeps-each-order\ntext:\n  - ACME keeps the way-out order.\n",
+		"the-way-out-order-is-kept": check("the-way-out-order-is-kept", longID, "The order service keeps the way-out order."),
+	}
+	approved := writeApproved(t, documents)
+	spec := filepath.Join(t.TempDir(), "repo", ".dispatch", "spec")
+	printAll := []string{"print", "--approved", approved}
+	for _, id := range []string{"acme-keeps-each-order", "each-order-is-kept", longID, "the-way-out-order-is-kept"} {
+		printAll = append(printAll, "--id", id)
+	}
+	if got := runBinary(t, binary, "", append(printAll, "--dir", spec)...); got.code != 0 {
+		t.Fatalf("SETUP: print of the tree: exit %d, stderr %q", got.code, got.stderr)
+	}
+	replaceIn(t, filepath.Join(spec, "acme-keeps-each-order.yaml"), "kind: behavior\n", "kind: behavior \n")
+	refused := runBinary(t, binary, "", "print", "--approved", approved, "--id", "each-order-is-kept", "--dir", spec)
+	const marker = "name each node of it: "
+	_, after, found := strings.Cut(refused.stderr, marker)
+	if refused.code != 2 || !found {
+		t.Fatalf("SETUP: print must refuse and name the way out: exit %d: %s", refused.code, refused.stderr)
+	}
+	line, _, _ := strings.Cut(after, "\n")
+	words := strings.Fields(line)
+	again := []string{"print", "--approved", approved}
+	var ids []string
+	for i := 0; i+1 < len(words); i++ {
+		if words[i] == "--id" {
+			ids = append(ids, words[i+1])
+			again = append(again, "--id", words[i+1])
+		}
+	}
+	t.Logf("the line names: %q", ids)
+	if got := runBinary(t, binary, "", append(again, "--dir", spec)...); got.code != 0 {
+		t.Errorf("print refuses the ids that its own way out names (a valid id longer than the cut): print with exactly those ids: exit %d: %s", got.code, got.stdout+got.stderr)
+	}
 }

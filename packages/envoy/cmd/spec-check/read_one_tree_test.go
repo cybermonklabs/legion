@@ -13,7 +13,7 @@ import (
 )
 
 // A reader of the spec files reads one tree: the files as they were before a run of print or as
-// the run leaves them, never a mix of the two (R3-N3 of the acceptance), since it opens the
+// the run leaves them, never a mix of the two, since it opens the
 // directory one time and reads each file through it. The test reads a directory of 40 spec files
 // again and again while another goroutine exchanges it with a directory of the same names and
 // other texts, as print does, and requires each read to hold the texts of one of the two. The

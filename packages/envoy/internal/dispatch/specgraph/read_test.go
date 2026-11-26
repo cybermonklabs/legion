@@ -655,8 +655,8 @@ func TestReadLayoutKeepsEachFile(t *testing.T) {
 
 // The reader cuts a file into the documents that yaml.v3 reads, with each line break that yaml.v3
 // counts: CR LF, CR, U+0085, U+2028 and U+2029 in a quoted key, after a key, in a quoted text, in
-// a block text and between two documents, a CR at the end of the file, and the two files of the
-// red team of print (CR line ends, and U+2028 in a quoted name). Each document's text, read
+// a block text and between two documents, a CR at the end of the file, a file of CR line ends, and
+// a file with U+2028 in a quoted name. Each document's text, read
 // alone, is the document that the whole file gives, so Place, which replaces one text, leaves the
 // bytes of each other document as they were. A file whose reading stops, and a file that yaml.v3
 // reads as UTF-16, are the files that Uncounted names. LF is the control: the same file with LF

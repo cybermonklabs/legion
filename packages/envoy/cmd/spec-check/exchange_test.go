@@ -162,7 +162,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		unchanged(t, dir, before, ino)
 	})
 	// A mount point whose parent the process may not write, as a spec directory mounted into a
-	// container (R3-N2): the line names the way out of the mount point, since a parent that the
+	// container: the line names the way out of the mount point, since a parent that the
 	// process may write would meet the refusal of the exchange next. /dev/shm is such a directory
 	// on Linux, for each user but root; writable reads it and changes nothing.
 	t.Run("a mount point whose parent the process may not write", func(t *testing.T) {
@@ -395,7 +395,7 @@ func (c callFS) remove(path string) error {
 	return c.call("remove", path, func() error { return osFileSystem{}.remove(path) })
 }
 
-// A run of print finishes what a killed run left beside its directory (M1), and keeps each entry of
+// A run of print finishes what a killed run left beside its directory, and keeps each entry of
 // the directory: a new directory that the killed run built and did not exchange, a second name of
 // a spec file and a new file, which it removes; the old directory that a killed run exchanged out
 // of the place of the directory, with the old text of a spec file, which it removes, and a file
@@ -562,7 +562,7 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 }
 
 // A run of print that keeps beside its directory an entry that another program made or changed
-// exits 1, and its line names what it kept and where (M8): a person must compare that entry with
+// exits 1, and its line names what it kept and where: a person must compare that entry with
 // the spec directory, and an exit 0 would hide it. The rows: a spec file that another program
 // changes in place while the run builds its new directory, so the old directory holds that change;
 // a new directory that a killed run left, which holds an entry that print did not make; and the old
