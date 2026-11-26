@@ -144,10 +144,17 @@ func TestASettlementWhoseWritePhaseStallsIsCutAtItsWriteBoundAndStaysOwed(t *tes
 	}
 	bound := settlementWriteBound(len(stamped))
 
-	const deadline = 2 * time.Second
+	// The pass's work before its write phase - its read and render of the tree, its version's
+	// block index - runs under the settlement's deadline. Run alone on a 2-CPU pod it took 0.1 s to
+	// 0.4 s, and up to 0.8 s under the race detector; beside the package's other tests under the
+	// race detector a deadline of 2 s failed this row as a settlement that runs out its deadline
+	// before it queues its version's writes fails it, with nothing to arm the socket
+	// (envoy-go-race-docs, 2026-11-25). The deadline is what the write bound of these blocks
+	// (6.5 s) leaves after a margin that still tells the two apart.
+	const deadline = 5 * time.Second
 	service.settleTimeout = deadline
 	testcleanup.Add(t, func() { service.settleTimeout = settlementTimeout })
-	if bound < deadline+3*time.Second {
+	if bound < deadline+time.Second {
 		t.Fatalf("the write bound of %d blocks is %v, too near the %v deadline to tell the two apart", len(stamped), bound, deadline)
 	}
 	// The write phase begins once the version's writes are queued: from here the batch carrying the
@@ -165,11 +172,16 @@ func TestASettlementWhoseWritePhaseStallsIsCutAtItsWriteBoundAndStaysOwed(t *tes
 	returned := time.Now()
 	service.afterSettleVersionWrite = nil
 
+	// A settlement that never queued its version's writes never armed the socket: its outcome says
+	// what ended it first.
+	if queued.Load() == 0 {
+		t.Fatalf("the settlement ended %d (%v) %v after it began, before it queued its version's writes: want them queued inside its %v deadline", outcome.next, outcome.err, returned.Sub(started), deadline)
+	}
 	if !socket.Fired() {
 		t.Fatal("the settlements socket never stalled, so the write phase ran as any other")
 	}
 	wrote := time.Unix(0, queued.Load())
-	if queued.Load() == 0 || wrote.Sub(started) >= deadline {
+	if wrote.Sub(started) >= deadline {
 		t.Fatalf("the version's writes were queued %v into the settlement, want inside its %v deadline", wrote.Sub(started), deadline)
 	}
 	// The write phase ended at its own bound and not at the deadline: it ran no shorter than that
