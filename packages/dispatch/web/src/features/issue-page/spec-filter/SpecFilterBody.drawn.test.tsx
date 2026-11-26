@@ -1,8 +1,8 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
@@ -29,7 +29,7 @@ import {
 } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { useKeymapScope } from "../../shell/keymap";
+import { appKeymap, useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
 import {
   artifact,
@@ -41,9 +41,11 @@ import {
   SPEC_SLUG,
 } from "../decisions-filter/decisions-fixtures";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { DocumentStage, DocumentStages } from "../document-stage";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeAsk, type TreeNode } from "../issue-tree";
+import * as roomTarget from "../model-rows/room-target";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
 import { OutlineRequestProvider } from "../outline-request";
@@ -59,6 +61,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { publishedNames, publishedTree } from "../projection-fixture";
+import { EditorBox } from "../StagedDocument";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { nodeRowSelectorOf } from "../tree-focus";
@@ -79,6 +82,7 @@ import {
   viewQuery,
 } from "../tree-read/tree-read";
 import { issueAskThreadsQuery } from "../useIssueTree";
+import type { OnEditing } from "../useNodeEditing";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -163,6 +167,51 @@ function locationOf(view: RenderResult): string {
   return view.container.querySelector("[data-location]")?.getAttribute("data-location") ?? "";
 }
 
+/** The page's side of editing a row in place (`IssuePresetPanels.tsx`'s `useOutlineEditing`): a
+ *  spy for the body's `onEditing`, which notes each document a row asks for, and hands the call
+ *  on (`held`) to `EditorStand`, so the document asked for is drawn on its stage as a plain
+ *  element standing in for its editor. */
+interface EditingPage {
+  readonly asked: Mock<OnEditing>;
+  readonly held: { set?: OnEditing };
+}
+
+function editingPage(): EditingPage {
+  const held: EditingPage["held"] = {};
+  return {
+    asked: mock<OnEditing>((artifactId, onEditor) => held.set?.(artifactId, onEditor)),
+    held,
+  };
+}
+
+/** What a body is given as its `onEditing` where a case reads none: it asks the page for
+ *  nothing. */
+const NO_EDITING: OnEditing = () => {};
+
+/** Each document the page was asked for, in order, of the calls `page` noted: the asks that end
+ *  an editing (`undefined`) left out. */
+function askedDocuments(page: EditingPage): string[] {
+  return page.asked.mock.calls.flatMap(([artifactId]) =>
+    artifactId === undefined ? [] : [artifactId]
+  );
+}
+
+/** The page's one editor of the document a row is being edited in, as `IssuePresetPanels` draws
+ *  it for the row to take onto its stage: a plain editable element (`data-editor-stand`) in the
+ *  box the page draws an editor in, on the stage of the document `held.set` was last given, and
+ *  nothing while none is. */
+function EditorStand({ held }: { held: EditingPage["held"] }): ReactNode {
+  const [edited, setEdited] = useState<string | undefined>(undefined);
+  held.set = (artifactId) => setEdited(artifactId);
+  return edited === undefined ? null : (
+    <DocumentStage artifactId={edited}>
+      <EditorBox>
+        <div contentEditable data-editor-stand="" suppressContentEditableWarning />
+      </EditorBox>
+    </DocumentStage>
+  );
+}
+
 /** The reads the page's tree fills (`useIssueTree.ts`), each by an observer that fetches as the
  *  tree's own do, under the same keys and with the same requests: the body only watches them,
  *  so this stands in for the tree above it, which no view takes off the page. */
@@ -230,7 +279,10 @@ beforeAll(async () => {
  *  requests stands above the body, so `request` is taken as the page takes it; `redraw(false)`
  *  takes the body off the page and `redraw(true)` draws a new one under the same provider and
  *  reads, as the view turned off and on again does, and `redraw(true, issue)` draws the body and
- *  the reads over `issue` from then on, as the page does once the issue read answers anew. */
+ *  the reads over `issue` from then on, as the page does once the issue read answers anew.
+ *  `editing` is the page's side of editing a row in place, where a case reads it: the body is
+ *  given its `asked` as its `onEditing`, and an editor's stand-in is drawn beside the body, under
+ *  the page's stages (`DocumentStages`). */
 function drawBody(
   tree: TreeNode,
   made: readonly TreeAnswerNode[] = [],
@@ -241,6 +293,7 @@ function drawBody(
     checks = [],
     context = new Set<string>(),
     coverage = "answered",
+    editing,
     named = [],
     names,
     reader = READER,
@@ -259,6 +312,7 @@ function drawBody(
     checks?: readonly CheckBlock[];
     context?: Set<string>;
     coverage?: ReadState;
+    editing?: EditingPage;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
     reader?: string;
@@ -366,6 +420,7 @@ function drawBody(
           emptyLine={EMPTY_STATE_LINES.spec}
           holdsEscape={false}
           issue={over}
+          onEditing={editing?.asked ?? NO_EDITING}
           reader={reader}
           {...(request === undefined ? {} : { request })}
           {...(reveal === undefined ? {} : { reveal })}
@@ -398,11 +453,14 @@ function drawBody(
               <MarginProvider>
                 <OutlineRequestProvider>
                   <FocusedNodeProvider>
-                    <IssueScope />
-                    <FocusedProbe />
-                    <LocationProbe />
-                    <TreeReads issue={shown} />
-                    {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
+                    <DocumentStages>
+                      <IssueScope />
+                      <FocusedProbe />
+                      <LocationProbe />
+                      <TreeReads issue={shown} />
+                      {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
+                      {editing === undefined ? null : <EditorStand held={editing.held} />}
+                    </DocumentStages>
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
               </MarginProvider>
@@ -1672,6 +1730,119 @@ test("a criterion is a row of the statements' list, with its tag, its words and 
   }
 });
 
+// R9: Enter on a statement's row, and a pointer's press on a criterion's words, put the caret in
+// that node's text, each in its document's room: on this converted issue the statement in the
+// spec, and the criterion, written into the issue, in the issue's tree artifact. The page is asked
+// for that document's editor, and the row draws it on its stage in place of its words while it is
+// the row edited. The row is kept as the outline keeps its edited row: a press outside the view
+// lets go of nothing, and Escape in the editor, which the key table names there, leaves the caret
+// for the row. A statement of the issue above, which the child's Spec draws as context, is that
+// issue's: Enter on it says it is edited on its own issue, and neither Enter nor a press on its
+// words asks for an editor; the press gives its row the focus. The room's facts stand in for the
+// tree read's (`useRoomFacts`), which the body does not read here.
+test("Enter on a statement and a press on a criterion edit each in its document's room, and a parent's statement is edited on its own issue", async () => {
+  const user = userEvent.setup();
+  const rooms = spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+    converted: true,
+    issueKey: KEY,
+    tree: "artifact-tree",
+    viewOf: null,
+  });
+  const page = editingPage();
+  const own = statement("r1");
+  const criterion = node({
+    id: `${KEY}/tree#k1`,
+    text: "A person reads the whole spec on a phone.",
+    type: "criterion",
+  });
+  // The tree read names a node of another issue by its block id, and its address is that issue's.
+  const above = statement("r9", { id: "r9", reference: "dispatch://CORE-2/spec#b-r9" });
+  const { read, view } = drawBody(issueTree([own, criterion, above]), [], {
+    context: new Set([above.id]),
+    editing: page,
+  });
+  // A control out of the view, which a press lands on.
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  try {
+    const statementRow = rowOf(view, own.id);
+    const criterionRow = rowOf(view, criterion.id);
+    const aboveRow = rowOf(view, above.id);
+    expect([statementRow, criterionRow, aboveRow].map((row) => row.dataset.rowKey)).toEqual([
+      own.id,
+      criterion.id,
+      above.id,
+    ]);
+    expect(aboveRow.hasAttribute("data-node-context")).toBe(true);
+    /** The key of the row each editor stands in, as the page's stages hold them. */
+    const stood = () =>
+      [...view.container.querySelectorAll("[data-editor-stand]")].map((stand) =>
+        stand.closest("[data-row-key]")?.getAttribute("data-row-key")
+      );
+    expect(stood()).toEqual([]);
+    const statementWords = statementRow.querySelector("[data-node-words]")?.textContent;
+    expect(statementWords).toContain("The page draws r1.");
+
+    act(() => statementRow.focus());
+    await user.keyboard("{Enter}");
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+    expect(stood()).toEqual([own.id]);
+    // The editor stands where the statement's words stood.
+    expect(statementRow.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
+    expect(statementRow.querySelector("[data-node-words]")?.textContent).not.toContain(
+      "The page draws r1."
+    );
+    // A press outside the view, once it has ended, leaves the statement the row edited, with its
+    // focused look and its facts in Details.
+    await user.click(outside);
+    // The task after the press, in which the page lets go of what a press left (`trackPress`).
+    const ended = Promise.withResolvers<void>();
+    window.setTimeout(ended.resolve, 0);
+    await act(() => ended.promise);
+    expect(stood(), "the press outside the view ended the editing").toEqual([own.id]);
+    expect(statementRow.className, "the press outside the view let go of the row").toContain(
+      pageFocusedRow
+    );
+    expect(focusedNodeIn(view).id).toBe(own.id);
+
+    await user.click(criterionRow.querySelector("[data-node-words]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec", "artifact-tree"]);
+    expect(stood()).toEqual([criterion.id]);
+    // The statement's words are back, and the criterion's are the editor's place.
+    expect(statementRow.querySelector("[data-node-words]")?.textContent).toBe(statementWords);
+    expect(criterionRow.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
+    // With the caret in the criterion's editor the key table offers Escape, which leaves the caret
+    // for the row and gives the row back its words.
+    const editor = criterionRow.querySelector<HTMLElement>("[data-editor-stand]");
+    act(() => editor?.focus());
+    expect(document.activeElement).toBe(editor);
+    expect(
+      appKeymap.describe().find(({ id }) => id === "tree-leave-caret")?.enabled,
+      "the key table offers no Escape in the criterion's editor"
+    ).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(criterionRow);
+    expect(stood()).toEqual([]);
+    expect(criterionRow.querySelector("[data-node-words]")?.textContent).toBe(criterion.text);
+
+    act(() => aboveRow.focus());
+    await user.keyboard("{Enter}");
+    expect(aboveRow.querySelector("[data-row-report]")?.textContent).toBe(KEY_REPORTS.issue_above);
+    await user.click(aboveRow.querySelector("[data-node-words]") as Element);
+    expect(document.activeElement).toBe(aboveRow);
+    expect(askedDocuments(page), "the parent's statement asked for an editor").toEqual([
+      "artifact-spec",
+      "artifact-tree",
+    ]);
+    expect(stood()).toEqual([]);
+  } finally {
+    view.unmount();
+    outside.remove();
+    read.mockRestore();
+    rooms.mockRestore();
+  }
+});
+
 // An issue whose spec holds no statement says so, in the words the outline says it in.
 test("an issue with no statements says so in the page's own line", () => {
   const { read, view } = drawBody(issueTree([]));
@@ -2810,9 +2981,9 @@ test("q and w still say where they could not go while the results read is out or
 });
 
 // R11: the Spec view draws no row for an open question unless an address names one, so `q`
-// with an open question to go to goes to it in the conversation, at the address Enter on a
-// statement follows, where the outline puts the focus on it; it says there is no next question
-// only where the issue holds none.
+// with an open question to go to goes to it in the conversation, at the address the outline draws
+// it at, which puts the focus on it there; it says there is no next question only where the issue
+// holds none.
 test("q goes to the next open question in the conversation, where the view draws no row for it", async () => {
   const user = userEvent.setup();
   const question = openAsk("ask-2");

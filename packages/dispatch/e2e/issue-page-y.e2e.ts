@@ -942,24 +942,62 @@ test("a node is edited where it lives", async ({ browser }) => {
   });
 });
 
-// In Verification a statement and its check are edited in place in their issue's room, but a
-// borrowed check is not. The check's Facts control and `o`, not a press on its words, keep
-// facts drawn. Decisions edits a decision and its reading, but not an answered question.
-// Plan edits a task under Steps, while Enter on its chart goes to the task in Conversation.
-// SLOW(>=2s): seeds the whole converted issue, opens five editors, reloads to read the edits,
-// and switches among three filters.
+// In Spec a statement and a criterion written into the issue are edited in place, each through
+// its own document's socket. In Verification a statement and its check are edited in place in
+// their issue's room, but a borrowed check is not. The check's Facts control and `o`, not a press
+// on its words, keep facts drawn. Decisions edits a decision and its reading, but not an answered
+// question. Plan edits a task under Steps, while Enter on its chart goes to the task in
+// Conversation.
+// SLOW(>=2s): seeds the whole converted issue and a criterion, opens seven editors, reloads to
+// read the edits, and switches among four filters.
 test("a node is edited in place in each filter", async ({ browser }) => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);
   test.setTimeout(240_000);
   await phase(browser, seedModelRows, async (page, seeded) => {
+    const criterion = await writeCriterionApi(
+      seeded.key,
+      seeded.tree,
+      seeded.thread.address,
+      `${WRITTEN.edited} is a criterion written through the page's own request.`
+    );
     await page.setViewportSize(DESKTOP);
     expect((await treeAnswerOf(seeded.key)).converted, NOT_CONVERTED).toBe(true);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    const { statementOne, checkOne, statementSeven, child } = seeded;
+
+    // In Spec the words typed after Enter go before statement 7's text, through the spec's
+    // socket, and a press on the criterion's words puts the caret in it, through the socket of
+    // the tree artifact it is written in.
+    await pickPreset(page, PRESET_NAMES.spec);
+    const specStatement = nodeRow(page, statementSeven.row).first();
+    const specCriterion = nodeRow(page, criterion).first();
+    await focusFilterRow(specStatement);
+    await caretInto(page, {
+      artifact: seeded.specArtifactId,
+      id: statementSeven.row,
+      message: "Enter on statement 7 in Spec does not put the caret in its text",
+      what: "statement 7",
+    });
+    await page.keyboard.type(`${TYPED.statement} `);
+    await escapeToRow(page, specStatement, "statement 7");
+    await caretBy(
+      page,
+      {
+        artifact: seeded.tree,
+        id: criterion,
+        message: "a press on the criterion's words in Spec does not put the caret in it",
+        what: "the criterion",
+      },
+      "a press",
+      () => rowWords(specCriterion).click()
+    );
+    await page.keyboard.type(`${TYPED.criterion} `);
+    await escapeToRow(page, specCriterion, "the criterion");
+
     await pickPreset(page, PRESET_NAMES.verification);
 
     // The words typed after Enter go before statement 1's text. The check's words take a caret
     // from a press, and its facts are drawn while that caret holds the focus inside the row.
-    const { statementOne, checkOne, statementSeven, child } = seeded;
     const statement = verificationCard(page, statementOne.row);
     const check = checkUnder(page, statementOne.row, checkOne.row);
     await focusFilterRow(statement);
@@ -1005,22 +1043,30 @@ test("a node is edited in place in each filter", async ({ browser }) => {
 
     await page.reload();
     await issueRead(page);
+    // The words typed in Spec and in Verification, each where its caret went: at the start of
+    // each node Enter put the caret in, and in the criterion where the press put it.
     await expect
       .poll(
         async () => {
           const { nodes } = await treeAnswerOf(seeded.key);
-          return [
-            nodes.find((node) => node.id === statementOne.id)?.text.trimStart() ?? "",
-            nodes.find((node) => node.id === checkOne.id)?.text.trimStart() ?? "",
-          ].map((text) => text.split(/\s+/, 1)[0]);
+          const text = (id: string) => nodes.find((node) => node.id === id)?.text.trimStart() ?? "";
+          return {
+            criterion: text(criterion).includes(TYPED.criterion),
+            starts: [statementOne.id, checkOne.id, statementSeven.id].map(
+              (id) => text(id).split(/\s+/, 1)[0]
+            ),
+          };
         },
         {
           message:
-            "after a reload the tree read does not hold the words typed at both nodes' starts",
+            "after a reload the tree read does not hold the words typed in Spec and Verification",
           timeout: 20_000,
         }
       )
-      .toEqual([TYPED.statement, TYPED.check]);
+      .toEqual({
+        criterion: true,
+        starts: [TYPED.statement, TYPED.check, TYPED.statement],
+      });
     for (const artifact of [seeded.specArtifactId, seeded.verificationArtifactId]) {
       expect(await artifactRoomOf(artifact), "the document is not edited in the issue's room").toBe(
         seeded.tree

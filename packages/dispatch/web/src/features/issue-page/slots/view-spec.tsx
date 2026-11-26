@@ -5,6 +5,7 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { useAddressTarget } from "../address-target";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
@@ -47,6 +48,10 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   // where only its own tree holds them (`PresetView.parents`).
   usePublishViewParents(view.parents);
   const request = useOutlineRequest();
+  // The document a row of the view is being edited in, and that document's one editor, which the
+  // view draws for the row to take onto its own stage: `IssuePresetPanels.tsx`'s
+  // `useOutlineEditing`, as the Verification view reads it (`slots/view-verification.tsx`).
+  const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
@@ -61,6 +66,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           issue={issue}
           reader={viewer}
           {...(namesFailure === undefined ? {} : { namesFailure })}
+          onEditing={onEditing}
           {...(request === undefined ? {} : { request })}
           {...(revealed === undefined ? {} : { reveal: revealed })}
           root={root}
@@ -69,6 +75,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
         {/* While the view read answers a next page, the control that reads it (R15). */}
         <NextViewPage filter="spec" issueKey={issue.key} />
       </div>
+      {panels}
     </NoTooltips>
   );
 }

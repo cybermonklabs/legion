@@ -1233,6 +1233,7 @@ function SpecAtAddress({
     emptyLine: query === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match,
     holdsEscape: false,
     issue,
+    onEditing: () => {},
     reader: "alice",
     ...(request === undefined ? {} : { request }),
     ...(reveal === undefined ? {} : { reveal }),

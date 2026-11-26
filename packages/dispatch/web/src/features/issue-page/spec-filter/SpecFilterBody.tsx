@@ -48,10 +48,12 @@ import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { standingParts } from "../decisions-filter/entry-standing";
+import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
+import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { LensLines } from "../lenses/LensLines";
 import { NodeGlyph } from "../NodeGlyph";
@@ -85,6 +87,7 @@ import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useBlocksRunning, useTreeRead, viewQuery } from "../tree-read/tree-read";
 import { issueAskThreadsQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
+import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import {
@@ -133,11 +136,23 @@ const NOTHING = (): void => {};
  * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
- * before its run, and Enter goes to a statement in the conversation, where it is edited. `r`
+ * before its run, and Enter puts the caret in a row's own text, in this view (below). `r`
  * replies to a statement once a statement can be a target of the outline's writer, which
  * the body already passes to the keymap. The focus on a statement puts its facts in Details, as
  * a row of the outline does, and the focus on a decision puts that decision's; an address
  * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
+ *
+ * A row's node is edited in place, in this view, as a row of the outline is
+ * (`useNodeEditing.ts`, R9): Enter on a statement's row, a criterion's or another row's puts the
+ * caret in that node's text, in the room it is edited in - on a converted issue the issue's one
+ * room, else its document's (`room-target.ts`'s `roomTarget`) - and the row says why where none
+ * goes in: a node of another issue, such as a parent's statement the view draws as context, is
+ * edited on its own issue (`KEY_REPORTS.issue_above`). A pointer's press on a row's words does
+ * the same where the row takes a caret (`takesCaret`), and else only gives the row the focus; a
+ * press on a link or a chip in them, or one that ends a selection made in them, is not the
+ * words' (`pressAsksCaret`). The page draws that document's one editor (`onEditing`), and the row
+ * draws it on its stage in place of its words while it is the row edited; Escape gives the row
+ * back the focus and its words.
  */
 export function SpecFilterBody({
   context,
@@ -145,6 +160,7 @@ export function SpecFilterBody({
   holdsEscape,
   issue,
   namesFailure,
+  onEditing,
   reader,
   request,
   reveal,
@@ -165,6 +181,10 @@ export function SpecFilterBody({
    *  too - the name of every reference the three sentences and a plain line cite. None while it
    *  does not stand failed. */
   namesFailure?: NamesFailure;
+  /** Tells the page which document a row is being edited in, so it draws that document's one
+   *  editor for the row to take onto its stage (`IssuePresetPanels.tsx`'s `useOutlineEditing`,
+   *  whose panels the slot draws after the body, `slots/view-spec.tsx`). */
+  onEditing: OnEditing;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
@@ -360,6 +380,32 @@ export function SpecFilterBody({
     const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
+  // A row's node is edited in place by the outline's own editing (`useNodeEditing.ts`), which
+  // asks the page for the editor of the document the node's text lives in (`onEditing`) and
+  // finds the row by its key (`data-row-key`): its node's id, the key the keymap names a row of
+  // the view's one level by (`rowKeyOf`). An edit of the reader's own needs no note of the
+  // view's (`onOwnEdit`): a read that draws the row anew draws it under the same key, which the
+  // editing finds it by.
+  const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
+  const { edit, editing, stopEditing } = useNodeEditing({
+    artifacts,
+    container: tree,
+    onEditing,
+    onOwnEdit: () => {},
+    onReport: reportHere,
+  });
+  /** The document the row with this id is being edited in, while it is the row edited. */
+  const editingFor = (id: string): string | undefined =>
+    editing?.row === id ? editing.artifactId : undefined;
+  // A pointer's press on a row's words, which asks for the caret as Enter does only where the row
+  // takes one, by the outline's one rule (`takesCaret`), and else leaves the row the focus the
+  // press gave it with nothing said.
+  const pressWords = useWordsPress({
+    artifacts,
+    edit,
+    isClosed: issue.closed_at !== null,
+    onReport: reportHere,
+  });
   // The statements in the order they are drawn, which is the order the keys move through them,
   // and after them every other row the filter kept.
   const statements = useMemo(
@@ -426,12 +472,12 @@ export function SpecFilterBody({
   );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
   // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
-  // This body edits nothing, so no row holds the focus through an edit.
+  // A row being edited is let go of only once the editing ends, as the outline's is.
   const leave = useCallback(() => {
     setFocused(undefined);
     setOpenCell(undefined);
   }, []);
-  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
+  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
   // Puts the focus on the statement or the decision cell that draws node `id`, as the outline
   // moves to a row (`moveToRow`), which brings it on screen where it already holds the focus.
   const goTo = useCallback((id: string): boolean => {
@@ -510,17 +556,14 @@ export function SpecFilterBody({
 
   useTreeKeymap({
     container: tree,
-    // No row of this filter is edited here (Enter goes to the conversation), so none is held.
-    editing: false,
+    // Escape in the editor of the row being edited leaves the caret for the row (`onEditEnd`).
+    editing: editing !== undefined,
     holdsEscape,
     onCycle: NOTHING,
-    // Enter on a statement goes to it in the conversation, where it is edited: this filter
-    // draws each statement and edits none.
-    onEdit: (_row, node) => {
-      const path = conversationPath(node);
-      if (path !== undefined) navigate(path);
-    },
-    onEditEnd: NOTHING,
+    // Enter on a row puts the caret in its node's text, in the room it is edited in, and says
+    // why at the row where none goes in (`edit`).
+    onEdit: edit,
+    onEditEnd: stopEditing,
     onFold: NOTHING,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
@@ -535,7 +578,7 @@ export function SpecFilterBody({
     // goes there, and a decision named from a statement is that statement's own cell's to
     // answer, as the tree's key handler answers a `w` it takes first. Where the view draws
     // nothing for it - an open question no address named, a decision that heads no run of the
-    // view - the key goes to it in the conversation, at the address Enter on a statement follows
+    // view - the key goes to it in the conversation, at the address the outline draws it at
     // (`conversationPath`), which opens the outline there with the focus on it. Which decision
     // heads which run is known only once what decided each statement is held: until then a
     // decision with no cell may yet have one, and the key does nothing. Whether the node is a
@@ -681,6 +724,7 @@ export function SpecFilterBody({
           {groups.map((group) => (
             <Group
               context={context}
+              editingFor={editingFor}
               focused={focused}
               group={group}
               key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
@@ -688,6 +732,7 @@ export function SpecFilterBody({
               marked={marked}
               onCellFocus={focusCell}
               onFocus={focusStatement}
+              onPressWords={pressWords}
               openCell={openCell}
               {...(report === undefined ? {} : { report })}
               tabStop={tabStop}
@@ -696,10 +741,12 @@ export function SpecFilterBody({
         </DecisionMarks.Provider>
         {others.map((node) => (
           <OtherRow
+            editing={editingFor(node.id)}
             focused={focused === node.id}
             key={node.id}
             node={node}
             onFocus={(row) => focusStatement(row, node)}
+            onPressWords={() => pressWords(node.id, node)}
             {...(report?.row === node.id ? { report: report.line } : {})}
             tabStop={tabStop === node.id}
           />
@@ -979,17 +1026,22 @@ function dotted(parts: readonly LinePart[]): ReactNode {
  *  of the grid per run of statements one decision shaped. */
 function Group({
   context,
+  editingFor,
   focused,
   group,
   known,
   marked,
   onCellFocus,
   onFocus,
+  onPressWords,
   openCell,
   report,
   tabStop,
 }: {
   context: ReadonlySet<string>;
+  /** The document the row with this id is being edited in, while it is the row edited (the
+   *  body's `editingFor`). */
+  editingFor: (id: string) => string | undefined;
   focused: string | undefined;
   group: SpecGroup;
   /** Whether the Spec view read the decisions come from and the asks read hold an answer, which
@@ -1007,6 +1059,9 @@ function Group({
   ) => void;
   /** Takes a focus inside a statement's row. */
   onFocus: (row: HTMLElement, node: TreeNode) => void;
+  /** Asks for the caret in the node of the row with this id by a pointer's press on its words,
+   *  where the row takes one (the body's `pressWords`). */
+  onPressWords: (row: string, node: TreeNode) => void;
   /** The run whose cell draws its decision whole, by its first statement. */
   openCell: string | undefined;
   /** What a key reported, and the statement it was pressed on. */
@@ -1061,11 +1116,13 @@ function Group({
               <Statement
                 context={context.has(statement.node.id)}
                 decision={run.decision}
+                editing={editingFor(statement.node.id)}
                 focused={focused === statement.node.id}
                 key={statement.node.id}
                 marked={marked}
                 {...markOf(statement)}
                 onFocus={(row) => onFocus(row, statement.node)}
+                onPressWords={() => onPressWords(statement.node.id, statement.node)}
                 {...(report?.row === statement.node.id ? { report: report.line } : {})}
                 statement={statement}
                 tabStop={tabStop === statement.node.id}
@@ -1339,24 +1396,37 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
  * line over its words that names its kind as its tag, who wrote it and when, as a group's
  * heading names its parent: what a person wants to be able to do is theirs, and no statement of
  * the spec (R1). It carries no mark (`Group`).
+ *
+ * It is edited in place (`SpecFilterBody`): while it is the row edited it draws its document's
+ * one editor on its stage in place of its words (`useDocumentStage`), whole, with its chips under
+ * the editor, as the outline's row draws them. A pointer's press on its words puts the caret in
+ * them where the row takes one, as Enter on the row does; a press on a link or a chip in them, or
+ * one that ends a selection made in them, asks for nothing (`pressAsksCaret`).
  */
 function Statement({
   context,
   decision,
+  editing,
   focused,
   marked,
   onFocus,
+  onPressWords,
   report,
   statement,
   tabStop,
 }: {
   context: boolean;
   decision: SpecDecision | undefined;
+  /** The document its node's text is being edited in, while this is the row edited. */
+  editing: string | undefined;
   focused: boolean;
   /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
+  /** Asks for the caret in its node's text by a pointer's press on its words, where the row
+   *  takes one (the body's `pressWords`). */
+  onPressWords: () => void;
   /** What a key pressed on this statement reported when it had nowhere to go. */
   report?: string;
   statement: SpecStatement;
@@ -1369,14 +1439,18 @@ function Statement({
   if (outOfCounts(node) && statement.mark === "no_check") marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
+  const stage = useDocumentStage(editing);
   const press = useOnScreenUnderHeads(row, focused);
   const clamp = useClamp(words, true);
-  useOutOfTabOrder(words, true);
+  // The words' links and chips are out of the tab order, as every control inside a row is (R9),
+  // but for the editor drawn in their place while the row is edited, whose controls are its own.
+  useOutOfTabOrder(words, editing === undefined);
   const [opened, setOpened] = useState(false);
-  const clamped = clamp !== undefined && !opened && !focused;
+  // The row edited draws its editor whole in its words' place, cut by nothing.
+  const clamped = clamp !== undefined && !opened && !focused && editing === undefined;
   // "more · N words" opens the rest of cut words and closes it again; the focused statement
   // draws its words whole, so it draws no such control.
-  const more = clamp !== undefined && !focused;
+  const more = clamp !== undefined && !focused && editing === undefined;
   // Every gap and chip on the statement but the gap its mark already says: "No check" is the
   // mark at the right of the row and the word for it in the legend (R17), and a chip beside it
   // would say it twice. The rest are drawn as the outline draws them (R4, R10).
@@ -1406,6 +1480,7 @@ function Statement({
       // `drawnRows` and `nodeRow`), and the outline's keys walk it (`useTreeKeymap.ts`).
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={node.id}
       data-spec-mark={marked ? statement.mark : undefined}
       data-spec-statement=""
       // Any focus inside the row is the reader on this statement - a chip or a link of its
@@ -1453,18 +1528,27 @@ function Statement({
             ])}
           </p>
         ) : null}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+            pointer's way to what Enter on the row does; the words are no control of their own. */}
         <div
           className={`relative text-[15px] leading-6 ${context ? pageQuietText : pageWordsText} ${
             clamped ? "overflow-clip" : ""
           }`}
           data-node-words=""
+          onClick={(event) => {
+            if (pressAsksCaret(event, editing)) onPressWords();
+          }}
           ref={words}
           style={clamped ? { maxHeight: clamp.height } : undefined}
         >
-          <RowText markdown={node.text} source={node.source} tree={node.tree} />
+          {editing === undefined ? (
+            <RowText markdown={node.text} source={node.source} tree={node.tree} />
+          ) : (
+            <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+          )}
           {/* A direct child of the words' box, which `styles.css` reads to draw the words
               inline, so the trail follows the last word. */}
-          {clamped ? null : trail}
+          {clamped || editing !== undefined ? null : trail}
           {clamped && !clamp.pictures ? (
             <span
               aria-hidden="true"
@@ -1472,6 +1556,12 @@ function Statement({
             />
           ) : null}
         </div>
+        {/* While the row is edited its chips stand under the editor, as the outline's row draws
+            them (`NodeRow.tsx`): a trail inside the words' box draws the box's own children
+            inline (`styles.css`), and the editor's host would be one of them. */}
+        {editing === undefined || trail === null ? null : (
+          <p className="flex min-w-0 flex-wrap items-baseline">{trail}</p>
+        )}
         {more ? (
           <p className="flex min-w-0 flex-wrap items-baseline">
             {/* Out of the tab order, as every control inside a row is (R9). */}
@@ -1514,22 +1604,30 @@ function Statement({
  *  and no decision beside it, so nothing the filter kept is lost (R19). A key pressed on it with
  *  nowhere to go says so under its words, as on a statement. */
 function OtherRow({
+  editing,
   focused,
   node,
   onFocus,
+  onPressWords,
   report,
   tabStop,
 }: {
+  /** The document its node's text is being edited in, while this is the row edited. */
+  editing: string | undefined;
   focused: boolean;
   node: TreeNode;
   /** Takes a focus anywhere in the row, once a press that gave it is over. */
   onFocus: (row: HTMLElement) => void;
+  /** Asks for the caret in its node's text by a pointer's press on its words, where the row takes
+   *  one (the body's `pressWords`). */
+  onPressWords: () => void;
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   tabStop: boolean;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(row, focused);
+  const stage = useDocumentStage(editing);
   return (
     <div
       aria-level={1}
@@ -1539,6 +1637,7 @@ function OtherRow({
       data-node-id={node.id}
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={node.id}
       data-spec-other=""
       // Any focus inside the row is the reader on it, as on a statement.
       onFocus={(event) => onFocus(event.currentTarget)}
@@ -1552,9 +1651,26 @@ function OtherRow({
         {/* After the kind's word, in that line's own size. */}
         <NodeMarks compact marks={node} />
       </p>
-      <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
-        <RowText markdown={node.text} source={node.source} tree={node.tree} />
-      </CutWords>
+      {/* Enter on it, and a pointer's press on its words, ask for the caret in its node's text
+          as on a statement; while it is the row edited its document's one editor is drawn on
+          its stage in place of its words. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+          pointer's way to what Enter on the row does; the words are no control of their own. */}
+      <div
+        onClick={(event) => {
+          if (pressAsksCaret(event, editing)) onPressWords();
+        }}
+      >
+        {editing === undefined ? (
+          <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
+            <RowText markdown={node.text} source={node.source} tree={node.tree} />
+          </CutWords>
+        ) : (
+          <div className={`text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
+            <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+          </div>
+        )}
+      </div>
       <RowReport line={report} />
     </div>
   );
