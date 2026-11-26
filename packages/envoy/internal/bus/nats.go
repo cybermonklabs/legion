@@ -2552,15 +2552,58 @@ func validSubject(subject string) bool {
 }
 
 // refused names nats.go's refusal of a message past the server's max payload as the ErrTooLarge it
-// is, naming its envelope of size bytes. checkSubject has already refused every subject nats.go
-// would.
+// is, naming its envelope of size bytes, in TooLargeToPublish's words. checkSubject has already
+// refused every subject nats.go would.
 func (c *Client) refused(err error, size int) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
-		conn := c.Connection()
-		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes",
-			ErrTooLarge, size, conn.MaxPayload())
+		return envelopeTooLarge(int64(size), c.Connection().MaxPayload())
 	}
 	return err
+}
+
+// TooLargeToPublish answers the ErrTooLarge a publish of item would meet because the envelope is
+// past the max payload of the server the client's connection is on (nats.Conn.MaxPayload, which
+// that server's INFO sets and a reconnect renews), and nil for an envelope within it, or while the
+// client has not connected yet and so knows no max payload. It sends nothing and waits on nothing.
+// nats.go refuses the same message before sending it (nats.ErrMaxPayload, which refused names),
+// but a JetStream publish reads its context first (nats.go v1.55.0 requestWithContext), so a
+// caller whose deadline ended before its publish reads that refusal as ctx's error, a bus that did
+// not answer, though the bus was never asked. The envelope is measured as a publish encodes it,
+// counted rather than kept. A publish adds its headers, and a caller may add fields before it
+// publishes (cmd/listener's sender stamp), so nil does not promise the publish fits: refused still
+// names what nats.go refuses then.
+func (c *Client) TooLargeToPublish(item contracts.Envelope) error {
+	maxPayload := c.Connection().MaxPayload()
+	if maxPayload <= 0 {
+		return nil
+	}
+	var encoded byteCount
+	if err := json.NewEncoder(&encoded).Encode(item); err != nil {
+		// An envelope that does not encode is refused by the publish's own encoding, which
+		// names the failure.
+		return nil
+	}
+	// Encode ends what it writes with a newline, which json.Marshal, and so the publish, leaves
+	// out.
+	if size := int64(encoded) - 1; size > maxPayload {
+		return envelopeTooLarge(size, maxPayload)
+	}
+	return nil
+}
+
+// envelopeTooLarge is the ErrTooLarge of an envelope of size bytes past the server's max payload,
+// in the one wording both its refusals use (TooLargeToPublish before a publish, refused after
+// nats.go's), so a caller reads one answer whichever made it.
+func envelopeTooLarge(size, maxPayload int64) error {
+	return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes", ErrTooLarge, size, maxPayload)
+}
+
+// byteCount is an io.Writer that counts the bytes written to it and keeps none of them.
+type byteCount int64
+
+func (n *byteCount) Write(p []byte) (int, error) {
+	*n += byteCount(len(p))
+	return len(p), nil
 }
 
 // publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and

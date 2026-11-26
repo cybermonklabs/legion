@@ -1,7 +1,9 @@
 package bus
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,4 +80,90 @@ func TestPublishRefusesAnEnvelopeNATSCannotTakeWhole(t *testing.T) {
 	if !client.Conn.IsConnected() {
 		t.Fatalf("a subject at the bound left the connection %v, want it connected", client.Conn.Status())
 	}
+}
+
+// TooLargeToPublish measures an envelope as a publish encodes it and refuses it past the server's
+// max payload in the words of the publish's own refusal, sending nothing. The bound is exact: an
+// envelope whose JSON is the max payload to the byte is not refused, and one byte more is. The
+// JSON is what counts, not the payload's length: a payload of '<', which the encoding writes as
+// six bytes each (\u003c), is refused though the payload alone is a quarter of the bound. A client
+// that has not connected yet knows no max payload and refuses nothing, leaving the publish to
+// answer for itself.
+func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.T) {
+	t.Parallel()
+	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	maxPayload := int(client.Conn.MaxPayload())
+	envelope := func(payload string) contracts.Envelope {
+		return contracts.Envelope{
+			EventID:        "event",
+			Source:         "agent",
+			SourceEventID:  "source-event",
+			Topic:          "notifications.team.too-large",
+			DedupeKey:      "publish.too-large",
+			IssuedAt:       contracts.NowMillis(),
+			PayloadSummary: "a message measured against the max payload",
+			Payload:        payload,
+			TraceID:        "trace",
+		}
+	}
+	encodedSize := func(item contracts.Envelope) int {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("encode the envelope: %v", err)
+		}
+		return len(encoded)
+	}
+	// Each byte of a payload of 'p' encodes as one, so the payload that brings the envelope to the
+	// max payload exactly is the bound less what the rest of the envelope weighs.
+	fill := maxPayload - (encodedSize(envelope("p")) - 1)
+	atBound, pastBound := envelope(strings.Repeat("p", fill)), envelope(strings.Repeat("p", fill+1))
+	if size := encodedSize(atBound); size != maxPayload {
+		t.Fatalf("UNKNOWN: the envelope at the bound encodes to %d bytes, want the max payload, %d", size, maxPayload)
+	}
+	escaped := envelope(strings.Repeat("<", maxPayload/4))
+
+	sentBefore := client.Conn.Stats().OutMsgs
+	if err := client.TooLargeToPublish(atBound); err != nil {
+		t.Fatalf("an envelope of exactly the max payload, %d bytes, was refused: %v", maxPayload, err)
+	}
+	for _, refused := range []struct {
+		name string
+		item contracts.Envelope
+	}{
+		{"an envelope one byte past the max payload", pastBound},
+		{"a payload a quarter of the bound that encodes past it", escaped},
+	} {
+		err := client.TooLargeToPublish(refused.item)
+		if !errors.Is(err, ErrTooLarge) || !errors.Is(err, ErrRefused) {
+			t.Fatalf("%s: %v, want an ErrRefused naming ErrTooLarge", refused.name, err)
+		}
+		says := fmt.Sprintf("an envelope of %d bytes against the server's max payload of %d bytes", encodedSize(refused.item), maxPayload)
+		if !strings.Contains(err.Error(), says) {
+			t.Fatalf("%s: %q, want it to say %q", refused.name, err, says)
+		}
+	}
+	if sent := client.Conn.Stats().OutMsgs - sentBefore; sent != 0 {
+		t.Fatalf("the size checks sent %d messages, want none", sent)
+	}
+
+	// The publish's own refusal of the same envelope, which nats.go makes, says the same.
+	checked := client.TooLargeToPublish(pastBound)
+	if published := client.Publish(pastBound); published == nil || published.Error() != checked.Error() {
+		t.Fatalf("the publish of the envelope one byte past the bound answered %v, want the check's own refusal %q", published, checked)
+	}
+
+	t.Run("a client that has not connected", func(t *testing.T) {
+		unconnected, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
+		if err != nil {
+			t.Fatalf("connect in the background: %v", err)
+		}
+		t.Cleanup(unconnected.Close)
+		if err := unconnected.TooLargeToPublish(pastBound); err != nil {
+			t.Fatalf("a client that knows no max payload refused an envelope of %d bytes: %v", maxPayload+1, err)
+		}
+	})
 }

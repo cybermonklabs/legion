@@ -761,6 +761,26 @@ const sendSessionReadTimeout = 1 * time.Second
 // connection probe shares this second with the stamp (connectionProbeTimeout).
 const senderStampReadTimeout = 1 * time.Second
 
+// refuseTooLargeToPublish answers a message whose envelope, as its route built it, is past the
+// server's max payload (bus.Client.TooLargeToPublish) with the 413 naming the envelope's size and
+// that bound, with no Retry-After, and reports whether it answered. NATS takes a message only
+// whole, so the same message is refused however often it is sent. Both message routes ask it once
+// the envelope is built and before the sender limit's take, so such a message is refused at any
+// count, before anything is read, resolved, reported or published, and whatever is left of the
+// route's deadline: nats.go makes the same refusal only after a publish has read its context, so a
+// request whose deadline the reads and the encoding of a large message had spent was answered as a
+// bus that did not answer, though the bus was never asked. The answer is the one the publish's own
+// refusal still gives (writeNATSError) to an envelope that crosses the bound only with what is
+// added after this, the sender stamp and the publish's headers.
+func refuseTooLargeToPublish(w http.ResponseWriter, d *listenerDeps, record *requestRecord, item contracts.Envelope) bool {
+	err := d.client.TooLargeToPublish(item)
+	if err == nil {
+		return false
+	}
+	record.refuse(w, http.StatusRequestEntityTooLarge, outcomeTooLarge, err.Error())
+	return true
+}
+
 // sendHandler publishes a direct message to a session Envoy knows, and tells its sender what that
 // session was when the message was stored. Which answer a target gets turns on two stores, the
 // session registry (the entries of the sessions running now, each judged by its age:
@@ -793,13 +813,14 @@ const senderStampReadTimeout = 1 * time.Second
 // record) is the 403 naming it. Every one of those answers is written through record, so this
 // route's one line per request is written with it.
 //
-// Before any of them, a message of an agent session whose count under the operator's sender limit
-// is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
-// (senderLimit.admit). A counted message costs its sender one where the wake is reported, and the
-// stream's answer to its publish marks the rest by the rule the topic publish shares
-// (senderCharge.published): a copy the stream stored or may have stored costs one, a copy it
-// already held costs nothing, also after the wake, and a publish that sent nothing costs only the
-// wake, if one was reported.
+// Before any of them, a message whose envelope is past the server's max payload is the 413
+// refuseTooLargeToPublish writes, and then a message of an agent session whose count under the
+// operator's sender limit is empty is the 429 refuseSenderRateLimited writes, each with nothing
+// read, reported or stored (senderLimit.admit). A counted message costs its sender one where the
+// wake is reported, and the stream's answer to its publish marks the rest by the rule the topic
+// publish shares (senderCharge.published): a copy the stream stored or may have stored costs one,
+// a copy it already held costs nothing, also after the wake, and a publish that sent nothing costs
+// only the wake, if one was reported.
 //
 // A send carrying role, the role a Dispatch send for a route to a role is sent for, is taken only
 // from Dispatch's own verified principal (refuseRoleMark): any other caller carrying it is the
@@ -862,6 +883,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
+			return
+		}
+		if refuseTooLargeToPublish(w, d, record, item) {
 			return
 		}
 		charge, admitted := d.senderLimit.admit(w, r, record, item)
@@ -1202,13 +1226,15 @@ const publishDedupePrefix = "publish."
 // repeat, whose event_id no stored message carries. A copy that cannot be read is the 503 with
 // Retry-After: 1 under storedCopyUnreadablePrefix.
 //
-// After the refusal of a topic no stream subject captures, a message of an agent session whose
-// count under the operator's sender limit is empty is the 429 refuseSenderRateLimited writes, with
-// no holder resolved, nothing kept, no wake reported and nothing stored (senderLimit.admit). The
-// stream's answer to the publish of a counted message to a topic the stream captures marks what it
-// costs its sender, by the rule the send route shares (senderCharge.published): a copy the stream
-// stored or may have stored costs one, and a copy it already held, or a publish that sent nothing,
-// costs nothing. A role send marks its own (roleSend).
+// After the refusal of a topic no stream subject captures, a message whose envelope is past the
+// server's max payload is the 413 refuseTooLargeToPublish writes, and then a message of an agent
+// session whose count under the operator's sender limit is empty is the 429
+// refuseSenderRateLimited writes, each with no holder resolved, nothing kept, no wake reported and
+// nothing stored (senderLimit.admit). The stream's answer to the publish of a counted message to a
+// topic the stream captures marks what it costs its sender, by the rule the send route shares
+// (senderCharge.published): a copy the stream stored or may have stored costs one, and a copy it
+// already held, or a publish that sent nothing, costs nothing. A role send marks its own
+// (roleSend).
 //
 // keep is this route's own request field, meaningful only for a role topic, and unset means true:
 // a role message the listener cannot deliver because no live session holds the role - no claim,
@@ -1344,6 +1370,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error(), "topic")
 				return
 			}
+		}
+		if refuseTooLargeToPublish(w, d, record, item) {
+			return
 		}
 		charge, admitted := d.senderLimit.admit(w, r, record, item)
 		if !admitted {
