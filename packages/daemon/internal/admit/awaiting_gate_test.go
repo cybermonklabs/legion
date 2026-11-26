@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -281,13 +280,12 @@ func personHoldsTheClaim(t *testing.T, pool *pgxpool.Pool) {
 	seedDispatchClaim(t, pool, "LEGION-100", "user:bob")
 }
 
-// applyThroughMirror applies fact through the mirror of Dispatch's issues, then the engine and
-// admission, as the daemon's handlers run: a claim reaches the record through that mirror alone.
+// applyThroughMirror applies a Dispatch fact through the mirror of Dispatch's issues, then the
+// engine and admission, as the daemon's handlers run (applyAsTheDaemon): a claim reaches the
+// record through that mirror alone.
 func applyThroughMirror(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string, fact intake.Fact) {
 	t.Helper()
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", id, fact, blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
-		t.Fatalf("apply %s: %v", id, err)
-	}
+	applyAsTheDaemon(t, pool, admission, "dispatch", id, fact, admission.engine)
 }
 
 // awaitingRoot records LEGION-100 waiting on waiting, holding the row it took at its admission
@@ -724,7 +722,8 @@ func TestAResumeKeepsItsHandBackUntilItsTaskIsTaken(t *testing.T) {
 }
 
 // Round 21 second-review P2-2, same-model P3-1: a hand-back a guard kept from starting a wait starts
-// it on whatever path clears the guard, since every fact reaches admission's pass.
+// it on whatever path clears the guard, since each such path reaches admission's pass (the pass
+// rule, Admission.Apply).
 func TestAHandedBackWaitStartsOnEveryGuardClearingPath(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

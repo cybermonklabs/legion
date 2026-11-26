@@ -501,9 +501,9 @@ type LineEntry struct {
 // the pass's one reading of the Dispatch chains, the design gates of the issues that hold their
 // own gate on them, and the worker starts the project already owes. They are gathered once per
 // admission pass (ReadLineFacts) and handed to every judgement that pass makes, because each of
-// them is read under the one fact lock (intake.ApplyFact) on every fact of every consumer: a read
-// per chain, per gate or per slot would cost the daemon a round trip for each of them on each
-// fact.
+// them is read under the one fact lock (intake.ApplyFact) on every pass (the pass rule on admit's
+// Admission.Apply): a read per chain, per gate or per slot would cost the daemon a round trip for
+// each of them on each pass.
 type LineFacts struct {
 	// Chains is the pass's one reading of the Dispatch chains of the project and of each issue
 	// the pass was read for (ReadChains): every question of above, under, root, top issue and

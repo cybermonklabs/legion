@@ -151,8 +151,9 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // at least one claim, holds no claim whose state is outside ('failed', 'retired', 'suspended')
 // — no live claim, that is — and whose own row still stands in the workflow. It is the
 // candidate list of the second release rule (workflow.UnownedPodRelease), beside IdlePods, which
-// answers the other half: the pods a live claim still holds. Such a pod stands with 3 CPU and
-// 19 GiB reserved and no role that can take a turn in it, which is what the rule releases.
+// answers the other half: the pods a live claim still holds. Such a pod holds its reservation (2
+// CPU and 8 GiB at the defaults) with no role that can take a turn in it, which is what the rule
+// releases.
 //
 // The project is spelled two ways, and the two are not the same string, so this read takes
 // both. project is the issue record's own project (issues.project, the Dispatch project key

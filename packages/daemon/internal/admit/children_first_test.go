@@ -296,10 +296,10 @@ func TestAChildOfAnotherProjectHoldsNoChildrenFirstWait(t *testing.T) {
 	}
 }
 
-// A5. One children-first notice per parent per run of its own: every fact, tick and boot runs the
-// admission pass again, and a child filed later during one wait is no second telling, nor is a new
-// run of the issue above it, while a run the parent has not had yet is (R17 of
-// dispatch://INFRA-3320: each issue's run is its own fact).
+// A5. One children-first notice per parent per run of its own: every pass (the pass rule,
+// Admission.Apply) and boot runs the admission pass again, and a child filed later during one wait
+// is no second telling, nor is a new run of the issue above it, while a run the parent has not had
+// yet is (R17 of dispatch://INFRA-3320: each issue's run is its own fact).
 func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)

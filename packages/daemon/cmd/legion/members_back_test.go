@@ -65,6 +65,7 @@ func membersBackStoreRows(t *testing.T, st *store.Store) string {
 // changes no row. On a store whose conversion has ended it prints that the conversion ran, and
 // lists no member. No claim token or session id of the store is in what it prints.
 func TestMembersBackListsEachMemberTheFirstBootBringsBackAndChangesNothing(t *testing.T) {
+	t.Parallel()
 	dsn := testpg.Clone(t, "legion_cmd_members_back")
 	st, err := store.Open(context.Background(), dsn)
 	if err != nil {

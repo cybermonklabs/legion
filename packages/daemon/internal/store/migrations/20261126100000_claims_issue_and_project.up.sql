@@ -1,0 +1,36 @@
+-- 20261126100000_claims_issue_and_project.up.sql — the indexes the reads of the claims of an issue and
+-- of a project use.
+--
+-- This release reads a claim by the issue it is on and never by the tree it stores (R22 of
+-- dispatch://INFRA-3320, decision 13 of dispatch://INFRA-4730): the claims of an issue's gate root
+-- and of the issues of its tree are named by the Dispatch chain, so each read asks for `issue =
+-- any($1)` or `issue = $1`. record.Store.SessionClaimsOf asks whether a session holds a claim of
+-- one of some issues (`select exists (select 1 from claims where issue = any($1) and session = $2
+-- and session <> '')`), which every admission pass reads for each root waiting on a person whose
+-- Dispatch claim a session holds (workflow.Unresumable), under the one lock every fact takes, and
+-- which the repair of a session's held status writes reads too; ArchitectLaunchesOf and
+-- ArchitectServedOf read the architect claim of an issue by its issue and role, RoleHoldersAt and
+-- LiveRoleHolders every claim of an issue that records a session, and IssuePodUID the pod the claims
+-- of an issue run in. record.Store.ProjectClaims reads the claims of the project that stand on an
+-- issue (`where project = $1 and issue <> ''`), which the admission pass's stalled-tree notice reads
+-- once a running root has been quiet past `stalled_tree_notice_hours` (admit's quietTrees). claims
+-- had no index on either column, only its key, 0002's claims_boot_token_hash and 20261125212800's
+-- claims_tree, which serves a read by the stored tree and so none of these, so each of them scanned
+-- the whole table, which holds the claims of every project that shares the database. claims_issue
+-- bounds each read by issue to the claims of the issues it names, among which the read finds the
+-- role or the session; claims_project bounds ProjectClaims to the claims of its own project, so
+-- another project's claims are not read.
+--
+-- Each index is on one column, as claims_tree is on tree alone. A btree that holds session too
+-- cannot be built over a claim whose session is longer than a btree row may be, which the table
+-- does not refuse: over a claim whose session is 3,200 bytes such an index failed to build with
+-- "index row size 3224 exceeds btree version 4 maximum 2704". A claim's token names its project,
+-- its issue and its role (claim.NewToken), so an issue holds one claim of each role at most and the
+-- issue alone bounds each read to a handful of rows.
+--
+-- It carries no way back, and a rollback leaves both indexes standing: each is a plain index that
+-- constrains no row and changes no result, so a release before this one, which names neither, reads
+-- and writes claims the same with them in place, and the one cost it bears is that each claim
+-- write also updates them.
+create index claims_issue on claims (issue);
+create index claims_project on claims (project);

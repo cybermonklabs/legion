@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/clitest"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -92,6 +93,7 @@ var legionHidden = [][]string{
 // completion left to clitest: a command added to the tree and to neither list fails here, so no
 // command passes clitest by being left out of its case.
 func TestConformanceCaseIsTheTree(t *testing.T) {
+	t.Parallel()
 	var visible, hidden [][]string
 	var walk func(cmd *cobra.Command, words []string)
 	walk = func(cmd *cobra.Command, words []string) {
@@ -143,6 +145,7 @@ func commandSet(commands [][]string) map[string]bool {
 // only a program runs is offered nowhere: neither its group's help nor its group's completion
 // lists it, which clitest reads for visible groups alone.
 func TestLegionConformance(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	recorder := clitest.NewRecorder(t)
 	env := []string{"LEGION_DAEMON_URL=" + recorder.URL()}
@@ -195,6 +198,7 @@ func TestLegionConformance(t *testing.T) {
 // with an Args of its own resolves any word to itself). A word after a shell is a usage error
 // too, where cobra's NoArgs would exit 1. The forms they serve still exit 0.
 func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		args   []string
 		code   int
@@ -225,6 +229,7 @@ func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
 // case runs the built legion as its runtime's wrapper runs it and reads what the stand-in for the
 // real program received.
 func TestPassThroughCommandsParseNoFlags(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	t.Run("git", func(t *testing.T) {
 		// A tmux pane's git (trailerWrapperDir's shape, around the built binary) runs the next git
@@ -263,16 +268,16 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 			t.Fatal(err)
 		}
 		stub := filepath.Join(t.TempDir(), "gh")
-		if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
+		if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		wrappers, state := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		lsRemote := "#!/bin/sh\nfor a; do if [ \"$a\" = ls-remote ]; then printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "; exit 0; fi; done\n" +
 			"exec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
-		if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(lsRemote), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(lsRemote), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}
@@ -311,6 +316,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 // it passes only where the built binary took the linked deadline, and a built binary with the
 // product bound refuses the call, the read killed at 30 s.
 func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
+	t.Parallel()
 	if _, ok := os.LookupEnv(testDeadlineEnv); !ok {
 		t.Skip("this test binary runs with -timeout 0, so the built legion links no deadline")
 	}
@@ -321,15 +327,15 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}

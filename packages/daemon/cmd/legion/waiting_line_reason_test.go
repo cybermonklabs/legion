@@ -35,6 +35,7 @@ func waitingMember(key string, place, length int, part, reason string) api.Issue
 // ten are named and the last line says how many more there are
 // (waitingLineNamedCap, and `legion state --json` for all of them).
 func TestWaitingLineReasonIsPrintedUnderTheAdmissionCounts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	returned := "Its work came back at 2026-11-10T15:11:32Z. It is 1st of 1 issue whose work came back, " +
 		"and it takes the free slots first."
 	queued := "It has not started. It is %d of 2 issues that have not started, by its own Dispatch rank, " +
