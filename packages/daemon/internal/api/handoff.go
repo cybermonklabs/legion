@@ -233,7 +233,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// rules read the role the grant's claim holds, never the settings: a role outside Legion's six
 	// is a role of the deployment, whichever agent's claim, named for that role or keyed and on a
 	// step of it, holds it.
-	deploymentRole := !claim.IsBuiltin(grant.Role)
+	deploymentRole := claim.IsDeploymentRole(grant.Role)
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
 	}

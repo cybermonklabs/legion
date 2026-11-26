@@ -297,7 +297,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	passthrough(spec.Env, refusalCooldownVariables...)
 	// A role the deployment defines runs the model its settings give it; Legion's roles name none
 	// and run the profile's own (runtime.SpawnSpec.Model).
-	if role, defined := s.roleOf(c.Role); defined && !claim.IsBuiltin(c.Role) {
+	if role, defined := s.roleOf(c.Role); defined && claim.IsDeploymentRole(c.Role) {
 		spec.Model = role.Model
 	}
 	return spec, nil
@@ -494,7 +494,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
 	}
-	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion || s.plugins == nil {
+	if s.runtimeName != "kubernetes" || c.Session == "" || c.PluginContract == api.DaemonAPIVersion() || s.plugins == nil {
 		return nil
 	}
 	install := *s.plugins

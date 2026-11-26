@@ -91,7 +91,7 @@ func LookupBackend(backend Backend) (BackendInfo, error) {
 // Runs is whether the backend may run role: one of its Roles (every role where it names none), or,
 // where it runs StepRoles, a role the deployment defines.
 func (b BackendInfo) Runs(role claim.Role) bool {
-	return b.Roles == nil || slices.Contains(b.Roles, role) || b.StepRoles && claim.IsRole(role) && !claim.IsBuiltin(role)
+	return b.Roles == nil || slices.Contains(b.Roles, role) || b.StepRoles && claim.IsDeploymentRole(role)
 }
 
 // RunsWhat is what a refusal of a role the backend does not run says it runs: its Roles, followed

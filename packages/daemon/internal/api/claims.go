@@ -434,7 +434,8 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 // completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
 // held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
 // `claims` is absent on a release that suspended no claim, on a record the release before
-// 20261124213823 wrote, and below contract 298 (withoutRecordClaims).
+// 20261124213823 wrote, and below the stranded token's entry (strandedTokenContract,
+// withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`
@@ -452,9 +453,10 @@ type ReleaseRecord struct {
 // minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
 // issue can hold one role, and each can be woken, so the role does not say which came back. It is
 // absent on a wake recorded before 20261124213821, which stands for each claim of its role, and
-// below contract 298 (withoutRecordClaims). Pause is the project pause that held the wake
-// (store.PodResume.Pause), absent for a wake no pause held: a held wake pairs with no release, and
-// its wait to the first turn measures the pause, so a reader of the release measurements counts it
+// below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is the
+// project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
+// held wake pairs with no release, and its wait to the first turn measures the pause, so a reader
+// of the release measurements counts it
 // apart (decision 15 of dispatch://INFRA-3759).
 type ResumeRecord struct {
 	ID          int64  `json:"id"`
@@ -759,7 +761,7 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // asked has answered it already: a pending delivery is handed to no claim that is not ready or
 // idle (supervise's staleRefusesClaim, sendPending).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion(), s.pluginRelaunchable, s.noPluginInstall) &&
 		c.State != supervise.StateWorking
 }
 
@@ -767,7 +769,7 @@ func (s *server) staleClaim(c supervise.Claim) (int, bool) {
 // never a secret.
 func (s *server) logStaleRefusal(r *http.Request, identityKey, identityValue string, got int) {
 	s.log.Warn("api: refused a call from a process on another plugin contract",
-		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion)
+		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion())
 }
 
 // refuseIfStaleClaim is the claim-route refusal shape (ready, exit): the sentence-only refusal
@@ -779,7 +781,7 @@ func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c su
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)
 	return true
 }
@@ -792,7 +794,7 @@ func (s *server) refuseIfStaleClaimFailure(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion).Message)
+	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion()).Message)
 	return true
 }
 

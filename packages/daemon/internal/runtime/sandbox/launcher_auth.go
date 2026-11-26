@@ -126,15 +126,14 @@ var (
 	errTurnHeld        = fmt.Errorf("its pod's launch turn is held: %w", errDeclined)
 )
 
-// LauncherResolver rejects unknown pods from informer state before consulting credentials: a
-// launcher's role must be one of the roles of the kind its pod's labels name (podKindOf), a role
-// of the runtime's issue roles (Legion's six, then each role the deployment defines) for an issue
-// pod or the controller of the project controller's, and its claim is the
-// one that kind derives (podKind.claimToken). Tokens minted here are cached as hashes; after a
-// restart a known role's Secret is read once however often its launcher says hello
-// (launcherCredential), so a restart's reconnecting launchers cost one read each and
-// unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello waits
-// for that read up to apiTimeout.
+// LauncherResolver rejects unknown pods from informer state before consulting credentials. An
+// issue pod's launcher must name a configured role or one in the pod's template. A role removed
+// from the deployment can still authenticate to let a pending stop reach its child. The project
+// controller pod accepts only the controller. The pod kind derives the claim (podKind.claimToken).
+// Tokens minted here are cached as hashes. After a restart, a known role's Secret is read once
+// however often its launcher says hello (launcherCredential), so unauthenticated hellos cannot
+// turn into an unbounded stream of Kubernetes requests. A hello waits for that read up to
+// apiTimeout.
 //
 // A launcher holding its role's current token from the Sandbox's current pod, which no Secret
 // binds, is of a pod no launch made: the Agent Sandbox controller recreated it after an eviction or
@@ -154,7 +153,11 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil || !slices.Contains(kind.roles(r), role) {
+		if err != nil {
+			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
+		}
+		if _, issue := kind.(issuePod); !slices.Contains(kind.roles(r), role) &&
+			(!issue || !slices.Contains(templateRoles(view.sandbox), role)) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)

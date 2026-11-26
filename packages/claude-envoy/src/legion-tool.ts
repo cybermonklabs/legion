@@ -19,8 +19,9 @@ import pkg from "../package.json" with { type: "json" }
  * (the daemon's `NoPluginInstall`) and loads its image's own claude-envoy, so a relaunch keeps
  * this build and only the update round over the pod brings another. It is an Oh My Pi role's
  * relaunch that installs its plugin pair fresh under the state home of its claim's agent, the
- * same whatever role the agent's step is on. */
-const BUILD = pluginBuildOf(pkg)
+ * same whatever role the agent's step is on. Its contract is `daemonContract`'s, read as the
+ * module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir)
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
 export const LEGION_TOOL_NAME = "legion"

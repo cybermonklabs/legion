@@ -293,9 +293,10 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract,
-	// deploymentRolesContract and strandedTokenContract too, the rows above it, so it is told of
-	// every one of them, in the table's order.
+	// A caller below causeTimesContract is below dispatchCredentialContract, the frozen row above
+	// it, and below every entry's band too, so it is told of each of them, in the table's order:
+	// the cause times' line, the Dispatch credential's, then one line for each band of an entry
+	// that takes something off this state. It counts no entry (R4 of dispatch://INFRA-1569).
 	below := causeTimesContract - 1
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), below)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
@@ -304,8 +305,8 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 			narrowings, below, dropped, "dispatchCredential")
 	}
 	want := narrowingsExpected(populatedState(t), below)
-	if len(want) != 4 {
-		t.Fatalf("a caller at %d expects the lines %v, want the cause times', the Dispatch credential's, the deployment roles' and the claim tokens' rows alone", below, want)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller at %d expects the lines %v, want the cause times' row's and the Dispatch credential's row's first", below, want)
 	}
 	wantNarrowings(t, narrowings, below, want)
 }

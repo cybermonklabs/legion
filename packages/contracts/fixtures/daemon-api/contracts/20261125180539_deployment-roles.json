@@ -1,0 +1,115 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "startWaitsForPod",
+        "startWaitsForPod.*",
+        "stepRole"
+      ],
+      "addValues": {
+        "architect.pendingTask.phase": [
+          "step"
+        ],
+        "heldFrom": [
+          "step"
+        ],
+        "phase": [
+          "step"
+        ],
+        "workers.*.claim.pendingTask.phase": [
+          "step"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.startWaitsForPod",
+        "issues.*.startWaitsForPod.*",
+        "issues.*.stepRole"
+      ],
+      "addValues": {
+        "issues.*.architect.pendingTask.phase": [
+          "step"
+        ],
+        "issues.*.heldFrom": [
+          "step"
+        ],
+        "issues.*.phase": [
+          "step"
+        ],
+        "issues.*.workers.*.claim.pendingTask.phase": [
+          "step"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/phase/backward",
+      "addFieldPaths": [
+        "returnTo"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.heldFrom",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "heldFrom",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingTask.phase",
+      "values": [
+        "step"
+      ]
+    }
+  ]
+}

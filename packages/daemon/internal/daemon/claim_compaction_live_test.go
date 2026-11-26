@@ -287,7 +287,7 @@ func (r *claimCompactionLive) registerController() {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
 	}
@@ -299,7 +299,7 @@ func (r *claimCompactionLive) registerController() {
 	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: r.controllerSession,
 		OmpSessionFile: "/sessions/" + r.controllerSession + ".jsonl",
-		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion,
+		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)

@@ -585,6 +585,9 @@ type rig struct {
 	// answers a start it has recorded: a start the launcher is still waiting on, as a real
 	// launcher waits for its slot's gh files to hold the start's credential. Guarded by commandsMu.
 	holdStart chan struct{}
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -624,6 +627,12 @@ func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resu
 // withoutCredentialWait has every fake launcher's hello say nothing of waiting for a start's
 // credential, as a launcher of the release before says nothing.
 func withoutCredentialWait() rigOption { return func(g *rig, _ *Options) { g.noCredentialWait = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -1404,6 +1413,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 							return
 						}
 					}
+				}
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
 				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {

@@ -1,0 +1,23 @@
+{
+  "answers": [
+    {
+      "answer": "census-answer",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": ["censusKey"]
+    },
+    {
+      "answer": "no-content",
+      "noBody": false
+    }
+  ],
+  "routes": [],
+  "answerRows": [
+    {
+      "id": "census-answer",
+      "routes": ["GET /legion/v1/census-answer"],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": []
+}

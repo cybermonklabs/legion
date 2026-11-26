@@ -160,7 +160,7 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	}
 	var roles []string
 	for _, role := range kind.roles(r) {
-		if role != claim.RoleController && !claim.IsBuiltin(role) {
+		if claim.IsDeploymentRole(role) {
 			roles = append(roles, string(role))
 		}
 	}

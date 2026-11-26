@@ -1388,6 +1388,18 @@ type SuperviseRequest struct {
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 
+// BringsBack says whether the request is a start that brings a role back and hands it nothing: a
+// start that carries no task, no news, no entry, no production check's look and no wake's mark. It
+// is the start a re-admission's promotion writes for each role of a mid-phase member that has run
+// and is not the phase's own (admit's startMidPhaseMembers): the role comes back and is told
+// nothing. Such a start serves no work of the phase it names, which is the phase the member stood
+// in when it was queued, so it is held to that phase alone (Issue.HoldsStart) and not to the role
+// of the step: at the phase step the role is the running step's, and a role that ran another step
+// of the task is never that.
+func (r SuperviseRequest) BringsBack() bool {
+	return r.Op == "start" && r.Phase != "" && r.Task == "" && !r.News && r.Entry == 0 && r.CheckLook == 0 && r.WakeKind == ""
+}
+
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
 type GateSeed struct {
@@ -1648,6 +1660,12 @@ type StepRecord struct {
 	// members are members of the payload itself, written together and left out together when it is
 	// nil (validateOutboxPayload holds a stored row to that).
 	*PlanRating
+	// StepExperiment is the experiment a draw put the record's issue in and the variant it drew
+	// there, nil for an issue that no such draw names. Dispatch takes it on the record's experiment
+	// route, after the write of the record itself (dispatch.HTTPClient.PutStepExperiment). It is
+	// embedded, as PlanRating is, so its two members are members of the payload, written together
+	// and left out together (validateOutboxPayload holds a stored row to that).
+	*StepExperiment
 }
 
 // PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
@@ -1659,6 +1677,16 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// StepExperiment is the experiment a draw put an issue in and the variant it drew there. The two
+// are one value, so a step record names both or neither. It mirrors dispatch.StepExperiment, which
+// the publication converts it to (publishStepExperiment), as PlanRating mirrors
+// dispatch.PlanRating; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two
+// to the same fields.
+type StepExperiment struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -1715,21 +1743,26 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
-// (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
-// per check: it is enqueued once, at the end of a look, and consumed when it fires, and the one
-// deferral that queues another — workflow's checkWakeDue, for an issue back in the workflow —
-// queues it in the transaction that finishes the row it came from. Nothing else wakes a check: no
-// boot, no build and no deploy event reads production any more.
+// (ProductionCheck.WakeAt), or the retry of a look nobody reported. It is enqueued at the end of a
+// look and consumed when it fires. Two writes queue another while it waits, each in the
+// transaction that moves the check's wake: workflow's checkWakeDue, for an issue back in the
+// workflow, which finishes the row it came from, and a failure of the checking role's claim
+// between looks, which names the next look later (workflow's failedBetweenLooks) and leaves the
+// row before it standing. Nothing else wakes a check: no boot, no build and no deploy event reads
+// production any more.
 //
 // Look is the look the check stood at when the wake was named, so a row left over from an earlier
 // look starts nothing; OpenedAt is the check instance it was named for
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
-// its looks from one again — zero names no instance and is not fenced. Reason is what the wake
-// is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
-// reported.
+// its looks from one again — zero names no instance and is not fenced. WakeAt is the wake the row
+// was queued for (ProductionCheck.WakeAt, at the microsecond), so a row whose wake the check no
+// longer records, the one a failure between looks moved, starts nothing either; zero, a row a
+// release before this field queued, is not fenced. Reason is what the wake is, for the look's
+// wake and the log: the agent's own wake, or the retry of a look nobody reported.
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
+	WakeAt   time.Time `json:"wakeAt,omitzero"`
 	Reason   string    `json:"reason"`
 }
 
@@ -2010,7 +2043,7 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 // (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
 // worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
-	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
+	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsDeploymentRole(role) {
 		return true
 	}
 	return slices.Contains(mergeForwardRoles[step], role)
@@ -2776,7 +2809,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
 	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
 	// the daemon, refused where it is queued rather than found by a warning after the completion
-	// that carried it committed.
+	// that carried it committed. The experiment and the variant of the record's issue are held
+	// whole for the same reason: they are one value, which a row naming one of them alone breaks.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -2795,6 +2829,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
 			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
 				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+		if value.StepExperiment != nil && (value.StepExperiment.Experiment == "" || value.StepExperiment.Variant == "") {
+			return fmt.Errorf("a step record carries the experiment of its issue with its variant or neither; it carries the experiment %q with the variant %q",
+				value.StepExperiment.Experiment, value.StepExperiment.Variant)
 		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
