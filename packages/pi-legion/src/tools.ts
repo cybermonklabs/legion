@@ -607,11 +607,13 @@ export function createLegionTool(deps: {
         "plan it does not carry out, with one reason for each cause (PLAN_REFUSED, which also refuses a version that removes a running task " +
         "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
-        "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+        "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
+        "again is answered as taken, and adds you to its givers), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
+        "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
         "An issue whose experiment's group runs the project's default steps takes only a version that changes just the text of its " +
         "running task default. Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and " +
         "the same plan given again gets the same answer. " +
@@ -907,8 +909,8 @@ export function createLegionTool(deps: {
             // The document is named as register_gate's is: its id, or a reference looked up.
             const isId = LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success;
             const artifactId = isId ? reference : await resolveDocument(issue, reference);
-            // The fact is keyed by the issue, its generation, the document and the version, so a
-            // repeat is the registration again, answered the same.
+            // The daemon judges every give against its store: a repeat of a registration it
+            // applied is answered as taken while that version is in force, and writes nothing.
             const taken = await retryWhileDaemonRestarts(
               "register_plan",
               async () =>

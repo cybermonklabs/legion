@@ -2813,9 +2813,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
 // passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
 // (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree; the reason names each version, its document and its giver,
-// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
-// default steps), and that the architect may give the plan again with register_plan as its own.
+// moves a member to another tree; the reason names each version once, its document and the
+// givers of its copies, the plan the first step runs (an owner's, of the issue's generation or
+// carried to it, or the default steps), and that the architect may give the plan again with
+// register_plan as its own.
 // Or a plan of an issue whose experiment's group runs the project's default steps (workflow's
 // passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
 // run takes the project's default steps, and the reason names each version and the group

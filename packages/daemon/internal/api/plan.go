@@ -131,12 +131,15 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // each running task stands at (RunningStep), which the route reads once the fact is taken
 // (runningAt).
 //
-// The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered as the same plan, and the same version
-// given at a later generation of the issue is a new one. A retry applies nothing, and its answer
-// is read the same way, so the first answer and the answer to a retry read where the tasks stand
-// by one path. A read that fails is answered 500 RECORD_UNAVAILABLE, with the version taken, and
-// the same registration given again reads it again.
+// The fact's id is the issue, the generation the plan is given at, the document and the version.
+// No id decides whether a registration is one already taken (intake.ApplyFact applies every
+// PlanGiven): the workflow decides it against the store, and answers a give of the version that
+// runs, or that the issue's first step will run, as taken, with the plan given, as its first
+// registration was answered. Only an architect of the issue's tree gives a plan (planOwner, and
+// the workflow's judgement of the owner under the fact lock). The answer to a give taken again is
+// read as the first one is, so both read where the tasks stand by one path. A read that fails is
+// answered 500 RECORD_UNAVAILABLE, with the version taken, and the same registration given again
+// reads it again.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

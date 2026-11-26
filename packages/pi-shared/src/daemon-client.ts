@@ -416,10 +416,11 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again), `register_plan` (its
- * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
- * same fact and takes the plan once; its answer names the same plan, and each step of `running`
- * as the record holds it at the repeat, which can be a later step), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (the
+ * daemon judges every give against its store: a repeat of a give it applied is answered as taken
+ * while that version is in force, and writes nothing; its answer names the same plan, and the act
+ * each running task stands at (`running`) as the record holds it at the repeat, which can be a
+ * later act), `stop_task` (a repeat finds the task stopped and changes nothing)
  * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive

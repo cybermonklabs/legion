@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -101,7 +102,9 @@ var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}
 // (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a plan
 // with a cause of each kind is answered both, and none of them records anything. A plan both
 // checks take is recorded as the one fact the workflow reads (intake.PlanGiven) and answered with
-// its tasks; the same version given again is that fact, answered the same.
+// its tasks. No id decides whether a registration given again is the one taken (intake.ApplyFact
+// applies every PlanGiven), so each registration reaches this handler, which stores nothing, under
+// the one id the route names it by, and is answered the same.
 func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -144,10 +147,11 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	}
 	want := []intake.Fact{
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
+		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 5),
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("facts = %#v, want %#v: one for each version taken, the second registration of version 4 being the first's", got, want)
+		t.Fatalf("facts = %#v, want %#v: one for each registration, version 4's second among them", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
 }
@@ -169,7 +173,9 @@ func (p *planReadFailing) Plan(ctx context.Context, tx pgx.Tx, issue string, gen
 // register_plan reads where each task of the plan stands once the fact is taken (runningAt), on
 // the first registration and on its retry alike: the one path of `running`. When that read fails,
 // the registration is answered 500 RECORD_UNAVAILABLE with the version taken, and a retry while
-// the read still fails is answered the same and records nothing more. The fault is a registration
+// the read still fails is answered the same. Each registration reaches the handler, which stores
+// nothing here, under the one id the route names it by (intake.ApplyFact applies every PlanGiven,
+// and the workflow answers a give of the version in force as taken). The fault is a registration
 // answered 200 without `running`, which would tell the owner that no step of the plan runs. The
 // control is the same registration once the read works again: it is answered 200 with the plan.
 func TestARegistrationWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T) {
@@ -195,8 +201,8 @@ func TestARegistrationWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *te
 	if again := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); again.Code != http.StatusOK || strings.TrimSpace(again.Body.String()) != taken {
 		t.Fatalf("the retry once the read works = %d %s, want 200 with its one task", again.Code, again.Body)
 	}
-	if got := facts.recorded(); !reflect.DeepEqual(got, given) {
-		t.Fatalf("facts = %#v, want %#v: the one registration taken, and nothing for either retry", got, given)
+	if got, want := facts.recorded(), slices.Repeat(given, 3); !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts = %#v, want %#v: one for each registration of the one version", got, want)
 	}
 }
 

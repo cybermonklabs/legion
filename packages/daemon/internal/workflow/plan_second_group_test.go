@@ -38,7 +38,9 @@ func drawnAndPlanning(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // later version that changes nothing but the text of its running task default. The task goes on
 // at its step on the default steps, the plan names that step as the act that runs, and the version
 // keeps the source default, since the issue still runs the project's default steps: its plan node
-// and Dispatch's read of the project's plans say default, as before the version. Every other
+// and Dispatch's read of the project's plans say default, as before the version. The same give
+// again is answered taken and writes nothing, as a give of the version in force is on any issue
+// (sameVersion): the fault is PLAN_NOT_TAKEN for it, or PLAN_VERSION_OLD read as that. Every other
 // version is answered PLAN_NOT_TAKEN, left unspent, and changes nothing. So is a version that also
 // adds a task, one that changes nothing, one whose block default names steps (another issue gets
 // PLAN_REFUSED), one that replaces default, one below the version in force (another issue gets
@@ -73,6 +75,10 @@ func TestTheGroupDefaultTakesAChangeOfTheTextOfItsRunningTaskAlone(t *testing.T)
 		}
 		if text := after.task(t).BlockText; text != now {
 			t.Fatalf("the text of default after version 1 = %q, want %q", text, now)
+		}
+		mustTake(t, "version 1 given again", applyFacts(t, pool, engine)(planID(key, gen, 1), ownersPlan(t, key, gen, 1, defaultBlock(t, now))))
+		if again := planStandingOf(t, pool, engine, key, gen); !reflect.DeepEqual(again.plan, after.plan) {
+			t.Fatalf("the plan after version 1 given again = %+v, want it as version 1 left it, %+v", again.plan, after.plan)
 		}
 	})
 
