@@ -752,60 +752,68 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 // idle view and by WaitsForItsSlot) repeats record's outboxInOrder, which holds such a start back
 // until the slot comes. The two must agree about one row encoded as the workflow writes it, or the
 // idle rule holds the pod of an issue waiting in the line again, or releases a pod under a start
-// that is due: without a slot the outbox lists no due start, the idle view reads nothing waiting,
-// and the issue waits for its slot; with a slot the start is due, the view reads it as waiting,
-// and the issue no longer waits.
+// that is due. For a start marked to wait: without a slot the outbox lists no due start, the idle
+// view reads nothing waiting, and the issue waits for its slot; with a slot the start is due, the
+// view reads it as waiting, and the issue no longer waits. An ordinary start, whose payload carries
+// no `needsSlot`, is due, holds the pod and makes no wait, whether a slot stands or not.
 func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 	t.Parallel()
-	st := migratedStore(t)
-	ctx := context.Background()
-	openRunningTree(t, st)
-	row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
-		Generation: 1, Phase: phase.Implementing, Task: "Continue.", NeedsSlot: true}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var id int64
-	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
-		id, err = record.NewStore().EnqueueID(ctx, tx, row)
-		return err
-	}); err != nil {
-		t.Fatalf("queue the start: %v", err)
-	}
-	records, err := st.PodRecordsOf("LEGION")
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := func() (due, waits bool) {
-		t.Helper()
-		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
-			rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
+	for _, tc := range []struct {
+		name      string
+		needsSlot bool
+	}{
+		{name: "a start marked to wait for its slot", needsSlot: true},
+		{name: "an ordinary start", needsSlot: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+				Generation: 1, Phase: phase.Implementing, Task: "Continue.", NeedsSlot: tc.needsSlot}, time.Now())
 			if err != nil {
-				return err
+				t.Fatal(err)
 			}
-			due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
-			waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
-			return err
-		}); err != nil {
-			t.Fatalf("read the outbox: %v", err)
-		}
-		return due, waits
-	}
+			var id int64
+			if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+				id, err = record.NewStore().EnqueueID(ctx, tx, row)
+				return err
+			}); err != nil {
+				t.Fatalf("queue the start: %v", err)
+			}
+			records, err := st.PodRecordsOf("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(slot bool) {
+				t.Helper()
+				var due, waits bool
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
+					rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
+					if err != nil {
+						return err
+					}
+					due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
+					waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
+					return err
+				}); err != nil {
+					t.Fatalf("read the outbox: %v", err)
+				}
+				held := tc.needsSlot && !slot
+				view := idleViewOf(t, st, rootIssue)
+				if due == held || waits != held || view.Waiting == held {
+					t.Fatalf("with a slot %t: due %t, waits for its slot %t, the idle view waiting %t; want due %t, waits %t, waiting %t",
+						slot, due, waits, view.Waiting, !held, held, !held)
+				}
+			}
 
-	if due, waits := read(); due || !waits {
-		t.Fatalf("with no slot: due %t, waits for its slot %t; want the start held back and the issue waiting for its slot", due, waits)
-	}
-	if view := idleViewOf(t, st, rootIssue); view.Waiting {
-		t.Fatal("with no slot the idle view reads the start as waiting for a role of the pod, though the outbox holds it back")
-	}
-	if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if due, waits := read(); !due || waits {
-		t.Fatalf("with the slot: due %t, waits for its slot %t; want the start due and the issue no longer waiting", due, waits)
-	}
-	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
-		t.Fatal("with the slot the idle view reads nothing waiting, though the outbox has the start due")
+			check(false)
+			if _, err := st.Pool().Exec(ctx, `insert into slots (issue, index, admitted_at) values ($1, 0, now())`, rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			check(true)
+		})
 	}
 }
 

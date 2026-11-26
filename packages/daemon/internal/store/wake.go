@@ -845,9 +845,17 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 // until the slot comes, and the start then wakes the worker an idle release suspended. So a
 // backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
 // worker to its phase's work while the admission cap says the issue may not run.
+//
+// Only a start of the issue's current phase and generation counts. An older one stays in the
+// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
+// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
+// would leave the released worker with nothing to wake it once that row goes.
 func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var waits bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`)`,
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
+		and exists (select 1 from issues i where i.key = outbox.issue
+			and i.phase = outbox.payload->>'phase'
+			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
 		issue).Scan(&waits); err != nil {
 		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
 	}

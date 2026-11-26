@@ -102,10 +102,12 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
-	// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot
-	// while no slot of the issue stands (record.SuperviseRequest.NeedsSlot, which the outbox holds
-	// back until the slot comes): such an issue waits in the admission line, and the slot's start
-	// is what brings its worker back, so its backstop wakes no one (podBackstopDue).
+	// WaitsForItsSlot is whether issue owes a worker a start of its current phase and generation
+	// that waits for its admission slot while no slot of the issue stands
+	// (record.SuperviseRequest.NeedsSlot, which the outbox holds back until the slot comes): such
+	// an issue waits in the admission line, and the slot's start is what brings its worker back,
+	// so its backstop wakes no one (podBackstopDue). An older such start brings no one back, since
+	// admission finishes it without acting, so it silences no backstop.
 	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 }
 

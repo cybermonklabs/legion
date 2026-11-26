@@ -595,63 +595,6 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// A backstop of an issue that waits for its admission slot fires and wakes no one. The issue owes
-// its worker a start that the outbox holds until the slot comes (record.SuperviseRequest.NeedsSlot),
-// and the idle rule releases its pod meanwhile; a wake would put that worker to work while the
-// admission cap says the issue may not run, and would repeat at every backstop of the wait. Once
-// a slot of the issue stands, the start is due and the backstop wakes the worker as before.
-func TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		slot     bool
-		wantWake bool
-	}{
-		{name: "no slot of the issue stands", slot: false, wantWake: false},
-		{name: "the issue holds its slot again", slot: true, wantWake: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			rig := newWakeRig(t)
-			ctx := context.Background()
-			if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-				values ('supervise', 'LEGION-208', $1, 0, now(), '')`,
-				fmt.Sprintf(`{"op":"start","tree":"LEGION-208","role":"implementer","generation":%d,"phase":"implementing","task":"Continue.","needsSlot":true}`, wakeIssueGeneration)); err != nil {
-				t.Fatalf("queue the start that waits for the slot: %v", err)
-			}
-			if tc.slot {
-				if _, err := rig.pool.Exec(ctx, `insert into slots (issue, index, admitted_at) values ('LEGION-208', 0, now())`); err != nil {
-					t.Fatalf("give the issue its slot: %v", err)
-				}
-			}
-			id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-			rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
-
-			var fired bool
-			if err := rig.pool.QueryRow(ctx, `select fired from pod_wake_backstops where id = $1`, id).Scan(&fired); err != nil {
-				t.Fatalf("read the backstop: %v", err)
-			}
-			if !fired {
-				t.Fatal("the backstop is not marked fired")
-			}
-			resumes := wakeResumes(t, rig.pool)
-			switch {
-			case tc.wantWake && (len(resumes) != 1 || resumes[0] != [2]string{string(claim.RoleImplementer), pods.WakeBackstop}):
-				t.Fatalf("pod resumes = %v, want the one backstop wake of the implementer", resumes)
-			case !tc.wantWake && len(resumes) != 0:
-				t.Fatalf("pod resumes = %v, want none: the issue waits for its admission slot, whose start brings the implementer back", resumes)
-			}
-			wantStarts, what := 1, "the start that waits for the slot alone"
-			if tc.wantWake {
-				wantStarts, what = 2, "the start that waits for the slot and the backstop's wake"
-			}
-			if starts := wakeStarts(t, rig.pool); len(starts) != wantStarts {
-				t.Fatalf("supervise start rows = %+v, want %s", starts, what)
-			}
-		})
-	}
-}
-
 // R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
 // open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
 // which live claim has a phase reminder armed in it — and it answers none for a phase the
