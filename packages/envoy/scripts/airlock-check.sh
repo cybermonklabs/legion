@@ -921,13 +921,17 @@ check_k3() {
 	t_before="$(records_count t)"
 	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 	# T is reached end-to-end through the CONNECT tunnel the proxy opens to it, and T presents
-	# its own certificate, which the stands' authority signs (PROXY_STANDS_CA_CERT_FILE). Since
-	# #5240 the brokers' roots (AIRLOCK_CA_CERT_FILE) no longer hold that authority, so the
-	# command cannot verify T without it. The proxy front is plain http, so the CONNECT uses no
-	# proxy TLS root and --cacert verifies T's leaf alone: the stands' authority is the one root
-	# that should sign T, and trusting any other - the proxy's own among them - would let a proxy
-	# that MITM'd T pass the one check that exists to catch it.
-
+	# its own certificate, which the stands' authority signs (PROXY_STANDS_CA_CERT_FILE). The
+	# command verifies T against its own trust bundle, the system ca-bundle agent-secrets points
+	# it at, which holds no stands' authority; AIRLOCK_CA_CERT_FILE, the broker-client bundle
+	# dev-airlock.sh writes, holds both the proxy root and the stands' authority, but the command
+	# does not read it. So the T call names the stands' authority itself. The proxy front is plain
+	# http, so the CONNECT uses no proxy TLS root and --cacert verifies T's leaf alone: the
+	# stands' authority is the one root that should sign T, and trusting any other - the proxy's
+	# own among them - would let a proxy that MITM'd T pass the one check that exists to catch it.
+	# printf %q so a TMPDIR path with a space in it stays one argument in the generated script.
+	local stands_ca
+	stands_ca="$(printf %q "$PROXY_STANDS_CA_CERT_FILE")"
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
 P="\$AIRLOCK_SCOPED_TOKEN"
@@ -949,7 +953,7 @@ say "post=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w 
 say "post_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -X POST -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "other=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)"
 say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
-say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
+say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --cacert $stands_ca -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
 say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
 say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -1093,7 +1097,9 @@ check_k4() {
 	local s_before t_before
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
-
+	# printf %q so a TMPDIR path with a space in it stays one argument in the generated script.
+	local stands_ca
+	stands_ca="$(printf %q "$PROXY_STANDS_CA_CERT_FILE")"
 	cat >"$WORK_DIR/k4-steps.sh" <<EOF
 set -u
 out="$WORK_DIR/k4-out"
@@ -1102,8 +1108,8 @@ say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
 printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
 say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
-curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
-say "t_body=\$(curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
+curl -sS --cacert $stands_ca -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
+say "t_body=\$(curl -sS --cacert $stands_ca -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
 say "svc_exit=\$?"
 say "tsnet=\$(curl -sS --max-time 10 https://host.example-tailnet.ts.net/ 2>&1 | tr '\n' ' ')"
