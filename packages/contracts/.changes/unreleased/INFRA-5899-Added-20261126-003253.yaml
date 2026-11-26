@@ -1,9 +1,0 @@
-kind: Added
-body: |-
-  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` give `OpenAsksResponse` the
-  optional member `default_assignee` (`string | null`): on a `?project=` read the login of that
-  project's default assignee, `null` where no project has the key, and absent on an
-  `?author_session=` read and from a Dispatch before this change.
-time: 2026-11-26T00:32:53Z
-custom:
-    Issue: INFRA-5899
