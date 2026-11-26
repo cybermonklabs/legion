@@ -581,6 +581,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
+		{"POST /legion/v1/project/signals", s.projectSignals},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
@@ -597,6 +598,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
+		{"POST /legion/v1/operator/project/signals", s.operator(s.operatorProjectSignals)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof

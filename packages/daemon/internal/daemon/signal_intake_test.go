@@ -31,8 +31,9 @@ import (
 
 // signalRig is the daemon's workflow runtime over an isolated pool, its admission built and
 // registered with the live signals and the signal deadline's timer as openWorkflow registers them
-// (admit.LiveSignals, admit.UseLiveSignals, workflowRuntime.signalTimer), the project's settings
-// admission by signals on at limits. Each committed pass's kind is in passes.
+// (admit.LiveSignals over the store's settings, admit.UseLiveSignals, workflowRuntime.signalTimer),
+// the project's settings admission by signals on at limits, written as a person's changes before
+// the rig's first fact. Each committed pass's kind is in passes.
 type signalRig struct {
 	t      *testing.T
 	pool   *store.Pool
@@ -66,7 +67,7 @@ func newSignalRig(t *testing.T, limits map[string]float64) *signalRig {
 	admission.UseModelRequests(6000, nil)
 	r.w = &workflowRuntime{pool: r.pool, records: records, admission: admission, dispatchProject: killsProject, log: quietLogger(),
 		signalDue: make(chan record.SignalDeadline, 1)}
-	r.live = admit.NewLiveSignals(admission, signalSettings(limits), api.ModelRequestsContract())
+	r.live = admit.NewLiveSignals(admission, admit.StoreSignalSettings{}, api.ModelRequestsContract())
 	admission.UseSignals(r.live.Read)
 	r.w.signalTimer = admit.NewDeadlineTimer(r.w.signalDeadlineDue)
 	admission.UseLiveSignals(r.live, r.w.signalTimer.Arm)
@@ -78,7 +79,29 @@ func newSignalRig(t *testing.T, limits map[string]float64) *signalRig {
 	r.w.handlers = admit.Handlers(records, killsProject, engine, admission)
 	r.kills.bind(r.pool, r.w.handlers)
 	t.Cleanup(r.w.signalTimer.Stop)
+	r.seed(limits)
 	return r
+}
+
+// seed writes admission by signals on at limits as the operator's changes, before the rig's first
+// fact, so the boot's pass already admits by them.
+func (r *signalRig) seed(limits map[string]float64) {
+	r.t.Helper()
+	set := store.SignalSet{By: store.PauseActor{Kind: store.PauseByOperator}, At: time.Now().UTC(), Reason: "the rig's settings"}
+	changes := []store.SignalSettingChange{{Setting: store.SignalSwitchSetting, Value: new(1.0), Set: set}}
+	for series, limit := range limits {
+		changes = append(changes, store.SignalSettingChange{Setting: series, Value: &limit, Set: set})
+	}
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		for _, change := range changes {
+			if _, err := store.ChangeSignalSettingTx(ctx, tx, killsProject, change); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		r.t.Fatalf("write the rig's settings: %v", err)
+	}
 }
 
 // at sets admission's clock to now.
@@ -246,6 +269,41 @@ func (r *signalRig) requests(token claim.Token, id string, tokens int64, refusal
 	r.apply("api", "requests:"+id, intake.ModelRequests{Claim: token, Generation: 1, Requests: requests, RetriedRefusalsReported: retried})
 }
 
+// guardKill hands the kill holder the memory guard's kill of a process of an issue pod's tester, a
+// minute before now, as the launcher session hands it one.
+func (r *signalRig) guardKill(now time.Time) {
+	r.t.Helper()
+	if err := r.kills.killed(context.Background(), memoryGuardIssue, hostToken(r.t, memoryGuardIssue, claim.RoleTester), "pod-1",
+		shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: 1, PID: 4242, Executable: "python3", LimitBytes: 4 << 30, At: now.Add(-time.Minute)}); err != nil {
+		r.t.Fatalf("apply the kill: %v", err)
+	}
+}
+
+// setting applies the operator's change of setting to value at now, for reason, as the
+// operator's route applies it (api's changeSignals).
+func (r *signalRig) setting(now time.Time, setting string, value *float64, reason string) {
+	r.t.Helper()
+	r.n++
+	r.apply("api", fmt.Sprintf("signals:%d", r.n), intake.SignalSettingChanged{Change: store.SignalSettingChange{Setting: setting, Value: value,
+		Set: store.SignalSet{By: store.PauseActor{Kind: store.PauseByOperator}, At: now, Reason: reason}}})
+}
+
+// writtenHold is whether the record's newest holds entry of series says it holds admission: what
+// the last committed pass wrote of it.
+func (r *signalRig) writtenHold(series string) bool {
+	r.t.Helper()
+	var newest map[string]store.SeriesEntries
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		newest, err = store.NewestSeriesEntriesTx(ctx, tx, killsProject)
+		return err
+	}); err != nil {
+		r.t.Fatal(err)
+	}
+	holds := newest[series].Holds
+	return holds != nil && *holds.Value == 1
+}
+
 // hostToken is the claim token of issue's role, whose host reports its model requests.
 func hostToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	t.Helper()
@@ -263,6 +321,8 @@ func hostToken(t *testing.T, issue string, role claim.Role) claim.Token {
 // signalEvent is one source event of plan section 4's list: what drives it through the daemon,
 // the series whose live value its committed pass reads, and that value; passes is how many
 // committed passes it runs, by the pass rule and the architect's rule for a report and a turn edge.
+// holds, where set, is whether the series holds admission once the event's last pass committed,
+// as the live signals read it and as that pass wrote it in the record of changes.
 type signalEvent struct {
 	name   string
 	limits map[string]float64
@@ -270,14 +330,15 @@ type signalEvent struct {
 	series string
 	value  float64
 	passes int
+	holds  *bool
 }
 
-// signalEventSources is every source event of plan section 4's list that this release takes: the
-// switch and the limits are the settings' (S3), whose own facts run their pass, and a slot given
-// or taken back is the pass's own move, which the pass that made it reads.
+// signalEventSources is every source event of plan section 4's list that this release takes: a
+// slot given or taken back is the pass's own move, which the pass that made it reads.
 var signalEventSources = []string{"queue entry", "queue removal", "queue merge", "ask opened", "ask restored", "ask asked of",
 	"ask edited", "ask handed back", "ask comment", "ask answered", "ask resolved", "issue assignee", "default assignee",
-	"issue pod guard kill", "Oh My Pi report", "Claude Code report", "holder turn start", "holder turn end"}
+	"issue pod guard kill", "Oh My Pi report", "Claude Code report", "holder turn start", "holder turn end",
+	"switch", "limit set", "limit clear"}
 
 func signalEvents() []signalEvent {
 	const issue = "LEGION-301"
@@ -328,12 +389,7 @@ func signalEvents() []signalEvent {
 			r.dispatch(issue, 1, "ask.opened", now.Add(-time.Minute), ask("A1", issue, "question", "owner@example.invalid", nil))
 			r.apply("dispatch", "settings:1", intake.DispatchDefaultAssignee{Assignee: "lead@example.invalid", Seq: 1, At: now})
 		}},
-		{name: "issue pod guard kill", series: signals.Kills, value: 1, passes: 1, drive: func(r *signalRig, now time.Time) {
-			if err := r.kills.killed(context.Background(), memoryGuardIssue, hostToken(r.t, memoryGuardIssue, claim.RoleTester), "pod-1",
-				shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: 1, PID: 4242, Executable: "python3", LimitBytes: 4 << 30, At: now.Add(-time.Minute)}); err != nil {
-				r.t.Fatalf("apply the kill: %v", err)
-			}
-		}},
+		{name: "issue pod guard kill", series: signals.Kills, value: 1, passes: 1, drive: func(r *signalRig, now time.Time) { r.guardKill(now) }},
 		// The pinned Oh My Pi host cannot report the 429s its transport retries, so its report
 		// leaves the refusals unrecorded and moves the headroom; the bridge reports each such 429,
 		// so its refused request moves the refusals.
@@ -357,6 +413,22 @@ func signalEvents() []signalEvent {
 			r.claimed(issue, supervise.StateWorking, now.Add(-10*time.Minute), now.Add(-2*time.Hour))
 			r.apply("pause", "resume", intake.ProjectResumed{})
 			r.turn(issue, supervise.StateIdle, now.Add(-10*time.Minute), now, false)
+		}},
+		// A person's change of a setting, applied as the operator's and the controller's routes
+		// apply it, runs its own pass, which admits by the change: the kill at the limit holds
+		// until admission by signals is turned off, the limit set at the kill holds, and the limit
+		// cleared under it holds no more.
+		{name: "switch", series: signals.Kills, value: 1, passes: 2, limits: map[string]float64{signals.Kills: 1}, holds: new(false), drive: func(r *signalRig, now time.Time) {
+			r.guardKill(now)
+			r.setting(now, store.SignalSwitchSetting, new(0.0), "the owner turned admission by signals off")
+		}},
+		{name: "limit set", series: signals.Kills, value: 1, passes: 2, holds: new(true), drive: func(r *signalRig, now time.Time) {
+			r.guardKill(now)
+			r.setting(now, signals.Kills, new(1.0), "the owner set the kills' limit at one")
+		}},
+		{name: "limit clear", series: signals.Kills, value: 1, passes: 2, limits: map[string]float64{signals.Kills: 1}, holds: new(false), drive: func(r *signalRig, now time.Time) {
+			r.guardKill(now)
+			r.setting(now, signals.Kills, nil, "the owner cleared the kills' limit")
 		}},
 	}
 }
@@ -395,6 +467,14 @@ func TestSignalEventPassInventory(t *testing.T) {
 			if event.name == "holder turn end" {
 				if got := r.committed(); !got.Set || !got.Due.Equal(now.Add(time.Hour)) {
 					t.Errorf("after the turn's end the committed deadline is %+v, want the hour the holder is idle, %s", got, now.Add(time.Hour))
+				}
+			}
+			if event.holds != nil {
+				if got := r.reading(event.series); got.Holds != *event.holds {
+					t.Errorf("the %s series holds %t after the event, want %t", event.series, got.Holds, *event.holds)
+				}
+				if got := r.writtenHold(event.series); got != *event.holds {
+					t.Errorf("the event's last pass wrote the %s series holding %t, want %t", event.series, got, *event.holds)
 				}
 			}
 		})

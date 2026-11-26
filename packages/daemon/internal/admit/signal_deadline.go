@@ -23,16 +23,17 @@ import (
 // Nothing fires on a period, and a fact rolled back neither writes nor arms anything.
 
 // SignalHeldStartLine is the line of each start a signal held at a pass (S4), once its fact
-// commits: the issue, the signal and part (SignalPart), its value and its limit.
+// commits: the issue, the signal and part (store.SignalPart), its value and its limit.
 const SignalHeldStartLine = "admission: a signal held a start"
 
 // UseLiveSignals registers live, the daemon's live signals whose reader is the pass's gate
-// (UseSignals), for what admission keeps beside each pass: what the pass recorded of each series
-// (record.Store.KeepSignalPassMarks), which the architect's rule for a report of model requests
-// and a turn edge reads (signalsMoved), and the project's one deadline, which each pass computes
-// again (commitDeadline) and hands to arm once the fact that changed it commits. A firing of the
-// deadline (intake.SignalDeadline) runs a pass only where it is still the committed deadline and
-// due. It is a setter rather than a parameter of New for the reason UseExperiments is.
+// (UseSignals), for what admission keeps beside each pass: the record of changes of what the pass
+// computed of each series (writeSignalChanges), whose newest entries the architect's rule for a
+// report of model requests and a turn edge reads (signalsMoved), and the project's one deadline,
+// which each pass computes again (commitDeadline) and hands to arm once the fact that changed it
+// commits. A firing of the deadline (intake.SignalDeadline) runs a pass only where it is still the
+// committed deadline and due. It is a setter rather than a parameter of New for the reason
+// UseExperiments is.
 func (a *Admission) UseLiveSignals(live *LiveSignals, arm func(record.SignalDeadline)) {
 	a.live, a.armDeadline = live, arm
 }
@@ -111,9 +112,9 @@ func (a *Admission) commitDeadline(ctx context.Context, tx pgx.Tx, reading LiveR
 // signalFactMoved is the architect's rule for a fact that keeps an input of a signal with no mark
 // of its own (a report of model requests, a turn edge): it reads the live signals at the
 // admission's clock, sets the deadline again from them, and keeps the mark that runs the pass
-// (record.NoteSignalsMoved) only where they moved against the last committed pass (signalsMoved).
-// A pass it runs computes the deadline again itself. Where admission keeps no live signals, it
-// keeps nothing.
+// (record.NoteSignalsMoved) only where they moved against the last committed pass, the record's
+// newest entries of each series (signalsMoved). A pass it runs computes the deadline again itself.
+// Where admission keeps no live signals, it keeps nothing.
 func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx) error {
 	if a.live == nil {
 		return nil
@@ -122,11 +123,11 @@ func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx) error {
 	if err != nil {
 		return fmt.Errorf("read the signals at a report: %w", err)
 	}
-	marks, err := a.store.SignalPassMarks(ctx, tx, a.project)
+	newest, err := store.NewestSeriesEntriesTx(ctx, tx, a.project)
 	if err != nil {
 		return err
 	}
-	if signalsMoved(reading, marks) {
+	if signalsMoved(reading, newest) {
 		record.NoteSignalsMoved(ctx)
 		return nil
 	}
@@ -134,24 +135,25 @@ func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx) error {
 }
 
 // afterSignalPass is what a pass that judged the line under gate keeps once it is done: the line
-// of each start a signal held (S4), and, where admission keeps the live signals, what it recorded
-// of each series (passMarks) and the deadline computed again from the inputs as the pass left
-// them, its grants and releases among them.
+// of each start a signal held (S4), and, where admission keeps the live signals, the record of
+// changes of what the pass computed from the reading its gate read (writeSignalChanges), and the
+// deadline computed again from the inputs as the pass left them, its grants and releases among
+// them.
 func (a *Admission) afterSignalPass(ctx context.Context, tx pgx.Tx, gate passGate, moves *passMoves) error {
 	a.logSignalHolds(ctx, gate, moves)
 	if a.live == nil {
 		return nil
 	}
-	marks, err := a.store.SignalPassMarks(ctx, tx, a.project)
-	if err != nil {
-		return err
+	read, ok := passReadingOf(ctx)
+	if !ok {
+		return fmt.Errorf("the %s pass keeps the live signals, and its gate read none of them: register the live signals' Read as its reader (UseSignals)", gate.kind)
 	}
-	moved := len(moves.given) > 0 || len(moves.taken) > 0
-	if err := a.store.KeepSignalPassMarks(ctx, tx, a.project, passMarks(gate.snapshot, gate.bySignals, moved, marks)); err != nil {
+	if err := a.writeSignalChanges(ctx, tx, read, len(moves.given) > 0 || len(moves.taken) > 0); err != nil {
 		return err
 	}
 	reading := LiveReading{}
 	if gate.bySignals {
+		var err error
 		if reading, err = a.live.Reading(ctx, tx, a.now()); err != nil {
 			return fmt.Errorf("read the signals after the %s pass: %w", gate.kind, err)
 		}
@@ -172,7 +174,7 @@ func (a *Admission) logSignalHolds(ctx context.Context, gate passGate, moves *pa
 		}
 		for _, name := range gate.snapshot.Holding() {
 			reading := gate.snapshot.Readings[name]
-			signal, part := SignalPart(name)
+			signal, part := store.SignalPart(name)
 			var named any
 			if part != "" {
 				named = part

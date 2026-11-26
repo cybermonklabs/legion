@@ -2902,10 +2902,6 @@ type Store interface {
 	// commitDeadline).
 	SignalDeadline(ctx context.Context, tx pgx.Tx, project string) (SignalDeadline, error)
 	PutSignalDeadline(ctx context.Context, tx pgx.Tx, project string, deadline SignalDeadline) error
-	// SignalPassMarks is what the last committed pass recorded of each series of project, and
-	// KeepSignalPassMarks writes the marks a pass changed (admit's keepPassMarks).
-	SignalPassMarks(ctx context.Context, tx pgx.Tx, project string) (map[string]SignalPassMark, error)
-	KeepSignalPassMarks(ctx context.Context, tx pgx.Tx, project string, marks map[string]SignalPassMark) error
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

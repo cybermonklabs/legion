@@ -12,7 +12,8 @@
     "waiting": [],
     "trees": [],
     "blocked": [],
-    "held": []
+    "held": [],
+    "signalChanges": []
   },
   "issues": {},
   "pendingStatusWrites": [],

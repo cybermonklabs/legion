@@ -33,6 +33,8 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionProjectSignalsRequest,
+  LegionProjectSignalsResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -206,6 +208,14 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's change of admission by signals on a person's cited word (`signals_on`,
+   * `signals_off`, `set_signal_limit`, `clear_signal_limit`): the daemon turns admission by
+   * signals on or off, or sets or clears one signal's limit, and records the person's reason, the
+   * effect `legion project signals` runs for an operator. The answer is whether the change moved
+   * the setting, and the settings as they stand. */
+  readonly projectSignals: (
+    input: z.input<typeof LegionProjectSignalsRequest>
+  ) => Promise<z.output<typeof LegionProjectSignalsResponse>>;
   /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
    * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
    * every open record of that consumer at or below that stream sequence, through the handling a
@@ -747,6 +757,13 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    projectSignals: (input) =>
+      post(
+        "/legion/v1/project/signals",
+        LegionProjectSignalsRequest,
+        LegionProjectSignalsResponse,
         input
       ),
     intakeReplay: (input) =>

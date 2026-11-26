@@ -18,7 +18,8 @@
       "LEGION-208"
     ],
     "blocked": [],
-    "held": []
+    "held": [],
+    "signalChanges": []
   },
   "issues": {
     "LEGION-208": {

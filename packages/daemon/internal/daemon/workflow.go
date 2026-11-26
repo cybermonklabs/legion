@@ -67,6 +67,9 @@ type workflowRuntime struct {
 	// the same client as dispatch in the daemon, which has the reads Client leaves out. Nil, in a
 	// runtime a test builds by hand that runs no such read.
 	approvals dispatch.ApprovalReads
+	// signals is the project's live signals, which each pass admits by and the state reads at each
+	// read (admit.LiveSignals.State).
+	signals *admit.LiveSignals
 	// signalTimer is the project's one timer of its deadline of admission by signals, which
 	// admission arms once each fact that changed the deadline commits (admit.UseLiveSignals), and
 	// signalDue hands each deadline it fires to the runtime's loop that applies it
@@ -845,15 +848,16 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	})
 	// Each pass admits below P0 by the live signals, read in its own transaction from what the
 	// daemon keeps of their inputs (admit.LiveSignals), while the project's settings turn admission
-	// by signals on; until a person sets them, every project is off with no limit
-	// (admit.NoSignalSettings) and the pass admits under the cap. Beside each pass admission keeps
-	// what it recorded of each series and the project's one deadline, which this runtime's timer
-	// fires (runSignalDeadline).
-	live := admit.NewLiveSignals(w.admission, admit.NoSignalSettings{}, api.ModelRequestsContract())
-	w.admission.UseSignals(live.Read)
+	// by signals on; a fresh project is off with no limit, and each change a person makes on the
+	// operator's or the controller's route is in force from its own fact's pass
+	// (admit.StoreSignalSettings). Beside each pass admission keeps the record of changes of what it
+	// computed of each series and the project's one deadline, which this runtime's timer fires
+	// (runSignalDeadline). The state reads the same live signals at each read (signals.State).
+	w.signals = admit.NewLiveSignals(w.admission, admit.StoreSignalSettings{}, api.ModelRequestsContract())
+	w.admission.UseSignals(w.signals.Read)
 	w.signalDue = make(chan record.SignalDeadline, 1)
 	w.signalTimer = admit.NewDeadlineTimer(w.signalDeadlineDue)
-	w.admission.UseLiveSignals(live, w.signalTimer.Arm)
+	w.admission.UseLiveSignals(w.signals, w.signalTimer.Arm)
 	// The mirror runs before both deciders, and that order is load-bearing (admit.Handlers). The
 	// engine decides whether to start a child and admission whether to admit a root inside this
 	// same transaction, from the mirror's rows, so the row an event carries must already be

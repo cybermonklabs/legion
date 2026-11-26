@@ -3,7 +3,6 @@ package admit
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // SignalSettings is where the live signals read a project's switch of admission by signals and the
@@ -27,32 +27,23 @@ type SignalSwitch struct {
 	Limits map[string]float64
 }
 
-// NoSignalSettings answers every project's settings as a fresh project's (S3): admission by signals
-// off, with no limit.
-type NoSignalSettings struct{}
+// StoreSignalSettings is the settings a person set (store.SignalSettingsTx), the daemon's own: a
+// fresh project is off with no limit, and each change a person makes is in force from the pass of
+// the fact it is applied as (intake.SignalSettingChanged).
+type StoreSignalSettings struct{}
 
-func (NoSignalSettings) SignalSwitch(context.Context, pgx.Tx, string) (SignalSwitch, error) {
-	return SignalSwitch{}, nil
-}
-
-// The parts of the provider's signal, which reads its headroom and its refusals apart: every
-// surface of admission by signals names those two series by the signal provider and these parts.
-const (
-	PartHeadroom = "headroom"
-	PartRefusals = "refusals"
-)
-
-// SignalPart is the signal and the part every surface of admission by signals names series by, for
-// its name of signals.Names(): the provider's two series are provider's headroom and refusals, and
-// each other series is its own signal, with no part.
-func SignalPart(series string) (signal, part string) {
-	switch series {
-	case signals.Provider:
-		return signals.Provider, PartHeadroom
-	case signals.Refusals:
-		return signals.Provider, PartRefusals
+func (StoreSignalSettings) SignalSwitch(ctx context.Context, tx pgx.Tx, project string) (SignalSwitch, error) {
+	settings, err := store.SignalSettingsTx(ctx, tx, project)
+	if err != nil {
+		return SignalSwitch{}, err
 	}
-	return series, ""
+	sw := SignalSwitch{On: settings.On(), Limits: map[string]float64{}}
+	for _, series := range signals.Names() {
+		if limit, set := settings.Limit(series); set {
+			sw.Limits[series] = limit
+		}
+	}
+	return sw, nil
 }
 
 // signalSteps is the step of each series' value entries (S6): a pass records a value of a series
@@ -142,12 +133,15 @@ func NewLiveSignals(admission *Admission, settings SignalSettings, reporting int
 }
 
 // Read is the reader the daemon registers as the pass's gate (Admission.UseSignals): the snapshot
-// of the six series at at, and whether admission by signals is on.
+// of the six series at at, and whether admission by signals is on. The pass keeps the reading it
+// answered (keepPassReading), each series with the reason it cannot be computed, which the
+// snapshot does not carry, so the record of changes the pass writes is of its own reading.
 func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error) {
 	reading, err := l.Reading(ctx, tx, at)
 	if err != nil {
 		return signals.Snapshot{}, false, err
 	}
+	keepPassReading(ctx, reading)
 	return reading.Snapshot(), reading.On, nil
 }
 
@@ -169,10 +163,18 @@ func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signal
 // never as the minute before; its refusals count from its end, as signals.RefusalsNext counts a
 // minute's.
 func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, error) {
+	reading, _, err := l.read(ctx, tx, at)
+	return reading, err
+}
+
+// read is Reading, and the provider's minutes its headroom and refusals read, from the start of
+// the hour before at to the end of the minute under way, which the state shows beside them.
+func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, record.ProviderMinutes, error) {
 	a := l.admission
+	var minutes record.ProviderMinutes
 	settings, err := l.settings.SignalSwitch(ctx, tx, a.project)
 	if err != nil {
-		return LiveReading{}, fmt.Errorf("read the settings of admission by signals: %w", err)
+		return LiveReading{}, minutes, fmt.Errorf("read the settings of admission by signals: %w", err)
 	}
 	reading := LiveReading{At: at, On: settings.On}
 	limit := func(name string) *float64 {
@@ -190,7 +192,7 @@ func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (Liv
 
 	holders, idleSince, err := a.idleHolders(ctx, tx, at)
 	if err != nil {
-		return LiveReading{}, err
+		return LiveReading{}, minutes, err
 	}
 	idle := SeriesReading{Name: signals.Idle, Value: signals.IdleAt(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter)}
 	if bound := limit(signals.Idle); bound != nil {
@@ -200,29 +202,29 @@ func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (Liv
 
 	queue, err := l.queue(ctx, tx, at, limit(signals.Queue))
 	if err != nil {
-		return LiveReading{}, err
+		return LiveReading{}, minutes, err
 	}
 	add(queue)
 
-	headroom, refusals, err := l.provider(ctx, tx, at, limit(signals.Provider), limit(signals.Refusals))
+	headroom, refusals, minutes, err := l.provider(ctx, tx, at, limit(signals.Provider), limit(signals.Refusals))
 	if err != nil {
-		return LiveReading{}, err
+		return LiveReading{}, minutes, err
 	}
 	add(headroom)
 	add(refusals)
 
 	kills, err := l.kills(ctx, tx, at, limit(signals.Kills))
 	if err != nil {
-		return LiveReading{}, err
+		return LiveReading{}, minutes, err
 	}
 	add(kills)
 
 	approvals, err := a.store.ApprovalsOf(ctx, tx, a.project)
 	if err != nil {
-		return LiveReading{}, err
+		return LiveReading{}, minutes, err
 	}
 	add(SeriesReading{Name: signals.Approvals, Value: approvals.Value(), Absent: approvals.Unrecorded})
-	return reading, nil
+	return reading, minutes, nil
 }
 
 // spanCoverage is the coverage of a series counted over span whose input the daemon began keeping
@@ -293,18 +295,18 @@ func (l *LiveSignals) kills(ctx context.Context, tx pgx.Tx, at time.Time, limit 
 
 // provider is the provider's headroom and refusals at at (signals.ProviderAt, signals.RefusalsAt),
 // over the project's minutes from the start of the hour before at to the end of the minute under
-// way (record.Store.ProviderMinutes), as Reading says.
-func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, headroomLimit, refusalsLimit *float64) (SeriesReading, SeriesReading, error) {
+// way (record.Store.ProviderMinutes), as Reading says, and those minutes.
+func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, headroomLimit, refusalsLimit *float64) (SeriesReading, SeriesReading, record.ProviderMinutes, error) {
 	a := l.admission
 	_, kept, err := a.store.SignalInputSince(ctx, tx, a.project, signals.Provider)
 	if err != nil {
-		return SeriesReading{}, SeriesReading{}, err
+		return SeriesReading{}, SeriesReading{}, record.ProviderMinutes{}, err
 	}
 	current := at.Truncate(time.Minute)
 	first := current.Add(-signals.RefusalSpan)
 	minutes, err := a.store.ProviderMinutes(ctx, tx, a.project, first, current.Add(time.Minute), l.reporting)
 	if err != nil {
-		return SeriesReading{}, SeriesReading{}, err
+		return SeriesReading{}, SeriesReading{}, record.ProviderMinutes{}, err
 	}
 	// The record as a prediction reads it, the minutes standing as they do at at: the minute under
 	// way with its tokens so far and none of its refusals, and each minute after it as no request
@@ -346,7 +348,7 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, hea
 	if refusalsLimit != nil {
 		refusals.Next, refusals.Due = refusalsNext(predicted, unreported, at, *refusalsLimit)
 	}
-	return headroom, refusals, nil
+	return headroom, refusals, minutes, nil
 }
 
 // unreportedRetries is the latest minute of the provider's record that holds a request of a host
@@ -439,59 +441,4 @@ func (a *Admission) idleHolders(ctx context.Context, tx pgx.Tx, at time.Time) (i
 		}
 	}
 	return len(holders), idle, nil
-}
-
-// valueEntryDue says whether a pass would record series' value against mark, the last one recorded
-// (S6): the first value of the series, a change between a value and one the daemon cannot compute,
-// or a move of at least the series' step. A float's difference of a step is read with a margin of
-// a billionth of the step, so a share of 0.35 against 0.30 moves by the step it reads as.
-func valueEntryDue(series SeriesReading, mark record.SignalPassMark) bool {
-	switch {
-	case !mark.Written, series.Value.Recorded != mark.Value.Recorded:
-		return true
-	case !series.Value.Recorded:
-		return false
-	}
-	step := signalSteps[series.Name]
-	return math.Abs(series.Value.Value-mark.Value.Value) >= step*(1-1e-9)
-}
-
-// signalsMoved is the architect's rule for a report of model requests and the edge of a slot
-// holder's turn (design "The pass triggers", option (a)): whether reading moved what the last
-// committed pass recorded (marks): a series whose hold differs from the hold that pass recorded,
-// or one of the five series but the provider's headroom whose value qualifies for a value entry
-// against its last recorded value (valueEntryDue). It compares with the last committed pass and
-// never with the state before the fact at the same moment, so a crossing that came with no event
-// since that pass moves it.
-func signalsMoved(reading LiveReading, marks map[string]record.SignalPassMark) bool {
-	for _, series := range reading.Series {
-		mark := marks[series.Name]
-		if series.Holds != mark.Holds || series.Name != signals.Provider && valueEntryDue(series, mark) {
-			return true
-		}
-	}
-	return false
-}
-
-// passMarks is what a pass whose gate read snapshot records of each series against marks, the
-// last committed pass's: each series' hold, and its value where a value entry is due (S6): where
-// its hold changed, and otherwise where its value moved by its step (valueEntryDue), the provider's
-// headroom only at a pass that gave out or took back a slot (moved). It answers the marks that
-// changed, by series.
-func passMarks(snapshot signals.Snapshot, on, moved bool, marks map[string]record.SignalPassMark) map[string]record.SignalPassMark {
-	changed := make(map[string]record.SignalPassMark)
-	for _, name := range signals.Names() {
-		reading := snapshot.Readings[name]
-		mark := marks[name]
-		next := mark
-		next.Holds = on && reading.Holds()
-		due := valueEntryDue(SeriesReading{Name: name, Value: reading.Value}, mark)
-		if next.Holds != mark.Holds || due && (name != signals.Provider || moved) {
-			next.Written, next.Value = true, reading.Value
-		}
-		if next != mark {
-			changed[name] = next
-		}
-	}
-	return changed
 }

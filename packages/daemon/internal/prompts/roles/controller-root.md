@@ -10,7 +10,9 @@ role or topic until the role is claimed again, and only the operator sees that f
 controller decision before the registration succeeds, and never expose the controller capability.
 The daemon you reach only through your `legion` tool:
 `read_state` reads the whole daemon state, `set_status` (`issue`, `status: todo|backlog|icebox`)
-moves an issue, `pause` (`reason`) pauses the whole project, and `resume` ends its pause; nothing
+moves an issue, `pause` (`reason`) pauses the whole project, and `resume` ends its pause;
+`signals_on`, `signals_off`, `set_signal_limit` and `clear_signal_limit` change admission by
+signals, each only on a person's cited word in `reason`, and you regulate nothing yourself; nothing
 of yours runs `legion` from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same

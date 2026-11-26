@@ -696,6 +696,20 @@ type TurnEdge struct {
 
 func (TurnEdge) namedIssue() (string, bool) { return "", false }
 
+// SignalSettingChanged is a person's change of a setting of admission by signals (S3): the switch
+// turned on or off, or the limit of one series set or cleared, with who made it, when and the
+// person's cited reason (store.SignalSettingChange). The operator's and the controller's routes
+// apply it once they have checked it (api's changeSignals), under an id of the request's own, and
+// it is never decoded from an event. Admission writes the setting and its entry of the record of
+// changes in the fact's transaction, before the fact's pass, where the change moves the setting,
+// so that pass and every one after it admit by the change with no restart; a change to the value
+// the setting holds already writes nothing and runs no pass. The workflow does nothing with it.
+type SignalSettingChanged struct {
+	Change store.SignalSettingChange
+}
+
+func (SignalSettingChanged) namedIssue() (string, bool) { return "", false }
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string

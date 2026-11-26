@@ -91,6 +91,7 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerProjectSignals     AnswerID = "project-signals"
 	AnswerPlanRegister       AnswerID = "plan-register"
 	AnswerIntakeReplay       AnswerID = "intake-replay"
 	AnswerIntakeDiscard      AnswerID = "intake-discard"

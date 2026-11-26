@@ -72,6 +72,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"ApprovalsBootRead":           ApprovalsBootRead{},
 		"ModelRequests":               ModelRequests{},
 		"TurnEdge":                    TurnEdge{},
+		"SignalSettingChanged":        SignalSettingChanged{},
 		"PullRequestReviewRequests":   PullRequestReviewRequests{},
 		"PullRequestMergeStateUnread": PullRequestMergeStateUnread{},
 		"Push":                        Push{},

@@ -11,6 +11,16 @@ body: |-
   `fixtures/refusal-classes.json` is the table of refusal texts and the class each host gives them
   under a project's two refusal patterns, which the Oh My Pi plugin's and the Claude Code bridge's
   tests both read.
+
+  `LegionState`'s admission gains `signals`, admission by signals as the daemon reads it at the
+  state's moment (`on`, the `switch`'s last change, each of the six `series` with its `value` or
+  the reason it is `absent`, its `limit` and `limitSet`, whether it `holds` and `since` when, and the
+  provider's `minutes` of the last hour), and `signalChanges`, the newest 50 entries of the record
+  of changes, each `{id, at, signal, part, what, value, absent, setBy, reason}`.
+  `LegionProjectSignalsRequest` is the controller's change of admission by signals (`grantId`,
+  `action` one of `on`, `off`, `set-limit` and `clear-limit`, `signal`, `part`, `limit`, `reason`),
+  and `LegionProjectSignalsResponse`, `{changed, settings}`, its answer, with its golden
+  `fixtures/daemon-api/project-signals.json`.
 time: 2026-11-26T05:33:15Z
 custom:
     Issue: pr5603

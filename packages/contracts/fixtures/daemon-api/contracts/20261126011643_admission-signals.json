@@ -8,6 +8,81 @@
         "kept",
         "kept.*"
       ]
+    },
+    {
+      "answer": "project-signals",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "changed",
+        "settings",
+        "settings.limits",
+        "settings.limits.*",
+        "settings.limits.*.limit",
+        "settings.limits.*.part",
+        "settings.limits.*.set",
+        "settings.limits.*.set.at",
+        "settings.limits.*.set.reason",
+        "settings.limits.*.set.setBy",
+        "settings.limits.*.set.setBy.kind",
+        "settings.limits.*.set.setBy.session",
+        "settings.limits.*.signal",
+        "settings.on",
+        "settings.switch",
+        "settings.switch.at",
+        "settings.switch.reason",
+        "settings.switch.setBy",
+        "settings.switch.setBy.kind"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "admission.signalChanges",
+        "admission.signalChanges.*",
+        "admission.signalChanges.*.absent",
+        "admission.signalChanges.*.at",
+        "admission.signalChanges.*.id",
+        "admission.signalChanges.*.part",
+        "admission.signalChanges.*.reason",
+        "admission.signalChanges.*.setBy",
+        "admission.signalChanges.*.setBy.kind",
+        "admission.signalChanges.*.setBy.session",
+        "admission.signalChanges.*.signal",
+        "admission.signalChanges.*.value",
+        "admission.signalChanges.*.what",
+        "admission.signals",
+        "admission.signals.on",
+        "admission.signals.provider",
+        "admission.signals.provider.minutes",
+        "admission.signals.provider.minutes.*",
+        "admission.signals.provider.minutes.*.at",
+        "admission.signals.provider.minutes.*.held",
+        "admission.signals.provider.minutes.*.ownRefusals",
+        "admission.signals.provider.minutes.*.providerRefusals",
+        "admission.signals.provider.minutes.*.tokenLimit",
+        "admission.signals.provider.minutes.*.uncachedInputTokens",
+        "admission.signals.series",
+        "admission.signals.series.*",
+        "admission.signals.series.*.absent",
+        "admission.signals.series.*.holds",
+        "admission.signals.series.*.limit",
+        "admission.signals.series.*.limitSet",
+        "admission.signals.series.*.limitSet.at",
+        "admission.signals.series.*.limitSet.reason",
+        "admission.signals.series.*.limitSet.setBy",
+        "admission.signals.series.*.limitSet.setBy.kind",
+        "admission.signals.series.*.limitSet.setBy.session",
+        "admission.signals.series.*.part",
+        "admission.signals.series.*.signal",
+        "admission.signals.series.*.since",
+        "admission.signals.series.*.value",
+        "admission.signals.switch",
+        "admission.signals.switch.at",
+        "admission.signals.switch.reason",
+        "admission.signals.switch.setBy",
+        "admission.signals.switch.setBy.kind"
+      ]
     }
   ],
   "routes": [
@@ -30,6 +105,18 @@
         "secret",
         "sessionId"
       ]
+    },
+    {
+      "route": "POST /legion/v1/project/signals",
+      "change": "add",
+      "addFieldPaths": [
+        "action",
+        "grantId",
+        "limit",
+        "part",
+        "reason",
+        "signal"
+      ]
     }
   ],
   "answerRows": [
@@ -37,6 +124,13 @@
       "id": "model-requests",
       "routes": [
         "POST /legion/v1/claims/model-requests"
+      ],
+      "noBody": false
+    },
+    {
+      "id": "project-signals",
+      "routes": [
+        "POST /legion/v1/project/signals"
       ],
       "noBody": false
     }

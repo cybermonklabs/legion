@@ -93,6 +93,10 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "compact",
     "pause",
     "resume",
+    "signals_on",
+    "signals_off",
+    "set_signal_limit",
+    "clear_signal_limit",
     "replay_give_up",
     "discard_give_up",
   ],
@@ -118,6 +122,10 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  signals_on: ["reason"],
+  signals_off: ["reason"],
+  set_signal_limit: ["signal", "part", "limit", "reason"],
+  clear_signal_limit: ["signal", "part", "reason"],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
   discard_give_up: ["giveUp", "consumer", "throughSeq", "reason"],
 };
@@ -429,7 +437,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires; for signals_on, signals_off, set_signal_limit and clear_signal_limit, which each require it, the person's cited word: whose word it is and what they said. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -466,6 +474,22 @@ function toolSchema(pi: PiApi): unknown {
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups"
       )
       .optional(),
+    // The series a change of a limit names, as every surface of admission by signals names it:
+    // the signal, and for the provider its part.
+    signal: z
+      .enum(["idle", "queue", "provider", "kills", "approvals"])
+      .describe("set_signal_limit's and clear_signal_limit's signal")
+      .optional(),
+    part: z
+      .enum(["headroom", "refusals"])
+      .describe(
+        "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one"
+      )
+      .optional(),
+    limit: z
+      .number()
+      .describe("set_signal_limit's limit, which the signal holds admission at or over")
+      .optional(),
   });
 }
 
@@ -478,6 +502,37 @@ function requiredString(
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${operation} requires ${name}`);
   return value;
+}
+
+/** The action of each of the controller's four changes of admission by signals, as the daemon's
+ * route takes it (`LegionProjectSignalsRequest`). */
+const SIGNAL_ACTIONS: Readonly<Record<string, "on" | "off" | "set-limit" | "clear-limit">> = {
+  signals_on: "on",
+  signals_off: "off",
+  set_signal_limit: "set-limit",
+  clear_signal_limit: "clear-limit",
+};
+
+/** A change of admission by signals as the daemon client sends it, its grant left to the caller. */
+type SignalChange = Omit<Parameters<LegionDaemonClient["projectSignals"]>[0], "grantId">;
+
+/** The change `operation` asks the daemon for: the person's cited word in `reason`, which each
+ * requires, and for a limit its signal, the provider's part where it names one, and for a limit set
+ * the limit. The tool's schema holds the signal and the part to their names; the daemon checks the
+ * limit's range and refuses one outside it with its reason, so this checks only that each is there. */
+function signalChange(
+  parameters: Record<string, unknown>,
+  operation: string,
+  action: SignalChange["action"]
+): SignalChange {
+  const reason = requiredString(parameters, operation, "reason");
+  if (action === "on" || action === "off") return { action, reason };
+  const signal = requiredString(parameters, operation, "signal") as SignalChange["signal"];
+  const part = parameters.part as SignalChange["part"];
+  if (action === "clear-limit") return { action, signal, part, reason };
+  const limit = parameters.limit;
+  if (typeof limit !== "number") throw new Error(`${operation} requires limit`);
+  return { action, signal, part, limit, reason };
 }
 
 /** A whole number from 1: a give-up's record id, a stream sequence or a gate's version. */
@@ -728,6 +783,11 @@ export function createLegionTool(deps: {
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
         "since each would start a turn. " +
+        "signals_on and signals_off (reason) turn admission by signals on or off, and set_signal_limit (signal, part " +
+        "for provider, limit, reason) and clear_signal_limit (signal, part, reason) set or clear one signal's limit. " +
+        "Make each only on a person's cited word, and cite it in reason; never choose a change yourself. The answer is " +
+        "changed, whether the change moved the setting, and settings, as they stand. The daemon refuses a limit outside " +
+        "its signal's range, a name of no signal and a blank reason (SIGNAL_SETTING_INVALID), changing nothing. " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
@@ -808,6 +868,16 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // A change of admission by signals names no issue either, and each is the person's: it
+          // is validated whole, the person's cited word in reason among it, before its grant is
+          // minted, and its answer is the daemon's own, whether it moved the setting and the
+          // settings as they stand.
+          const action = SIGNAL_ACTIONS[operation];
+          if (action !== undefined) {
+            const change = signalChange(parameters, operation, action);
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.projectSignals({ grantId, ...change }));
           }
           // The replay and the discard of the intake's give-ups name no issue either. Each is
           // validated whole, its selection and the discard's reason, before its grant is minted,

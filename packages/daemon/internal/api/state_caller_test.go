@@ -427,6 +427,32 @@ func withoutSlotsReadingBody(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAdmissionSignalsBody is a state body without `admission.signals` and
+// `admission.signalChanges`, the two keys admissionSignalsContract added, which is what a caller
+// below that contract is served of a state (api's withoutAdmissionSignals).
+func withoutAdmissionSignalsBody(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	withoutAdmissionSignalsKeys(served)
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without admission by signals: %v", body, err)
+	}
+	return encoded
+}
+
+// withoutAdmissionSignalsKeys takes `admission.signals` and `admission.signalChanges` off a
+// decoded state body.
+func withoutAdmissionSignalsKeys(body map[string]any) {
+	if admission, ok := body["admission"].(map[string]any); ok {
+		delete(admission, "signals")
+		delete(admission, "signalChanges")
+	}
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -960,6 +986,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if tc.contract < entryNumber(slotsReadingContract) {
 					want = withoutSlotsReadingBody(t, want)
 				}
+				if tc.contract < entryNumber(admissionSignalsContract) {
+					want = withoutAdmissionSignalsBody(t, want)
+				}
 				if !tc.giveUps {
 					want = withoutIntakeGiveUpsKey(t, want)
 				}
@@ -1039,8 +1068,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "paused")
 			delete(want, "dispatchCredential")
 			// And with the slots reading gone, the five keys slotsReadingContract added
-			// (withoutSlotsReading, withoutRanksAndSlotStates).
+			// (withoutSlotsReading, withoutRanksAndSlotStates), and the two of
+			// admissionSignalsContract (withoutAdmissionSignals).
 			withoutSlotsReadingKeys(want)
+			withoutAdmissionSignalsKeys(want)
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

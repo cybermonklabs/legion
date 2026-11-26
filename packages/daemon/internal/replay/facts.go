@@ -279,6 +279,9 @@ var FactSources = map[string]FactSource{
 	"ModelRequests": {Way: FactUnrecorded, From: "each report of a host's model requests (POST /legion/v1/claims/model-requests, intake.ModelRequests), " +
 		"which no recorded window holds a line of: the replay reads the provider's minutes from the deployment's record of the model provider " +
 		"(SignalRecord's minutes), and injects none until it supplies the signals to the pass"},
+	"SignalSettingChanged": {Way: FactUnrecorded, From: "a person's change of a setting of admission by signals (POST /legion/v1/project/signals and " +
+		"POST /legion/v1/operator/project/signals, intake.SignalSettingChanged), which no recorded window holds a line of: a replay admits by the " +
+		"rule and the limits it is given, and injects none"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},

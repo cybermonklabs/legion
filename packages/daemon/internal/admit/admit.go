@@ -2270,7 +2270,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// The pass is taken past the pause, so a pause's skipped pass leaves a catch-up release owed.
 	a.passCatchUpReleases(ctx)
 	// The P0 bound and the signals are read once for the pass, beside the pause (gateFor), and the
-	// stall measure and the promotion below judge under them (capHold).
+	// stall measure and the promotion below judge under them (capHold). The reading of the signals
+	// is kept for the pass's record of changes at its end (withPassReading, afterSignalPass).
+	ctx = withPassReading(ctx)
 	gate, err := a.gateFor(ctx, tx, kind)
 	if err != nil {
 		return 0, nil, err

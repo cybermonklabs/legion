@@ -55,6 +55,7 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionProjectSignalsResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -177,6 +178,7 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.ModelRequestsResponse`: what a host's report of model requests comes back as, every id
   // of the batch the daemon now holds.
   "model-requests.json": LegionModelRequestsResponse,
+  "project-signals.json": LegionProjectSignalsResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -402,6 +404,20 @@ function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record
   return state;
 }
 
+/** A state body as a caller below the admission-signals entry is served it: with no
+ * `admission.signals` and no `admission.signalChanges`, the two keys shaping.go's
+ * withoutAdmissionSignals takes off. It takes them off `state` itself, as
+ * `servedBelowSlotsReadingContract` does. */
+function servedBelowAdmissionSignalsContract(
+  state: Record<string, unknown>
+): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.signals;
+    delete state.admission.signalChanges;
+  }
+  return state;
+}
+
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
  * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
  * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
@@ -512,6 +528,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   compact: [LegionCompactResponse],
   "turn-outcome": [LegionTurnOutcomeResponse],
   "model-requests": [LegionModelRequestsResponse],
+  "project-signals": [LegionProjectSignalsResponse],
   "wave-release": [LegionWaveReleaseResponse],
   refusal: [LegionErrorResponse, LegionPauseFailureResponse],
   "project-pause": [LegionProjectPauseResponse],
@@ -3063,7 +3080,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
-  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
+  } = servedBelowAdmissionSignalsContract(
+    servedBelowSlotsReadingContract(fixtureBody("state.json"))
+  );
   const withoutCauseTimes = (view: unknown): unknown => {
     if (!isJsonObject(view)) {
       return view;

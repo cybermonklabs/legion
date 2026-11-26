@@ -17,6 +17,12 @@ body: |-
   host and never from a version text, and false on the pinned host, which offers none. The daemon
   then reads the provider's refusals as not recorded while a request of such a batch is in the hour
   they count, rather than a count known to be low; the headroom counts its tokens as before.
+
+  The controller's `legion` tool gains `signals_on`, `signals_off`, `set_signal_limit` (`signal`,
+  `part` for the provider, `limit`) and `clear_signal_limit` (`signal`, `part`), which change
+  admission by signals through `POST /legion/v1/project/signals`. Each requires the person's cited
+  word in `reason`, and each answers whether the change moved the setting and the settings as they
+  stand.
 time: 2026-11-26T05:33:15Z
 custom:
     Issue: pr5603

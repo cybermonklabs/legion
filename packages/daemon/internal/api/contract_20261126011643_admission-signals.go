@@ -60,16 +60,45 @@ package api
 // variable. An operator's `runtime.tmux.pane_env` and `runtime.kubernetes.pod.env` may not name
 // either.
 //
+// A person turns admission by signals on or off and sets or clears each series' limit while the
+// daemon runs, on the controller's `POST /legion/v1/project/signals` (ProjectSignalsRequest:
+// `grantId`, `action` one of `on`, `off`, `set-limit` and `clear-limit`, `signal` and `part` naming
+// a limit's series as an entry does, `limit`, and the person's cited `reason`, which every action
+// requires), answered `{changed, settings}` (ProjectSignalsResponse, AnswerProjectSignals), and on
+// the operator's `POST /legion/v1/operator/project/signals` (OperatorSignalsRequest, `legion
+// project signals`), the same body with no grant. `settings` is `{on, switch, limits}`: who set the
+// switch last, when and why (`{setBy, at, reason}`, `setBy` the form of a pause's actor, null before
+// the first change), and each of the six series with its `limit` (null for none) and its last change
+// `set`. A refused change answers SIGNAL_SETTING_INVALID with the reason and changes nothing.
+//
+// `GET /legion/v1/state` gains `admission.signals` (SignalsReading): `on`, `switch`, `series`, each
+// of the six series in the order of signals.Names() as `{signal, part, value, absent, limit,
+// limitSet, holds, since}`, and `provider.minutes`, each whole minute of the last hour as
+// `{at, held, uncachedInputTokens, tokenLimit, ownRefusals, providerRefusals}`; and
+// `admission.signalChanges`, the newest 50 entries of the record of changes newest first, `[]`
+// before the first, each exactly `{id, at, signal, part, what, value, absent, setBy, reason}`
+// (SignalChange). A caller below this entry's contract is served the state without both keys
+// (withoutAdmissionSignals, the band below): `signalChanges` is left off rather than emptied
+// (Admission.signalChangesHidden), since a strict reader of an earlier contract refuses it either
+// way.
+//
 // admissionSignalsContract is this entry's id, by which every row that admission by signals adds to
 // a table of this package names the entry.
 const admissionSignalsContract = 20261126011643
 
 func init() {
 	registerEntry(contractEntry{id: admissionSignalsContract, slug: "admission-signals",
-		// The report of model requests arrives with its answer, so no contract below this entry
-		// records either, and the answer is served whole to every contract that reads it.
-		answers:         []Answer{{ID: AnswerModelRequests, Routes: []string{"POST /legion/v1/claims/model-requests"}, Since: admissionSignalsContract}},
-		identityAnswers: []AnswerID{AnswerModelRequests},
+		bands: []stateNarrowing{
+			{contract: admissionSignalsContract, state: withoutAdmissionSignals, dropped: "admission.signals and admission.signalChanges"},
+		},
+		// The report of model requests and the controller's change of admission by signals each
+		// arrive with their answer, so no contract below this entry records either, and each answer
+		// is served whole to every contract that reads it.
+		answers: []Answer{
+			{ID: AnswerModelRequests, Routes: []string{"POST /legion/v1/claims/model-requests"}, Since: admissionSignalsContract},
+			{ID: AnswerProjectSignals, Routes: []string{"POST /legion/v1/project/signals"}, Since: admissionSignalsContract},
+		},
+		identityAnswers: []AnswerID{AnswerModelRequests, AnswerProjectSignals},
 	})
 }
 

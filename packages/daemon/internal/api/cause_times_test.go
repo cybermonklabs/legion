@@ -290,13 +290,14 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// A caller below causeTimesContract is below dispatchCredentialContract and
-	// slotsReadingContract too, the two rows above it, so it is told of all three rows, in the
-	// table's order.
+	// A caller below causeTimesContract is below dispatchCredentialContract, slotsReadingContract
+	// and admissionSignalsContract too, the three rows above it, so it is told of all four rows, in
+	// the table's order.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	wantNarrowings(t, narrowings, causeTimesContract-1, []string{
 		"the claim views' lastDeathAt and lastStartFailureAt",
 		"dispatchCredential",
 		"admission.slots, the issues' rank and rootRank, and the slots' state and since",
+		"admission.signals and admission.signalChanges",
 	})
 }

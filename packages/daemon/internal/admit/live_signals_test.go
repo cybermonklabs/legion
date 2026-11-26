@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
@@ -439,7 +440,7 @@ func TestSignalGateInventory(t *testing.T) {
 	parts := map[string]bool{}
 	for _, row := range seriesRows() {
 		series[row.name] = true
-		signal, part := SignalPart(row.name)
+		signal, part := store.SignalPart(row.name)
 		parts[signal+"/"+part] = true
 		for _, absent := range row.absent {
 			parts[signal+"/"+part+": "+absent.cause] = true
@@ -491,7 +492,7 @@ func TestLiveSignalGate(t *testing.T) {
 	// series under its limit, with no limit, or not recorded holds nothing.
 	t.Run("series", func(t *testing.T) {
 		for _, row := range seriesRows() {
-			signal, part := SignalPart(row.name)
+			signal, part := store.SignalPart(row.name)
 			run := func(t *testing.T, limits map[string]float64, arrange func(*testing.T, *pgxpool.Pool, *liveTest), starts bool) {
 				t.Helper()
 				pool := migratedPool(t)
