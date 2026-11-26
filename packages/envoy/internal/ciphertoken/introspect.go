@@ -69,12 +69,20 @@ const ScopeResults = oauthwire.ScopeResults
 // (Introspection.CI), carried here for the reason the project scopes are.
 type CIRun = oauthwire.CIRun
 
+// ScopeApprove is the one OAuth scope an approve-only token holds: beside ProjectScopePerson, a
+// person, and no service, no projects and no cut (approveShapeOf) it is the token the broker mints
+// for a person's approve grant and spends through its proxy, which a verifier accepts only under
+// Options.ServesApproveOnly, and in any other shape it is no session's credential
+// (ErrNotASession).
+const ScopeApprove = oauthwire.ScopeApprove
+
 // ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
 // answer's space-separated Scope: the broker's own wire name, carried here for the reason
 // ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
-// person, shapeOf reads a token that names a person and holds it as it reads one that does not.
-// A named answer that names no person and holds any scope word, this one included, is no
-// session's credential (shapeOf).
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not,
+// but for one beside ScopeApprove: approveShapeOf reads that token first and answers it no
+// session's token. A named answer that names no person and holds any scope word, this one
+// included, is no session's credential (shapeOf).
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
@@ -149,6 +157,7 @@ func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
 		ReadOnly:     shape == shapeReadOnly,
 		ResultsOnly:  shape == shapeResults,
+		ApproveOnly:  shape == shapeApproveOnly,
 		Cut:          cut,
 	}
 	if shape == shapeResults {

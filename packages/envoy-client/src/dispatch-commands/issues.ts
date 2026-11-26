@@ -603,7 +603,8 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
 export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_issues" && args["json"] === true;
+  const { json } = args;
+  return tool === "dispatch_issues" && json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
@@ -712,9 +713,8 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  A dry run with no such question sends nothing.
  */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return (
-    tool === "dispatch_result" && args["retract"] === undefined && args["project"] === undefined
-  );
+  const { retract, project } = args;
+  return tool === "dispatch_result" && retract === undefined && project === undefined;
 }
 
 /**

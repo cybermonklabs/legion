@@ -16,10 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
-// formRequestedTokenType is the request's requested_token_type (RFC 8693 Section 2.1), which the
-// library reads too: absent, it is the access token.
-const formRequestedTokenType = "requested_token_type"
-
 // resultGrantMaxLifetime is the longest a result grant lasts: a report writes its checks one after
 // another, each bounded at a minute, so a grant shorter than the run's report fails more reports,
 // and a longer one leaves a placeholder that opens the proxy longer than any report needs.

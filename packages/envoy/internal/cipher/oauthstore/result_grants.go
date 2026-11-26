@@ -11,7 +11,7 @@ import (
 )
 
 // ResultGrants is the table the results capability keeps its grants in, result_grants (migration
-// 0042): each a CI run's result grant, the session the token exchange decided for a result entry's
+// 0047): each a CI run's result grant, the session the token exchange decided for a result entry's
 // run, kept by the broker in place of the access token the run would otherwise hold. It answers
 // each grant as a MintedGrant: Scopes are oauthwire.ScopeResults alone, Extra holds the run, the
 // person, the project scope and the projects, and EntryDigest is the digest of the profile

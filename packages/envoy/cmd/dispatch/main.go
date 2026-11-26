@@ -2427,7 +2427,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // 403 READ_ONLY_TOKEN before anything of the route runs. It serves a results token
 // (ciphertoken.Options.ServesResults) for the same reason: the scope results alone, which the
 // broker mints from a result entry for one CI run, reaches the routes the results list names
-// (resultsScopeRoutes) and every other route answers it 403 RESULTS_ONLY_TOKEN.
+// (resultsScopeRoutes) and every other route answers it 403 RESULTS_ONLY_TOKEN. It serves an
+// approve-only token too (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which
+// the broker mints for a person's approve grant and spends through its proxy, never released.
+// Dispatch's approve list (approveScopeRoutes) names the routes such a token may call, and every
+// other route answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2445,11 +2449,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class, the results list and their gate are Dispatch's own
-		// (internal/dispatch/api), so a read-only token reaches the reads of that class and a
-		// results token the routes its list names, and no other route.
-		ServesReadOnly: true,
-		ServesResults:  true,
+		// The read class, the results list, the approve list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
+		// token the routes its list names and an approve-only token the routes the approve list
+		// names, and no other route.
+		ServesReadOnly:    true,
+		ServesResults:     true,
+		ServesApproveOnly: true,
 	})
 }
 

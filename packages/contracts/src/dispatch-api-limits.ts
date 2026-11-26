@@ -363,6 +363,15 @@ export const SPEC_CHECK_OBSERVED_END =
   SPEC_CHECK_OBSERVED_MAX - SPEC_CHECK_OBSERVED_START - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
 
 /**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
+
+/**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
  * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
  * No build serves a read at a past time yet, so Dispatch refuses the request before the route's

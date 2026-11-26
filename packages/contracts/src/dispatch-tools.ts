@@ -528,20 +528,25 @@ const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}
  *  here, before its reason is posted. */
 function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
   const options = issueStatusOptionsOf(input);
+  const optionInput = input as {
+    readonly include_children?: unknown;
+    readonly unlink_children?: unknown;
+    readonly status?: unknown;
+  };
   if (options.length === 0) return undefined;
   const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
   return brokenParts([
     [
-      !(input["include_children"] === true && input["unlink_children"] === true),
+      !(optionInput.include_children === true && optionInput.unlink_children === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
     ],
     [
-      !(input["include_children"] === true && input["status"] === "done"),
+      !(optionInput.include_children === true && optionInput.status === "done"),
       "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ],
     [
-      typeof input["status"] === "string",
+      typeof optionInput.status === "string",
       `status is required with ${named}. Add status, or drop ${named}.`,
     ],
     [
@@ -1012,7 +1017,10 @@ const RESULT_SHAPE_RULE =
  *  `dispatch results` sees the result and its retraction together. A CI job's record is the
  *  third shape, named by project. */
 function resultProblem(value: unknown): string | undefined {
-  const input = value as Record<string, unknown>;
+  const input = value as Record<string, unknown> & {
+    readonly retract?: unknown;
+    readonly reason?: unknown;
+  };
   // Destructured, not read as `input.project`: claude-envoy compiles this file under
   // noPropertyAccessFromIndexSignature, and Biome asks for no `input["project"]`.
   const { project, verdict } = input;
@@ -1031,8 +1039,8 @@ function resultProblem(value: unknown): string | undefined {
     return "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.";
   }
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
-  if (typeof input["retract"] === "string") {
-    const reason = input["reason"];
+  if (typeof input.retract === "string") {
+    const reason = input.reason;
     if (typeof reason !== "string" || reason.trim() === "") {
       return "retract needs reason, the words that say why the result is wrong.";
     }
@@ -1041,7 +1049,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
-  if (input["reason"] !== undefined) {
+  if (input.reason !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }
   const missing = RESULT_REQUIRED_FIELDS.filter((field) => input[field] === undefined);
@@ -2335,7 +2343,11 @@ export const dispatchToolSpecs = [
       "token names: what the document header's Approve and Request changes record. A review " +
       "records an approval or a changes request in the person's name at that version, so it " +
       "works only with a token that names a person who holds approve; Dispatch refuses it to " +
-      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. --version is the " +
+      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. On a box where " +
+      "the person signed in with agent-secrets login, the review goes through Cipher's proxy " +
+      "instead, with the approve placeholder the session trades that sign-in for; a secrets " +
+      "broker that serves no approve capability refuses that trade 400 invalid_request, with a " +
+      "reason that says so, and nothing is sent to Dispatch. --version is the " +
       "version you read, sent in the review route's path, and it must be the version the review " +
       "would record: the document's latest settled version, or, while an approval request is " +
       "open on it, the version that request names for it. Any other is refused 409 " +
