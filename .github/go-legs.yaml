@@ -88,6 +88,7 @@ packages/daemon:
       - internal/ghbranch
       - internal/controller
       - internal/runtime/workerbin
+      - internal/execfile
       - internal/githubrest
       - internal/testfifo
       - internal/testbin

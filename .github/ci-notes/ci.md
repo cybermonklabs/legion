@@ -2800,8 +2800,13 @@ The first-rollout row runs the first-rollout build instead, the newest release b
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
 it the same way.
-Each build is cached by its commit and the hash of the script that built it, with its src/ left
-out, since the test reads only the parts the script copies out of it. The job restores each and
+Each build is cached by its commit and the hash of the script that built it. The script removes
+the archive it built in (src/) once it has copied the parts out, since the test reads only those
+parts, so the entry holds the build alone. The `!<dir>/src` line the cache steps' path lists
+carried before left nothing out: actions/cache resolves its list with @actions/glob and
+`implicitDescendants: false`, so `<dir>` yields that one directory and tar archives it whole (a
+round trip of a `!` line under a listed directory kept every file it named: run 45722872215, job
+139585272669). The job restores each and
 saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
 main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
 ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
@@ -2833,8 +2838,8 @@ go commands of the job, and they download and compile the set from nothing. In t
 merge groups after 2026-11-24T08:40Z, the sizing step took 27 s, against 2 s before, when
 the previous build's compile had filled the caches first. In the dispatch-two-builds job of run
 45360231949, the two steps printed 16 and 67 `go: downloading` lines. Each push to main fills
-go-envoy-test with `go test -c -o /dev/null ./...` over the envoy module, so it holds what both
-steps build. Measured with
+go-envoy-test with `go test -count=1 -run '^$' ./...` over the envoy module, which builds the
+test binary of every package and runs no test, so it holds what both steps build. Measured with
 `go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections`
 at main 1b636f3193e, the steps need 626 packages of 80 modules, and `go list -deps -test ./...`
 holds every one. go-envoy's build of the listener and natsd lacks 485 of the packages and 53
