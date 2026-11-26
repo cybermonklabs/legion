@@ -1181,8 +1181,9 @@ production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px
 each state a route names (the Peek drawer open, rows or agents selected). At 360, 900 and 1280 px
 `e2e/layout-check.ts` loads the page fresh, and so at 1440 and 1920 px unless the route is marked
 `reuseWide`: it resizes such a page from 1280 px instead, where the reading there was 1280 px
-wide, and waits two animation frames. Either way it then waits for `waitForRouteSettled` and the
-pinned faces, and runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls
+wide. Either way it then waits for `waitForRouteSettled`, whose Inbox window of at least 500 ms
+is also the time a resized page has to redraw for its new width, and for the pinned faces, and
+runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls
 sideways, a box that does for anything but a code block, one picture wider than the box, a data
 table or a board's lanes, something cut off at a side with no ellipsis (a code block's text, a
 picture and a fixed
@@ -1203,7 +1204,10 @@ in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagr
 `JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
 in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
-case, and holds the instrument to reporting the one and not the other. A row fails on each breach
+case, and holds the instrument to reporting the one and not the other. It holds the settle wait
+after a resize too: on a page whose size observer redraws 250 ms after a resize, `checkLayout`
+must report what it drew at 1440 and at 1920 px, which a reading taken without
+`waitForRouteSettled` misses. A row fails on each breach
 no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
 breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
 only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound

@@ -398,28 +398,26 @@ async function loadSettled(
  *  and the first wide one are each read on a cold load. */
 const RESIZED_WIDTHS: ReadonlySet<LayoutWidth> = new Set<LayoutWidth>([1440, 1920]);
 
-/** Waits two animation frames in `page`, as `nextFrames` in `e2e/frames.ts` does, which this
- *  module does not import: that one imports `./issue-page`, which reaches `./seed`. After a
- *  resize, the first frame is the one the browser draws at the new width, whose size observers
- *  run before it paints, and by the second what they asked for is drawn. */
-async function nextFrames(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const frames = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-    return frames.promise;
-  });
-}
-
-/** Waits until `route` has settled again on the page the viewport just resized: the two frames
- *  the resize draws in, then the same wait a load gets (`waitForRouteSettled`), so the route's
- *  ready locators are asked for again and the Inbox number holds its value for its whole window
- *  again. Not `resizeSettled` of `e2e/frames.ts`, which waits out the new issue page's resize. */
+/** Waits until `route` has settled again on the page the viewport just resized: the same wait a
+ *  load gets (`waitForRouteSettled`), so the route's ready locators are on the screen and the
+ *  Inbox number holds one value for its whole window, at least 500 ms, again. That window is the
+ *  time a page that redraws for the new width - in a size observer or a `resize` listener - has
+ *  to draw before the reading. Not `resizeSettled` of `e2e/frames.ts`, which waits out the new
+ *  issue page's resize.
+ *
+ *  It waits for no animation frame. Under the page clock `checkLayout` pins (`setFixedTime`), the
+ *  page's `requestAnimationFrame` is Playwright's own timer, which fires every 16 ms, so a wait
+ *  for two frames waited for two of its ticks and for no frame the browser draws.
+ *
+ *  The row "checkLayout reads a resized width only once the page has redrawn for it" of
+ *  `e2e/layout-measure.stub.e2e.ts` holds this wait: its page's size observer redraws 250 ms
+ *  after a resize, and with this wait taken out the row reads each resized width before that
+ *  redraw and fails. */
 async function settleResized(
   page: Page,
   route: LayoutRoute,
   inFlight: InFlightRequests
 ): Promise<void> {
-  await nextFrames(page);
   await waitForRouteSettled(page, route, inFlight);
 }
 
