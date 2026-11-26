@@ -117,10 +117,26 @@ const EvalDaysWrittenByDefaults = "defaults"
 // moved (EvalDaysWrittenByDefaults).
 const DefaultsJudgingRef = "judging"
 
+// SettingsRecordedRef is the Ref of the change that says the refresher recorded the delivery
+// settings the day rows stand built under (SettingsRecorded).
+const SettingsRecordedRef = "settings-recorded"
+
 // SettingsApplied reports whether change is the refresher's word that the day rows stand at the
 // delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.
 func SettingsApplied(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == ""
+}
+
+// SettingsRecorded reports whether change is the refresher's word that it recorded the delivery
+// settings the day rows stand built under (evals.recordBuiltUnder): an eval_days change of no
+// project, Ref SettingsRecordedRef, carrying EvalDaysWrittenBySettingsRewrite, logged by every
+// commit that records them. The delivery routes and views answer under the recorded settings
+// (evals.BuiltSettingsIn), so it marks every delivery view; it names no project and is no
+// SettingsApplied, so it marks no evals view, whose answer only the deploy repository among those
+// settings moves.
+func SettingsRecorded(change Change) bool {
+	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == SettingsRecordedRef &&
+		change.RunKind == EvalDaysWrittenBySettingsRewrite
 }
 
 // JudgingMoved reports whether change is the refresher's word that the project whose published

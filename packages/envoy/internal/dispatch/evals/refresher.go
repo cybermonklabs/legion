@@ -803,7 +803,10 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if published != nil {
 		published.log(began, committed)
 	}
-	if work.settingsApplied || len(spans) > 0 || work.defaults != nil {
+	// The commit logged a change where it recorded the settings (recordBuiltUnder logs that they
+	// are recorded, which the delivery views are recomputed for), applied them, wrote a span or
+	// published a default: the log's outbox is moved into the log now, not at the next pass.
+	if work.built != nil || work.settingsApplied || len(spans) > 0 || work.defaults != nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil
