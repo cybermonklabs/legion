@@ -14,7 +14,8 @@
 // anything is sent, the credential it presents and the session its trade names, with a host and
 // without one, and the AskGate rule: in a session whose gate is on it sends GET alone, and names
 // the command that makes the write; the gate sits in the command itself, under a host and with
-// none.
+// none. A command whose spec binds its routes is held to the same rule, so the refusal never names
+// one.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -327,6 +328,20 @@ const GATED_WHY =
 
 /** How the gate refuses a write: before the command it names. */
 const GATED = `dispatch api was not called: ${GATED_WHY}; make this write with `;
+
+/** The ask a command whose spec binds its routes acts on here: `dispatch decline-ask` writes it,
+ *  `POST /api/v1/asks/{id}/decline`, and `dispatch read-ask` reads it. */
+const ASK = "01234567-0000-4000-8000-000000000009";
+
+/** `dispatch decline-ask`'s write of `ASK`, which no hand-written command makes. */
+const DECLINE = ["decline-ask", "--ask", ASK, "--note", "Not mine to decide."];
+
+/** Why the gate refuses `DECLINE`, as the refusal and its ledger line's AskGate mark say it. */
+const DECLINE_GATED_WHY =
+  "this session's AskGate reviews Dispatch writes, so dispatch decline-ask sends only GET here";
+
+/** How the gate refuses `DECLINE` in a session whose AskGate record is live. */
+const DECLINE_GATED = `dispatch decline-ask was not called: ${DECLINE_GATED_WHY}`;
 
 /** The refusal of a body with no method, the contract's rule (`dispatch_api`). */
 const BODY_WITHOUT_METHOD =
@@ -1263,6 +1278,97 @@ describe("AskGate", () => {
     );
     expect(ran.code, ran.stdout).toBe(0);
     expect(server.sent.map((sent) => sent.method)).toEqual(["POST"]);
+  });
+});
+
+// The commands whose specs bind their routes (`DispatchToolSpec.routes`, `routeCommand`) reach
+// routes that a gated session could reach before only through `dispatch api`, which AskGate does
+// not review either. So each one's write is refused there as `dispatch api`'s is, and the refusal
+// of `dispatch api` never names one.
+describe("AskGate and the commands whose specs bind their routes", () => {
+  test.each([
+    ["is live", false],
+    ["cannot be read", true],
+  ])("with an AskGate record that %s, a bound write is refused with AskGate's mark, and nothing is sent", async (_, broken) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    const file = writeRecord(stateDir, SESSION);
+    if (broken) writeFileSync(file, "{not json");
+    const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
+    expect(ran.code).toBe(1);
+    expect(ran.stdout).toStartWith("dispatch decline-ask was not called: ");
+    expect(ran.stdout.trimEnd()).toEqual(broken ? expect.stringContaining(file) : DECLINE_GATED);
+    expect(server.sent).toHaveLength(0);
+    expect(broker.trades).toHaveLength(0);
+    expect(ledgerOf(stateDir, SESSION)).toEqual([
+      {
+        at: expect.any(String),
+        tool: "dispatch_decline_ask",
+        error: ran.stdout.trimEnd(),
+        askgate: { mode: "block", why: broken ? expect.stringContaining(file) : DECLINE_GATED_WHY },
+      },
+    ]);
+    expect(cliRefusals(ran.stdout)).toEqual([{ line: ran.stdout.trimEnd(), command: "decline-ask" }]);
+  });
+
+  test("with a live AskGate record, a bound read is sent", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    writeRecord(stateDir, SESSION);
+    const ran = await dispatch(
+      ["read-ask", "--ask", ASK],
+      sessionEnvironment(broker.url, server.url, stateDir)
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(server.sent.map((sent) => `${sent.method} ${sent.url.pathname}`)).toEqual([
+      `GET /api/v1/asks/${ASK}`,
+    ]);
+  });
+
+  test.each([
+    ["no AskGate record", false],
+    ["an AskGate record whose owner is gone", true],
+  ])("with %s, the bound write is sent", async (_, gone) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    if (gone) {
+      const child = Bun.spawn(["true"]);
+      await child.exited;
+      writeRecord(stateDir, SESSION, { pid: child.pid, start: "1" });
+    }
+    const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(server.sent.map((sent) => `${sent.method} ${sent.url.pathname}`)).toEqual([
+      `POST /api/v1/asks/${ASK}/decline`,
+    ]);
+    expect(JSON.parse(server.sent[0]?.body ?? "{}")).toMatchObject({ note: "Not mine to decide." });
+    expect(ledgerOf(stateDir, SESSION)).toEqual([
+      { at: expect.any(String), tool: "dispatch_decline_ask", details: expect.any(Object) },
+    ]);
+  });
+
+  test.each([
+    // A route only a command whose spec binds it sends: the refusal names no command.
+    ["POST", `/api/v1/asks/${ASK}/decline`, "dispatch --help", "dispatch decline-ask"],
+    // A route a hand-written command sends too: the refusal names that command alone.
+    ["POST", "/api/v1/markdown/round-trip", "dispatch artifact", "dispatch check-markdown"],
+  ])("dispatch api's refusal of %s %s names %s, never %s, which is refused there too", async (method, path, names, bound) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    writeRecord(stateDir, SESSION);
+    const ran = await dispatch(
+      ["api", "--method", method, "--path", path, "--body-file", bodyFile(COMMENT)],
+      sessionEnvironment(broker.url, server.url, stateDir)
+    );
+    expect(ran.code).toBe(1);
+    expect(ran.stdout).toStartWith(GATED);
+    expect(ran.stdout).toContain(names);
+    expect(ran.stdout).not.toContain(bound);
+    expect(server.sent).toHaveLength(0);
   });
 });
 

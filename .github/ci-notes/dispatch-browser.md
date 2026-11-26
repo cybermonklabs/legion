@@ -1124,10 +1124,13 @@ for an answer that did not come, and once more on their retry. So (76 + 47) s x 
 Firefox install is the Chromium install's figure, 4 min: one browser's archives, with no apt,
 for the reason
 .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
-gives, and a library the image lacked would fail the launch visibly. The Firefox step runs
-going-agent-place's five rows, which ran in 3.5 s of row time on Chromium, at the 4 min of the
-step before the models step, whose two rows are as short, until its first runs give it a
-reading. 4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
+gives, and a library the image lacked would fail the launch visibly. The Firefox step runs one
+row, the one row of going-agent-place tagged `@firefox`: the `firefox` project selects a row by
+that tag (e2e/playwright.config.ts), so the file's four other rows, which the models step runs,
+are not run again here. The file's five rows ran in 3.5 s of row time on Chromium, so the step
+takes the 4 min of the step before the models step, whose two rows are as short, until its
+first runs give it a reading. 4 + 4 + 4 + 2 + 4 + 4 min plus 135 s and 120 s = 26 min 15 s ->
+27 min.
 
 ## Why the embedder job builds contracts
 
@@ -1169,22 +1172,22 @@ results of the step that failed.
 ## The visual review, its docker run and its budgets
 
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
-set compared against a committed baseline, in light and in dark, at a desktop width and two
-of them again at a phone width - twenty pages and two, so forty-four comparisons, in the
+set compared against a committed baseline, in light and in dark, at a desktop width and six
+of them again at a phone width - twenty-three pages and six, so fifty-eight comparisons, in the
 `visual` and `visual-phone` projects - and each state of the command bar's design compared
 against its own, in the `visual-bar` project (packages/dispatch/e2e/going-bar.visual.e2e.ts):
-thirteen rows, one per state, which take twenty-five shots, those of states 2, 3, 4 and 6 over
-the page and again in the panel at the side. Sixty-nine baselines, which is the number of PNGs
-under `packages/dispatch/e2e/__screenshots__` once the first full-lane run that holds the bar's
-rows has written its twenty-five and a person has committed them (the upload's section below
-says how that file reaches the tree).
+fourteen rows, one per state, which take twenty-seven shots, since ten of the rows shoot their
+state more than once, those of states 2, 3, 4 and 6 over the page and again in the panel at the
+side. Eighty-five baselines, which is the number of PNGs under
+`packages/dispatch/e2e/__screenshots__`: the pages' fifty-eight and the bar's twenty-seven (the
+upload's section below says how a new baseline reaches the tree).
 
 The bar's rows draw what only a model's answer makes, so the stack this job starts is the
 models lane's: packages/dispatch/e2e/visual-run.sh sets `DISPATCH_E2E_MODELS=fake` itself, so
 the job and a person run the same command, and the harness starts the fake writing model and
 the fake decision model beside the server, on the host, as the embedder job's models step
 does. The pages' rows open no bar, and only the bar asks the server whether it has a model, so
-the forty-four pages' baselines are drawn as before.
+the pages' fifty-eight baselines are drawn as before.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
 or a layout regression is refused at the merge rather than found the next morning, and the
@@ -1272,7 +1275,7 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
-The command bar's thirteen rows (the `visual-bar` project) run inside the same browser step.
+The command bar's fourteen rows (the `visual-bar` project) run inside the same browser step.
 Five runs of this job at heads of #3924 (runs 45120752749, 45120693969, 45176245187,
 45214980814 and 45268550216), before the guard of the next section reached the page rows, read
 that step with the bar's rows in it at 134-188 s, the largest 188 s (run 45120693969, job

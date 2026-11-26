@@ -6,4 +6,7 @@ body: |-
   whose every placeholder an argument fills, sends the query and body arguments the route binds
   under their own names, with the session's actor beside them, and prints the route's JSON answer
   compact. Such a command names its own arguments and no owner, so `LEGION_ISSUE` fills none of
-  them. A change a command-bar run made prints its actor as "<person>, through the command bar".
+  them. AskGate reviews no such command, so it keeps `dispatch api`'s rule: in a session whose
+  AskGate record is on or cannot be read, it sends a `GET` route alone and refuses any other before
+  any request, with exit 1 and AskGate's mark, and `dispatch api`'s refusal never names one. A
+  change a command-bar run made prints its actor as "<person>, through the command bar".

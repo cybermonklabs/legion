@@ -1,5 +1,5 @@
-import type { Actor, DispatchToolRoute } from "@legion/contracts";
-import type { DispatchClient } from "../dispatch-http";
+import type { DispatchToolRoute } from "@legion/contracts";
+import { gatedWriteRefusal } from "./api";
 import type { CommandContext, DispatchToolResult, ToolArguments } from "./context";
 
 /** The value of an argument a call names, or undefined for one it leaves out or names as "". */
@@ -26,20 +26,25 @@ export function boundRoute(
  * its path filled by its argument, each query argument the call names sent as a query parameter
  * under its own name, and, for every method but GET, a JSON body of each body argument the call
  * names, under its own name, with the session's actor beside them. The answer is the route's JSON
- * body, printed compact.
+ * body, printed compact. AskGate reviews no such command, so in a session whose AskGate reviews
+ * Dispatch writes, a route but GET is refused before anything is sent, as `dispatch api` refuses
+ * one there (`gatedWriteRefusal`): no such command writes what `dispatch api` may not.
  */
 export async function callBoundRoute(
-  client: DispatchClient,
-  routes: readonly DispatchToolRoute[],
-  args: ToolArguments,
-  actor: Actor
+  context: Pick<CommandContext, "client" | "args" | "actor" | "input">,
+  routes: readonly DispatchToolRoute[]
 ): Promise<DispatchToolResult> {
+  const { client, args, actor, input } = context;
   const route = boundRoute(routes, args);
   if (route === undefined) {
     const wanted = routes
       .map((each) => Object.values(each.params ?? {}).join(" and "))
       .join(", or ");
     throw new Error(`these arguments fill no route of this command: name ${wanted}`);
+  }
+  if (route.method !== "GET") {
+    const refusal = gatedWriteRefusal(input.tool, input.env ?? {});
+    if (refusal !== undefined) throw refusal;
   }
   const params = route.params ?? {};
   const path = route.path
@@ -73,5 +78,5 @@ export async function callBoundRoute(
 export function routeCommand(
   routes: readonly DispatchToolRoute[]
 ): (context: CommandContext) => Promise<DispatchToolResult> {
-  return (context) => callBoundRoute(context.client, routes, context.args, context.actor);
+  return (context) => callBoundRoute(context, routes);
 }

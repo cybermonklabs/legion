@@ -5,9 +5,10 @@
 // makes a write. It drives every method of DispatchClient through a recording fetch and holds the
 // table to the writes they send: each write route has a row, and each row is a route some method
 // sends. `callRoute` sends each route but GET of every spec that binds its routes
-// (`DispatchToolSpec.routes`), every alternate route included, and each one's row names that
-// spec's command. A write method added to DispatchClient later fails here until its route has a
-// row, or it joins the methods no `dispatch` command calls, below, with its reason.
+// (`DispatchToolSpec.routes`), every alternate route included, and no row names such a spec's
+// command: a gated session is refused that command's writes as it is refused `dispatch api`'s. A
+// write method added to DispatchClient later fails here until its route has a row, or it joins the
+// methods no `dispatch` command calls, below, with its reason.
 
 import { expect, test } from "bun:test";
 import {
@@ -31,14 +32,16 @@ type ClientMethod = Exclude<
   "fetchImpl"
 >;
 
-/** The write methods whose writes need no row, each with why: no `dispatch` command calls it (a
- *  route of its that a command sends another way still has a row), or, for `sendRoute`, the route
- *  it sends is the one its caller names. */
+/** The write methods whose writes need no row, each with why: no `dispatch` command a gated
+ *  session may run calls it (a route of its that such a command sends another way still has a
+ *  row), or, for `sendRoute`, the route it sends is the one its caller names. */
 const NO_COMMAND: Readonly<Partial<Record<ClientMethod, string>>> = {
   deliveryReply: "the plugins' answer to a delivery they took (src/delivery.ts)",
   acceptMessageDelivery:
     "Oh My Pi's acceptance of a person's direct message as its user's turn (pi-shared's accept-user-turn.ts)",
   nameArtifactVersion: "no caller outside DispatchClient's own tests",
+  callRoute:
+    "the writes of the commands whose specs bind their routes, which a gated session is refused as it is refused dispatch api's (src/dispatch-commands/route-tools.ts)",
   sendRoute: "dispatch api's write of the route its caller names (src/dispatch-commands/api.ts)",
 };
 
@@ -247,13 +250,12 @@ test("every write DispatchClient sends has a row in dispatch api's table", async
     }
   }
   expect(rowless).toEqual([]);
-  // Each route a spec binds names that spec's command, once, in the row it matches: a command
-  // missing from that row, or a row that shadows the route, shows here.
-  const unnamed = BOUND_WRITES.filter(({ command, method, path }) => {
-    const commands = writeRoute(method, path)?.commands ?? [];
-    return commands.filter((name) => name === command).length !== 1;
-  });
-  expect(unnamed).toEqual([]);
+  // No row names a command whose spec binds a write route: a gated session is refused each such
+  // write, so a refusal that named the command would send the session to another refusal. A route
+  // such a command sends that a hand-written command sends too keeps that command's row.
+  const bound = new Set(BOUND_WRITES.map(({ command }) => command));
+  const naming = WRITE_ROUTES.filter((row) => row.commands.some((name) => bound.has(name)));
+  expect(naming).toEqual([]);
   // Each row is a route some method sends: a row no method sends, or a method the walk no longer
   // reaches, shows here.
   expect([...reached].sort()).toEqual(

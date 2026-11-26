@@ -1605,6 +1605,17 @@ write, a variable that holds no valid session id (1 to 128 letters, digits, `.`,
 usage error that names the variable; a `GET` reads no AskGate record. Where every record is off,
 or the environment names no session (CI, a terminal, a script), every method is sent.
 
+A command whose spec binds its routes (`DispatchToolSpec.routes`, served by `routeCommand`,
+`src/dispatch-commands/route-tools.ts`), such as `dispatch broadcast`, `dispatch answer-ask` or
+`dispatch decline-ask`, reaches a route that a gated session could reach before only through
+`dispatch api`, and AskGate reviews neither. So it keeps `dispatch api`'s rule: in a session whose
+AskGate record is on, or cannot be read, it sends its route where that route is a `GET`, and
+refuses any other method the same way (`gatedWriteRefusal`), before any request, with exit 1 and
+AskGate's mark on its ledger line. The refusal of `dispatch api` names no such command: a route
+that a hand-written command sends too names that command alone, and a route that only such
+commands send names none. The commands AskGate reviews (`gatedWrite`'s list, `dispatch comment`
+among them) still post each write it reviewed.
+
 A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
 `@sjawhar/codex-envoy`, which is that package's npm `bin`
 (`npx --package @sjawhar/codex-envoy dispatch api …`), or of `@sjawhar/pi-envoy`, which declares
