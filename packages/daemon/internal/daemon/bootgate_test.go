@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/user"
@@ -386,6 +385,18 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(raw)
+}
+
+// markedAt is when the fake, or its launch prefix, last wrote the file name: the file's
+// modification time, which the kernel stamps as the stand-in writes it, so a stand-in's marks are
+// read on no clock of the stand-in's own and no process it would have to start.
+func (f fakeOmp) markedAt(t *testing.T, name string) time.Time {
+	t.Helper()
+	info, err := os.Stat(filepath.Join(f.dir, name))
+	if err != nil {
+		t.Fatalf("read when %s was written: %v", name, err)
+	}
+	return info.ModTime()
 }
 
 // gateUnder is a gate over a pane environment whose HOME holds a pi-legion manifest declaring
@@ -1143,11 +1154,15 @@ func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 
 // A daemon stopped while its gate waits kills the probe it is running and starts no other. The
 // probe hangs until a signal ends it (held), so a gate that left it running would return only at
-// the end of its attempt's minute budget. The gate returns within gateStopsWithin of its start. A
-// run past that fails where the probe was seen running within half of it, since the stop then took
-// the other half. Where the probe started later, a loaded machine that held up its start cannot be
-// told from a slow stop, so that run is not judged, and the row runs again on a gate of its own,
-// until a run of the right order comes, within a minute.
+// the end of its attempt's minute budget. The gate returns within gateStopsWithin of its start, on
+// every run, less only the time its stand-in took to start once the gate's launch reached it: from
+// the launch prefix's mark (prefixed, the prefix's first act, once the gate's shell has exec'd the
+// launch) to the fake Oh My Pi's (count, written as its own first act). Nothing of the gate's runs
+// between the two marks, which the kernel stamps as the stand-ins write them (fakeOmp.markedAt):
+// only the stand-ins' own start, which a loaded machine can hold up. A run past gateStopsWithin
+// that this time accounts for is not judged, and the row runs again on a gate of its own, until a
+// judged run comes, within a minute. A gate slow before it execs the probe, or slow to stop it,
+// spends that time outside the two marks, and fails the run it is slow in.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	t.Parallel()
 	// The last run may spend its attempt's minute budget and cutRunMargin for the row to fail in.
@@ -1160,27 +1175,24 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		// The cancellation this test is about is one that lands on a probe in flight, so it waits
 		// for the probe to be running rather than for a span: a fixed delay on a loaded machine
-		// fires before the probe starts, and the gate then cancels having run nothing. It sends when
-		// it saw the probe running, read after that fact, or the zero time where it never did.
-		running := make(chan time.Time, 1)
+		// fires before the probe starts, and the gate then cancels having run nothing. It closes
+		// watched once it has cancelled.
+		watched := make(chan struct{})
 		go func() {
+			defer close(watched)
 			defer cancel()
 			// Read here rather than through attempts: a helper that fails the test belongs to the
 			// test's own goroutine, and this one only needs to know the probe started.
-			var seen time.Time
-			if testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+			testwait.Holds(30*time.Second, testwait.Poll, func() bool {
 				raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
 				return err == nil && strings.TrimSpace(string(raw)) == "1"
-			}) {
-				seen = time.Now()
-			}
-			running <- seen
+			})
 		}()
 
 		started := time.Now()
 		err := gate.verify(ctx)
 		elapsed := time.Since(started)
-		seen := <-running
+		<-watched
 
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("run %d: err = %v, want the daemon's cancellation", runs, err)
@@ -1191,19 +1203,17 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 		if t.Failed() || elapsed <= gateStopsWithin {
 			return
 		}
-		if !seen.IsZero() && seen.Sub(started) <= gateStopsWithin/2 {
-			t.Errorf("run %d: the gate took %s to stop, past %s, though its probe was seen running %s after the start: the daemon's stop did not end the probe in time", runs, elapsed, gateStopsWithin, seen.Sub(started))
+		late := f.markedAt(t, "count").Sub(f.markedAt(t, "prefixed"))
+		if elapsed-late > gateStopsWithin {
+			t.Errorf("run %d: the gate took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which leaves %s of the gate's own: the gate was slow to start its probe, or the daemon's stop did not end the probe in time",
+				runs, elapsed, gateStopsWithin, late, elapsed-late)
 			return
 		}
-		went := "was never seen running"
-		if !seen.IsZero() {
-			went = fmt.Sprintf("was seen running %s after the start", seen.Sub(started))
-		}
 		if time.Now().Before(until) {
-			t.Logf("run %d is not judged: the gate took %s to stop, past %s, and its probe %s, not within half of it", runs, elapsed, gateStopsWithin, went)
+			t.Logf("run %d is not judged: the gate took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which accounts for the overrun", runs, elapsed, gateStopsWithin, late)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: the last took %s to stop, past %s, and its probe %s, not within half of it", runs, within, elapsed, gateStopsWithin, went)
+		t.Fatalf("no judged run in %d runs over %s: the last took %s to stop, past %s, and its stand-in started %s after the gate's launch reached it, which accounts for the overrun", runs, within, elapsed, gateStopsWithin, late)
 	}
 }
 
