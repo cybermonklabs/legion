@@ -266,7 +266,7 @@
     { "name": "TAILSCALE_API_KEY" },
     { "name": "GCLOUD_OWNER" },
     { "name": "AZURE_ADMIN" },
-    { "name": "GWS_THEOREM_ADMIN_OAUTH" },
+    { "name": "GWS_EXAMPLE_ADMIN_OAUTH" },
     {
       "name": "GITHUB_ENTERPRISE_ADMIN",
       "allow": [
@@ -326,7 +326,7 @@
       "allow": [
         {
           "method": "POST",
-          "pathPrefix": "/v1/projects/-/serviceAccounts/aws-admin@theorem-aws-admin.iam.gserviceaccount.com:generateIdToken",
+          "pathPrefix": "/v1/projects/-/serviceAccounts/aws-admin@example-aws-admin.iam.gserviceaccount.com:generateIdToken",
           "host": "iamcredentials.googleapis.com"
         }
       ]
