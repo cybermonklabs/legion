@@ -23,6 +23,14 @@ export function isLiveSocket(url: URL): boolean {
   return url.pathname.startsWith("/ws/");
 }
 
+/** Whether `request` loads a new document into the page's main frame. Such a load ends every
+ *  request of the document it replaces, and Playwright reports no end for some of them: three
+ *  reads Settings still had open stayed in flight after a load of an issue, so a watch started on
+ *  Settings never went quiet. So each watcher drops what is in flight when such a load starts. */
+function loadsDocument(page: Page, request: Request): boolean {
+  return request.isNavigationRequest() && request.frame() === page.mainFrame();
+}
+
 export function watchTraffic(page: Page): Traffic {
   const gets: string[] = [];
   const issueReads = new Map<string, number>();
@@ -30,6 +38,7 @@ export function watchTraffic(page: Page): Traffic {
   let lastSettledAt = Date.now();
   page.on("request", (request) => {
     const url = new URL(request.url());
+    if (loadsDocument(page, request)) inFlight.clear();
     if (!isLiveSocket(url)) inFlight.add(request);
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
@@ -121,6 +130,7 @@ export function watchApiRequests(page: Page): ApiRequests {
   let lastSettledAt = Date.now();
   page.on("request", (request) => {
     const url = new URL(request.url());
+    if (loadsDocument(page, request)) inFlight.clear();
     if (!isLiveSocket(url)) inFlight.add(request);
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
