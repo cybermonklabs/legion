@@ -629,9 +629,6 @@ var stateNarrowings = []stateNarrowing{
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
 	{contract: strandedTokenContract, state: withoutStrandedTokens, issue: withoutClaimTokens,
 		dropped: "the stranded claims' token, the claim views' token and the issues' otherClaims"},
-	{contract: startWaitTokenContract, issue: withoutStartWaitTokens,
-		dropped: "the claim tokens of the issues' startWaitsForPod, " +
-			"served as the roles of its starts, each once"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1225,19 +1222,6 @@ const deploymentRolesContract = 297
 // gives, and answers.go's SupportedContracts names the constant rather than its number for that
 // reason.
 const strandedTokenContract = 298
-
-// startWaitTokenContract is the daemon contract that names each start of an issue's
-// `startWaitsForPod` by its role and the token of the claim it starts (version.go's 300), where
-// the list held the roles of the starts, each role once: two claims of one issue can hold one
-// role, so a role named the start of a second agent of the role, such as `implementer-2`, as a
-// start of the role's own agent. A plugin below it reads the list as strings and refuses the
-// whole body for an entry that is an object, so a caller below it is served the role of each
-// start, each role once, as before (withoutStartWaitTokens).
-//
-// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
-// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
-// rather than its number for that reason.
-const startWaitTokenContract = 300
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
