@@ -658,11 +658,12 @@ type ContractView struct {
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
 	Cap int `json:"cap"`
-	// P0Holders is how many of the issues holding a slot are P0 by their own Dispatch priority
-	// (record.HoldersOf): they start and hold their slot outside the cap, so the cap counts the
-	// other holders of `active` alone (R10 of dispatch://INFRA-3199). Every body at
-	// p0BoundContract carries it, 0 included; a body served a caller below that contract leaves it
-	// out (shaping.go's withoutP0Start).
+	// P0Holders is how many of the issues holding a slot admission treats as P0 (record.HoldersOf,
+	// record.Issue.StartsNow): Dispatch resolves them to P0 (own or inherited), or with an older
+	// Dispatch release that sends no `resolved_priority` their own priority is P0. They start and
+	// hold their slot outside the cap, so the cap counts the other holders of `active` alone (R10
+	// of dispatch://INFRA-3199). Every body at p0BoundContract carries it, 0 included; a body
+	// served a caller below that contract leaves it out (shaping.go's withoutP0Start).
 	P0Holders *int `json:"p0Holders,omitempty"`
 	// P0Bound is the P0 bound in force, legion.yaml's and the live value that stands, with who set
 	// it and when (P0BoundView, P0BoundStateTx). Every body the daemon's state route serves at
@@ -685,8 +686,9 @@ type Admission struct {
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: by priority first (each issue's own
-	// Dispatch priority, else its tree root's, else after P3), and within one priority the issues
+	// Waiting is the admission line, in the line's own order: by priority first (the priority
+	// Dispatch resolves for each issue, or with an older Dispatch release its own priority else
+	// its tree root's for line order alone, else after P3), and within one priority the issues
 	// whose work came back, oldest first, then the issues whose first phase can start, by their
 	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
@@ -833,11 +835,12 @@ type Issue struct {
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
-	// to 3 for P3, or null for an issue with none. It is the issue's own and never its tree
-	// root's; the priority that placed a member of the line is its waitingLine's. It is set on
-	// every issue the workflow records, and absent on an issue it does not record (an operator's
-	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
-	// (shaping.go's withoutPriority).
+	// to 3 for P3, or null for an issue with none. It is the issue's own and never an inherited
+	// priority: Dispatch's resolved priority is in ResolvedPriority, and the priority that placed
+	// a member of the line is in WaitingLine.Priority. It is set on every issue the workflow
+	// records, and absent on an issue it does not record (an operator's claim, Unrecorded) and
+	// from every issue of the body served a caller below priorityContract (shaping.go's
+	// withoutPriority).
 	Priority *PriorityView `json:"priority,omitempty"`
 	// ResolvedPriority is the priority Dispatch resolves the issue to (record.Issue.Resolved, J1 of
 	// dispatch://INFRA-5793), the one admission reads: its number, 0 for P0 to 3 for P3, or null
@@ -1641,10 +1644,11 @@ type WaitingLineView struct {
 	RootRank  string     `json:"rootRank,omitempty"`
 	OwnRank   string     `json:"ownRank,omitempty"`
 	RootKey   string     `json:"rootKey,omitempty"`
-	// Priority is the priority that placed the member (record.LineEntry.Priority): the issue's
-	// own, else its tree root's, as a number from 0 for P0 to 3 for P3, or null for a member
-	// neither it nor its tree root has a priority for, whose band stands after P3. It is the first
-	// key of the whole line; Part, PartPlace and PartLength count within its band.
+	// Priority is the priority that placed the member (record.LineEntry.Priority): the priority
+	// Dispatch resolves for the issue (or, with an older Dispatch release that sends no
+	// `resolved_priority`, the issue's own else its tree root's for line order alone), as a number
+	// from 0 for P0 to 3 for P3, or null for a member with none, whose band stands after P3. It is
+	// the first key of the whole line; Part, PartPlace and PartLength count within its band.
 	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means

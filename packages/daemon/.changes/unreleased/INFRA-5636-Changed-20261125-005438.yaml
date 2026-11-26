@@ -16,12 +16,12 @@ body: |-
   changes only the resolved priority, which Dispatch sends when an ancestor's priority or parent
   changes, does not count as work of the issue.
 
-  What the first admission pass after the upgrade does. With a Dispatch release that sends no
-  resolved priority, the first admission pass after the daemon upgrade treats only explicit P0 this
-  way. With the resolved-priority Dispatch release, it treats both explicit and inherited P0 the
-  same way: the boot listing gives each recorded issue its resolved priority, with no edit of the
-  issue. In each case it starts eligible P0 issues outside the regular cap and no longer counts
-  those P0 holders against it.
+  What the first admission pass after the upgrade does. With an older Dispatch release, the first
+  admission pass after the daemon upgrade treats only explicit P0 this way. With the
+  resolved-priority Dispatch release, it treats both explicit and inherited P0 the same way. In each
+  case it starts eligible P0 issues outside the regular cap and no longer counts those P0 holders
+  against it. On the resolved-priority release, the boot listing gives each recorded issue its
+  resolved priority with no edit of the issue.
 
   The P0 bound limits how many P0 issues may hold a slot at once. It has no value unless
   `legion.yaml` gives one in the new key `admission_p0_bound`. A person sets it to a number or to

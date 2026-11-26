@@ -311,27 +311,40 @@ never under `admission.active`, which is how you tell it from an issue a person 
 in none of the three.
 
 The line is ordered by Dispatch priority first, and `legion state` prints it in the order the
-daemon promotes it: the issues at P0, then at P1, P2 and P3, and then the issues with no priority.
-An issue waits at its own priority, else at its tree root's, and after P3 when neither has one.
-Within one priority the line has two parts: the issues whose work came back, oldest first by the
-moment it came back, and then the issues that have not started, by the Dispatch rank of each
-issue's tree root and then its own. So an issue whose work came back goes ahead of every issue of
-its priority that has not started, and never ahead of an issue of a higher priority. A re-rank on
-the board moves an issue inside its priority's second part, and never ahead of an issue of its
-priority whose work came back; a change of the issue's priority in Dispatch moves it to the
-place of its new priority at the daemon's next admission pass. Priority orders the line and
-nothing else: it takes no slot back from work that runs, an issue that still waits on another
-issue is placed by its priority and passed over while that wait lasts, and an issue that already
-holds its slot is placed by its priority and resumes whatever the cap says. The members of a
-re-admitted tree stay out of the line until their root's promotion, whatever their own priority.
+daemon promotes it: P0, then P1, P2 and P3, and then issues with no priority.
+An issue waits at the priority Dispatch resolves for it (its own, or the nearest ancestor's on its
+Dispatch parent chain that has one), and after P3 when Dispatch resolves none.
+With an older Dispatch release that sends no `resolved_priority`, an issue waits at its own
+priority, else at its tree root's, for the order of the line alone, and that fallback never makes
+an issue P0.
+Within one priority, the line has two parts.
+First stand the issues whose work came back, oldest first by the moment it came back.
+Next stand the issues that have not started, ordered by the Dispatch rank of each issue's tree
+root and then its own.
+An issue whose work came back goes ahead of every issue of its priority that has not started, and
+never ahead of an issue of a higher priority.
+A re-rank on the board moves an issue inside its priority's second part, and never ahead of an
+issue of its priority whose work came back.
+A priority change in Dispatch moves the issue to its new priority at the next admission pass.
+A P0 start needs no free regular slot.
+Priority takes no slot back from work that runs.
+An issue that still waits on another issue stands at its priority and is passed over while that
+wait lasts.
+An issue that already holds its slot stands at its priority and resumes whatever the cap says.
+The members of a re-admitted tree stay out of the line until their root's promotion, whatever
+their own priority.
 Every issue the workflow records carries `priority` in `legion state --json`, its own Dispatch
-priority: 0 for P0 to 3 for P3, or null for none. Each waiting issue carries `waitingLine` there:
-its `place` and the line's `length`, its `priority`, the one that placed it (its own, else its
-tree root's, or null for an issue that waits after P3), its `part` (`returned` or `starting`) and
-`kind`, its `partPlace` and `partLength` within its priority and part, `holdsSlot` where it
-already holds its admission slot and so resumes whatever the cap says, the key that placed it
-within its part — `since`, the moment the work came back, or `rootRank`, `ownRank` and `rootKey`
-for an issue that has not started — and `reason`, the daemon's own sentence for that place.
+priority (0 for P0 to 3 for P3, or null for none).
+It also carries `resolvedPriority` (the priority Dispatch resolves for it, 0 to 3 or null, absent
+when Dispatch sent none) and `priorityFrom` (the issue key it inherits from, absent when the
+priority is its own or none).
+Each waiting issue carries `waitingLine` there: its `place` and the line's `length`, its
+`priority` (the priority that placed it, 0 for P0 to 3 for P3, or null for an issue that waits
+after P3), its `part` (`returned` or `starting`) and `kind`, its `partPlace` and `partLength`
+within its priority and part, `holdsSlot` where it already holds its admission slot and so resumes
+whatever the cap says, the key that placed it within its part (`since` when work came back, or
+`rootRank`, `ownRank` and `rootKey` for an issue that has not started), and `reason`, the daemon's
+own sentence for that place.
 Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a

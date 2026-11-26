@@ -7,16 +7,24 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
 ## The lists
 
 - `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person.
+  The regular cap counts only holders that are not P0 (`admission.p0Holders` gives how many are P0), so `admission.active` can hold more issues than `admission.cap`.
   An issue in `accepting`, `retro` or `merging` holds none (in the default steps, the phases after the review), and a step after `accepting` whose phase keeps a slot waits for one again.
   A started issue that waits on another issue holds none either, except three roots that keep theirs:
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
+
+- `admission.p0Holders` and `admission.p0Bound`: how many holders in `admission.active` are P0, and the P0 bound in force (`bound`, null for none) with `legion.yaml`'s `configured` value and any `live` value.
+  An issue is P0 when its `resolvedPriority` is 0, or, where Dispatch sent no `resolvedPriority`, its own `priority` is 0.
+  `waitingLine.priority` alone does not say it: with an older Dispatch, the line places an issue with no priority of its own at its tree root's, and that makes no issue P0.
+  A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
 
 - `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
   Use it, not `admission.active`, for which trees run.
 
 - `admission.waiting`: the line, in order.
-  First the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
-  `issues.<KEY>.waitingLine` says where one stands (`part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
+  Ordered by the priority Dispatch resolves first (P0 to P3, then issues with no priority).
+  Within one priority, first the issues whose work came back, oldest first, and then the issues whose first phase can start, by their root's Dispatch rank and then their own.
+  A P0 waiter takes no regular slot: once no other hold stands, it starts outside the regular cap unless the P0 bound holds it.
+  `issues.<KEY>.waitingLine` says where one stands (`priority`, `part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
 
 - `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children.
   A started issue here gave its slot back and takes one again by itself; nothing of its work stops.

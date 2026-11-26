@@ -74,7 +74,7 @@ func (p Priority) String() string {
 }
 
 // band is where p's band stands in the waiting line, lower first: P0 to P3 in their order, and
-// NoPriority, an entry neither it nor its tree root has a priority for, after P3 (Waiting).
+// NoPriority, an entry with no priority (PriorityOf), after P3 (Waiting).
 func (p Priority) band() uint8 {
 	if p == NoPriority {
 		return uint8(P3) + 1
@@ -133,10 +133,11 @@ func PriorityOf(issue, root Issue) Priority {
 func (i Issue) StartsNow() bool { return i.AdmissionPriority() == P0 }
 
 // SlotHolders is a project's holders of an admission slot as the cap and the P0 bound count them:
-// P0, the holders whose own priority is P0 (Issue.StartsNow), which the cap does not count and the
-// P0 bound does, and Capped, every other holder, which the cap counts. A holder is counted by the
-// priority its record carries at the read, so one raised to P0 leaves the cap's count at the next
-// read and one lowered below P0 counts against the cap from then on, while its slot stays.
+// P0, the holders that admission treats as P0 (Issue.StartsNow: Dispatch's resolved P0, or own P0
+// with an older Dispatch release), which the cap does not count and the P0 bound does, and Capped,
+// every other holder, which the cap counts. A holder is counted by the priority its record carries
+// at the read, so one raised to P0 leaves the cap's count at the next read and one lowered below
+// P0 counts against the cap from then on, while its slot stays.
 type SlotHolders struct {
 	Capped int
 	P0     int

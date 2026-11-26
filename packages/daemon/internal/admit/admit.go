@@ -2441,12 +2441,13 @@ func slotFor(entry record.LineEntry) bool {
 // capLets says whether the cap and the P0 bound let the promotion start entry, given held, the
 // project's holders of a slot as the two count them (record.HoldersOf), cap and bound, the P0 bound
 // in force (p0BoundAt, nil for none): an entry that takes no slot (slotFor) starts whatever the cap
-// says; a P0 entry that takes one (record.Issue.StartsNow, its own priority) starts outside the
-// cap, while fewer P0 issues than the bound hold a slot, or always where no bound is set (R10 of
-// dispatch://INFRA-3199); and any other entry that takes one starts only while the holders below
-// P0 leave a row of the cap free. A cap that admits nothing lets nothing start, since the
-// promotion does not run under it. It answers the cap's half alone: what an entry waits on is the
-// other half (blockers.LineWaitsOn), which each reader asks beside this.
+// says; a P0 entry that takes one (record.Issue.StartsNow: Dispatch's resolved P0, or own P0 with
+// an older Dispatch release) starts outside the cap, while fewer P0 issues than the bound hold a
+// slot, or always where no bound is set (R10 of dispatch://INFRA-3199); and any other entry that
+// takes one starts only while the holders below P0 leave a row of the cap free. A cap that admits
+// nothing lets nothing start, since the promotion does not run under it. It answers the cap's half
+// alone: what an entry waits on is the other half (blockers.LineWaitsOn), which each reader asks
+// beside this.
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure

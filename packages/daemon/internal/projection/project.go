@@ -454,8 +454,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	}
 	projected.Admission.Active = active
 	// The holders the cap does not count (R10 of dispatch://INFRA-3199): the project's own holders
-	// whose own priority is P0, counted by the one count admission's cap readers make
-	// (record.HoldersOf), so the number the state gives is the number the pass admitted under.
+	// that admission treats as P0 (record.Issue.StartsNow), counted by the one count admission's
+	// cap readers make (record.HoldersOf), so the number the state gives is the number the pass
+	// admitted under.
 	projected.Admission.P0Holders = new(record.HoldersOf(own, slots).P0)
 	// The roots of the live trees, which no slot says any more: a slot counts one issue the
 	// daemon has started, and a tree is live before the daemon has started anything of it — a

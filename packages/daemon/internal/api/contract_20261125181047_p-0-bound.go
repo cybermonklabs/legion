@@ -37,7 +37,9 @@ package api
 // /legion/v1/issues/{key}/record` gains the two issue keys too. `admission.cap` keeps its number and
 // now counts no P0 holder, and a member's `waitingLine.priority` and `reason` read the resolved
 // priority where Dispatch sent one, its reason naming the issue in `priorityFrom` rather than the
-// Legion tree root. `settings` gains `admission_p0_bound`, absent where the file gives none, which
+// Legion tree root (with an older Dispatch release that sends no `resolved_priority`, line order
+// uses the issue's own priority else its tree root's, without making an issue P0). `settings` gains
+// `admission_p0_bound`, absent where the file gives none, which
 // no supported reader types. A caller whose contract (the one it states, else its pod's) is below
 // this entry is served the state without the four keys (the entry's two bands, `withoutP0Start` and
 // `withoutResolvedPriority`). No value of an enumerated field moves.

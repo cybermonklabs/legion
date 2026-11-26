@@ -1459,18 +1459,27 @@ Closing the terminal leaves the project without one, and the daemon logs
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue takes a slot when the daemon starts it and gives it back as the admission rule says
-  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
-  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
-  trees that run whether or not any issue of theirs holds one.
+  The `admission` line counts the issues that hold a slot, a root or a child, against the cap.
+  An issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
+  A tree of four issues holding a slot holds four of them, and `live trees` counts the trees that
+  run whether or not any issue of theirs holds a slot.
+  The regular cap counts only holders that are not P0: a P0 issue needs no free regular slot and
+  starts outside the regular cap while below any P0 bound (the `P0:` line shows P0 holders and
+  the P0 bound).
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
-  daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no
-  priority, each issue at its own priority, else at its tree root's; and within one priority the
-  issues whose work came back first, oldest first by the moment it came back, and then the issues
-  that have not started, by the Dispatch rank of each issue's tree root and then its own. A
-  priority changed in Dispatch moves the issue at the next admission pass, and priority takes no
+  daemon promotes them.
+  It orders them by the priority Dispatch resolves first: P0, P1, P2, P3, and then issues with no
+  priority.
+  With an older Dispatch release that sends no `resolved_priority`, the order falls back to the
+  issue's own priority or its Legion root's for the line alone, and that fallback never makes an
+  issue P0.
+  Within one priority, issues whose work came back stand first, oldest first by the moment it came
+  back.
+  Issues that have not started follow, ordered by the Dispatch rank of each issue's tree root and
+  then its own.
+  A priority change in Dispatch moves the issue at the next admission pass, and priority takes no
   slot back from work that runs. The order is strict and nothing ages: while a higher priority
   has an issue that can take a slot, no issue of a lower one, and none with no priority, reaches
   a free slot, however long it has waited; an entry that waits on another issue is passed over,
@@ -1642,11 +1651,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
   says what each reason means and what to do.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `p0Holders` how many slot holders are P0 and outside `cap`, `p0Bound` the P0 bound in force with configured and live values, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
-  below, for a caller below contract 250),
+  below, for a caller below contract 250), `resolvedPriority` (the priority Dispatch resolves for
+  the issue, 0 to 3 or null; absent when Dispatch sent none), `priorityFrom` (the issue key
+  `resolvedPriority` comes from; absent when own or none),
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
@@ -1662,8 +1673,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
   issue that gave its slot back to wait on another issue,
   [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `priority`, the
-  priority that placed the issue in the line, its own, else its tree root's (0 for P0 to 3 for P3, or
-  null for an issue that waits after P3); `partPlace` and
+  priority that placed the issue in the line (the priority Dispatch resolves for it, 0 for P0 to
+  3 for P3, or null for an issue that waits after P3; with an older Dispatch release that sends
+  no `resolved_priority`, its own priority or its Legion root's for line order alone); `partPlace` and
   `partLength`, its place among the issues of its own priority and part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two

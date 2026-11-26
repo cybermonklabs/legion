@@ -193,9 +193,10 @@ function pauseSummary(state: LegionState): string | undefined {
 
 /**
  * The summary's `p0` line (C3 and C4 of dispatch://INFRA-5636): how many of the issues holding a
- * slot are P0 by their own priority, which hold it outside the cap, the P0 bound in force (`none`
- * for no bound), and the live value that stands with who set it, when and why. A body served below
- * the P0 start's contract entry carries neither key, and the summary then has no such line.
+ * slot admission treats as P0 (Dispatch's resolved P0, or own P0 with an older Dispatch release),
+ * which hold it outside the cap, the P0 bound in force (`none` for no bound), and the live value
+ * that stands with who set it, when and why. A body served below the P0 start's contract entry
+ * carries neither key, and the summary then has no such line.
  */
 function p0Summary({ admission }: LegionState): string | undefined {
   if (admission?.p0Holders === undefined && admission?.p0Bound === undefined) return undefined;

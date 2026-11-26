@@ -521,9 +521,10 @@ const legionSlotView = z.object({
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
  * in the line, and `length`, how long that list was at this read, beside the line's own fields
  * for a program that acts on the line rather than reading the sentence `reason` renders:
- * `priority`, the Dispatch priority band the issue waits in, which is its own priority, else its
- * tree root's (0 for P0 to 3 for P3), or null for an issue placed after P3 because neither it nor
- * its tree root has one; `part`, which of the two parts of its band the issue waits in, and
+ * `priority`, the Dispatch priority band the issue waits in: the priority Dispatch resolves for
+ * it (or, with an older Dispatch release that sends no `resolved_priority`, its own priority else
+ * its tree root's for line order alone), 0 for P0 to 3 for P3, or null for an issue placed after
+ * P3; `part`, which of the two parts of its band the issue waits in, and
  * `kind`, why it waits there; `partPlace` and `partLength`, its place within its own band and
  * part and that part's length in that band; `holdsSlot`, whether it already holds one of the
  * cap's slots; and what placed it within its part — `since`, the moment its work came back, for
@@ -821,11 +822,11 @@ const legionIssue = z.object({
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
-   * (contract 250): the priority Dispatch sends on the issue itself. The admission line places an
-   * issue at this priority, else at its tree root's, and the line's own `priority` says which.
-   * Present on every issue the workflow records; absent on an issue it does not record (phase
-   * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
-   * caller below 250. */
+   * (contract 250): the priority Dispatch sends on the issue itself. Admission reads
+   * `resolvedPriority` where Dispatch sends one; the line's own `priority` says which band placed
+   * a waiting issue. Present on every issue the workflow records; absent on an issue it does not
+   * record (phase `unrecorded`, an operator's claim), and from every issue of the body the route
+   * serves a caller below 250. */
   priority: dispatchPriority,
   /** The priority Dispatch resolves the issue to, 0 for P0 to 3 for P3, or null for none (the P0
    * start's contract entry, dispatch://INFRA-5636): its own priority, else the nearest issue's above
@@ -1139,8 +1140,9 @@ const legionP0Bound = z.object({
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
  * finds it absent has been served that stripped body and learns nothing about what is held.
- * `p0Holders` is how many of the issues holding a slot are P0 by their own Dispatch priority, which
- * start and hold their slot outside the cap, so the cap counts the other holders of `active` alone;
+ * `p0Holders` is how many of the issues holding a slot admission treats as P0 (Dispatch's
+ * resolved P0, or own P0 with an older Dispatch release), which start and hold their slot outside
+ * the cap, so the cap counts the other holders of `active` alone;
  * `p0Bound` is the P0 bound in force (`legionP0Bound`). A daemon at the P0 start's contract entry writes both on
  * every state, and both are optional here because the route strips them for a caller below the entry
  * (`api.stateFor`, `withoutP0Start`). */
