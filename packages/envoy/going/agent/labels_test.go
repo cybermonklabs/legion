@@ -194,6 +194,45 @@ func TestAStepThatEndedNamesItsCountAndItems(t *testing.T) {
 	}
 }
 
+// TestAProgressReadOfAProjectStatesItsTotal: read_progress of a project answers a page of the
+// project's issues and the total of them (GET /api/v1/issues with a limit), and both its step's
+// label and the line the model is told before the list state that total. read_progress of an
+// issue answers the issue (GET /api/v1/issues/{key}), whose own lists - its labels, blockers,
+// documents, open asks, children and the rest - answerList reads as no list of issues, so neither
+// its label nor its result states a count.
+func TestAProgressReadOfAProjectStatesItsTotal(t *testing.T) {
+	call := agentwire.CallRequest{Step: 2, Call: 1, Kind: agentwire.KindRoute, Tool: going.ReadProgress}
+	head := storedDataNote + "\nstep 2, call 1: status 200\n"
+	page := `{"issues":[{"key":"DEMO-1","title":"First","status":"todo","progress":{"tasks":null,"children":null}},` +
+		`{"key":"DEMO-2","title":"Second","status":"done","progress":{"tasks":{"done":2,"total":2},"children":null}}],"total":300,"limit":250,"offset":0}`
+	issue := `{"key":"DEMO-12","project":"DEMO","number":12,"title":"The mill","status":"in_progress","priority":1,"labels":["ui"],"parent":null,` +
+		`"blocked_by":["DEMO-9"],"advances":[],"assignee":"alice@example.com","claim":null,"components":{"mode":"inherit","ids":[]},"external_links":[],` +
+		`"blocks":[],"progress":{"tasks":{"done":1,"total":3},"children":{"done":1,"total":2}},"artifacts":[],"open_asks":[],` +
+		`"children":[{"key":"DEMO-13","title":"A child","status":"done"},{"key":"DEMO-14","title":"Another child","status":"todo"}],"design_gates":[],"referenced_by_count":0}`
+	for _, row := range []struct {
+		name, input, body, total, label string
+		count                           int
+		items                           []string
+	}{
+		{"a project's page", `{"tool":"read_progress","arguments":{"project":"DEMO"}}`, page,
+			"[Total: 300 matching issues; the list below holds 2 of them.]\n", "Read the progress of DEMO · 2 of 300 issues", 2, []string{"DEMO-1", "DEMO-2"}},
+		{"an issue", `{"tool":"read_progress","arguments":{"issue":"DEMO-12"}}`, issue, "", "Read the progress of DEMO-12", 0, []string{"DEMO-12"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			result := resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(row.body)})
+			told := strings.TrimPrefix(result, head)
+			if !strings.HasPrefix(told, row.total) || row.total == "" && strings.HasPrefix(told, totalPrefix) {
+				t.Errorf("the model is told %q after the head, want the total line %q", told[:min(len(told), 80)], row.total)
+			}
+			label, arguments := stepLabel(toolCallTool, json.RawMessage(row.input))
+			end := ended(label, arguments, result, false)
+			if end.label != row.label || end.count != row.count || !slices.Equal(end.items, row.items) {
+				t.Errorf("%s ended reading %q, count %d, items %q; want %q, %d, %q", row.input, end.label, end.count, end.items, row.label, row.count, row.items)
+			}
+		})
+	}
+}
+
 // TestAReadThatFoundNothingIsNoFailure: a read Dispatch answered 404 - the item or record it reads
 // does not exist - found nothing, which the person cannot act on as a failure: it reads as its past
 // form with " · none found" and carries no error. A 403, a 5xx, a 404 of a step that is no read and

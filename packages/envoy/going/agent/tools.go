@@ -356,15 +356,17 @@ func findablesOf(dispatchTools []contracts.DispatchTool) []findable {
 
 // barReadDescriptions are what the bar's model is told of the reads of going's whose answer the
 // server gives the bar otherwise than going's description of it says, by the read's name. The
-// bar's read_progress of a project is the listing of the project's issues (GET /api/v1/issues of
-// the project, internal/dispatch/api going_tools.go), each with its status and progress, which
-// the answer run's read counts by status instead. The bar's read_roster is the agents list of the
-// 50 sessions seen last (internal/dispatch/api goingReadSessionMax), with their claims and the
-// gone sessions that hold one, and the total of every session (goingRosterTold): it names no
-// source and no age, which the answer run's read names, and a listener that cannot answer
+// bar's read_progress of a project is a page of the listing of the project's issues (GET
+// /api/v1/issues of the project with limit contracts.MaxIssuePageLimit, internal/dispatch/api
+// goingTranslateProjectIssues), each with its status and progress, and the total of the project's
+// issues, which the answer run's read counts by status instead. The bar's read_roster is the
+// agents list of the 50 sessions seen last (internal/dispatch/api goingReadSessionMax), with their
+// claims and the gone sessions that hold one, and the total of every session (goingRosterTold): it
+// names no source and no age, which the answer run's read names, and a listener that cannot answer
 // answers 503 rather than the sessions Dispatch's own rows name.
 var barReadDescriptions = map[string]string{
-	going.ReadProgress: "Read progress: for an issue, its task and child counts and its children; for a project, every issue of it with its status and its progress. " +
+	going.ReadProgress: "Read progress: for an issue, its task and child counts and its children; " +
+		fmt.Sprintf("for a project, how many issues it holds (total) and at most %d of them, each with its status and its progress. ", contracts.MaxIssuePageLimit) +
 		"Name issue, or project; with neither, the page's issue or project is read.",
 	// No longer than going's own description of the read, so find_tools ranks it where it did
 	// (fitting: of two tools that hold as many of a need's words, the shorter first).

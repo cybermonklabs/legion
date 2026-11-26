@@ -32,7 +32,7 @@ package agent
 // (missedRewrite, errRewriteCut); one whose reply writes no words, none or white space alone
 // (endRewrite); and one the person stopped while its call worked, which frees the run's lease
 // before the agent hears of the stop, so the agent saves nothing and the server's stop saves the
-// held reply shown whole as the stopped run's answer (ShowHeld, stopGoingRunIn in
+// held reply shown whole as the stopped run's answer (StopStep, stopGoingRunIn in
 // internal/dispatch/api/going_agent.go). A grant that ends as the rewrite's reply is counted stops
 // the run with the grant's reason, the run's lease still held, so the held reply is shown whole
 // first (endRewrite).
@@ -173,12 +173,22 @@ func (w *worker) saveLong(prose *proseReply, words int) {
 // (rewrite). A held reply the history gives by its note alone makes none: a claim gives its last
 // steps whole (agentwire.WholeFrom).
 func (w *worker) heldLast() (modelBody, bool) {
-	var held modelBody
 	if len(w.history) == 0 {
-		return held, false
+		return modelBody{}, false
 	}
 	last := w.history[len(w.history)-1]
-	if last.Kind != agentwire.StepModel || json.Unmarshal(last.Body, &held) != nil {
+	if last.Kind != agentwire.StepModel {
+		return modelBody{}, false
+	}
+	return heldBody(last.Body)
+}
+
+// heldBody decodes raw, the saved body of a model step, and answers it and whether it is the body
+// of a reply held back as long (saveLong), one that counts its long words (modelBody.LongWords); a
+// body that does not decode answers an empty body and false.
+func heldBody(raw json.RawMessage) (modelBody, bool) {
+	var held modelBody
+	if json.Unmarshal(raw, &held) != nil {
 		return modelBody{}, false
 	}
 	return held, held.LongWords > 0
@@ -309,7 +319,7 @@ func (w *worker) missedRewrite(base int, held modelBody, result agentloop.Result
 // carries its prose and the count the bar drew of it (DrawnWords), not HeldLong, so the bar draws
 // it as the answer, and nothing is cut. A rewrite the person stopped saves nothing here: the stop
 // freed the run's lease, and the server's stop saves the held reply shown whole in its place
-// (ShowHeld).
+// (StopStep).
 func (w *worker) showHeld(ctx context.Context, base int, held modelBody) stepOutcome {
 	request, body := shownHeld(base, held)
 	w.saveIn(ctx, request, body)
@@ -323,7 +333,7 @@ func (w *worker) showHeld(ctx context.Context, base int, held modelBody) stepOut
 // the count the bar drew of it. The reply tells of the tool steps held records the run had
 // withheld from the model when it was held back (saveLong): its body says the notice of them after
 // its text and its frame their count, as a reply that ends the turn does (saveModel), whichever
-// worker shows it, a restarted one too, or the server's stop (ShowHeld). The frame says no model
+// worker shows it, a restarted one too, or the server's stop (StopStep). The frame says no model
 // call's time: no call wrote the reply again.
 func shownHeld(base int, held modelBody) (agentwire.StepRequest, modelBody) {
 	words, withheld := held.LongWords, held.Withheld
@@ -331,16 +341,17 @@ func shownHeld(base int, held modelBody) (agentwire.StepRequest, modelBody) {
 	return modelStep(held, replyFrame{Step: base, Tools: []string{}, Labels: []string{}, DrawnWords: &words}, nil, withheld)
 }
 
-// ShowHeld is the step the server saves where it stops a run whose last step is held, the saved
-// body of a reply held back as long, before the reply's rewrite ended the turn
-// (internal/dispatch/api's stopGoingRunIn): the stop frees the run's lease, so the run's agent can
+// StopStep is the step the server's stop saves for a run whose last step is a held reply: held,
+// the saved body of a reply held back as long, before the reply's rewrite ended the turn
+// (internal/dispatch/api's stopGoingRunIn). The stop frees the run's lease, so the run's agent can
 // save nothing after it. It is held shown whole as the step numbered base, as showHeld saves it
 // (shownHeld), the notice of the tool steps the run had withheld from the model included: the
 // step's body, its note and the data of its reply frame, which carries the reply's prose and how
-// many results were withheld. It answers false where held is no body of a reply held back as long.
-func ShowHeld(base int, held json.RawMessage) (body json.RawMessage, line string, frame json.RawMessage, ok bool) {
-	var read modelBody
-	if json.Unmarshal(held, &read) != nil || read.LongWords <= 0 {
+// many results were withheld. It answers false where held is no body of a reply held back as long
+// (heldBody).
+func StopStep(base int, held json.RawMessage) (body json.RawMessage, line string, frame json.RawMessage, ok bool) {
+	read, isHeld := heldBody(held)
+	if !isHeld {
 		return nil, "", nil, false
 	}
 	request, shown := shownHeld(base, read)

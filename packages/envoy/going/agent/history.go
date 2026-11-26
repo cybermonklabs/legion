@@ -31,7 +31,7 @@ const noteLimit = 500
 // bar draws of it, which conversation tells the model after it (longTold), 0 for every other, and
 // the tool steps the run had withheld from the model by then (withhold), by number with their
 // tools, none for every other: what the reply shown whole tells its person of them (shownHeld),
-// whichever worker shows it, or the server's stop (ShowHeld).
+// whichever worker shows it, or the server's stop (StopStep).
 type modelBody struct {
 	Text      string         `json:"text"`
 	Calls     []toolCall     `json:"calls"`

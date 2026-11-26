@@ -171,7 +171,7 @@ type replyFrame struct {
 	// with words of its own, as those words. endProse sets it, 0 included, on a reply in prose it
 	// would end the turn done with, held back as long or not, and showHeld on a reply held back as
 	// long that it shows whole, as the server's stop of a run during its rewrite does
-	// (ShowHeld); every other reply leaves it out, as does one whose count failed. HeldLong marks
+	// (StopStep); every other reply leaves it out, as does one whose count failed. HeldLong marks
 	// a reply held back as long (saveLong), which carries no prose.
 	DrawnWords *int `json:"drawn_words,omitempty"`
 	HeldLong   bool `json:"held_long,omitempty"`
@@ -484,7 +484,7 @@ type stepOutcome struct {
 // quota, or its reply was cut at its output tokens, which OnStep saves nothing of
 // (errRewriteCut) - ends the turn done with the held reply shown whole too (missedRewrite). A
 // rewrite the person stops while its call works saves nothing: the stop freed the run's lease, and
-// the server's stop saves the held reply shown whole as the stopped run's answer (ShowHeld,
+// the server's stop saves the held reply shown whole as the stopped run's answer (StopStep,
 // internal/dispatch/api's stopGoingRunIn).
 func (w *worker) step() stepOutcome {
 	base := w.next

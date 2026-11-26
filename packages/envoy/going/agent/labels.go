@@ -70,10 +70,12 @@ var (
 )
 
 // goingReadLabels are the labels of the reads the server makes by going's names (going.ReadSpecs),
-// which call_tool runs.
+// which call_tool runs. read_progress counts issues: of a project it answers a page of the
+// project's issues and their total, which its label states; of an issue it answers the issue
+// alone, whose lists answerList reads as no list of issues, so its label states no count.
 var goingReadLabels = map[string]contracts.ToolLabel{
 	going.ReadRoster: {Kind: kindRead, Verb: "read", Present: "Reading the agent sessions", Past: "Read the agent sessions", Count: "session"},
-	going.ReadProgress: {Kind: kindRead, Verb: "read",
+	going.ReadProgress: {Kind: kindRead, Verb: "read", Count: "issue",
 		Present: "Reading the progress of {issue|{project|the page's issue}}", Past: "Read the progress of {issue|{project|the page's issue}}"},
 	going.ReadArchitecture: {Kind: kindRead, Verb: "read",
 		Present: "Reading the components of {project|the page's project}", Past: "Read the components of {project|the page's project}"},

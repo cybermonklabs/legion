@@ -21,11 +21,6 @@ import (
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
-// goingFilterRefusal is the 400 an Azure deployment answers a call its content filter blocked
-// with: one stream chunk that stops for content_filter, as going/agent's tests answer it.
-const goingFilterRefusal = `data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
-	`"content_filter_results":{"error":{"code":"content_filter","message":"Response content blocked by label 'Jailbreak'."}}}]}` + "\n\n"
-
 // TestAStopDuringTheRewriteShowsTheHeldReplyWhole: a reply the bar draws in 120 words or more is
 // held back once, its frame carrying no text, so the bar draws nothing of it, and the next model
 // call is its rewrite. A person who stops the run while the rewrite's call works frees its lease,
@@ -182,7 +177,7 @@ func TestAStopDuringTheRewriteShowsTheHeldReplyWhole(t *testing.T) {
 		loop.script.set(asked, func(n int) agenttest.Reply {
 			switch n {
 			case 1, 2:
-				return agenttest.Reply{Status: http.StatusBadRequest, Error: goingFilterRefusal}
+				return agenttest.Reply{Status: http.StatusBadRequest, Error: agenttest.FilterRefusal}
 			case 3:
 				return answered(long)
 			}

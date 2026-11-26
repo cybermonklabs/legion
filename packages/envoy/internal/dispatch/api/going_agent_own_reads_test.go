@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,12 +25,13 @@ import (
 // TestTheAgentReadsTheAnswerRunsReadsAsThePersonDoes: each of the answer run's own reads that the
 // bar's agent is offered (going.ReadSpecs), called by call_tool, reaches the route the person
 // reads it by, with each argument where that route reads it, and is answered 200 (R12):
-// read_progress of an issue reads the issue, whatever project it also names, of a project the
-// project's issues, and naming neither the page's issue; read_architecture and
-// read_project_activity read the project's components and its weeks; read_delivery reads the route
-// its view names, the measures and the timeline over the window from and to name and the pipeline
-// of the seven days ending on its to. A call that names no project reads the page's project, and
-// one that names no item on a run whose page names none is refused.
+// read_progress of an issue reads the issue, whatever project it also names, of a project a page
+// of contracts.MaxIssuePageLimit of the project's issues, whose total the model is told, and
+// naming neither the page's issue; read_architecture and read_project_activity read the project's
+// components and its weeks; read_delivery reads the route its view names, the measures and the
+// timeline over the window from and to name and the pipeline of the seven days ending on its to. A
+// call that names no project reads the page's project, and one that names no item on a run whose
+// page names none is refused.
 func TestTheAgentReadsTheAnswerRunsReadsAsThePersonDoes(t *testing.T) {
 	t.Parallel()
 	writes := newGoingWritesRig(t)
@@ -97,7 +100,8 @@ func TestTheAgentReadsTheAnswerRunsReadsAsThePersonDoes(t *testing.T) {
 			holds: []string{"The quernstone mill", `"progress"`}},
 		{name: "read_progress of a project lists the project's issues", tool: going.ReadProgress,
 			arguments: map[string]any{"project": "DEMO"},
-			route:     "GET /api/v1/issues", query: url.Values{"project": {"DEMO"}}, holds: []string{mill}},
+			route:     "GET /api/v1/issues", query: url.Values{"project": {"DEMO"}, "limit": {strconv.Itoa(contracts.MaxIssuePageLimit)}},
+			holds: []string{mill, " matching issues; the list below holds "}},
 		{name: "read_progress naming nothing reads the page's issue", page: mill, tool: going.ReadProgress,
 			arguments: map[string]any{},
 			route:     "GET /api/v1/issues/{key}", path: map[string]string{"key": mill}, holds: []string{"The quernstone mill"}},
@@ -172,7 +176,7 @@ func TestTheAgentReadsTheAnswerRunsReadsAsThePersonDoes(t *testing.T) {
 		}{
 			{tool: going.ReadArchitecture, route: "GET /api/v1/projects/{key}/architecture", key: "DEMO"},
 			{tool: going.ReadProjectActivity, route: "GET /api/v1/projects/{key}/activity", key: "DEMO"},
-			{tool: going.ReadProgress, route: "GET /api/v1/issues", query: url.Values{"project": {"DEMO"}}},
+			{tool: going.ReadProgress, route: "GET /api/v1/issues", query: url.Values{"project": {"DEMO"}, "limit": {strconv.Itoa(contracts.MaxIssuePageLimit)}}},
 		} {
 			record.take()
 			answer, err := rig.call(goingRouteCall(run, token, 1, call+1, want.tool, map[string]any{}))
@@ -224,7 +228,29 @@ func TestTheAgentsRosterReadStatesEverySession(t *testing.T) {
 	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) { _, _ = w.Write(answer) })
 	rig := newGoingAgentRigOver(t, newGoingWritesRigOn(t, listener.url, func(database *store.Store) *store.Store { return database }), nil)
 	loop := newGoingLoop(t, rig)
-	const words = "how many agent sessions are there"
+	roster := goingAgentRosterRead(t, rig, loop, "how many agent sessions are there", sessions, goingReadSessionMax)
+	if roster.Total != sessions || len(roster.Sessions) != goingReadSessionMax {
+		t.Fatalf("the roster read answered a total of %d and %d sessions, want %d and %d", roster.Total, len(roster.Sessions), sessions, goingReadSessionMax)
+	}
+	if newest := roster.Sessions[0][going.FieldSessionID]; newest != fmt.Sprintf("ses-%02d", sessions-1) {
+		t.Errorf("the roster read lists %v first, want the session seen last", newest)
+	}
+}
+
+// goingToldRoster is what the bar's agent tells the model of its roster read after the line that
+// states the read's total: the route's answer, its total and its sessions.
+type goingToldRoster struct {
+	Total    int              `json:"total"`
+	Sessions []map[string]any `json:"sessions"`
+}
+
+// goingAgentRosterRead runs a run of alice's, whose words are words, whose model calls call_tool
+// read_roster with no argument and then answers, and answers what the model was told of the read.
+// It fails the test unless the run ends done with that one tool result, and the result holds the
+// roster whole after the line that states its total before the list, in the label's noun (the
+// agent's resultCount): total matching sessions, of which the list holds listed.
+func goingAgentRosterRead(t *testing.T, rig goingAgentRig, loop *goingLoop, words string, total, listed int) goingToldRoster {
+	t.Helper()
 	loop.script.set(words, func(n int) agenttest.Reply {
 		if n == 1 {
 			return toolCall("call_tool", map[string]any{"tool": going.ReadRoster, "arguments": map[string]any{}})
@@ -236,20 +262,11 @@ func TestTheAgentsRosterReadStatesEverySession(t *testing.T) {
 		t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
 	}
 	results := rig.toolResults(t, run)
-	// The total stands before the list, in the label's noun (the agent's resultCount).
-	line := fmt.Sprintf(": status 200\n[Total: %d matching sessions; the list below holds %d of them.]\n", sessions, goingReadSessionMax)
+	line := fmt.Sprintf(": status 200\n[Total: %d matching sessions; the list below holds %d of them.]\n", total, listed)
 	_, body, told := strings.Cut(strings.Join(results, ""), line)
-	var roster struct {
-		Total    int              `json:"total"`
-		Sessions []map[string]any `json:"sessions"`
-	}
+	var roster goingToldRoster
 	if len(results) != 1 || !told || json.Unmarshal([]byte(body), &roster) != nil {
 		t.Fatalf("the run saved the tool results %q, want the roster read whole after %q", results, line)
 	}
-	if roster.Total != sessions || len(roster.Sessions) != goingReadSessionMax {
-		t.Fatalf("the roster read answered a total of %d and %d sessions, want %d and %d", roster.Total, len(roster.Sessions), sessions, goingReadSessionMax)
-	}
-	if newest := roster.Sessions[0][going.FieldSessionID]; newest != fmt.Sprintf("ses-%02d", sessions-1) {
-		t.Errorf("the roster read lists %v first, want the session seen last", newest)
-	}
+	return roster
 }

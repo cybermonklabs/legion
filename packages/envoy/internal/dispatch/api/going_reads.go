@@ -244,8 +244,7 @@ func (g *goingReadRun) project(named string) (string, error) {
 // their arguments, and the row such a call reads refuses what still names nothing.
 func (s *server) goingPageArguments(ctx context.Context, run, tool string, arguments map[string]any) (map[string]any, error) {
 	named := func(argument string) bool {
-		text, _ := arguments[argument].(string)
-		return strings.TrimSpace(text) != ""
+		return strings.TrimSpace(goingText(arguments, argument)) != ""
 	}
 	switch tool {
 	case going.ReadProgress:

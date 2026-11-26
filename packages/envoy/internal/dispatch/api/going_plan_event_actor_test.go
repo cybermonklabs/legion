@@ -2,10 +2,7 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -14,17 +11,16 @@ import (
 // reader, names the person whose plans changed, through the command bar, and not the run whose
 // plan changed, as the web's reader of it says (event-refresh.ts: the event names the person
 // alone, and no run): bob's read of the log holds alice's event, whose actor is alice through the
-// command bar with no run, and no text of the run's id.
+// command bar with no run. appendGoingPlanEvent is given no run, so the event holds no text of one.
 func TestThePlanEventNamesThePersonAndNoRun(t *testing.T) {
 	t.Parallel()
 	rig := newGoingWritesRig(t)
 	ctx := t.Context()
-	run := uuid.NewString()
 	tx, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rig.served.appendGoingPlanEvent(ctx, tx, "alice", run); err != nil {
+	if _, err := rig.served.appendGoingPlanEvent(ctx, tx, "alice"); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("append the plan's event: %v", err)
 	}
@@ -35,9 +31,6 @@ func TestThePlanEventNamesThePersonAndNoRun(t *testing.T) {
 	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/events/log?limit=1000", nil, "bob")
 	if response.Code != http.StatusOK {
 		t.Fatalf("bob's read of the event log: status=%d body=%s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), run) {
-		t.Errorf("bob's read of the event log holds alice's run %s: %s", run, response.Body.String())
 	}
 	found := false
 	for _, event := range decodeBody[[]struct {

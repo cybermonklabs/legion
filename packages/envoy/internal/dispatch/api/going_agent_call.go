@@ -835,8 +835,7 @@ func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (st
 }
 
 // goingReadToolRoutes is the rows of read tool name: the rows its entry names, or the routes its
-// spec binds, each with its translation. A row that binds no argument of a call (its Path is nil)
-// takes no call, and is left out.
+// spec binds, each with its translation, and an error where the read names no row.
 func goingReadToolRoutes(name string) ([]GoingRoute, error) {
 	tool := goingReadTools[name]
 	named := tool.Routes
@@ -850,14 +849,11 @@ func goingReadToolRoutes(name string) ([]GoingRoute, error) {
 	}
 	routes := make([]GoingRoute, 0, len(named))
 	for _, row := range named {
-		if row.Path == nil {
-			continue
-		}
 		routes = append(routes, GoingRoute{Method: row.Method, Pattern: row.Pattern, path: row.Path,
 			whenArgument: row.WhenArgument, whenValue: row.WhenValue, translate: row.Translate})
 	}
 	if len(routes) == 0 {
-		return nil, GoingArgumentError{Action: name, Reason: "no row of this read binds a call's arguments, so it takes no call"}
+		return nil, GoingArgumentError{Action: name, Reason: "this read names no row, so it takes no call"}
 	}
 	return routes, nil
 }

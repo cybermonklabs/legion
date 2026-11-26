@@ -997,7 +997,7 @@ func (s *server) stopGoingRun(ctx context.Context, run, reason string) (bool, er
 	}
 	var events []model.Event
 	if state == agentwire.StateWaiting {
-		appended, err := s.appendGoingPlanEvent(ctx, tx, login, run)
+		appended, err := s.appendGoingPlanEvent(ctx, tx, login)
 		if err != nil {
 			return false, err
 		}
@@ -1054,7 +1054,7 @@ func stopGoingRunIn(ctx context.Context, tx pgx.Tx, run, reason string, offers [
 // reply's rewrite, ends the turn with the rewrite's reply or with the held reply shown whole
 // (going/agent's endRewrite and showHeld). A stop that lands before then frees the run's lease, so
 // the agent can save nothing after it, and the stop saves the step showHeld would have saved
-// (agent.ShowHeld): the reply again whole, its count of long words cleared, with the notice of the
+// (agent.StopStep): the reply again whole, its count of long words cleared, with the notice of the
 // tool results the run had withheld from the model, which the held step records, so a later turn
 // reads it as the answer the person saw, and its frame, which carries its prose, the count the bar
 // draws of it and how many results were withheld, its text stored as every answer is
@@ -1075,7 +1075,7 @@ func goingShowHeld(ctx context.Context, tx pgx.Tx, run string) ([]agentwire.Fram
 	if err != nil {
 		return nil, fmt.Errorf("read the last step of run %s: %w", run, err)
 	}
-	body, note, frame, shown := agent.ShowHeld(step+1, held)
+	body, note, frame, shown := agent.StopStep(step+1, held)
 	if !shown {
 		return nil, nil
 	}
@@ -1286,7 +1286,7 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	// A turn that leaves its run waiting puts its plan in the person's Inbox.
 	var events []model.Event
 	if ended.State == agentwire.StateWaiting {
-		appended, err := a.s.appendGoingPlanEvent(ctx, tx, login, request.Run)
+		appended, err := a.s.appendGoingPlanEvent(ctx, tx, login)
 		if err != nil {
 			return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 		}

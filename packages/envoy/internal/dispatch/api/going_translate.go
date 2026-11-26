@@ -51,6 +51,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -731,22 +732,26 @@ func goingTranslateRoster(_ context.Context, _ goingReader, call goingCallInput)
 }
 
 // goingTranslateProjectIssues sends read_progress of a project, a call that names no issue, as GET
-// /api/v1/issues of that project: every issue of it, each with its status and its progress, as the
-// project's page lists them. A call that names no project either, on a run whose page names
-// neither (goingPageArguments), is refused as the answer run's read refuses it
+// /api/v1/issues of that project with limit contracts.MaxIssuePageLimit: a page of the project's
+// issues, each with its status and its progress, as the project's page lists them, and the total
+// of every issue of it, which the route counts in SQL ({issues, total, limit, offset}). So, as
+// goingTranslateRoster bounds the roster, the answer of a project of any size stays inside what
+// the server's writer carries (agentwire.CallBodyLimit), and the model is told the project's total
+// before the list (going/agent's resultCount). A call that names no project either, on a run whose
+// page names neither (goingPageArguments), is refused as the answer run's read refuses it
 // (goingReadRun.project): the listing of every project's issues is no one project's progress.
 func goingTranslateProjectIssues(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	project := strings.TrimSpace(goingText(call.arguments, "project"))
 	if project == "" {
 		return goingCall{}, goingUntranslatable("name the issue or the project to read: the call names neither and none is on the page")
 	}
-	return goingCall{path: call.path, query: url.Values{"project": {project}}}, nil
+	return goingCall{path: call.path, query: url.Values{"project": {project}, "limit": {strconv.Itoa(contracts.MaxIssuePageLimit)}}}, nil
 }
 
 // goingTranslateDeliveryWindow sends read_delivery of the measures or the timeline as its view's
 // route over the window from and to name, each under its own name; the view only picks the row.
 func goingTranslateDeliveryWindow(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	query, err := goingDeliveryQuery(call.arguments, map[string]string{"from": "from", "to": "to"})
+	query, err := goingDeliveryQuery(call.arguments, []goingQueryKey{{argument: "from", key: "from"}, {argument: "to", key: "to"}})
 	return goingCall{path: call.path, query: query}, err
 }
 
@@ -754,25 +759,30 @@ func goingTranslateDeliveryWindow(_ context.Context, _ goingReader, call goingCa
 // /api/v1/delivery/pipeline of the seven days ending on the call's to, the route's at, as the
 // answer run reads it (goingReadRun.readDelivery), which reads no from of a pipeline either.
 func goingTranslateDeliveryPipeline(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	query, err := goingDeliveryQuery(call.arguments, map[string]string{"to": "at"})
+	query, err := goingDeliveryQuery(call.arguments, []goingQueryKey{{argument: "to", key: "at"}})
 	return goingCall{path: call.path, query: query}, err
 }
 
+// goingQueryKey is an argument of a call and the key of the route's query that the argument is
+// sent under. A translation lists them in the call's order, so the first argument it cannot send
+// is the one its error names.
+type goingQueryKey struct{ argument, key string }
+
 // goingDeliveryQuery is the query of a delivery read: each argument of keys the call names, under
-// the key keys names for it, a blank one left out as the answer run's read leaves it out.
-func goingDeliveryQuery(arguments map[string]any, keys map[string]string) (url.Values, error) {
+// its key, a blank one left out as the answer run's read leaves it out.
+func goingDeliveryQuery(arguments map[string]any, keys []goingQueryKey) (url.Values, error) {
 	query := url.Values{}
-	for argument, key := range keys {
-		value, named := arguments[argument]
+	for _, sent := range keys {
+		value, named := arguments[sent.argument]
 		if !named || value == nil {
 			continue
 		}
 		text, isText := value.(string)
 		if !isText {
-			return nil, goingUntranslatable(fmt.Sprintf("%s is a time in RFC 3339, and the call sends a %T", argument, value))
+			return nil, goingUntranslatable(fmt.Sprintf("%s is a time in RFC 3339, and the call sends a %T", sent.argument, value))
 		}
 		if text = strings.TrimSpace(text); text != "" {
-			query.Set(key, text)
+			query.Set(sent.key, text)
 		}
 	}
 	return query, nil
@@ -782,16 +792,18 @@ func goingDeliveryQuery(arguments map[string]any, keys map[string]string) (url.V
 // its limit and its offset under their own names, as `dispatch search` sends them.
 func goingTranslateSearch(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	query := url.Values{}
-	for argument, key := range map[string]string{"query": "q", "project": "project", "limit": "limit", "offset": "offset"} {
-		value, named := call.arguments[argument]
+	for _, sent := range []goingQueryKey{
+		{argument: "query", key: "q"}, {argument: "project", key: "project"}, {argument: "limit", key: "limit"}, {argument: "offset", key: "offset"},
+	} {
+		value, named := call.arguments[sent.argument]
 		if !named || value == nil {
 			continue
 		}
 		text, isText := goingArgumentText(value)
 		if !isText {
-			return goingCall{}, goingUntranslatable(fmt.Sprintf("%s is sent in the query, which takes no %T", argument, value))
+			return goingCall{}, goingUntranslatable(fmt.Sprintf("%s is sent in the query, which takes no %T", sent.argument, value))
 		}
-		query.Set(key, text)
+		query.Set(sent.key, text)
 	}
 	return goingCall{path: call.path, query: query}, nil
 }

@@ -699,10 +699,8 @@ func goingPlanActor(login string) model.Actor {
 
 // appendGoingPlanEvent appends going_plan.updated naming login in tx, the transaction that changed
 // what login's plans wait on - a run of theirs began to wait, or a waiting run was answered or
-// stopped - after it wrote the run's row. The event names login alone: the run its callers pass
-// is named neither in its payload nor in its actor (goingPlanActor). The caller publishes the
-// event once tx commits.
-func (s *server) appendGoingPlanEvent(ctx context.Context, tx pgx.Tx, login, _ string) (model.Event, error) {
+// stopped - after it wrote the run's row. The caller publishes the event once tx commits.
+func (s *server) appendGoingPlanEvent(ctx context.Context, tx pgx.Tx, login string) (model.Event, error) {
 	event, err := s.appendEvent(ctx, tx, model.Event{
 		Type: "going_plan.updated", Actor: goingPlanActor(login), Payload: model.GoingPlanEventPayload{Login: login},
 	})

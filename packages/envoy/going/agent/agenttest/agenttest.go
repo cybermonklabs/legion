@@ -61,6 +61,12 @@ type Reply struct {
 	Endless    bool
 }
 
+// FilterRefusal is the 400 an Azure deployment answers a prompt its content filter blocked with,
+// a Reply's Error under http.StatusBadRequest: one stream chunk that stops for content_filter
+// (chat-calls.log of the eval's handoff-02).
+const FilterRefusal = `data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
+	`"content_filter_results":{"error":{"code":"content_filter","message":"Response content blocked by label 'Jailbreak'."}}}]}` + "\n\n"
+
 // Asked is how the agent's loop gives the model the person's words of the run it works (going/
 // agent's conversation): this line, then the words and the end of their line, which Asks matches
 // whole, so words that begin another run's words do not match that run.

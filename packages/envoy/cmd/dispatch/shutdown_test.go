@@ -1138,13 +1138,11 @@ func (e *unansweredRecordEnd) Stop() {
 func TestTheAgentsShutdownEndsInsideItsShareWithTheDatabaseUnanswering(t *testing.T) {
 	end := &unansweredRecordEnd{recorded: make(chan error, 1)}
 	supervisor := startAgentSupervisor(end, []string{"sh", "-c", "exec cat >/dev/null"}, nil, agentLimits(0))
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, running := supervisor.running(); running {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the agent process did not start within 10s")
-		}
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		_, running := supervisor.running()
+		return running
+	}) {
+		t.Fatal("the agent process did not start within 10s")
 	}
 	supervisor.Stop()
 	began := time.Now()
@@ -1175,13 +1173,11 @@ func TestTheServersCloseKillsAnAgentThatOutlivesItsStandardInput(t *testing.T) {
 	t.Parallel()
 	end := &unansweredRecordEnd{recorded: make(chan error, 1)}
 	supervisor := startAgentSupervisor(end, []string{"sh", "-c", "exec sleep 60"}, nil, agentLimits(0))
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, running := supervisor.running(); running {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the agent process did not start within 10s")
-		}
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		_, running := supervisor.running()
+		return running
+	}) {
+		t.Fatal("the agent process did not start within 10s")
 	}
 	supervisor.Stop()
 	supervisor.Close(time.Now().Add(time.Minute))

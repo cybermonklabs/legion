@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -906,10 +907,11 @@ var goingPostlessReads = map[string]goingPostlessRead{
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {reason: "GitHub's answer on the App's installation"},
 	"GET /api/v1/handoffs/{id}":                          {reason: "one phase handoff with its body: a handoff is no comment or message"},
 	"GET /api/v1/issues":                                 {reason: "issue lists: keys, titles, statuses and labels"},
-	"GET /api/v1/projects/{key}/activity":                {reason: "a project's events counted by type per ISO week, which name no post", tool: "read_project_activity", arguments: func(withdrawnRouteFixture) map[string]any { return map[string]any{"project": "DEMO"} }},
-	"GET /api/v1/issues/resolve":                         {reason: "the issue an external reference names"},
-	"GET /api/v1/issues/{key}/artifacts":                 {reason: "an issue's documents by name, which prints no version name (census C.15)"},
-	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   {reason: goingDocumentText},
+	"GET /api/v1/projects/{key}/activity": {reason: "a project's events counted by type per ISO week, which name no post", tool: going.ReadProjectActivity,
+		arguments: func(withdrawnRouteFixture) map[string]any { return map[string]any{"project": "DEMO"} }},
+	"GET /api/v1/issues/resolve":                       {reason: "the issue an external reference names"},
+	"GET /api/v1/issues/{key}/artifacts":               {reason: "an issue's documents by name, which prints no version name (census C.15)"},
+	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks": {reason: goingDocumentText},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {reason: goingDocumentText, tool: "dispatch_doc_read",
 		arguments: func(f withdrawnRouteFixture) map[string]any { return map[string]any{"issue": f.documentIssue} }},
 	"GET /api/v1/issues/{key}/asks":                       {reason: goingNoCallPicks},

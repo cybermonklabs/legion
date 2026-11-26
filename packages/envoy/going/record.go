@@ -207,7 +207,7 @@ func (r *Record) RightShare() float64 {
 // JevP95Ceiling. Its accuracies on the cases that name their action and on the rest, each apart,
 // and its action fit are no floor, and a candidate without one is ranked as any other (Choose).
 func (r *Record) MeetsFloors() bool {
-	return r.RightShare() >= JevRightFloor && r.P95MS < float64(JevP95Ceiling)/float64(time.Millisecond)
+	return r.RightShare() >= JevRightFloor && r.P95MS < float64(JevP95Ceiling.Milliseconds())
 }
 
 // PairedAgainst is the model's paired test against the named model, and whether it holds one.

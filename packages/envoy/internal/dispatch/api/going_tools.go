@@ -813,7 +813,8 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/agents", Path: map[string]string{}, Translate: goingTranslateRoster},
 	}},
 	// A progress read of an issue is the issue's read, which carries its progress and its
-	// children; one of a project is the listing of its issues (goingTranslateProjectIssues).
+	// children; one of a project is a page of the listing of its issues, with their total
+	// (goingTranslateProjectIssues).
 	going.ReadProgress: {Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}", Path: map[string]string{"key": "issue"}, Translate: goingTranslateNoBody},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues", Path: map[string]string{}, Translate: goingTranslateProjectIssues},

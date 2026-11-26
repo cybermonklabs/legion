@@ -1694,7 +1694,7 @@ func (s *server) answerGoingPlan(ctx context.Context, run string, plan int, writ
 	if err := appendGoingPlanFrame(ctx, tx, run, plan, planState); err != nil {
 		return err
 	}
-	event, err := s.appendGoingPlanEvent(ctx, tx, login, run)
+	event, err := s.appendGoingPlanEvent(ctx, tx, login)
 	if err != nil {
 		return err
 	}

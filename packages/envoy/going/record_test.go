@@ -51,7 +51,7 @@ func TestTheRecordReadsBack(t *testing.T) {
 		case record.Cases < going.LeastCases || record.ChartWorthyCases < going.LeastChartCases:
 			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R13 needs %d and %d",
 				record.Model, record.Cases, record.ChartWorthyCases, going.LeastCases, going.LeastChartCases)
-		case float64(record.Right())/float64(record.Cases*record.Repeats) < going.JevRightFloor || record.P95MS >= float64(going.JevP95Ceiling.Milliseconds()):
+		case record.RightShare() < going.JevRightFloor || record.P95MS >= float64(going.JevP95Ceiling.Milliseconds()):
 			t.Errorf("the chosen %s chooses the right action on %d of its %d answers at p95 %.0f ms; R13 needs %v of them and under %v",
 				record.Model, record.Right(), record.Cases*record.Repeats, record.P95MS, going.JevRightFloor, going.JevP95Ceiling)
 		case record.ChosenBy == going.ChosenByTieBreak && (strings.TrimSpace(record.Chooser) == "" || strings.TrimSpace(record.ChosenReason) == ""):

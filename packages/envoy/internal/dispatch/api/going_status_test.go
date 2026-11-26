@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going"
-	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -476,28 +475,8 @@ func TestTheRosterReadNamesEverySessionThatHoldsAClaim(t *testing.T) {
 	})
 
 	t.Run("the bar agent's read", func(t *testing.T) {
-		const words = "which agents are working now and on what"
-		loop.script.set(words, func(n int) agenttest.Reply {
-			if n == 1 {
-				return toolCall("call_tool", map[string]any{"tool": going.ReadRoster, "arguments": map[string]any{}})
-			}
-			return answered("Read.")
-		})
-		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
-		if ended := rig.ended(t, run, time.Minute); ended.state != "done" {
-			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
-		}
-		results := rig.toolResults(t, run)
-		// The total of every session stands before the list, in the label's noun (the agent's
-		// resultCount): the listener's two sessions and ses-gone.
-		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n[Total: 3 matching sessions; the list below holds 3 of them.]\n")
-		var roster struct {
-			Total    int              `json:"total"`
-			Sessions []map[string]any `json:"sessions"`
-		}
-		if len(results) != 1 || !read || json.Unmarshal([]byte(body), &roster) != nil {
-			t.Fatalf("the run saved the tool results %q, want the roster read whole", results)
-		}
+		// The total counts every session: the listener's two sessions and ses-gone.
+		roster := goingAgentRosterRead(t, rig, loop, "which agents are working now and on what", 3, 3)
 		told := roster.Sessions
 		if roster.Total != 3 || len(told) != 3 {
 			t.Fatalf("the model was told a total of %d and %v, want 3: the listener's two sessions, then ses-gone", roster.Total, told)

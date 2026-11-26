@@ -4020,7 +4020,7 @@
   },
   {
     "name": "read_progress",
-    "description": "Read progress: for an issue, its task and child counts and its children; for a project, every issue of it with its status and its progress. Name issue, or project; with neither, the page's issue or project is read.",
+    "description": "Read progress: for an issue, its task and child counts and its children; for a project, how many issues it holds (total) and at most 250 of them, each with its status and its progress. Name issue, or project; with neither, the page's issue or project is read.",
     "arguments": {
       "type": "object",
       "properties": {

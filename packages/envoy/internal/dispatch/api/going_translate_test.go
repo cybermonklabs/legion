@@ -542,3 +542,31 @@ func TestPostWritePrefixesResolveBeforeTheWrite(t *testing.T) {
 		}
 	}
 }
+
+// TestAQueryTranslationNamesTheFirstArgumentItCannotSend: a read whose query takes arguments it
+// cannot send refuses the call naming the first of them in the call's order, whichever order Go
+// walks a map in: read_delivery's from before its to, and dispatch_search's query before its
+// project, its limit and its offset. Each call is translated 64 times, since a translation that
+// walks a map of its arguments names another of them in about half of its tries.
+func TestAQueryTranslationNamesTheFirstArgumentItCannotSend(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name      string
+		translate goingTranslator
+		arguments map[string]any
+		first     string
+	}{
+		{"read_delivery's window", goingTranslateDeliveryWindow, map[string]any{"from": 1.0, "to": 2.0}, "from"},
+		{"dispatch_search", goingTranslateSearch, map[string]any{"query": []any{"a"}, "project": []any{"b"}, "limit": []any{1.0}, "offset": []any{2.0}}, "query"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for range 64 {
+				_, err := c.translate(context.Background(), goingReader{}, goingCallInput{arguments: c.arguments, path: map[string]string{}})
+				var refused goingUntranslatable
+				if !errors.As(err, &refused) || !strings.HasPrefix(string(refused), c.first+" ") {
+					t.Fatalf("%s of %v was refused with %v, want the refusal of %s", c.name, c.arguments, err, c.first)
+				}
+			}
+		})
+	}
+}
