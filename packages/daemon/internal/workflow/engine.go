@@ -325,6 +325,9 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.CloseChecksRead:
 		return e.closeChecksRead(ctx, tx, fact)
 	case intake.DispatchResultChanged:
+		if err := e.tellClosedCheckFailed(ctx, tx, fact); err != nil {
+			return intake.Result{}, err
+		}
 		return e.resultChanged(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
 		return e.conflictConfirmDone(ctx, tx, fact)
