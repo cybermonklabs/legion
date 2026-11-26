@@ -111,10 +111,11 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 
 	later := unsignedToken(time.Now().Add(50 * time.Minute))
 	require.NoError(t, os.WriteFile(tokenFile, []byte(later), 0o600))
-	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "the probe and the reconnect with the later token", func() bool {
-		return count(later) == 2 && nc.Stats().Reconnects == 1
+	testwait.Until(t, "the probe and the reconnect with the later token", func() (string, bool) {
+		presented, reconnects := count(later), nc.Stats().Reconnects
+		return fmt.Sprintf("the later token presented %d time(s), %d reconnect(s)", presented, reconnects), presented == 2 && reconnects == 1
 	})
-	testwait.Eventually(t, "the connection back up", nc.IsConnected)
+	testwait.Until(t, "the connection to be back up", func() (fmt.Stringer, bool) { return nc.Status(), nc.IsConnected() })
 	require.Never(t, func() bool { return count(later) > 2 || nc.Stats().Reconnects > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
 	require.Equal(t, 1, count(first))
 }
@@ -250,9 +251,9 @@ func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 	// callback, which is the stuck state the row fails on once the connection has closed. So the dump
 	// must show the keeper, a dispatcher and stuck, or the rule cannot fire with this nats.go and this
 	// runtime (a dispatcher name or a wait state it does not know), and every row it judges would pass.
-	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the live connection's keeper, its callback dispatcher and the stuck state", func() bool {
+	testwait.UntilPolling(t, 50*time.Millisecond, "the live connection's keeper, its callback dispatcher and the stuck state", func() (string, bool) {
 		dump := natscredGoroutines()
-		return dump.keepers == 1 && dump.dispatchers >= 1 && dump.stuck
+		return fmt.Sprintf("%+v", dump), dump.keepers == 1 && dump.dispatchers >= 1 && dump.stuck
 	})
 	nc.Close()
 	requireNoNatscredGoroutine(t, "after that connection closed")

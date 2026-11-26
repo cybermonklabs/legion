@@ -16,10 +16,14 @@
 --
 -- 'project_release' joins the sources of supervise.Claim.SuspendedBy: the release stopped the
 -- claim and deleted its pod. The claim keeps its phase, its session and its pending task, and the
--- daemon's next boot starts it again (workflow's booted), whatever role it is. 20261101201850
--- wrote the check last, so it is dropped and written again with the new value. No row holds the
--- value yet, so there is nothing to backfill, and every row the check validates holds one of the
--- values the old check took.
+-- daemon's next boot starts it again (workflow's booted), whatever role it is. The check is one
+-- list, and 20261115060739_claim_suspended_by_controller wrote it last, with 'controller', the
+-- project's controller's own suspension (#4065), so it is dropped and written again with every
+-- value that one took and the new value. Its version stands above 20261115060739's, so on any
+-- database this list is the last word: Migrate applies every unrecorded migration in version
+-- order, and a database main migrated has recorded 20261115060739 and applies this one after it.
+-- No row holds the new value yet, so there is nothing to backfill, and every row the check
+-- validates holds one of the values the old check took, 'controller' among them.
 create table project_releases (
   id bigint generated always as identity primary key,
   project text not null,
@@ -32,4 +36,4 @@ create table project_releases (
 
 alter table claims drop constraint if exists claims_suspended_by_check;
 alter table claims add constraint claims_suspended_by_check
-  check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released', 'project_release'));
+  check (suspended_by in ('', 'unknown', 'operator', 'daemon', 'exit', 'released', 'controller', 'project_release'));

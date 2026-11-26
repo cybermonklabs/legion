@@ -75,6 +75,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_JUDGE_DISPATCH_TOKEN_FILE":     givesNone("a file path"),
 	"BROKER_PROJECT_ACCESS_URL":            givesNone("a Dispatch's URL"),
 	"BROKER_PROJECT_ACCESS_TOKEN_FILE":     givesNone("a file path"),
+	"BROKER_HOLD_REQUIRES_DEADLINE":        givesNone("an on/off switch: it decides which of Dispatch's answers the hold gate serves, and names no account"),
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
 	"BROKER_GOOGLE_OIDC_ISSUER":            givesNone("an issuer"),

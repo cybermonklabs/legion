@@ -20,16 +20,20 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // A child's close or status change: it tells of the child's own run starting, leaving, coming back
 // or closing, which is not the child's own architect to judge (a leave suspends that architect and
 // a close as done retires it, in workflow's leave), and the architect above it decides what the
-// rest of the tree does. And a worker-died or a worker-stalled about an issue's own architect
-// (role is claim.RoleArchitect): the notice is about that architect, so the architect above it
-// must hear it, and the tree root's own architect, which has none above it, hears its own (the
-// walk from the root ends at the root, OwningIssue). Either notice on a child with no parent goes
+// rest of the tree does. And a worker-died, a worker-stalled or a provider-errors about an
+// issue's own architect (role is claim.RoleArchitect): the notice is about that architect, so the
+// architect above it must hear it, and the tree root's own architect, which has none above it,
+// hears its own worker-died and worker-stalled (the walk from the root ends at the root,
+// OwningIssue); the daemon writes no architect row for the root architect's own provider-errors
+// (daemon's providerErrorRunReached), since that wake would reach the session the provider keeps
+// refusing. Any of these notices on a child with no parent goes
 // to the tree root, never to the child's own architect: a failed claim is passed over by the walk
 // anyway, but a stalled one still holds its role and would be told of its own stall, and the
 // outbox can publish a child's close or status change while the child's own architect still holds
 // its role, before its suspension or close lands.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
-	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
+	aboutItsArchitect := role == claim.RoleArchitect &&
+		(kind == "worker-died" || kind == "worker-stalled" || kind == ProviderErrorsNotice)
 	return aboutItsArchitect || kind == "child-closed" || kind == "child-status"
 }
 
@@ -118,9 +122,11 @@ func TreeByKey(members []Issue) map[string]Issue {
 // resumes it, so what it owns is still its own. A claim the project release stopped keeps them
 // too, as the release left them, and the daemon's next boot starts it (workflow's
 // startReleaseStopped) rather than a wake: a delivery for it waits for that start (the daemon's
-// awaitsBootStart). Any other suspension stops the claim until a rule or an operator starts it
-// again. Were a released or stopped architect to lose its role here, a notice for it would walk up
-// to the architect above it, which owns neither the issue nor the answer.
+// awaitsBootStart). Any other suspension stops the agent until a rule or a resume starts it again,
+// and one the operator or the controller holds (supervise.SuspendSource.Holds) until that holder's
+// resume, or one that outranks it, lifts it. Were a released or stopped architect to lose its role
+// here, a notice for it would walk up to the architect above it, which owns neither the issue nor
+// the answer.
 //
 // It is the whole rule for a reader in a transaction (ArchitectRuns). The daemon's outbox reads
 // the same rule over the machine's live view and also passes over a claim whose process a

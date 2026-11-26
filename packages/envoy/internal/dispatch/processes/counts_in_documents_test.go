@@ -31,6 +31,7 @@ import (
 // renewal from its caller and fixes neither: those numbers are internal/dispatch/delivery's
 // intakeHoldTTL and intakeHoldRenew, and delivery registers them itself.
 func TestTheDocumentsStateTheCadencesThisPackageHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		site   = "docs/site/src/content/docs/dispatch/running-dispatch.md"
 		readme = "packages/envoy/cmd/dispatch/README.md"

@@ -679,13 +679,14 @@ func (r *projectReleaser) listSandboxes(run *releaseRun, sandboxes []runtime.Pro
 	return pods, others
 }
 
-// classifyReleasePod is how the release takes an issue pod, from its claims: left when an operator
-// holds one of them (heldRoles), with the roles named; no read when no role process of it has
-// said it is ready — none ever started, every claim failed, retired or suspended, or its role is
-// starting again — and read otherwise.
+// classifyReleasePod is how the release takes an issue pod, from its claims: left when a
+// suspension that holds is over one of them, the operator's or the project's controller's
+// (heldBy), with the roles and their holder named; no read when no role process of it has said it
+// is ready — none ever started, every claim failed, retired or suspended, or its role is starting
+// again — and read otherwise.
 func classifyReleasePod(claims []supervise.ClaimView) (podClass, string) {
-	if held := heldRoles(claims); held != "" {
-		return releaseLeaves, "an operator suspended its " + held
+	if why := heldBy(claims); why != "" {
+		return releaseLeaves, why
 	}
 	if len(runningClaims(claims)) == 0 {
 		return releaseUnread, ""
@@ -693,16 +694,31 @@ func classifyReleasePod(claims []supervise.ClaimView) (podClass, string) {
 	return releaseReads, ""
 }
 
-// heldRoles names the roles of claims an operator holds (Claim.RuleHolds: suspended by an
-// operator, or the operator's suspension held for its turn), "" when none.
-func heldRoles(claims []supervise.ClaimView) string {
-	var held []string
+// heldBy says which of claims a suspension that holds is over (Claim.RuleHolds: suspended by an
+// operator or by the project's controller, or such a suspension held for its turn), and whose it
+// is: "an operator suspended its <roles>", "the controller suspended its <roles>", or both, "" when
+// none. The controller's holds against every rule as the operator's does (supervise's
+// SuspendSource.Holds), so the release leaves such a pod as it leaves one an operator holds, and
+// holds its claims for an operator (hold).
+func heldBy(claims []supervise.ClaimView) string {
+	var byOperator, byController []string
 	for _, c := range claims {
-		if c.RuleHolds() {
-			held = append(held, string(c.Role))
+		switch {
+		case !c.RuleHolds():
+		case c.Holder() == supervise.SuspendedByController:
+			byController = append(byController, string(c.Role))
+		default:
+			byOperator = append(byOperator, string(c.Role))
 		}
 	}
-	return strings.Join(held, ", ")
+	var why []string
+	if len(byOperator) > 0 {
+		why = append(why, "an operator suspended its "+strings.Join(byOperator, ", "))
+	}
+	if len(byController) > 0 {
+		why = append(why, "the controller suspended its "+strings.Join(byController, ", "))
+	}
+	return strings.Join(why, ", and ")
 }
 
 // runningClaims is every claim of claims whose role process runs and has said it is ready, the

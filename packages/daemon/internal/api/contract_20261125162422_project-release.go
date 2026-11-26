@@ -48,15 +48,21 @@ import (
 // `….asked.*.role`, `projectRelease.result.claims.*.role` and `….ended`. Each value arrives
 // with its key in this entry, so its band holds back all six fields without a separate value
 // strip. A claim's `suspendedBy` on the operator routes takes `project_release`, a claim the
-// release stopped, which the daemon's next boot starts again. The release's ask to a role rides
-// the role's own topic as an update round's ask does, under the round `release:<id>`, and `POST
-// /legion/v1/claims/ready-for-update` hands an answer naming the running release's round to the
-// release, which records it on its own record and none of the claim's round columns. While a
-// release holds every start, the operator's spawn, retry, resume and deliver, and either door's
-// fresh session and compaction, answer 409 with the code `PROJECT_RELEASED` and the sentence
-// api.ProjectReleaseHeldSentence, the Failure body alone. The release and 178's project pause
-// refuse each other: while the project is paused, or a pod a pause stopped is still held after the
-// resume, `POST /legion/v1/operator/project/release` to a daemon process that has run no release, a
+// release stopped, which the daemon's next boot starts again; the agent actions' answer of the
+// agent-actions entry (#4065) never does, since the release refuses the controller's resume and
+// retry and the controller's suspension outranks the release's, so its domain stays that entry's.
+// A stopped claim's `ended` takes each suspension source, `controller` among them. The release's
+// ask to a role rides the role's own topic as an update round's ask does, under the round
+// `release:<id>`, and `POST /legion/v1/claims/ready-for-update` hands an answer naming the running
+// release's round to the release, which records it on its own record and none of the claim's
+// round columns. While a release holds every start, the operator's spawn, retry, resume and
+// deliver, either door's fresh session and compaction, and the controller's `POST
+// /legion/v1/agents/retry`, `agents/resume` and `issues/pod-update` (the agent-actions entry's)
+// answer 409 with the code `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence, the
+// Failure body alone; the controller's `agents/stop` and `agents/suspend` start nothing and run.
+// The release and 178's project pause refuse each other: while the project is paused, or a pod a
+// pause stopped is still held after the resume, `POST /legion/v1/operator/project/release` to a
+// daemon process that has run no release, a
 // dry run's included, answers 409 `PROJECT_PAUSED` with api.PauseFailure, which gains `heldPods`,
 // each such pod's `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the
 // `pause` that stands where one does, and records, stops and deletes nothing; the refusal's row of
@@ -97,12 +103,13 @@ func init() {
 // daemon's next boot, and nothing else. releaseOutcomes is every outcome of a Sandbox's line
 // (api.ReleaseOutcome), and releasedSandboxKinds every kind of Sandbox a line names
 // (runtime.ProjectSandboxKind). releaseClaimEnds is every word for how a claim of the stop set
-// ended (api.ReleasedClaimEnd): each claim state but `suspended`, each suspension source, and
-// `unrecorded`. All four record the entry id, which the registry resolves to the contract
-// `projectRelease` arrived at. Each names its constants rather than reading api.ReleaseOutcomes or
-// api.ReleasedClaimEnds, as failureCauses names its causes, because a word added to one of those
-// later arrives at its own contract and not at this one; TestProjectReleaseWordsGolden holds the
-// rosters themselves to the plugin's enums.
+// ended (api.ReleasedClaimEnd): each claim state but `suspended`, each suspension source, the
+// controller's own (#4065's `controller`) among them, and `unrecorded`. All four record the entry
+// id, which the registry resolves to the contract `projectRelease` arrived at. Each names its
+// constants rather than reading api.ReleaseOutcomes or api.ReleasedClaimEnds, as failureCauses
+// names its causes, because a word added to one of those later arrives at its own contract and
+// not at this one; TestProjectReleaseWordsGolden holds the rosters themselves to the plugin's
+// enums.
 var (
 	releaseEnders = valuesFrom(projectReleaseContract, store.ProjectReleaseEndedByBoot)
 
@@ -121,8 +128,9 @@ var (
 		ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
 		ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
 		ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
-		ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
-		ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+		ReleasedClaimEnd(supervise.SuspendedByController), ReleasedClaimEnd(supervise.SuspendedByDaemon),
+		ReleasedClaimEnd(supervise.SuspendedByExit), ReleasedClaimEnd(supervise.SuspendedByReleased),
+		ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
 		ReleasedClaimUnrecorded)
 )
 

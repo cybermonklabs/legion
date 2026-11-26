@@ -117,7 +117,7 @@ func approvedCredential(t *testing.T, svc *Service) (recordID, credentialID stri
 	if err != nil {
 		t.Fatalf("LookupByCode: %v", err)
 	}
-	_, credentialID, err = svc.ApplyDecision(ctx, view.RecordID, true, testApprover, code)
+	_, credentialID, err = applyDecision(ctx, svc, view.RecordID, true, testApprover, code, store.IssuerSubject{}, nil)
 	if err != nil {
 		t.Fatalf("ApplyDecision: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestLoginIssuesAKeyBoundCredentialOnTypedCodeApproval(t *testing.T) {
 	}
 
 	beforeDecision := time.Now()
-	state, credentialID, err := svc.ApplyDecision(ctx, view.RecordID, true, testApprover, code)
+	state, credentialID, err := applyDecision(ctx, svc, view.RecordID, true, testApprover, code, store.IssuerSubject{}, nil)
 	afterDecision := time.Now()
 	if err != nil {
 		t.Fatalf("ApplyDecision: %v", err)
@@ -229,11 +229,11 @@ func TestApplyDecisionTakesTheCodeThenOnlyTheApproversLogin(t *testing.T) {
 		t.Fatalf("LookupByCode: %v", err)
 	}
 
-	if _, _, err := svc.ApplyDecision(ctx, view.RecordID, true, testApprover, "WRONG-CODE"); !errors.Is(err, ErrCodeMismatch) {
+	if _, _, err := applyDecision(ctx, svc, view.RecordID, true, testApprover, "WRONG-CODE", store.IssuerSubject{}, nil); !errors.Is(err, ErrCodeMismatch) {
 		t.Fatalf("ApplyDecision(approver, wrong code) = %v, want ErrCodeMismatch", err)
 	}
 	for _, approve := range []bool{true, false} {
-		if _, _, err := svc.ApplyDecision(ctx, view.RecordID, approve, "mallory", code); !errors.Is(err, record.ErrNotApprover) {
+		if _, _, err := applyDecision(ctx, svc, view.RecordID, approve, "mallory", code, store.IssuerSubject{}, nil); !errors.Is(err, record.ErrNotApprover) {
 			t.Fatalf("ApplyDecision(approve=%v, mallory, right code) = %v, want record.ErrNotApprover", approve, err)
 		}
 	}
@@ -241,7 +241,7 @@ func TestApplyDecisionTakesTheCodeThenOnlyTheApproversLogin(t *testing.T) {
 		t.Fatalf("recordState after refused decisions = %q, %v, want pending", state, err)
 	}
 
-	if state, _, err := svc.ApplyDecision(ctx, view.RecordID, true, "  SJawhar ", code); err != nil || state != "issued" {
+	if state, _, err := applyDecision(ctx, svc, view.RecordID, true, "  SJawhar ", code, store.IssuerSubject{}, nil); err != nil || state != "issued" {
 		t.Fatalf("ApplyDecision(approver in another casing) = %q, %v, want issued", state, err)
 	}
 	var login, actor string
@@ -310,7 +310,7 @@ func TestAMachineLoginNamingAnyoneIsDecidedByNoOne(t *testing.T) {
 		t.Fatalf("insert the record an older binary opened: %v", err)
 	}
 	for _, login := range []string{"bob@example.com", record.AnyoneApprover} {
-		if _, _, err := svc.ApplyDecision(ctx, body.ID(), true, login, code); !errors.Is(err, record.ErrNotApprover) {
+		if _, _, err := applyDecision(ctx, svc, body.ID(), true, login, code, store.IssuerSubject{}, nil); !errors.Is(err, record.ErrNotApprover) {
 			t.Fatalf("ApplyDecision(%q) = %v, want record.ErrNotApprover", login, err)
 		}
 	}
@@ -482,14 +482,14 @@ func TestAPendingServiceLoginIsNeverApprovedButMayBeDenied(t *testing.T) {
 		svc := newFixture(t)
 		ctx := context.Background()
 		recordID, code, _ := insertServiceRecord(t, svc, approver)
-		if _, _, err := svc.ApplyDecision(ctx, recordID, true, "bob@example.com", code); !errors.Is(err, ErrServiceLogsInWithToken) {
+		if _, _, err := applyDecision(ctx, svc, recordID, true, "bob@example.com", code, store.IssuerSubject{}, nil); !errors.Is(err, ErrServiceLogsInWithToken) {
 			t.Fatalf("approver %q: ApplyDecision(approve) = %v, want ErrServiceLogsInWithToken", approver, err)
 		}
 		var minted int
 		if err := svc.Store.Pool.QueryRow(ctx, `select count(*) from launcher_credentials`).Scan(&minted); err != nil || minted != 0 {
 			t.Fatalf("approver %q: launcher credentials = %d, %v; want none", approver, minted, err)
 		}
-		state, credentialID, err := svc.ApplyDecision(ctx, recordID, false, "bob@example.com", code)
+		state, credentialID, err := applyDecision(ctx, svc, recordID, false, "bob@example.com", code, store.IssuerSubject{}, nil)
 		if err != nil || state != "denied" || credentialID != "" {
 			t.Fatalf("approver %q: ApplyDecision(deny, bob) = %q, %q, %v; want denied", approver, state, credentialID, err)
 		}
@@ -607,7 +607,7 @@ func TestExpirePendingMarksOverdueLoginsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupByCode(decided): %v", err)
 	}
-	if _, _, err := svc.ApplyDecision(ctx, decidedView.RecordID, false, testApprover, decidedCode); err != nil {
+	if _, _, err := applyDecision(ctx, svc, decidedView.RecordID, false, testApprover, decidedCode, store.IssuerSubject{}, nil); err != nil {
 		t.Fatalf("ApplyDecision(deny decided): %v", err)
 	}
 
@@ -641,7 +641,7 @@ func TestApplyDecisionRefusesALoginPastItsExpiry(t *testing.T) {
 		t.Fatalf("LookupByCode: %v", err)
 	}
 	for _, approve := range []bool{true, false} {
-		_, _, err := svc.ApplyDecision(ctx, view.RecordID, approve, testApprover, code)
+		_, _, err := applyDecision(ctx, svc, view.RecordID, approve, testApprover, code, store.IssuerSubject{}, nil)
 		if !errors.Is(err, ErrLoginExpired) {
 			t.Fatalf("ApplyDecision(approve=%v) before the sweep = %v, want ErrLoginExpired", approve, err)
 		}
@@ -650,7 +650,7 @@ func TestApplyDecisionRefusesALoginPastItsExpiry(t *testing.T) {
 		t.Fatalf("ExpirePending: %v", err)
 	}
 	for _, approve := range []bool{true, false} {
-		_, _, err := svc.ApplyDecision(ctx, view.RecordID, approve, testApprover, code)
+		_, _, err := applyDecision(ctx, svc, view.RecordID, approve, testApprover, code, store.IssuerSubject{}, nil)
 		if !errors.Is(err, ErrLoginExpired) {
 			t.Fatalf("ApplyDecision(approve=%v) after the sweep = %v, want ErrLoginExpired", approve, err)
 		}
@@ -703,7 +703,7 @@ func TestASweepWhileADecisionHoldsItsRowLockCommits(t *testing.T) {
 	}
 	decided := make(chan error, 1)
 	go func() {
-		_, _, err := svc.ApplyDecision(ctx, view.RecordID, true, testApprover, code)
+		_, _, err := applyDecision(ctx, svc, view.RecordID, true, testApprover, code, store.IssuerSubject{}, nil)
 		decided <- err
 	}()
 	waitForLockWait(t, ctx, svc.Store, "insert into launcher_credentials%", decided)

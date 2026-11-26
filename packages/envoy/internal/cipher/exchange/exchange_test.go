@@ -434,7 +434,7 @@ func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
 
 // TestAPersonlessEntryNamesNoProject: of the entries that name no job list, only an account entry
 // that names no project may name no person: an account entry that names a project names its
-// person, so no account entry's token held to a project is personless. An account entry naming a
+// person, so no account entry's token that names a project is personless. An account entry naming a
 // project and no person is refused, naming the entry and that rule; a person that is blank without
 // being empty is refused whatever the project; and a workflow entry still needs a person, whether
 // or not it names a project.
@@ -847,7 +847,7 @@ func withRun(token map[string]any, run string) map[string]any {
 
 func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T) {
 	set := listed(t)
-	claims, err := set.Machine(credentialID, person, "ada-devbox", nil)
+	claims, err := set.Machine(credentialID, person, "ada-devbox", nil, exchange.ApproverUnrestricted)
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
@@ -856,7 +856,7 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 		t.Fatalf("Machine = %+v, want %+v: a machine credential that asked for no project names none and says which absence that is", claims, want)
 	}
 	// Another machine of the same person is the same principal: the name belongs to the person.
-	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox", nil)
+	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox", nil, exchange.ApproverUnrestricted)
 	if err != nil || !reflect.DeepEqual(other, want) {
 		t.Fatalf("Machine(another credential of %s) = %+v, %v; want %+v", person, other, err, want)
 	}
@@ -868,7 +868,11 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 // is. A read entry's decision says that it writes nothing, carries no project, and reads apart
 // from the zero value in a refusal or a log line too. A job entry's decision carries its entry's
 // scope and whole list, the public scope included, which reads apart from every other in a
-// refusal or a log line.
+// refusal or a log line. A person's own credential (Machine of a member not restricted, and
+// Person here) is never named: a restricted member's machine login is the one person's
+// credential decided named (TestARestrictedMembersMachineLoginIsNamedToItsOneProject), and
+// Dispatch holds such a token to its account as it holds the person scope's, telling it from an
+// operator entry's by the credential its trade recorded.
 func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	set := listed(t)
 	pod, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, "implementer-g1", nil)
@@ -891,7 +895,7 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Google: %v", err)
 	}
-	machine, err := set.Machine(credentialID, person, "ada-devbox", []string{"PRIV", "PUB"})
+	machine, err := set.Machine(credentialID, person, "ada-devbox", []string{"PRIV", "PUB"}, exchange.ApproverUnrestricted)
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
@@ -974,7 +978,7 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a request naming a session holding a wildcard", credential: credentialID, approver: person, session: "ada-*", want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Machine(c.credential, c.approver, c.session, nil)
+			claims, err := set.Machine(c.credential, c.approver, c.session, nil, exchange.ApproverUnrestricted)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Machine(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}

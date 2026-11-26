@@ -662,7 +662,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 		t.Fatalf("pending = %+v while the operator's suspension stands, want the older daemon's ask %s held unsent", p, ask.ID)
 	}
 
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 
 	prompts := h.wantPrompts(sent + 1)
@@ -1027,7 +1027,7 @@ func TestPodUpdateSignalIsFenced(t *testing.T) {
 func TestPodUpdateARetiredClaimLeavesNoRoundBehind(t *testing.T) {
 	for name, retire := range map[string]func(*harness){
 		"the agent reports its exit": func(h *harness) { h.exit() },
-		"the workflow stops it":      func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+		"the workflow stops it":      func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
@@ -1373,7 +1373,7 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 				// round or none (sendPending): the resume is what brings its process back and
 				// sends the task the round no longer holds.
 				h.wantPrompts(sent + 1)
-				h.must(RequestResume{Claim: h.token})
+				h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 				h.relaunched()
 			}
 

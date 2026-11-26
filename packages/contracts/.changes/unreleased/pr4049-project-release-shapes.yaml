@@ -8,9 +8,12 @@ body: |-
   `outcome`, `endedBy` and a stopped claim's `ended` are enums of the words the daemon writes,
   `LEGION_RELEASE_OUTCOMES`, `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`, each
   held to the daemon's own list in `fixtures/daemon-api/project-release-words.json`, and its six
-  enumerated fields are rows of `fixtures/daemon-api/contracts/20261125162422_project-release.json`. A claim's
-  `suspendedBy` gains `project_release`, a claim the project release stopped, which the daemon's
-  next boot starts again. The release's refusal while the project is paused or a pod a pause stopped
+  enumerated fields are rows of `fixtures/daemon-api/contracts/20261125162422_project-release.json`. A
+  stopped claim's `ended` takes each suspension source, the controller's `controller` among them. A
+  claim's `suspendedBy` on the operator routes gains `project_release`, a claim the project release
+  stopped, which the daemon's next boot starts again; the agent actions' `suspendedBy` and
+  `suspensionHeldBy` do not take it, since no agent action answers a claim the release stopped. The
+  release's refusal while the project is paused or a pod a pause stopped
   is still held is `PROJECT_PAUSED` with `heldPods` (fixture `project-release-paused.json`), and a
   pause while a project release runs is refused `PROJECT_RELEASING` (fixture
   `project-pause-releasing.json`).

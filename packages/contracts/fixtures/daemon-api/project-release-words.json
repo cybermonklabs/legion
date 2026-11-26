@@ -24,6 +24,7 @@
     "retired",
     "unknown",
     "operator",
+    "controller",
     "daemon",
     "exit",
     "released",

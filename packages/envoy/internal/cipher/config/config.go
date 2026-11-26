@@ -190,10 +190,11 @@ type Config struct {
 	// the provider's issuer (an absolute https URL, or http only to a loopback host, for a run on
 	// one machine), the client's id, a file holding the client's secret (read at startup and
 	// trimmed; no variable carries the secret itself, so BROKER_SIGNIN_CLIENT_SECRET is refused),
-	// the Google Workspace domain a person's ID token must name in its hd claim, and how many
-	// seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours, the
-	// default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
-	// people in and is missing any of them refuses to start, naming the ones missing, since
+	// the Google Workspace domain a person's ID token must name in its hd claim (this domain is
+	// the gate, whatever audience the one consent screen both Google clients share is set to), and
+	// how many seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24
+	// hours, the default). The first four are required unless BROKER_SIGNIN is off: a broker that
+	// signs people in and is missing any of them refuses to start, naming the ones missing, since
 	// nobody could approve a secret request on a page nobody can sign in to. With BROKER_SIGNIN
 	// off every one of the five is refused, and SignIn is empty.
 	SignIn approval.SignIn
@@ -530,7 +531,11 @@ type Config struct {
 	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
 	// every enrollment under that person's login and every secret request and release of their
 	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
-	// (the approval page says it could not decide the request). Set with
+	// (the approval page says it could not decide the request). The broker keeps the kind
+	// Dispatch last answered for each person in person_member_kind (projectaccess.Client.Keep), so
+	// while Dispatch does not answer a person it last answered a full member is served as one,
+	// and only a person it last answered a restricted member, or of whom it keeps no kind, is
+	// refused so. Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator
@@ -546,6 +551,16 @@ type Config struct {
 	// through ciphertoken.AccountToken, which reads the file again once what it last read is 30
 	// seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
 	ProjectAccessTokenFile string
+	// BROKER_HOLD_REQUIRES_DEADLINE: true on the broker of a deployment whose Dispatch runs behind
+	// Identity-Aware Proxy (DISPATCH_IDENTITY=iap), and unset or false everywhere else. With it
+	// true, the hold of refused people (internal/cipher/hold) serves Dispatch's answer that a
+	// person is not held only with the deadline such a Dispatch puts on it (not_held_until), so an
+	// answer naming none is refused 503 HOLD_UNCHECKABLE, and refuses a person of whom the broker
+	// keeps no answer while Dispatch cannot be asked instead of serving them unchecked; and the
+	// hold's refusals say that the Workspace Directory, not a sign-in, ends a hold. It needs
+	// BROKER_PROJECT_ACCESS_URL, which builds the hold: true without it, the start is refused, since
+	// that broker would hold nobody. Anything strconv.ParseBool does not read is refused.
+	HoldRequiresDeadline bool
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -871,7 +886,7 @@ type Config struct {
 	// project each fleet writes for, whitespace-separated
 	// <service account email>=<project>=<person>[=<session>] entries, such as
 	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
-	// exchange mints for a machine of that account may write that one project, acts for that
+	// exchange mints for a machine of that account names that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
 	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
@@ -937,7 +952,7 @@ type Config struct {
 	// entries, such as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com, or
 	// <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, such
 	// as system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com==first,second. The
-	// token minted for a pod of the account may write that one project, a project key that
+	// token minted for a pod of the account names that one project, a project key that
 	// exchange.NewSet refuses the start over when it is not one, acts for that person, and writes
 	// under the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>, or <service
@@ -947,8 +962,8 @@ type Config struct {
 	// names its issuers): an account whose tokens name no person and no project and act as the
 	// account itself, which Dispatch records their writes under. An entry naming a project and no
 	// person is refused: an entry that names a project names its person, so no account entry's
-	// token held to a project is personless. An entry whose fixed session is legion-daemon:<its own
-	// project> is a Legion daemon's own: the token minted for its pods holds the OAuth scope
+	// token that names a project is personless. An entry whose fixed session is legion-daemon:<its
+	// own project> is a Legion daemon's own: the token minted for its pods holds the OAuth scope
 	// legion-status too. Dispatch reads that scope (DISPATCH_LEGION_STATUS_SCOPE): where the
 	// setting is on, a write of a Legion issue's status needs it or the person scope, but for a
 	// status write of the architect of an issue above, which writes with its own broker token. No
@@ -2418,8 +2433,8 @@ func exchangeListingRefusal(cfg *Config) error {
 // exchangeAccountIssuers' answer over issuers, BROKER_K8S_OIDC_ISSUER, and exchangeTakes, the
 // issuers BROKER_EXCHANGE_K8S_ISSUER names. It refuses, naming the entry: one not of that form,
 // with a blank account, or naming a project and no person, since an entry that names a project
-// names its person, so no account entry's token held to a project is personless; an account that
-// is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// names its person, so no account entry's token that names a project is personless; an account
+// that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
 // (podAccountRefusal); an account listed twice, since one account writes as one identity; an
 // entry that gives no issuer field and whose session is only issuer names (sessionNamesIssuers),
 // which it would write under as a session while taking the first issuer alone; and what
@@ -2434,7 +2449,7 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 			return nil, fmt.Errorf(`%s must be <service account>=<project>=<person>[=<session>] or <service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…] entries, the project empty for an entry naming none and the person empty only beside it: %s, got %q`, setting, accountIssuerForm.field, text)
 		}
 		if fields[1] != "" && fields[2] == "" {
-			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token held to a project is personless", setting, text)
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token that names a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -3053,11 +3068,12 @@ func parseAirlockTestAzureAuthority(value string) (string, error) {
 	return host, nil
 }
 
-// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
-// the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
-// than taken as off, since a misspelled value would otherwise turn a negative control into the
-// ordinary run it is meant to be compared against.
-func testOnlySwitch(setting, value string) (bool, error) {
+// onOffSetting reads an on/off setting: the local stack's test-only switches, the airlock's two
+// and the judge's one, and BROKER_HOLD_REQUIRES_DEADLINE. Unset is off, and anything
+// strconv.ParseBool does not read is refused rather than taken as off, since a misspelled value
+// would otherwise turn a negative control into the ordinary run it is meant to be compared
+// against, or serve an IAP deployment's people on answers that name no deadline.
+func onOffSetting(setting, value string) (bool, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
 		return false, nil
@@ -3316,16 +3332,16 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestResolve, cfg.ProxyTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+	if cfg.AirlockTestKeepValues, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+	if cfg.AirlockTestNoKind, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+	if cfg.JudgeTestSkipChecks, testSwitchErr = onOffSetting("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
@@ -3500,6 +3516,15 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
 			return Config{}, err
 		}
+	}
+	if cfg.HoldRequiresDeadline, err = onOffSetting("BROKER_HOLD_REQUIRES_DEADLINE", getenv("BROKER_HOLD_REQUIRES_DEADLINE")); err != nil {
+		return Config{}, err
+	}
+	// The deadline rule rules the hold, which BROKER_PROJECT_ACCESS_URL builds: a broker that asks
+	// no Dispatch holds nobody, so the rule beside no URL is an IAP deployment that meant to hold
+	// its people and holds none, refused as every setting that configures nothing is.
+	if cfg.HoldRequiresDeadline && cfg.ProjectAccessURL == "" {
+		return Config{}, errors.New("BROKER_HOLD_REQUIRES_DEADLINE is true and BROKER_PROJECT_ACCESS_URL is not set: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, so with no URL it holds nobody; set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE, or unset BROKER_HOLD_REQUIRES_DEADLINE")
 	}
 	switch cfg.SecretsStore {
 	case secrets.StoreAWS:

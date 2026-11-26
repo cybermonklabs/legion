@@ -331,8 +331,12 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // it stopped and a start queued for news of the approved design alone (two starts, which wait)
 // among them, and the pause's two notices to the controller, which wait as every controller notice
 // does. The end of a parent's worker's phase (phase_ended) waits, as a hook's prompt does: it
-// tells a role and wakes a released one. The reconcile of a tree's news (design_changes) and the
-// two reads of Dispatch for a root's design-gate basis and for a re-parented root
+// tells a role and wakes a released one. So do the merger's message that the project's merge
+// holds changed (merge_holds_changed, #4065), which wakes a released merger as the merge-queue
+// message does, the architect's notices of that change and of a run of provider errors, and the
+// ask of the update round the controller's pod update opens (`pod:<pod uid>`), as every round's
+// ask but the release's own does. The reconcile of a tree's news (design_changes) and the two
+// reads of Dispatch for a root's design-gate basis and for a re-parented root
 // (pending_basis_seed, reparent_seed) run: each tells a role only through a start or a notice,
 // which waits.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
@@ -359,8 +363,13 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindUpdateAsk: {
 			{"the release's own ask", record.UpdateAsk{Round: ownRound}, false},
 			{"a pod update round's ask", record.UpdateAsk{Round: "update:3"}, true},
+			{"the ask of the round the controller's pod update opened", record.UpdateAsk{Round: "pod:0f1e2d3c"}, true},
 		},
-		record.OutboxKindNotice: {{"a notice", record.Notice{}, true}},
+		record.OutboxKindNotice: {
+			{"a notice", record.Notice{}, true},
+			{"an architect's notice that the merge holds changed", record.Notice{Kind: "merge-holds-changed", Role: claim.RoleArchitect}, true},
+			{"an architect's notice of a run of provider errors", record.Notice{Kind: record.ProviderErrorsNotice, Role: claim.RoleArchitect}, true},
+		},
 		record.OutboxKindControllerNotice: {
 			{"a controller notice", record.ControllerNotice{}, true},
 			{"a project-paused notice", record.ControllerNotice{Kind: record.ProjectPausedNotice}, true},
@@ -371,6 +380,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindHookPrompt:         {{"a hook's prompt", record.HookPrompt{}, true}},
 		record.OutboxKindMergeQueueRead:     {{"a merge-queue read", record.MergeQueueRead{}, true}},
 		record.OutboxKindMergeQueueRemoval:  {{"a merge-queue removal", record.MergeQueueRemoval{}, true}},
+		record.OutboxKindMergeHoldsChanged:  {{"the merger's message that the merge holds changed", record.MergeHoldsChanged{Project: "legion"}, true}},
 		record.OutboxKindConflictConfirm:    {{"a conflicting head's second read", record.ConflictConfirm{}, true}},
 		record.OutboxKindMergeForward:       {{"a merge forward's message", record.MergeForwardMessage{}, true}},
 		record.OutboxKindCheckWake:          {{"a check's wake", record.CheckWakeDue{}, true}},

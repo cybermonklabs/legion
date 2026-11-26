@@ -210,6 +210,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
+		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
 
 	deps := api.Deps{

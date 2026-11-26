@@ -467,12 +467,13 @@ func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, kept b
 // suspended by an idle release (supervise.SuspendedByReleased) is asked once more, so the project
 // release's suspension takes over that hold by rank and the boot starts the claim; no other
 // source ranks below the project release's (supervise's suspensionRank), so none other is asked.
-// Then one of two ends. A pod a claim of which an operator suspended meanwhile, or whose claims
-// were not all stored settled by the stop's deadline (stopDeadline), is left, each of its claims
-// held for an operator so that no boot starts it. Otherwise the pod is deleted
-// (IssueSuspender.SuspendIssue), with an authorize the runtime calls under its pod lock that holds
-// only while the release runs and no claim of the pod is an operator's, and whose false answer
-// leaves the pod as well. A deleted pod's line takes its last read and its outcome (writeDeleted),
+// Then one of two ends. A pod a claim of which an operator or the project's controller suspended
+// meanwhile (heldBy), or whose claims were not all stored settled by the stop's deadline
+// (stopDeadline), is left, each of its claims held for an operator so that no boot starts it.
+// Otherwise the pod is deleted (IssueSuspender.SuspendIssue), with an authorize the runtime calls
+// under its pod lock that holds only while the release runs and no suspension of the operator's or
+// the controller's is over a claim of the pod, and whose false answer leaves the pod as well. A
+// deleted pod's line takes its last read and its outcome (writeDeleted),
 // and the pod's hold streaks end: no hold stands on a pod that is gone, and the idle pass, which
 // would end them at its next read, is held while the mark stands, so until the next boot the
 // state would show the deleted pod's hold (store.StandingPodHoldsTx). A streak that cannot be
@@ -498,8 +499,8 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 			}
 		}
 	}
-	if held := heldRoles(r.issueViews(pod.sandbox.Issue)); held != "" {
-		r.leave(ctx, run, pod, "an operator suspended its "+held+" during the release")
+	if why := heldBy(r.issueViews(pod.sandbox.Issue)); why != "" {
+		r.leave(ctx, run, pod, why+" during the release")
 		return
 	}
 	if len(pending) > 0 {
@@ -508,7 +509,7 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 	}
 	authorized := false
 	err := r.pods.SuspendIssue(ctx, pod.sandbox.Issue, pod.sandbox.Tree, func(context.Context) (bool, error) {
-		authorized = ctx.Err() == nil && !r.mark.finished() && heldRoles(r.issueViews(pod.sandbox.Issue)) == ""
+		authorized = ctx.Err() == nil && !r.mark.finished() && heldBy(r.issueViews(pod.sandbox.Issue)) == ""
 		return authorized, nil
 	})
 	switch {
@@ -516,7 +517,7 @@ func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, po
 		r.leave(ctx, run, pod, "its delete failed: "+err.Error())
 		return
 	case !authorized:
-		r.leave(ctx, run, pod, "an operator suspended one of its claims as its delete began")
+		r.leave(ctx, run, pod, "an operator or the controller suspended one of its claims as its delete began")
 		return
 	}
 	run.mu.Lock()

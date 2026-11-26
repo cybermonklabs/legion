@@ -21,12 +21,14 @@ body: |-
   Those starts reach each new issue pod's start gate as starts no request raised: the first starts
   at once, and of those that wait behind its load the role working the issue's phase loads its
   session first.
-  A pod that holds a claim an operator suspended, or whose ask to its roles could not be written
-  before the bound or reached no session of them by it, is left with its disk, and the claims that
-  ran there stay held for an operator.
-  A notice, role message, phase-ended message, hook prompt, merge-queue removal message or
-  merge-forward message held through the release reaches its claim once the next boot's start of it
-  holds its role again.
+  A pod that holds a claim an operator or the project's controller suspended, or whose ask to its
+  roles could not be written before the bound or reached no session of them by it, is left with
+  its disk, and the claims that ran there stay held for an operator.
+  A notice, role message, phase-ended message, hook prompt, merge-queue removal message, merge
+  holds change message or merge-forward message held through the release reaches its claim once
+  the next boot's start of it holds its role again. The controller's `retry`, `resume_agent` and
+  `replace_pod` are refused `409 PROJECT_RELEASED` until that boot, as the operator's starts are;
+  its `stop` and `suspend` still run.
   While the project is paused, or while a pod that a pause stopped is still held after the resume,
   a daemon process that has run no release answers the release `409 PROJECT_PAUSED`, its dry run
   included, names each held pod with the claims to resume (`legion claims resume --claim

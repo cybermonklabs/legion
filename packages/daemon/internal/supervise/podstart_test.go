@@ -243,7 +243,7 @@ func (h *harness) loadEnds(r *podRole) {
 // runs brings a suspended r up and through its load: resumed, registered and settled.
 func (h *harness) runs(r *podRole) {
 	h.t.Helper()
-	h.mustPostTo(r.m, RequestResume{Claim: r.token})
+	h.mustPostTo(r.m, RequestResume{Claim: r.token, By: SuspendedByOperator})
 	h.loadEnds(r)
 }
 
@@ -560,9 +560,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h := podHarness(t, "")
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-		h.mustPostTo(first.m, RequestResume{Claim: first.token})
+		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		h.wantStarts(first.token, 1)
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(19 * time.Second)
 		h.wantWaitsForPod(second, 0)
 
@@ -578,8 +578,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h := podHarness(t, "")
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(8 * time.Second)
 		h.registered(first)
 		h.wantWaitsForPod(second, 0)
@@ -601,9 +601,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door := h.holdStarts()
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token})
+		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		door.at(t, first)
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		// The pod comes up 118 s after the second start was asked, and the first role's process
 		// starts in it.
 		h.clock.Advance(118 * time.Second)
@@ -632,8 +632,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 		third := h.podRole(claim.RoleTester, StateQueued)
 
-		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.parks(third, RequestSpawn{Claim: third.token}, 0)
 		h.clock.Advance(10 * time.Second)
 
@@ -656,9 +656,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door := h.holdStarts()
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token})
+		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		door.at(t, first)
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(118 * time.Second)
 		door.release <- nil
 		receive(t, "the first role's start", firstStarted, false)
@@ -685,8 +685,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h := podHarness(t, "")
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-		h.mustPostTo(first.m, RequestResume{Claim: first.token})
-		h.parks(second, RequestResume{Claim: second.token}, 0)
+		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 
 		// The first role's agent registers 100 s after its process started, inside the bound: its
 		// load ends 30 s later, at +130 s, and the bound no longer runs.
@@ -711,9 +711,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door := h.holdStarts()
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token})
+			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			door.at(t, first)
-			h.parks(second, RequestResume{Claim: second.token}, 0)
+			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(4 * time.Second)
 			door.release <- errBoom
 			door.at(t, second)
@@ -738,8 +738,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h := podHarness(t, "")
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.parks(second, RequestResume{Claim: second.token}, 0)
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(5 * time.Second)
 			relaunched := h.died(first)
 			h.wantGrantedStart(second, 1)
@@ -758,8 +758,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h := podHarness(t, "")
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.parks(second, RequestResume{Claim: second.token}, 0)
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(4 * time.Second)
 			h.registered(first)
 			h.clock.Advance(10 * time.Second)
@@ -786,9 +786,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door := h.holdStarts()
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token})
+			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			door.at(t, first)
-			h.parks(second, RequestResume{Claim: second.token}, 0)
+			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(6 * time.Second)
 			suspended := h.postAsync(first.m, RequestSuspend{Claim: first.token, By: SuspendedByOperator, Reason: "a person stops the role while its pod comes up"})
 			door.at(t, second)
@@ -806,10 +806,10 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h := podHarness(t, "")
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
-			h.parks(second, RequestResume{Claim: second.token}, 0)
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
+			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(3 * time.Second)
-			h.mustPostTo(first.m, RequestStop{Claim: first.token})
+			h.mustPostTo(first.m, RequestStop{Claim: first.token, By: SuspendedByOperator})
 			h.wantGrantedStart(second, 1)
 			h.wantClaimState(first, StateRetired)
 			h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 3 * time.Second, endedBy: "retirement"})
@@ -830,7 +830,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			{name: "an operator's start, which the wake pacing lets through", paced: true, state: StateQueued,
 				start: func(token claim.Token) Event { return RequestSpawn{Claim: token, Exempt: true} }, method: "Spawn"},
 			{name: "a resume in a daemon that sets no wake pace", state: StateSuspended,
-				start: func(token claim.Token) Event { return RequestResume{Claim: token} }, method: "Resume"},
+				start: func(token claim.Token) Event { return RequestResume{Claim: token, By: SuspendedByOperator} }, method: "Resume"},
 			{name: "a fresh session's start", state: StateQueued,
 				start: func(token claim.Token) Event { return RequestSpawn{Claim: token} }, method: "Spawn"},
 		} {
@@ -891,13 +891,13 @@ func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 		planner := h.podRole(claim.RolePlanner, StateSuspended)
 		h.runs(reviewer)
 		h.runs(tester)
-		h.mustPostTo(holder.m, RequestResume{Claim: holder.token})
+		h.mustPostTo(holder.m, RequestResume{Claim: holder.token, By: SuspendedByOperator})
 
 		reviewerStarted := h.died(reviewer)
 		h.wantWaitsForPod(reviewer, 1)
 		testerStarted := h.died(tester)
 		h.wantWaitsForPod(tester, 1)
-		plannerStarted := h.postAsync(planner.m, RequestResume{Claim: planner.token})
+		plannerStarted := h.postAsync(planner.m, RequestResume{Claim: planner.token, By: SuspendedByOperator})
 		h.wantWaitsForPod(planner, 0)
 
 		h.wantStartOrder(holder, waitingStart{planner, plannerStarted}, waitingStart{reviewer, reviewerStarted},
@@ -910,13 +910,13 @@ func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 		planner, reviewer := h.podRole(claim.RolePlanner, StateSuspended), h.podRole(claim.RoleReviewer, StateSuspended)
 		tester := h.podRole(claim.RoleTester, StateSuspended)
 		h.runs(reviewer)
-		h.mustPostTo(holder.m, RequestResume{Claim: holder.token})
+		h.mustPostTo(holder.m, RequestResume{Claim: holder.token, By: SuspendedByOperator})
 
-		plannerStarted := h.postAsync(planner.m, RequestResume{Claim: planner.token})
+		plannerStarted := h.postAsync(planner.m, RequestResume{Claim: planner.token, By: SuspendedByOperator})
 		h.wantWaitsForPod(planner, 0)
 		reviewerStarted := h.died(reviewer)
 		h.wantWaitsForPod(reviewer, 1)
-		testerStarted := h.postAsync(tester.m, RequestResume{Claim: tester.token})
+		testerStarted := h.postAsync(tester.m, RequestResume{Claim: tester.token, By: SuspendedByOperator})
 		h.wantWaitsForPod(tester, 0)
 
 		h.wantStartOrder(holder, waitingStart{planner, plannerStarted}, waitingStart{reviewer, reviewerStarted},
@@ -931,7 +931,7 @@ func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 		h.runs(reviewer)
 		h.runs(tester)
 		h.runs(implementer)
-		h.mustPostTo(holder.m, RequestResume{Claim: holder.token})
+		h.mustPostTo(holder.m, RequestResume{Claim: holder.token, By: SuspendedByOperator})
 
 		reviewerStarted := h.died(reviewer)
 		h.wantWaitsForPod(reviewer, 1)
@@ -983,7 +983,7 @@ func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 		reviewer := h.podRoleSuspendedBy(claim.RoleReviewer, SuspendedByProjectRelease)
 		tester := h.podRoleSuspendedBy(claim.RoleTester, SuspendedByProjectRelease)
 		implementer := h.podRoleSuspendedBy(claim.RoleImplementer, SuspendedByProjectRelease)
-		h.mustPostTo(holder.m, RequestResume{Claim: holder.token})
+		h.mustPostTo(holder.m, RequestResume{Claim: holder.token, By: SuspendedByOperator})
 		bootStart := func(r *podRole) <-chan error {
 			return h.postAsync(r.m, RequestRuleResume{Claim: r.token, Reason: "the boot starts a claim the project release stopped"})
 		}

@@ -5,7 +5,8 @@
 // A connection presents one of two credentials. A session sends its broker access token in the
 // CONNECT's token field and, in its signature field, a proof of the key the token is bound to over
 // the server's own per-connection nonce (ciphertoken.VerifyConnectionProof); it is answered with
-// its own delivery channel and nothing of another session's (natsgrant.Session). A service sends
+// its own delivery channel and nothing of another session's (natsgrant.Session), and refused while
+// Dispatch holds the person its token names (decideSession). A service sends
 // user "service" (natscred.ServiceUser) and its platform identity token as the password: a
 // projected Kubernetes ServiceAccount token or a VM's Google identity token, which the broker
 // already verifies for its own callers; it is answered with its kind's grant, for the account
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/natscred"
@@ -135,7 +137,10 @@ func (r *Refusal) because(cause error) *Refusal {
 const (
 	labelNoCredential      = "no_credential"
 	labelBrokerUnreachable = "broker_unreachable"
+	labelHoldUncheckable   = "hold_uncheckable"
 	labelTokenNotLive      = "token_not_live"
+	labelMembershipHeld    = "membership_held"
+	labelDeadlinePassed    = "deadline_passed"
 	labelKeyMismatch       = "key_mismatch"
 	labelNotASession       = "not_a_session"
 	labelProofInvalid      = "proof_invalid"
@@ -233,15 +238,16 @@ func decideOperator(ctx context.Context, deps Deps, entry config.NATSService, ex
 
 // Decide is the user the service answers req with, or the *Refusal it refuses it with. A session
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
-// over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
-// platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services, a Kubernetes account's from an issuer its
-// entry names, an edge listener's and the operator's as every other's. The operator entry's grant
-// is the writer hold's phase's (decideOperator), and every other client it would admit is refused
-// while the hold row cannot be read (outsideTheHold); either reads the row once, after the
-// credential verified, so a client refused for its credential costs the broker's Postgres nothing.
-// The grant it answers is not yet checked: every answer passes the guard in admit (callout.go),
-// whatever decided it.
+// over req's nonce and while Dispatch does not hold the person its token names (decideSession); a
+// service with its kind's grant, held to its projects (scopeGrant), once its platform token
+// verifies and lives no longer than a token login may (an hour, beside the proof clock skew) and
+// its account is listed in services, a Kubernetes account's from an issuer its entry names, an
+// edge listener's and the operator's as every other's. The operator entry's grant is the writer
+// hold's phase's (decideOperator), and every other client it would admit is refused while the
+// hold row cannot be read (outsideTheHold); either reads the row once, after the credential
+// verified, so a client refused for its credential costs the broker's Postgres nothing. The grant
+// it answers is not yet checked: every answer passes the guard in admit (callout.go), whatever
+// decided it.
 func Decide(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -283,11 +289,28 @@ func openDirectionReason(direction string) string {
 // sessionNamePrefix opens the name of a session's user.
 const sessionNamePrefix = "session/"
 
+// decideSession decides a session's connection from the broker's introspection of its token, the
+// provider's own in this process, which asks the hold gate (hold.Gate.Decide) about the
+// person the token names. After the credential's own checks (live, bound to the key the proof is
+// signed with, a session's shape, an expiry, a session id that is one subject token), a person
+// Dispatch holds is refused, as every broker route refuses them; a not-held answer whose deadline
+// (not_held_until) has passed by this broker's clock is refused, and the user of one admitted
+// before it expires at it if that comes before the token's expiry, so the connection does not
+// outlive it, as the airlock cuts a call it carries then. A not-held answer the gate judged past
+// its deadline, by its own clock or as Dispatch's unavailable answer, whose deadline is its own
+// as_of, reaches here with a not_held_until every clock is past (oauth.Provider's withHold), so it
+// is refused as a deadline passed too. Every other case the gate cannot tell is introspection's
+// *oauth.HoldUncheckableError, refused under its own label, apart from a broker that did not
+// answer.
 func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error) {
 	answer, err := deps.Introspect(ctx, req.Token)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the token's introspection")
+		}
+		var uncheckable *oauth.HoldUncheckableError
+		if errors.As(err, &uncheckable) {
+			return Decision{}, refuse(labelHoldUncheckable, "hold unchecked: whether Dispatch holds the token's person cannot be read").because(err)
 		}
 		return Decision{}, refuse(labelBrokerUnreachable, "broker unreachable: the token's introspection failed").because(err)
 	}
@@ -318,7 +341,20 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 	if err != nil {
 		return Decision{}, refuse(labelBadSessionID, "session id is not one subject token")
 	}
-	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: time.Unix(answer.ExpiresAt, 0)}, nil
+	if caller.Held {
+		return Decision{}, refuse(labelMembershipHeld, "membership held: Dispatch holds the token's person")
+	}
+	expires := time.Unix(answer.ExpiresAt, 0)
+	if answer.NotHeldUntil > 0 {
+		deadline := time.Unix(answer.NotHeldUntil, 0)
+		if !deadline.After(deps.now()) {
+			return Decision{}, refuse(labelDeadlinePassed, "hold unchecked: Dispatch's answer that the token's person is not held has passed its deadline")
+		}
+		if deadline.Before(expires) {
+			expires = deadline
+		}
+	}
+	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: expires}, nil
 }
 
 // longestServiceToken is the longest life a service's platform token may have from its issue: a

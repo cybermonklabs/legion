@@ -12,12 +12,13 @@ const projectReleaseVersion = 20261115073241
 
 // The project release's migration adds its record (project_releases) and the source its stops
 // write (claims.suspended_by `project_release`), on a database holding the rows a deployment has
-// today: a claim of every source the check took before, an idle release in flight with its rows,
-// and a queued delivery. Before it, a claim suspended by the project release is refused and the
-// record has no table, which is the negative control read first. After it, every row it found
-// stands as it was, the new source is taken and a source that is none is still refused, and a
-// record written with its three required columns reads back unfinished, unended and with an empty
-// result; a boot is the one thing its end may name.
+// today: a claim of every source the check took before, the controller's own (main's
+// 20261115060739) among them, an idle release in flight with its rows, and a queued delivery.
+// Before it, a claim suspended by the project release is refused and the record has no table,
+// which is the negative control read first. After it, every row it found stands as it was, the new
+// source is taken and a source that is none is still refused, and a record written with its three
+// required columns reads back unfinished, unended and with an empty result; a boot is the one
+// thing its end may name.
 func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -43,6 +44,11 @@ func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
 		if err := claimOf("LEGION-208", c.role, c.state, c.by); err != nil {
 			t.Fatalf("seed the %s suspended by %q as today's daemon writes it: %v", c.role, c.by, err)
 		}
+	}
+	// The controller's own suspension, which main's 20261115060739 took before this migration: a
+	// list here that left it out would refuse this row and the upgrade with it.
+	if err := claimOf("LEGION-210", "architect", "suspended", "controller"); err != nil {
+		t.Fatalf("seed an architect the controller suspended, as main's daemon writes it: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('issue_bundle', 'LEGION-208', '{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"merger"}', 0, now(), ''),
@@ -79,6 +85,13 @@ func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
 		if state != c.state || by != c.by {
 			t.Fatalf("after the migration the %s reads %s by %q, want %s by %q as it stood", c.role, state, by, c.state, c.by)
 		}
+	}
+	var controllers string
+	if err := store.Pool().QueryRow(ctx, `select suspended_by from claims where token = 'legion-legion-legion-210-architect'`).Scan(&controllers); err != nil {
+		t.Fatalf("read the architect the controller suspended: %v", err)
+	}
+	if controllers != "controller" {
+		t.Fatalf("after the migration the architect the controller suspended reads %q, want controller as it stood", controllers)
 	}
 	var rows, marks int
 	if err := store.Pool().QueryRow(ctx, `select (select count(*) from outbox), (select count(*) from issue_releases)`).Scan(&rows, &marks); err != nil {

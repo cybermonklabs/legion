@@ -123,8 +123,9 @@ func releaseCarryingEveryDeclaredValue() *ProjectReleaseResponse {
 		ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
 		ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
 		ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
-		ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
-		ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+		ReleasedClaimEnd(supervise.SuspendedByController), ReleasedClaimEnd(supervise.SuspendedByDaemon),
+		ReleasedClaimEnd(supervise.SuspendedByExit), ReleasedClaimEnd(supervise.SuspendedByReleased),
+		ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
 		ReleasedClaimUnrecorded}
 	asked := make([]ReleasedAsk, 0, len(roles))
 	for _, role := range roles {
@@ -248,7 +249,7 @@ func TestProjectReleaseWordsGolden(t *testing.T) {
 		Outcomes: []ReleaseOutcome{"waiting", "deleted_clean", "deleted_unread", "deleted_lost", "deleted_read_refused", "deleted", "left"},
 		EndedBy:  []store.ProjectReleaseEnder{"boot"},
 		Ended: []ReleasedClaimEnd{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
-			"failed", "retired", "unknown", "operator", "daemon", "exit", "released", "project_release", "unrecorded"},
+			"failed", "retired", "unknown", "operator", "controller", "daemon", "exit", "released", "project_release", "unrecorded"},
 	}
 	if !reflect.DeepEqual(words, want) {
 		t.Fatalf("the project release's words = %q, want the wire words %q", words, want)
