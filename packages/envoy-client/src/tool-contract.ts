@@ -87,6 +87,18 @@ const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown 
   "blocking",
 ];
 
+/** What each reply mode asks of the recipient, keyed by every value of EXPECTS_REPLY_VALUES. */
+const EXPECTS_REPLY_MEANINGS: Readonly<Record<`${ExpectsReply}`, string>> = {
+  false: "no reply wanted",
+  optional: "a reply is welcome; nothing waits on it",
+  required: "the sender waits on the answer",
+};
+
+/** Each value of EXPECTS_REPLY_VALUES as JSON, then its meaning: `false (no reply wanted), ...`. */
+const EXPECTS_REPLY_GUIDE = EXPECTS_REPLY_VALUES.map(
+  (value) => `${JSON.stringify(value)} (${EXPECTS_REPLY_MEANINGS[`${value}`]})`
+).join(", ");
+
 /** Message metadata arguments shared by envoy_send and envoy_publish, built on the host's Zod. */
 export function messageMetadataShape<Element extends SchemaNode<Element>>(
   schema: SchemaApi<Element>
@@ -107,9 +119,7 @@ export function messageMetadataShape<Element extends SchemaNode<Element>>(
     expects_reply: schema
       .literal(EXPECTS_REPLY_VALUES)
       .optional()
-      .describe(
-        'false (a boolean: no reply wanted), "optional" (a reply is welcome; nothing waits on it) or "required" (the sender waits on the answer).'
-      ),
+      .describe(`One of these JSON values: ${EXPECTS_REPLY_GUIDE}.`),
     expires_at: schema.number({ int: true }).optional(),
   };
 }
