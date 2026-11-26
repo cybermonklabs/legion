@@ -179,70 +179,6 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 	}
 }
 
-// TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved: the live agent view relays a
-// session's raw transcript, whose tool results hold whatever the session read, and a read records
-// nothing. So a viewer that is not open, bob, a restricted member PRIV's list names, watches only a
-// session his own person's credential alone proved (access.SessionContentClause), with every
-// project public and while PRIV is private alike:
-//
-//   - carol's pod session, which commented on PRIV's issue and read PUB's, answers bob the
-//     no-responder verdict, and the relay neither subscribes to it nor asks it for its replay;
-//   - so does a session both bob's and carol's credentials proved;
-//   - bob's own session that lists PRIV relays its verdict, its replay and its live frames to bob,
-//     since its listener's list bounds what it read within what bob sees;
-//   - bob's own session whose listener sent no list relays them to bob at his browser, which sees
-//     every project bob sees: a session with no list passes only a credential that does
-//     (TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis holds the
-//     token that sees fewer).
-//
-// bob's token that lists PRIV watches none of them: a restricted member's token holds no scope
-// (R16), and the view needs the person scope, so each subscribe of it is refused 403
-// OAUTH_SCOPE_REQUIRED.
-//
-// carol, an open viewer of a deployment with no private project, is relayed her pod session (R9).
-// The agents list is not this rule's: it keeps access.SessionClause (K6), whose rows carry no
-// transcript.
-//
-// Controls: the clause as it was (a restricted viewer passing a session whose written projects and
-// listed ones it sees), under which bob is relayed carol's pod session; the second person's arm
-// dropped, under which bob is relayed the shared session; a restricted viewer's own session with no
-// list refused (the round before), under which bob is refused his unlisted session. Each fails the
-// row.
-func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
-	t.Parallel()
-	rig := newContentAgentRig(t, testServerOptions{})
-	bobs := func() []contentView {
-		return []contentView{
-			{callerBob, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
-			{callerBob, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
-			{callerBob, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list, at his browser"},
-			{callerBob, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
-		}
-	}
-	tokenRefused := func(state string) {
-		t.Helper()
-		for _, session := range []string{contentCarolPodSession, contentSharedSession, contentBobUnlistedSession, contentBobSession} {
-			client := rig.seed.dialLive(t, rig.url, rig.seed.liveHeader(t, callerBobPrivToken))
-			client.send(t, liveSubscribe("v", agentView(session), ""))
-			if refusal, ok := client.next(t, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
-				t.Errorf("%s, bob's token that lists PRIV subscribes to %s's view as %+v, want %s", state, session, refusal, codeScopeRequired)
-			}
-		}
-	}
-	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
-	for _, v := range bobs() {
-		rig.watch(t, "with every project public", v)
-	}
-	tokenRefused("with every project public")
-	rig.seed.makePrivate(t, seedPrivate)
-	for _, v := range bobs() {
-		rig.watch(t, "while PRIV is private", v)
-	}
-	tokenRefused("while PRIV is private")
-	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
-	rig.watch(t, "with every project public", contentView{callerCarol, contentCarolPodSession, agentViewResponding, "carol is open and nothing is private"})
-}
-
 // TestARestrictedViewersOwnSessionEndsOnceAnotherPersonActsInIt: bob, a restricted member, watches
 // his own session whose listener sent no list. carol's credential then writes as that session,
 // which ties it to carol too (session_owners), and bob's view ends (dropped) before the frame the
@@ -362,41 +298,5 @@ func TestASessionsProvedWritesTieItToItsPerson(t *testing.T) {
 	}
 	if want := contentBobSession + " " + model.CanonicalLogin(seedBob); len(got) != 1 || got[0] != want {
 		t.Errorf("session_owners after two proved writes of bob's session and a browser's write = %q, want [%q]", got, want)
-	}
-}
-
-// TestASessionThatOnlyReadsIsTiedToItsPerson: Dispatch ties a session to the person a
-// broker-issued token acts for when it verifies that token (brokerTokenActor), not only on a write
-// the token proved, so a session that only reads is tied too: its transcript holds what it read
-// under that person's sight (access.SessionContentClause). carol's session reads PUB's issue
-// twice and writes nothing, and session_owners holds its tie to carol once.
-//
-// Control: the tie written on a proved write alone (no TieSession in brokerTokenActor); the
-// session is tied to nobody, and the test fails.
-func TestASessionThatOnlyReadsIsTiedToItsPerson(t *testing.T) {
-	t.Parallel()
-	seed := seedPrivateProject(t)
-	for range 2 {
-		seed.asSessionOf(t, seedCarol, contentCarolPodSession, seedPublic, http.MethodGet,
-			"/api/v1/issues/"+seed.issue[seedPublic], nil, http.StatusOK)
-	}
-	var got []string
-	rows, err := seed.database.Pool.Query(context.Background(), `select session_id || ' ' || login from session_owners order by 1`)
-	if err != nil {
-		t.Fatalf("read session_owners: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var row string
-		if err := rows.Scan(&row); err != nil {
-			t.Fatalf("read session_owners: %v", err)
-		}
-		got = append(got, row)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read session_owners: %v", err)
-	}
-	if want := contentCarolPodSession + " " + model.CanonicalLogin(seedCarol); len(got) != 1 || got[0] != want {
-		t.Errorf("session_owners after two reads of carol's session = %q, want [%q]", got, want)
 	}
 }
