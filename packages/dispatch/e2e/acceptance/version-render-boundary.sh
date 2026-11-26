@@ -8,13 +8,13 @@
 # or BASELINE_BINARY), and writes through that server's API an issue whose spec, verification.md,
 # plan.md and notes.md hold the shapes the tree census reads (seed-corpus.sh's corpus_shapes), with
 # several versions each, and one image upload, whose version holds no markdown. The person
-# DEV_SIGNIN_LOGIN writes one more document, private.md, holding a block written author-only (a
-# callout carrying visibility="author"), and approves the newest version of the spec, the
-# verification.md and the notes.md, and an older version of the plan.md, which its next version
-# supersedes: so the corpus holds standing approvals. A second person, bob, signs in through the
-# same server, so that this head's half reads as a reader the block is hidden from and writes
-# nothing. It stops that server, boots this head over the same database with the hold of R6's step,
-# waits for the backfill, and from then on writes nothing.
+# DEV_SIGNIN_LOGIN writes one more document, private.md, holding a callout, #author-only, and
+# approves the newest version of the spec, the verification.md and the notes.md, and an older
+# version of the plan.md, which its next version supersedes: so the corpus holds standing
+# approvals. A second person, bob, signs in through the same server, so that this head's half reads
+# as a reader the block is hidden from and writes nothing through the API. It stops that server,
+# boots this head over the same database with the hold of R6's step, waits for the backfill, and
+# from then on writes nothing through the API.
 #
 # It prints the two counts of R19 over that corpus, each with the database's time: the
 # artifact_versions rows with a markdown body, and the standing approvals (the newest review of a
@@ -30,9 +30,12 @@
 # reads the update trigger on that column, artifact_reviews_content_sha256_update, out of the
 # catalog. It reads the version whose markdown is null, the image's, and finds the renderer saying
 # it holds no bytes (Dispatch-Render-Source: none) rather than answering an empty document. Last it
-# reads the rendered versions that hold a block written author-only (a block node of visibility
-# author whose fence the version's markdown holds): at least one must stand, and each renders for
-# bob with that block absent and the rest of the version byte for byte as stored.
+# makes #author-only a block written author-only: the earlier release writes every block at the
+# visibility `project` and refuses a `visibility` attribute (seed-corpus.sh's head comment), so the
+# driver sets that block's graph_nodes row to visibility author in the store, its one write after
+# the upgrade. It reads the rendered versions that hold a block written author-only (a block node
+# of visibility author whose fence the version's markdown holds): at least one must stand, and each
+# renders for bob with that block absent and the rest of the version byte for byte as stored.
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade on this machine), DISPATCH_TOKEN (e2e-token), PROJECT
 # (CORE), DEV_SIGNIN_LOGIN (alice), BASELINE_SHA or BASELINE_BINARY, and `envoy-dispatch` on PATH,
@@ -81,8 +84,8 @@ readonly person_login="$DEV_SIGNIN_LOGIN"
 readonly hidden_from=bob
 session="version-render-boundary-$(date +%s)-$$"
 readonly session
-# The fence that opens the block written author-only, and its words.
-readonly author_only_open=':::callout{#author-only kind="note" title="" visibility="author"}'
+# The fence that opens the block the hidden section makes author-only, and its words.
+readonly author_only_open=':::callout{#author-only kind="note" title=""}'
 readonly author_only_words="A paragraph the author alone reads."
 
 work_dir
@@ -97,31 +100,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-# version_render_boundary_empty_database: drops and creates the database database_url names, so
-# the earlier release's Store.Migrate writes its schema and the corpus is its only content. It takes
-# only infra_1253_upgrade on this machine, the database of this issue's upgrade drivers, and
-# refuses every other with status 2.
-version_render_boundary_empty_database() {
-  local scheme="" authority="" name="" query=""
-  # The URL's parts are taken before loopback_database_url runs, whose own match replaces
-  # BASH_REMATCH.
-  if [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]]; then
-    scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  fi
-  if [[ -z "$name" ]] || ! loopback_database_url "$database_url"; then
-    printf '%s: DATABASE_URL names no database on this machine; the run drops and creates infra_1253_upgrade alone\n' "$driver" >&2
-    exit 2
-  fi
-  [[ "$name" == infra_1253_upgrade ]] || {
-    printf '%s: DATABASE_URL names the database %s; the run drops and creates infra_1253_upgrade alone\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" \
-    >"$work/empty-database" 2>&1 || fail setup "drop and create the database $name" "psql: $(<"$work/empty-database")"
-  printf '%s: the database %s was dropped and created empty\n' "$driver" "$name"
-}
 
 # version_render_boundary_read JAR PATH: GET PATH at `base` with the session cookie JAR holds, its
 # body in $work/body, its headers in $work/headers, its status in `status`, and its
@@ -160,7 +138,7 @@ version_render_boundary_first_difference() {
 
 # --- setup and the corpus, through the earlier release ----------------------------------------------
 
-version_render_boundary_empty_database
+tree_reset_database "$database_url" infra_1253_upgrade setup
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
@@ -212,19 +190,15 @@ corpus_revise "$section" "$notes" notes.md 3
 corpus_image "$section" "$issue" diagram.png
 readonly image="$corpus_doc"
 pass "$section" "wrote $issue: its spec, verification.md and notes.md in three versions each, its plan.md in two, and the image $image"
-# The document holding a block written author-only, written by the person, who may see it.
+# The document holding the block the hidden section makes author-only, written by the person, who
+# may see it.
 printf '# Private\n\nA paragraph every reader reads.\n\n%s\n%s\n:::\n\nA closing paragraph every reader reads.\n' \
   "$author_only_open" "$author_only_words" >"$work/private.md"
 tree_person_send POST "/api/v1/issues/$issue/artifacts" "$(jq -cn --rawfile c "$work/private.md" '{name: "private.md", content: $c}')"
-author_only_written=""
-if [[ "$status" == 201 ]]; then
-  tree_field "$section" "write private.md" .artifact.id
-  author_only_written="$tree_value"
-  pass "$section" "$person_login wrote private.md ($author_only_written), holding a block written author-only"
-else
-  readonly author_only_refusal="$tree_last_request answered HTTP $status: $(body)"
-  printf '%s: the earlier release refused the document holding a block written author-only: %s\n' "$driver" "$author_only_refusal"
-fi
+tree_want 201 "$section" "$person_login writes private.md"
+tree_field "$section" "write private.md" .artifact.id
+readonly author_only_written="$tree_value"
+pass "$section" "$person_login wrote private.md ($author_only_written), holding the block #author-only"
 corpus_wait_settled "$section"
 corpus_review "$section" "$spec" approved
 corpus_review "$section" "$verification" approved
@@ -249,7 +223,7 @@ section=counts
 query "$section" "count the versions with a markdown body" \
   "select clock_timestamp(), (select count(*) from artifact_versions where markdown is not null)"
 IFS='|' read -r at versions <<<"$answer"
-printf 'count pre_cutover_versions=%s at %s\n' "$versions" "$at"
+corpus_count pre_cutover_versions "$versions" "$at"
 ((versions > 0)) || fail "$section" "the corpus holds versions with a markdown body" "the count reads $versions"
 readonly standing_sql="with newest as (
     select distinct on (artifact_id) artifact_id, state, version, content_sha256
@@ -261,7 +235,7 @@ readonly standing_sql="with newest as (
     and n.version = (select max(number) from artifact_versions v where v.artifact_id = n.artifact_id)"
 query "$section" "count the standing approvals" "select clock_timestamp(), (select count(*) from ($standing_sql) standing)"
 IFS='|' read -r at approvals <<<"$answer"
-printf 'count standing_approvals=%s at %s\n' "$approvals" "$at"
+corpus_count standing_approvals "$approvals" "$at"
 ((approvals > 0)) || fail "$section" "the corpus holds standing approvals" "the count reads $approvals"
 pass "$section" "the corpus holds $versions versions with a markdown body and $approvals standing approvals"
 
@@ -342,18 +316,25 @@ pass "$section" "the renderer says version $null_number of $null_id ($image is t
 # --- hidden: a block written author-only, read by a reader it is hidden from ----------------------------
 
 section=hidden
-held=""
-if [[ -n "$author_only_written" ]]; then
-  query "$section" "read the rendered versions that hold the block written author-only" "
-    select coalesce(string_agg(v.artifact_id || ' ' || v.number, E'\n' order by v.number), '')
-    from artifact_versions v join artifacts a on a.id = v.artifact_id
-    join graph_nodes n on n.kind = 'block' and n.id = a.ref_key || '#author-only' and n.visibility = 'author'
-    where v.artifact_id = '$author_only_written' and v.markdown like '%{#author-only %'"
-  held="$answer"
-fi
+# No API write of the earlier release can make a block author-only, so the store's row of
+# #author-only is set to visibility author here, after the render section read it as the person.
+with_vars "$section" "set the block #author-only of private.md to visibility author" \
+  "update graph_nodes set visibility = 'author'
+   where kind = 'block' and id = (select ref_key from artifacts where id = :'doc'::uuid) || '#author-only'
+   returning id" doc="$author_only_written"
+[[ -n "$answer" && "$answer" != *$'\n'* ]] ||
+  fail "$section" "the block #author-only of private.md stands at visibility author" \
+    "the update changed '$answer', want the one node of that block"
+pass "$section" "the block $answer of private.md stands at visibility author"
+query "$section" "read the rendered versions that hold the block written author-only" "
+  select coalesce(string_agg(v.artifact_id || ' ' || v.number, E'\n' order by v.number), '')
+  from artifact_versions v join artifacts a on a.id = v.artifact_id
+  join graph_nodes n on n.kind = 'block' and n.id = a.ref_key || '#author-only' and n.visibility = 'author'
+  where v.artifact_id = '$author_only_written' and v.markdown like '%{#author-only %'"
+held="$answer"
 [[ -n "$held" ]] ||
   fail "$section" "at least one rendered version holds a block written author-only" \
-    "${author_only_refusal:-private.md ($author_only_written) holds no block node of visibility author}"
+    "private.md ($author_only_written) holds no block node of visibility author"
 while read -r id number; do
   [[ -n "$number" ]] || continue
   version_render_boundary_stored "$id" "$number" "$work/stored"

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /**
@@ -63,15 +63,21 @@ function resolveImport(from: string, specifier: string): string | undefined {
     `${base}.tsx`,
     join(base, "index.ts"),
     join(base, "index.tsx"),
-  ].find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
+  ].find((candidate) => statSync(candidate, { throwIfNoEntry: false })?.isFile() === true);
   return found?.startsWith(`${SOURCES}${sep}`) && /\.tsx?$/.test(found) ? found : undefined;
 }
+
+/** The walks made so far, by the file each started from: two tests walk from `main.tsx`. */
+const closures = new Map<string, ReadonlyMap<string, string | null>>();
 
 /** Each file the walk from `start` (under `web/src`) reaches, to the file whose import reached it
  *  first, breadth first, so the path to each is a shortest one. */
 function closure(start: string): ReadonlyMap<string, string | null> {
+  const walked = closures.get(start);
+  if (walked !== undefined) return walked;
   const first = join(SOURCES, start);
   const reachedFrom = new Map<string, string | null>([[first, null]]);
+  closures.set(start, reachedFrom);
   const queue = [first];
   for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
     for (const { kind, path } of scannedImports(file)) {

@@ -648,7 +648,6 @@ export function DecisionsPanel({
       .filter((entry) => entry.node.kind !== "ask" || entry.answered_at !== null)
       .map((entry) => {
         const decision = entryDecision(entry);
-        // A decision for which the view names no document can still name a block by its address.
         const documentId = decisionDocumentId(documents, entry);
         return { blocks: entryBlocks(entry, decision), decision, documentId };
       });

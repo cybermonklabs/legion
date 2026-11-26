@@ -152,12 +152,18 @@ interface AdmissionBlock {
   readonly message: string;
 }
 
-function admissionBlock(error: unknown): AdmissionBlock {
+/** The block `error` leaves an admission in. A tree outside the Proof schema is offered a repair,
+ *  and a history that cannot load a rebuild, only where `writable`, on a document: the rebuild
+ *  route answers a document alone (`rebuildArtifact` in api/artifact_rebuild.go), and the repair's
+ *  upload under the artifact's name finds an issue's tree artifact by that name and is refused
+ *  `400 ARTIFACT_KIND_MISMATCH` (`storeArtifact` in api/artifacts.go). Elsewhere either fails the
+ *  load as any other failure does. */
+function admissionBlock(error: unknown, writable: boolean): AdmissionBlock {
   const message = error instanceof Error ? error.message : String(error);
-  if (isDocumentSchemaError(error)) {
+  if (writable && isDocumentSchemaError(error)) {
     return { kind: "repair", message };
   }
-  if (isDocumentUnloadable(error)) {
+  if (writable && isDocumentUnloadable(error)) {
     return { kind: "rebuild", message };
   }
   if (isDocumentNewerContent(error)) {
@@ -210,7 +216,10 @@ export interface DocumentToolbar {
   connection: ConnectionState;
   pending: PendingState | undefined;
   isNamingVersion: boolean;
-  requestNamedVersion(): void;
+  /** Opens the dialog that names a version of the document. Absent where the named-version route
+   *  refuses the artifact (`createNamedVersion` in api/artifacts.go answers a document alone), as
+   *  an issue's tree artifact is: a host draws no control to name one there. */
+  requestNamedVersion?(): void;
   copyBlockLink(): Promise<boolean>;
   versions: Version[];
 }
@@ -456,9 +465,16 @@ export function ProofDocument({
   const admissionHidesEditor =
     repairError !== undefined || rebuildError !== undefined || newerContent;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
+  // An issue's tree artifact, whose room holds the issue's own nodes, reads and edits as a
+  // document does (`readsAsDocument` in api/artifacts.go), and every other route of a document
+  // refuses it `400 NOT_DOCUMENT`: its blocks, a named version and a rebuild; the repair's upload
+  // is refused it too (`admissionBlock`). So the editor of a tree sends none of those and offers no
+  // control that would.
+  const isDocument = artifact.kind === "doc";
+  // The live blocks the reference gutter counts.
   const blockReferencesQuery = useQuery({
     ...artifactBlocksQuery(artifact.id),
-    enabled: version === undefined,
+    enabled: version === undefined && isDocument,
   });
   const versionQuery = useQuery({
     enabled: version !== undefined,
@@ -739,13 +755,14 @@ export function ProofDocument({
       pending,
       copyBlockLink,
       isNamingVersion: nameVersion.isPending,
-      requestNamedVersion,
+      requestNamedVersion: isDocument ? requestNamedVersion : undefined,
       versions,
     });
   }, [
     connection,
     pending,
     copyBlockLink,
+    isDocument,
     nameVersion.isPending,
     onToolbarChange,
     page,
@@ -943,15 +960,16 @@ export function ProofDocument({
                 );
               }
             }
-            return admissionBlock(error);
+            return admissionBlock(error, isDocument);
           }
         );
-      // The schema the editor is made with. An issue whose tree read answers `view_of` is a view
-      // on its ancestor's spec, and each editor of its documents gets a schema that creates no
-      // requirement (`editorBlockSchema`); every other editor gets the compiled manifest. The
-      // admission waits for this read beside the text read, so no editor of a view is ever made
-      // with the full schema. A document that names no issue reads nothing. A failed read fails
-      // the load, as a failed text read does.
+      // The schema the editor is made with. An issue that is a view on its ancestor's spec gets,
+      // for each editor of its documents, a schema that creates no requirement
+      // (`editorBlockSchema`); every other editor gets the compiled manifest. The admission waits
+      // for this read beside the text read, so no editor of a view is ever made with the full
+      // schema. The read sends nothing for an issue the page holds under no parent, which is no
+      // view (`issueViewOfQuery`), and a document that names no issue reads nothing. A failed
+      // read fails the load, as a failed text read does.
       const issueKey = artifact.issue_key;
       const schemaRead: Promise<EditorSchemaRead> =
         issueKey === null
@@ -1170,6 +1188,7 @@ export function ProofDocument({
     followBlockHash,
     fragmentName,
     fragmentReadError,
+    isDocument,
     loadTransport,
     page,
     pendingWaiter,

@@ -101,37 +101,6 @@ cap_line="$(grep -E '^const MaxIssueBlockers = [0-9]+$' \
 }
 readonly max_blockers="${cap_line##* }"
 
-# one_dependency_reset_database: drops the database DATABASE_URL names and creates it empty, so the
-# release before's own Store.Migrate writes its schema, connecting to the `postgres` database of
-# the same server with the same role. It drops only a database on this machine whose name begins
-# infra_1253_upgrade, the database the upgrade drivers of this issue alone use, and refuses every
-# other with status 2: never infra_1253, which `bun run dispatch:local` serves.
-one_dependency_reset_database() {
-  local scheme authority name query host
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] || {
-    printf '%s: DATABASE_URL is no postgres:// URL naming a database\n' "$driver" >&2
-    exit 2
-  }
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  host="${authority##*@}"
-  if [[ "$host" == \[* ]]; then host="${host%%]*}]"; else host="${host%%:*}"; fi
-  case "$host" in
-    127.0.0.1 | localhost | '[::1]') ;;
-    *)
-      printf '%s: DATABASE_URL is on %s, not this machine; this driver empties only this pod'"'"'s own infra_1253_upgrade\n' "$driver" "$host" >&2
-      exit 2
-      ;;
-  esac
-  [[ "$name" =~ ^infra_1253_upgrade[a-z0-9_]*$ ]] || {
-    printf '%s: DATABASE_URL names %s; this driver empties only a database whose name begins infra_1253_upgrade\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "drop and create the database $name" "psql: $(<"$work/reset")"
-  printf 'database %s dropped and created empty\n' "$name"
-}
-
 # one_dependency_issue SECTION TITLE [PARENT [BLOCKED_BY [PROJECT]]]: the agent creates an issue of
 # PROJECT (by default the run's) holding a spec of one paragraph, under PARENT and blocked by
 # BLOCKED_BY where given, through the member the release before reads (seed-corpus.sh's
@@ -253,7 +222,7 @@ trap 'exit 143' TERM
 # --- setup: the release before over an empty database ----------------------------------------------
 
 section=setup
-one_dependency_reset_database
+tree_reset_database "$database_url" 'infra_1253_upgrade*' "$section"
 baseline_start
 # The bearer both servers accept, the run's DISPATCH_TOKEN; printed nowhere, inherited by no child.
 token="$baseline_token"

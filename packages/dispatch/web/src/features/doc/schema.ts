@@ -14,6 +14,22 @@ export const compiledBlockSchema = manifest as unknown as BlockSchema;
 /** R for the manifest this page was built with, which its document connections present. */
 export const compiledSchemaCreatable = schemaCreatable(compiledBlockSchema);
 
+/** The attributes of each typed block of the manifest this page was built with, by its name. */
+const compiledTypeAttributes = new Map(
+  compiledBlockSchema.types.map((type) => [type.name, type.attributes] as const)
+);
+
+/**
+ * The item kinds the `block[]` attribute `name` of the typed block `typeName` declares in the
+ * manifest this page was built with (`items`): what its values may name besides a block of a
+ * document, such as an issue under a plan task's `needs` or a comment under a block's `parent`.
+ * A value is read under them (`parseBlockPointerValue`), since read under none a value naming an
+ * item parses to nothing. Undefined for an attribute that declares none.
+ */
+export function declaredPointerItems(typeName: string, name: string) {
+  return compiledTypeAttributes.get(typeName)?.[name]?.items;
+}
+
 /**
  * The schema the editor of a document of a view is given: an issue that is a view on its
  * ancestor's spec (`view_of` of `GET /api/v1/issues/{key}/tree`) holds no requirement of its own,

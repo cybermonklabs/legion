@@ -323,6 +323,7 @@ function byPlacementThenNewest(left: Placed, right: Placed): number {
 
 const NO_THREADS: ReadonlySet<string> = new Set();
 const NO_PLACEMENTS: ReadonlyMap<string, boolean> = new Map();
+const NO_DECISIONS: DecisionMarginItem[] = [];
 
 export function useMarginItems(
   owner: MarginOwner | undefined,
@@ -527,39 +528,54 @@ export function useMarginItems(
     ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
     ...freshness,
   });
-  const specAddress = issueSpecAddress(issueKey ?? "");
-  // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
-  // spec block it stands beside.
-  const specNode = `${issueKey ?? ""}/spec`;
+  // What decisionDocumentId reads of the issue read, each its own dependency: an issue event moves
+  // the read's sequence and nothing of these, and rebuilds no decision item.
+  const documentsKey = issue?.key;
+  const primaryArtifactId = issue?.primary_artifact_id;
+  const issueArtifacts = issue?.artifacts;
   const decisions = useMemo<DecisionMarginItem[]>(() => {
-    if (!showsDecisions) return [];
+    if (!showsDecisions) return NO_DECISIONS;
     // Until the issue read answers, a decision is found only where the view names its document.
-    const documents = issue ?? { key: issueKey ?? "", primary_artifact_id: "" };
+    const documents =
+      documentsKey === undefined
+        ? { key: issueKey ?? "", primary_artifact_id: "" }
+        : {
+            artifacts: issueArtifacts,
+            key: documentsKey,
+            primary_artifact_id: primaryArtifactId ?? "",
+          };
+    const specAddress = issueSpecAddress(issueKey ?? "");
+    // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
+    // spec block it stands beside.
+    const specNode = `${issueKey ?? ""}/spec`;
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
       // The spec blocks this entry shaped, each once: a block the link names the spec on screen
-      // as holding (`to.document`), named by its id in the spec. The link's node is no name for
-      // it: a block of a spec converted into its issue's room is the room's node,
-      // `<KEY>/tree#<id>`, which belongs to no one document of the room.
+      // as holding (`to.document`), named by its id in the spec, and kept by the margin's block
+      // filter. The link's node is no name for it: a block of a spec converted into its issue's
+      // room is the room's node, `<KEY>/tree#<id>`, which belongs to no one document of the room.
       const blocks = new Set<string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && link.to.document === specAddress) {
+        if (
+          blockId !== undefined &&
+          link.to.document === specAddress &&
+          (blockFilterId === undefined || blockId === blockFilterId)
+        ) {
           blocks.add(blockId);
         }
       }
+      if (blocks.size === 0) return [];
       // A decision the view names no document for - one of a document that plays no role - is
       // found by its own address among the issue read's documents, as the Decisions tab finds it.
       const documentId = decisionDocumentId(documents, decision);
-      return [...blocks]
-        .filter((blockId) => blockFilterId === undefined || blockId === blockFilterId)
-        .map((blockId) => ({
-          blockId,
-          decision,
-          documentId,
-          id: `decision:${decision.node.id}:${specNode}#${blockId}`,
-          kind: "decision" as const,
-        }));
+      return [...blocks].map((blockId) => ({
+        blockId,
+        decision,
+        documentId,
+        id: `decision:${decision.node.id}:${specNode}#${blockId}`,
+        kind: "decision" as const,
+      }));
     });
     return decisionItems.sort((left, right) =>
       byPlacementThenNewest(
@@ -571,12 +587,12 @@ export function useMarginItems(
     blockFilterId,
     blockPlacements,
     decisionsView.data,
-    issue,
+    documentsKey,
+    issueArtifacts,
     issueKey,
     markPlacements,
+    primaryArtifactId,
     showsDecisions,
-    specAddress,
-    specNode,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({

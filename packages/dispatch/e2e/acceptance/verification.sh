@@ -12,8 +12,10 @@
 # back when that check is deleted, with the missing plan task named only once a plan document
 # exists; the gap an approval request names and the covered spec that earns none; `dispatch
 # plan-approve`, refused on a spec, and `dispatch request-approval`, refused on a plan; and the one
-# request that names a spec and its Verification document together; a person's review and the CLI
-# pin the fetched version's UTF-8 bytes, even after the latest version changes; and, with a
+# request that names a spec and its Verification document together; a person's review pins the
+# digest of the version it approved - its query record's digest for a document a query covers, the
+# sha256 of its markdown for one no query covers - and the CLI prints both that digest and the
+# version's bytes' sha256, even after the latest version changes; and, with a
 # default repository set, every result of a check read whole — all forty characters of each
 # commit, so a commit that only reads like the head is told apart from it — beside a result at a
 # commit that repository does not hold refused.
@@ -53,8 +55,10 @@
 # script's fixture and its count rather than a server talking to GitHub.
 #
 # It writes four issues in PROJECT — a root, a child of it, a sibling in another tree and one more
-# whose spec and Verification document are approved together — with a spec, a Verification document
-# and, on the root, a plan; it closes every one of them, also when a check fails, and an approval
+# whose spec and Verification document are approved together — with a spec and a Verification
+# document, and beside them on the root a plan and a second plan document, outside-needs.md, on the
+# sibling a tasks.md, and on the fourth a notes.md no query covers; it closes every one of them,
+# also when a check fails, and an approval
 # request it left open is withdrawn with the issue that holds it. Nothing it writes is read by a
 # second run, so it may be run again at once.
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints

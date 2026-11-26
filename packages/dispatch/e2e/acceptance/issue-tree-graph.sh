@@ -120,31 +120,6 @@ trap 'exit 143' TERM
 
 # --- helpers -------------------------------------------------------------------------------------
 
-# issue_tree_graph_empty_database: drops the database database_url names and creates it empty, so
-# the earlier release's own Store.Migrate writes its schema and the run's rows are its only
-# content. It drops only a database on this machine whose name ends `_upgrade`, the database the
-# Verification preamble gives the upgrade drivers, connecting to the `postgres` database of the
-# same server with the same role.
-issue_tree_graph_empty_database() {
-  local scheme authority name query
-  loopback_database_url "$database_url" ||
-    tree_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
-    tree_refuse "DATABASE_URL is no postgres:// URL naming a database"
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  [[ "$name" =~ ^[a-z0-9_]+_upgrade$ ]] ||
-    tree_refuse "DATABASE_URL names the database $name: this driver drops and creates only a database whose name ends _upgrade"
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "empty the database $name" "psql: $(<"$work/reset")"
-  pass setup "dropped the database $name and created it empty"
-}
-
-# issue_tree_graph_key SECTION WHAT VALUE: VALUE is an issue key, which the SQL below names.
-issue_tree_graph_key() {
-  [[ "$3" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "$2" "'$3' is no issue key"
-}
-
 # issue_tree_graph_keys ISSUE…: the issues as a SQL array literal, in keys_sql.
 issue_tree_graph_keys() {
   local key list=""
@@ -167,7 +142,7 @@ issue_tree_graph_write_half() {
   } >"$work/$half-spec.md"
   corpus_issue "$section" "The $half half of the tree census" "$work/$half-spec.md"
   shapes="$corpus_key" shapes_spec="$corpus_spec"
-  issue_tree_graph_key "$section" "the shapes issue's key" "$shapes"
+  tree_key "$section" "the shapes issue's key" "$shapes"
   corpus_revise "$section" "$shapes_spec" spec 2
   {
     printf 'How the %s half is proved.\n\n' "$half"
@@ -216,7 +191,7 @@ issue_tree_graph_write_half() {
   } >"$work/$half-child-spec.md"
   corpus_issue "$section" "A child in the $half half" "$work/$half-child-spec.md" "$shapes"
   child="$corpus_key"
-  issue_tree_graph_key "$section" "the child's key" "$child"
+  tree_key "$section" "the child's key" "$child"
   {
     printf ':::check{#c-child serves="dispatch://%s/spec#b-r-shapes dispatch://%s/spec#b-r-child" surface="cli" run="bash e2e/acceptance/issue-tree-graph.sh" negative_control="Serve the parent alone and the check hangs under the issue."}\nThe child proves its parent'"'"'s shapes and its own requirement.\n:::\n\n' \
       "$shapes" "$child"
@@ -228,7 +203,7 @@ issue_tree_graph_write_half() {
   printf 'An issue the %s shapes issue blocks.\n\n:::requirement{#r-blocked}\nIt waits.\n:::\n' "$half" >"$work/$half-blocked-spec.md"
   corpus_issue "$section" "An issue blocked in the $half half" "$work/$half-blocked-spec.md" "" "$shapes"
   blocked="$corpus_key"
-  issue_tree_graph_key "$section" "the blocked issue's key" "$blocked"
+  tree_key "$section" "the blocked issue's key" "$blocked"
   corpus_wait_settled "$section"
   if [[ "$half" == base ]]; then
     base_issues=("$shapes" "$child" "$blocked")
@@ -554,7 +529,7 @@ issue_tree_graph_classes() {
 # --- setup: the earlier release over an emptied database --------------------------------------
 
 section=setup
-issue_tree_graph_empty_database
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 query "$section" "read how this database orders 'a' and 'B'" "select ('a' < 'B')::text"
 [[ "$answer" == true ]] ||
   fail "$section" "the database's own collation is not byte order, so a rank read without collate \"C\" shows" \
@@ -713,10 +688,7 @@ sections=$((sections + 1))
 # --- store: envoy-dispatch census --store over both halves ----------------------------------------
 
 section=store
-tree_envoy_dispatch_status census --store
-cp "$work/out" "$work/census.out"
-[[ "$tree_envoy_status" -le 1 ]] ||
-  fail "$section" "run the store census" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/census.out")"
+tree_store_census "$section"
 tree_census_versions "$section" "the census reads tree_mismatch=0 and tree_mismatch_repaired=0" "" "$work/census.out"
 for kind in "${census_kinds[@]}"; do
   line="$(grep -E "^census: store kind=$kind (nodes|tuples)=" "$work/census.out" || true)"

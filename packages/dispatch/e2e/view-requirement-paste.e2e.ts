@@ -67,8 +67,10 @@ function specBlocks(
 /** The words of each requirement block the blocks read answers for the issue's spec, each the
  *  span of the spec's text the block covers, as `blockId` (e2e/editor.ts) reads a block's words. */
 async function requirementWords(key: string): Promise<string[]> {
-  const { markdown } = await getIssueArtifactText(key, "spec");
-  const blocks = await specBlocks(key);
+  const [{ markdown }, blocks] = await Promise.all([
+    getIssueArtifactText(key, "spec"),
+    specBlocks(key),
+  ]);
   return blocks
     .filter((block) => block.type === "requirement")
     .map((block) => markdown.slice(block.from, block.to));
@@ -153,12 +155,18 @@ test("a pasted requirement block makes no requirement in a view's spec editor an
       childRequirements,
       `${child.key} holds a requirement block after the paste: ${childRequirements.join(", ")}`
     ).toEqual([]);
+    // The coverage read that owes no document is the one whose lines are read.
+    let settled: Result<"/api/v1/issues/{key}/coverage", "get"> | undefined;
     await expect
-      .poll(async () => (await getIssueCoverage(child.key)).owed_documents ?? [], {
-        message: `the coverage of ${child.key} still owes the block index of its documents`,
-      })
+      .poll(
+        async () => {
+          settled = await getIssueCoverage(child.key);
+          return settled.owed_documents ?? [];
+        },
+        { message: `the coverage of ${child.key} still owes the block index of its documents` }
+      )
       .toEqual([]);
-    const viewLines = ((await getIssueCoverage(child.key)).gaps ?? []).filter((line) =>
+    const viewLines = (settled?.gaps ?? []).filter((line) =>
       line.endsWith(VIEW_REQUIREMENT_LINE_END)
     );
     expect(

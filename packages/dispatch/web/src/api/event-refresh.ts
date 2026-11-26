@@ -703,9 +703,7 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
-          (field) => changes.has(field)
-        )
+        [...ISSUE_RELATION_FIELDS, "components", "title"].some((field) => changes.has(field))
       );
     }
     default:
@@ -826,13 +824,7 @@ function issueWriteTargets(
   // ones are the panels that still list an edge from this issue. A Dispatch of the release before
   // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
   // edge blocked_by.
-  if (
-    moved("parent") ||
-    moved("needs") ||
-    moved("blocked_by") ||
-    moved("duplicate_of") ||
-    moved("filed_from")
-  ) {
+  if (ISSUE_RELATION_FIELDS.some((field) => moved(field))) {
     const parent = payloadString(event, "parent");
     const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
     const duplicate = payloadString(event, "duplicate_of");
@@ -854,6 +846,16 @@ function issueWriteTargets(
   }
   return targets;
 }
+
+/** The fields of an issue's write that move an edge its node states (ISSUE_RELATION_KINDS): its
+ *  parent, its waits under both spellings, the issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_FIELDS = [
+  "parent",
+  "needs",
+  "blocked_by",
+  "duplicate_of",
+  "filed_from",
+] as const;
 
 /** The kinds of edge an issue states out of its own node: its parent, its waits under both the
  *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the

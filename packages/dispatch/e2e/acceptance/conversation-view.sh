@@ -133,28 +133,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# conversation_view_section NAME: starts the section NAME, which the closing line counts.
-conversation_view_section() {
-  sections=$((sections + 1))
-  printf -- '--- section %s\n' "$1"
-}
-
-# conversation_view_expect FILE SECTION WHAT WANT JQ-ARGS…: lib.sh's expect over the answer kept in
-# FILE rather than over the last one, which it puts back as $work/body first.
-conversation_view_expect() {
-  local file="$1"
-  shift
-  cp "$file" "$work/body"
-  expect "$@"
-}
-
-# conversation_view_keep SECTION PATH FILE: GET PATH as the agent, answered 200, kept in FILE.
-conversation_view_keep() {
-  tree_send GET "$2"
-  tree_want 200 "$1" "read $2"
-  cp "$work/body" "$3"
-}
-
 # conversation_view_create SECTION TITLE FILE [PARENT]: the agent creates an issue of `project`
 # titled TITLE, FILE's markdown its spec, under PARENT where given, through seed-corpus.sh's
 # corpus_issue; it is closed when the run ends.
@@ -162,14 +140,6 @@ conversation_view_create() {
   corpus_issue "$1" "$2" "$3" "${4:-}"
   [[ "$corpus_key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $corpus_key is no issue key"
   keys+=("$corpus_key")
-}
-
-# conversation_view_person_edit SECTION WHAT DOCUMENT OPS: the person applies the edit ops OPS (a
-# JSON list) to DOCUMENT, as seed-corpus.sh's corpus_edit applies them as the agent.
-conversation_view_person_edit() {
-  tree_person_send POST "/api/v1/artifacts/$3/edits" "$(jq -cn --argjson ops "$4" '{ops: $ops}')"
-  tree_want 200 "$1" "$2"
-  jq -e '.changed == true' "$work/body" >/dev/null || fail "$1" "$2" "the edit changed nothing: $(body)"
 }
 
 # conversation_view_message SESSION SECTION ISSUE BODY [IN_REPLY_TO]: the agent bearer posts a
@@ -217,13 +187,13 @@ conversation_view_newest() {
 
 # --- setup -------------------------------------------------------------------------------------
 
-conversation_view_section setup
+tree_section setup
 tree_init
 tree_sign_in setup "$person_login"
 
 # --- the issue that holds every node kind -----------------------------------------------------------
 
-conversation_view_section seed
+tree_section seed
 cat >"$work/spec.md" <<SPEC
 :::callout{#memo kind="note" title=""}
 $memo_sentence A remark nobody answered stays a node of it. The daemon's own thread is none of it.
@@ -237,19 +207,19 @@ $second_words
 SPEC
 conversation_view_create seed "The conversation holds the discussion" "$work/spec.md"
 readonly key="$corpus_key" spec="$corpus_spec"
-conversation_view_keep seed "/api/v1/issues/$key/tree" "$work/tree-first.json"
-conversation_view_expect "$work/tree-first.json" seed "$key is born converted and holds its tree" '[true,true]' \
+tree_keep seed "/api/v1/issues/$key/tree" "$work/tree-first.json"
+tree_kept_expect "$work/tree-first.json" seed "$key is born converted and holds its tree" '[true,true]' \
   '[.converted, (.tree | type == "string")]'
 tree="$(jq -r '.tree' "$work/tree-first.json")"
 readonly tree
-conversation_view_keep seed "/api/v1/artifacts/$tree" "$work/tree-artifact.json"
+tree_keep seed "/api/v1/artifacts/$tree" "$work/tree-artifact.json"
 tree_slug="$(jq -r '.slug' "$work/tree-artifact.json")"
 readonly tree_slug
 
 # The thread a person wrote: its head, the person's reply, and an agent's reply inside it.
 corpus_comment person seed "$key" "We want the conversation to hold the discussion."$'\n\n'"And to leave the workflow out of it."
 readonly head="$corpus_item"
-conversation_view_keep seed "/api/v1/comments/$head/blocks" "$work/head-blocks.json"
+tree_keep seed "/api/v1/comments/$head/blocks" "$work/head-blocks.json"
 head_block="$(jq -r '.blocks[0].ref // empty' "$work/head-blocks.json")"
 [[ -n "$head_block" ]] || fail seed "read the first block of the comment $head" "no ref: $(head -c 600 "$work/head-blocks.json")"
 readonly head_block
@@ -268,10 +238,10 @@ pass seed "wrote the thread $head with the replies $reply and $agent_reply, the 
 
 # The criterion the person wrote in that exchange, into the issue's tree under the thread's first
 # block; the requirement under it; the decision an agent recorded; the check and the plan task.
-conversation_view_person_edit seed "$person_login writes a criterion into the tree of $key" "$tree" "$(jq -cn --arg p "$head_block" \
+tree_person_edit seed "$person_login writes a criterion into the tree of $key" "$tree" "$(jq -cn --arg p "$head_block" \
   '[{op: "insert", after: "end", markdown: (":::criterion{#k-discussion parent=\"" + $p + "\"}\nI want the conversation to hold what a person exchanged.\n:::")}]')"
 readonly criterion_ref="dispatch://$key/artifact/$tree_slug#b-k-discussion"
-conversation_view_person_edit seed "$person_login writes a requirement under the criterion" "$spec" "$(jq -cn --arg p "$criterion_ref" --arg w "$requirement_words" \
+tree_person_edit seed "$person_login writes a requirement under the criterion" "$spec" "$(jq -cn --arg p "$criterion_ref" --arg w "$requirement_words" \
   '[{op: "insert", after: "end", markdown: (":::requirement{#r-discussion parent=\"" + $p + "\"}\n" + $w + "\n:::")}]')"
 corpus_edit seed "an agent records a decision that shaped the requirement" "$spec" "$(jq -cn --arg s "dispatch://$key/spec#b-r-discussion" \
   '[{op: "insert", after: "end", markdown: (":::decision{#d-discussion shaped=\"" + $s + "\"}\nThe conversation reads the comments, asks and messages a person wrote in.\n:::")}]')"
@@ -333,9 +303,9 @@ pass seed "the person approved version $approved_version of the spec $spec; the 
 
 # --- what the conversation graph answers --------------------------------------------------------------
 
-conversation_view_section kinds
-conversation_view_keep kinds "/api/v1/issues/$key/tree" "$work/tree.json"
-conversation_view_keep kinds "/api/v1/issues/$key/artifacts/spec/text?blocks=true" "$work/spec-blocks.json"
+tree_section kinds
+tree_keep kinds "/api/v1/issues/$key/tree" "$work/tree.json"
+tree_keep kinds "/api/v1/issues/$key/artifacts/spec/text?blocks=true" "$work/spec-blocks.json"
 for node in "comment:$head:the head of the person's thread" "comment:$reply:the person's reply" \
   "comment:$agent_reply:the agent's reply in the person's thread" "ask:$ask:the ask"; do
   IFS=: read -r kind id what <<<"$node"
@@ -346,9 +316,9 @@ held="$(jq -c --arg i "$remark" '[.nodes[] | select(.kind == "comment" and .id =
 [[ "$held" == '["tree"]' ]] ||
   fail kinds "the remark nobody answered is a node of its own" "the prose node comment $remark is missing from the answer (it holds it as $held)"
 pass kinds "the remark $remark nobody answered is a node of its own"
-conversation_view_expect "$work/tree.json" kinds "the ask answers its answer on its own node" '"Postgres, the database the pod runs."' \
+tree_kept_expect "$work/tree.json" kinds "the ask answers its answer on its own node" '"Postgres, the database the pod runs."' \
   --arg i "$ask" '[.nodes[] | select(.kind == "ask" and .id == $i) | .attributes.answer][0]'
-conversation_view_expect "$work/tree.json" kinds \
+tree_kept_expect "$work/tree.json" kinds \
   "the read answers the criterion, the requirement, the decision, the check and the plan task, each once, as nodes of the tree" \
   '[["c-discussion","check","tree"],["d-discussion","decision","tree"],["k-discussion","criterion","tree"],["r-discussion","requirement","tree"],["t-discussion","plan_task","tree"]]' \
   '[.nodes[] | select(.block_id == "k-discussion" or .block_id == "r-discussion" or .block_id == "d-discussion"
@@ -366,7 +336,7 @@ pass kinds "the read answers no artifact, no document version and no prose block
 summary_block="$(jq -r --arg w "$summary_words" '.markdown as $m
   | [.blocks[]? | select(.type == "paragraph" and ($m[.from:.to] | sub("\\s+$"; "")) == $w) | .id] | first // empty' "$work/spec-blocks.json")"
 [[ -n "$summary_block" ]] || fail kinds "find the spec's Summary paragraph among its blocks" "$(head -c 600 "$work/spec-blocks.json")"
-conversation_view_expect "$work/tree.json" kinds "the read answers the spec's Summary paragraph nowhere" '[]' \
+tree_kept_expect "$work/tree.json" kinds "the read answers the spec's Summary paragraph nowhere" '[]' \
   --arg w "$summary_words" --arg b "$summary_block" '[.nodes[] | select((.text // "") == $w or (.text // "") == ($w + "\n") or (.block_id != null and .block_id == $b and $b != "")) | {kind, id}]'
 conversation_view_newest kinds "$spec"
 tree_send GET "/api/v1/artifacts/$spec/versions/$tree_value"
@@ -388,14 +358,14 @@ for message in "$daemon_message" "$daemon_root" "$daemon_person_reply" "$daemon_
   conversation_view_absent kinds "$work/tree-messages.json" "the read with kind=message answers no message of the daemon or its thread ($message)" \
     message "$message" "its root $daemon_root, posted by $daemon_session"
 done
-conversation_view_keep kinds "/api/v1/issues/$key/messages" "$work/messages.json"
-conversation_view_expect "$work/messages.json" kinds "the issue's messages hold the daemon's message, its thread's root and both replies" \
+tree_keep kinds "/api/v1/issues/$key/messages" "$work/messages.json"
+tree_kept_expect "$work/messages.json" kinds "the issue's messages hold the daemon's message, its thread's root and both replies" \
   '[true,true,true,true]' --arg a "$daemon_message" --arg b "$daemon_root" --arg c "$daemon_person_reply" --arg d "$daemon_agent_reply" \
   '[.. | objects | select(has("body") and has("author")) | .id] as $ids | [$a, $b, $c, $d] | map(. as $m | $ids | index($m) != null)'
 # The agent's status comment is no node; its reply in the person's thread is; the comments hold both.
 conversation_view_absent kinds "$work/tree.json" "the read answers no status comment of an agent at the top of the issue" comment "$status_comment"
-conversation_view_keep kinds "/api/v1/issues/$key/comments" "$work/comments.json"
-conversation_view_expect "$work/comments.json" kinds "the issue's comments hold the agent's status comment and its reply in the person's thread" \
+tree_keep kinds "/api/v1/issues/$key/comments" "$work/comments.json"
+tree_kept_expect "$work/comments.json" kinds "the issue's comments hold the agent's status comment and its reply in the person's thread" \
   '[true,true]' --arg a "$status_comment" --arg b "$agent_reply" \
   '[.. | objects | select(has("body") and has("author")) | .id] as $ids | [$a, $b] | map(. as $m | $ids | index($m) != null)'
 # The agent's comment on the requirement's text, which no person answered: context under the
@@ -406,16 +376,16 @@ requirement_node="$(jq -r '[.nodes[] | select(.block_id == "r-discussion") | .id
   fail kinds "the agent's comment on the requirement's text is answered under the requirement as context" \
     "the answer holds the comment $on_text as $held, want it once as context under $requirement_node"
 pass kinds "the agent's comment $on_text on the requirement's text is answered under the requirement as context"
-conversation_view_expect "$work/tree.json" kinds "no node of the read stands under the agent's comment on the text" '[]' \
+tree_kept_expect "$work/tree.json" kinds "no node of the read stands under the agent's comment on the text" '[]' \
   --arg i "$on_text" '[.nodes[] | select(.parent != null and .parent.kind == "comment" and .parent.id == $i) | {kind, id}]'
-conversation_view_expect "$work/tree.json" kinds "the read answers the memo callout first, before any conversation node" \
+tree_kept_expect "$work/tree.json" kinds "the read answers the memo callout first, before any conversation node" \
   '["memo","callout"]' '[.nodes[] | select(.role != "context" and .parent != null)][0] | [.block_id, .supertag]'
 
 # --- the memo and the spec query ---------------------------------------------------------------
 
-conversation_view_section memo
-conversation_view_keep memo "/api/v1/issues/$key/tree?view=spec" "$work/spec-view.json"
-conversation_view_expect "$work/spec-view.json" memo "?view=spec answers the memo callout first, as a node of the query" \
+tree_section memo
+tree_keep memo "/api/v1/issues/$key/tree?view=spec" "$work/spec-view.json"
+tree_kept_expect "$work/spec-view.json" memo "?view=spec answers the memo callout first, as a node of the query" \
   '["memo","callout","query"]' '.nodes[0] | [.block_id, .supertag, .role]'
 second="$(jq -c '[.nodes[] | select(.block_id == "second") | {kind, id, role}]' "$work/spec-view.json")"
 [[ "$second" == "[]" ]] || fail memo "?view=spec answers no callout but the memo" "it answers the second callout second: $second"
@@ -450,13 +420,13 @@ A callout after the paragraph, which is no memo.
 THIRD
 conversation_view_create memo "An issue whose first child is a paragraph" "$work/third.md"
 readonly third="$corpus_key"
-conversation_view_keep memo "/api/v1/issues/$third/tree?view=spec" "$work/third-spec.json"
-conversation_view_expect "$work/third-spec.json" memo "?view=spec of $third, whose first child is a paragraph, answers no callout" '[]' \
+tree_keep memo "/api/v1/issues/$third/tree?view=spec" "$work/third-spec.json"
+tree_kept_expect "$work/third-spec.json" memo "?view=spec of $third, whose first child is a paragraph, answers no callout" '[]' \
   '[.nodes[] | select(.supertag == "callout") | {kind, id, block_id}]'
 
 # --- the largest issue ---------------------------------------------------------------------------
 
-conversation_view_section large
+tree_section large
 printf 'the large issue holds the measured counts the pull request body records: %s blocks over %s documents, %s comments, %s messages and %s asks (measured %s)\n' \
   "$corpus_measured_blocks" "$corpus_measured_documents" "$corpus_measured_comments" "$corpus_measured_messages" \
   "$corpus_measured_asks" "$corpus_measured_at"
@@ -489,7 +459,7 @@ while true; do
   [[ -n "$cursor" ]] || break
 done
 pass large "the read with no view of $large ends after $pages pages of $nodes nodes, each at most $page_bytes_bound bytes"
-conversation_view_expect "$work/large-first.json" large "the first page answers at most 200 comments, the newest" 'true' \
+tree_kept_expect "$work/large-first.json" large "the first page answers at most 200 comments, the newest" 'true' \
   '[.nodes[] | select(.kind == "comment")] | length <= 200'
 # The older comments, one comments_before page at a time, until it is null.
 comment_pages=1
@@ -501,7 +471,7 @@ while [[ -n "$before" ]]; do
   jq -r '.nodes[] | select(.kind == "comment") | .id' "$work/body" >>"$work/large-comments.txt"
   before="$(jq -r '.comments_before // empty' "$work/body")"
 done
-conversation_view_keep large "/api/v1/issues/$large/comments" "$work/large-comment-list.json"
+tree_keep large "/api/v1/issues/$large/comments" "$work/large-comment-list.json"
 # The comments the walk takes: each a person wrote, and each of a thread a person wrote in.
 jq -r '[.. | objects | select(has("body") and has("author") and has("reply_to"))] as $all
   | ([$all[] | {key: .id, value: .}] | from_entries) as $by
@@ -535,12 +505,12 @@ printf 'large issue %s: page size %s nodes (largest page), %s bytes at most, %s 
 
 # --- the child's ask -------------------------------------------------------------------------------
 
-conversation_view_section child
+tree_section child
 corpus_ask child "$child" "Which store holds the child's conversation?"
 readonly child_ask="$corpus_item"
-conversation_view_keep child "/api/v1/issues/$child/tree" "$work/child-tree.json"
+tree_keep child "/api/v1/issues/$child/tree" "$work/child-tree.json"
 conversation_view_present child "$work/child-tree.json" "the child's ask is a conversation node of the child's tree" ask "$child_ask" tree
-conversation_view_expect "$work/child-tree.json" child "the child's tree answers no artifact and no document version" '[]' \
+tree_kept_expect "$work/child-tree.json" child "the child's tree answers no artifact and no document version" '[]' \
   '[.nodes[] | select(.kind == "artifact" or .kind == "version") | {kind, id}]'
 
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"

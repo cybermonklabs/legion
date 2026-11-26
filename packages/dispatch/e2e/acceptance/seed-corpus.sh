@@ -98,9 +98,6 @@ readonly corpus_commit_two=2222222222222222222222222222222222222222
 # A 1x1 PNG, whose bytes the upload route stores as an image: its version holds no markdown.
 readonly corpus_png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
-# How long a settlement wait takes at most, the 300 s of lib-tree.sh's waits, polled every 2 s.
-readonly corpus_wait_seconds=300
-
 # What the writers leave their caller: the last issue's key and spec id, the last document's id and
 # slug, the last item's id, the block count corpus_blocks read and the first paragraph it found,
 # the blocks corpus_large_issue wrote, the version each approval named, by document id, and the
@@ -336,7 +333,7 @@ corpus_image() {
 # version is still settling would name the version before it, and a count of document_blocks taken
 # before the index has run counts fewer blocks than the documents hold.
 corpus_wait_settled() {
-  local deadline=$((SECONDS + corpus_wait_seconds)) at owed unindexed
+  local deadline=$((SECONDS + tree_wait_seconds)) at owed unindexed
   while true; do
     query "$1" "read what the documents still owe" "select clock_timestamp(),
       (select count(*) from doc_settlements_pending),
@@ -344,9 +341,9 @@ corpus_wait_settled() {
     IFS='|' read -r at owed unindexed <<<"$answer"
     [[ "$owed" != 0 || "$unindexed" != 0 ]] || return 0
     ((SECONDS < deadline)) ||
-      fail "$1" "every document settles and is indexed within ${corpus_wait_seconds} s" \
+      fail "$1" "every document settles and is indexed within ${tree_wait_seconds} s" \
         "at $at $owed documents still owe a settlement and $unindexed an index"
-    sleep 2
+    sleep "$tree_poll_seconds"
   done
 }
 
@@ -575,7 +572,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/lib-tree.sh"
 
 require_env LARGEST_ISSUE DATABASE_URL PROJECT DEV_SIGNIN_LOGIN DISPATCH_URL DISPATCH_TOKEN_FILE
-require_commands base64 curl date jq psql python3
+require_commands base64 cmp curl date jq psql python3 sed
 [[ "$LARGEST_ISSUE" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || tree_refuse "LARGEST_ISSUE must be an issue key"
 [[ -r "$DISPATCH_TOKEN_FILE" ]] || tree_refuse "DISPATCH_TOKEN_FILE is not readable"
 readonly source_issue="$LARGEST_ISSUE" source_url="${DISPATCH_URL%/}"

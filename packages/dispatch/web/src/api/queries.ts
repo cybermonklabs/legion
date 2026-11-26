@@ -97,15 +97,20 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
-/** Whether the issue is a view on its ancestor's spec: the issue its tree read's `view_of` names
- *  (`GET /api/v1/issues/{key}/tree?view=spec`), or null where it is none. Each document of the
- *  issue is edited under the schema this answer gives (`editorBlockSchema`), and its admission
- *  waits for it (`ProofDocument.tsx`). Only `view_of` is kept, since the page draws nothing else
- *  of that read. */
+/** Whether the issue is a view on its ancestor's spec: the issue it is a view of, or null where it
+ *  is none. Each document of the issue is edited under the schema this answer gives
+ *  (`editorBlockSchema`), and its admission waits for it (`ProofDocument.tsx`). An issue under no
+ *  parent is no view (`docs.ViewOf`), so where the page holds the issue's read and it names no
+ *  parent - every issue page holds that read before it draws a document - the answer is null and
+ *  nothing is read. Otherwise it is the `view_of` of the issue's spec view of its tree
+ *  (`getIssueViewOf`), the one part of that read the page draws. */
 export const issueViewOfQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "view-of"],
-    queryFn: async () => (await api.getIssueTree(key, { view: "spec" })).view_of,
+    queryFn: async ({ client }) =>
+      client.getQueryData(issueQuery(key).queryKey)?.parent === null
+        ? null
+        : api.getIssueViewOf(key),
   });
 
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which

@@ -9,16 +9,32 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const directories = temporaryDirectories("graph-database-guard");
 const drivers = ["node-projects.sh", "graph-store.sh", "graph-sizing.sh"];
+// The upgrade drivers, which drop the database DATABASE_URL names and create it empty, each
+// through lib-tree.sh's tree_reset_database and its tree_database_parts, with lib.sh's
+// loopback_database_url (view-arms-rollback.sh calls tree_database_parts at its start too).
+const droppingDrivers = ["issue-artifacts.sh", "one-dependency.sh", "view-arms-rollback.sh"];
 
-// Run each real driver only through its guard. Its first HTTP call leaves a marker and fails,
-// so a bad URL can reach neither a real server nor a database even if the guard lets it through.
-async function drive(driver: string, databaseUrl: string) {
+/** A driver's run: its stderr, and whether it reached curl (started) or psql (connected). */
+interface DriverRun {
+  readonly stderr: string;
+  readonly started: boolean;
+  readonly connected: boolean;
+}
+
+// Run each real driver only through its guard. Its first HTTP call and its first psql call each
+// leave a marker and fail, so a bad URL can reach neither a real server nor a database even if
+// the guard lets it through.
+async function drive(driver: string, databaseUrl: string): Promise<DriverRun> {
   const bin = directories();
   const marker = join(bin, "http-started");
+  const connectMarker = join(bin, "psql-started");
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash\n: > '${marker}'\nexit 97\n`, {
     mode: 0o755,
   });
-  for (const command of ["psql", "envoy-dispatch", "jq"]) {
+  writeFileSync(join(bin, "psql"), `#!/usr/bin/env bash\n: > '${connectMarker}'\nexit 97\n`, {
+    mode: 0o755,
+  });
+  for (const command of ["envoy-dispatch", "jq"]) {
     writeFileSync(join(bin, command), "#!/usr/bin/env bash\nexit 97\n", { mode: 0o755 });
   }
   const result = await runBounded({
@@ -40,7 +56,17 @@ async function drive(driver: string, databaseUrl: string) {
     },
     from: import.meta.url,
   });
-  return { ...result, started: existsSync(marker) };
+  const started = existsSync(marker);
+  return { stderr: result.stderr, started, connected: existsSync(connectMarker) };
+}
+
+// A refusal names DATABASE_URL and the loopback rule, and comes before any HTTP request or psql
+// call.
+function expectRefused(run: DriverRun) {
+  expect(run.started, run.stderr).toBe(false);
+  expect(run.connected, run.stderr).toBe(false);
+  expect(run.stderr).toContain("DATABASE_URL");
+  expect(run.stderr).toContain("loopback");
 }
 
 for (const driver of drivers) {
@@ -105,10 +131,35 @@ for (const driver of drivers) {
     test(
       `${driver} refuses ${shape} before any HTTP request`,
       async () => {
-        const run = await drive(driver, databaseUrl);
-        expect(run.started, run.stderr).toBe(false);
-        expect(run.stderr).toContain("DATABASE_URL");
-        expect(run.stderr).toContain("loopback");
+        expectRefused(await drive(driver, databaseUrl));
+      },
+      rowLimit("short")
+    );
+  }
+}
+
+// Each URL names the database the upgrade drivers drop, on a loopback authority, and an override
+// libpq connects by instead: a check of the authority's host alone would drop that database on
+// another server.
+for (const driver of droppingDrivers) {
+  for (const { shape, databaseUrl } of [
+    {
+      shape: "a host override",
+      databaseUrl: "postgres://user@127.0.0.1:5433/infra_1253_upgrade?host=remote.invalid",
+    },
+    {
+      shape: "a hostaddr override",
+      databaseUrl: "postgres://user@localhost/infra_1253_upgrade?hostaddr=192.0.2.1",
+    },
+    {
+      shape: "a service override",
+      databaseUrl: "postgres://user@localhost/infra_1253_upgrade?service=remote",
+    },
+  ]) {
+    test(
+      `${driver} refuses ${shape} before any HTTP request or database call`,
+      async () => {
+        expectRefused(await drive(driver, databaseUrl));
       },
       rowLimit("short")
     );

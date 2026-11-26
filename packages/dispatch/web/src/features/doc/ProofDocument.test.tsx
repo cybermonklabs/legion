@@ -1,15 +1,17 @@
-import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import type { IssueTreeRead } from "@legion/contracts";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import { MemoryRouter } from "react-router-dom";
 
 import {
   type FakeDocumentRuntime,
   fakeDocumentRuntime as fakeSpecRuntime,
 } from "../../__tests__/document-runtime";
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -20,7 +22,7 @@ import {
   artifact as spec,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import { issueViewOfQuery } from "../../api/queries";
+import { issueQuery, issueViewOfQuery } from "../../api/queries";
 import type {
   Artifact,
   ArtifactText,
@@ -29,11 +31,13 @@ import type {
   IssueReferenceSummary,
   Version,
 } from "../../api/types";
+import { ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+import type { DocumentToolbar } from "./ProofDocument";
 import { compiledBlockSchema, viewBlockSchema } from "./schema";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -278,6 +282,58 @@ test("ProofDocument shows a failed artifact read as its load failure and opens n
   }
 });
 
+/** The issue CORE-1, whose spec every case of this file opens, as its read answers it. */
+const issueRead: IssueDetails = {
+  route_status: null,
+  route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
+  advances: [],
+  advances_revision: 0,
+  artifacts: [],
+  children: [],
+  closed_at: null,
+  created_at: "2026-09-09T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  design_gates: [],
+  external_links: [],
+  key: "CORE-1",
+  labels: [],
+  last_seq: 1,
+  number: 1,
+  parent: null,
+  blocked_by: [],
+  assignee: null,
+  claim: null,
+  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
+  primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
+  project: "CORE",
+  referenced_by_count: 0,
+  route: null,
+  repo: null,
+  resolved_repo: null,
+  status: "testing",
+  priority: null,
+  rank: "U",
+  title: "Ship the release",
+  open_asks: [],
+  progress: { tasks: null, children: null },
+  updated_at: "2026-09-09T00:00:00Z",
+};
+
+/** A query client holding CORE-1's read, as an issue page holds it before it draws a document,
+ *  under `parent`. */
+function holdingTheIssue(parent: string | null) {
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...issueRead, parent });
+  return queryClient;
+}
+
 /** The tree read of `key` as Dispatch answers it, `view_of` naming `viewOf` or null. */
 function treeRead(key: string, viewOf: string | null): IssueTreeRead {
   return {
@@ -480,6 +536,82 @@ test("a document whose tree read answers view_of null gets the compiled schema",
   }
 });
 
+// An issue under no parent is no view (`docs.ViewOf`), so where the page holds the issue's read and
+// it names no parent, nothing reads the tree, whatever the tree would answer: here it would answer
+// that the issue is a view.
+test("a document of an issue the page holds under no parent reads no tree, and its editor gets the compiled schema", async () => {
+  const tree = heldTreeRead("CORE-0");
+  tree.release();
+  const { editors, sync, view } = renderProofDocument({ queryClient: holdingTheIssue(null) });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(compiledBlockSchema);
+    expect(tree.requests()).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// An issue under a parent may be a view, so its tree is read, and a view's editor is made with the
+// view's schema.
+test("a document of an issue the page holds under a parent reads its tree, and a view's editor gets the view's schema", async () => {
+  const tree = heldTreeRead("CORE-0");
+  tree.release();
+  const { editors, sync, view } = renderProofDocument({ queryClient: holdingTheIssue("CORE-0") });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(viewBlockSchema);
+    expect(tree.requests()).toEqual([SPEC_TREE_READ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A server of the release before serves no tree read, and answers each of its reads with no route:
+// the client sends the read again after each of its waits, and then the read is no view, since
+// that release holds none. The document loads with the compiled schema and shows no failure. The
+// spec's marks read the issue's decisions, which that server answers from its Decisions read.
+test("a child's document on a server with no tree route reads as no view after the client's retries, and its editor loads with the compiled schema", async () => {
+  jest.useFakeTimers();
+  const requests: string[] = [];
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", ({ request }) => {
+      const url = new URL(request.url);
+      requests.push(`${url.pathname}${url.search}`);
+      return Response.json(
+        { code: "NOT_FOUND", error: `no route for GET ${url.pathname}` },
+        { status: 404 }
+      );
+    }),
+    http.get("/api/v1/issues/:key/decisions", () =>
+      Response.json({ decisions: [], document: null, open_questions: [] })
+    )
+  );
+  const queryClient = holdingTheIssue("CORE-0");
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  let real = false;
+
+  try {
+    // The waits are 1, 2 and 4 seconds, each up to a quarter longer.
+    await tick(10_000);
+    realClock();
+    real = true;
+    expect(requests.filter((path) => path === SPEC_TREE_READ)).toHaveLength(4);
+    expect(queryClient.getQueryData(issueViewOfQuery("CORE-1").queryKey)).toBeNull();
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.blockSchema).toBe(compiledBlockSchema);
+    expect(within(view.container).queryByRole("alert")).toBeNull();
+  } finally {
+    if (!real) realClock();
+    view.unmount();
+  }
+});
+
 // The reader leaves the document while both reads are out: no editor is made, and the replies
 // that land after it change nothing.
 test("a document left before either read answers makes no editor, and its late replies change nothing", async () => {
@@ -568,7 +700,7 @@ test("a version named with its answer lost closes the dialog and says it was mad
   );
   const { toolbar, view } = renderProofDocument();
   try {
-    act(() => toolbar.current?.requestNamedVersion());
+    act(() => toolbar.current?.requestNamedVersion?.());
     const dialog = await screen.findByRole("dialog", { name: "Name this version" });
     await user.click(within(dialog).getByLabelText("What changed?"));
     await user.paste("Settled the rollout");
@@ -616,7 +748,7 @@ test("a read of the document asked before a version is named does not take the v
     });
     expect(getArtifact).toHaveBeenCalledTimes(2);
 
-    act(() => toolbar.current?.requestNamedVersion());
+    act(() => toolbar.current?.requestNamedVersion?.());
     const dialog = await screen.findByRole("dialog", { name: "Name this version" });
     await user.click(within(dialog).getByLabelText("What changed?"));
     await user.paste("Settled the rollout");
@@ -712,49 +844,7 @@ test("ProofDocument highlights a routed search term again after route and docume
 
 test("ProofDocument opens a hover card for a dispatch:// link in the live editor and navigates in-app", async () => {
   const user = userEvent.setup();
-  const issue: IssueDetails = {
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
-    advances: [],
-    advances_revision: 0,
-    artifacts: [],
-    children: [],
-    closed_at: null,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    design_gates: [],
-    external_links: [],
-    key: "CORE-1",
-    labels: [],
-    last_seq: 1,
-    number: 1,
-    parent: null,
-    blocked_by: [],
-    assignee: null,
-    claim: null,
-    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-    plan_artifact_id: "",
-    decisions_artifact_id: "",
-    primary_artifact_id: "artifact-1",
-    verification_artifact_id: "",
-    project: "CORE",
-    referenced_by_count: 0,
-    route: null,
-    repo: null,
-    resolved_repo: null,
-    status: "testing",
-    priority: null,
-    rank: "U",
-    title: "Ship the release",
-    open_asks: [],
-    progress: { tasks: null, children: null },
-    updated_at: "2026-09-09T00:00:00Z",
-  };
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issueRead);
   const { editors, sync, view } = renderProofDocument();
 
   try {
@@ -1069,6 +1159,225 @@ test("the block reference gutter filters the margin and focuses its block", asyn
     expect(margin.current?.blockFilterId).toBe("block-1");
   } finally {
     view.unmount();
+  }
+});
+
+/** The issue CORE-1's tree artifact, as the artifact read answers it on a converted issue: the
+ *  issue's room, of kind `tree`, whose own fragment holds the nodes written into the issue rather
+ *  than into a document (`createIssueTree` in api/artifacts.go). */
+const treeArtifact: Artifact = {
+  ...spec,
+  fragment: "prosemirror",
+  id: "artifact-tree",
+  kind: "tree",
+  name: "tree",
+  primary: false,
+  ref_key: "CORE-1/tree",
+  slug: "tree",
+};
+
+/** Every request the page sent through `fetch` from here on, as its path and query and the status
+ *  it was answered: the page's client calls `fetch` at each request (`createApiClient`), so the spy
+ *  sees each one and the answer the network gave it. Blocks reads are answered as the server
+ *  answers them, a document's with its blocks and a tree artifact's `400 NOT_DOCUMENT`
+ *  (`getArtifactBlocks` in api/artifacts.go). */
+function watchedRequests(): { answered(): Promise<string[]>; restore(): void } {
+  answerRequests(
+    http.get("/api/v1/artifacts/:id/blocks", ({ params }) =>
+      params.id === treeArtifact.id
+        ? Response.json(
+            { code: "NOT_DOCUMENT", error: "artifact is not a document" },
+            { status: 400 }
+          )
+        : Response.json([])
+    )
+  );
+  const fetches = spyOn(globalThis, "fetch");
+  return {
+    async answered() {
+      const statuses = await Promise.all(
+        fetches.mock.results.map(async (result) => (await result.value).status)
+      );
+      return fetches.mock.calls.map(([input], index) => {
+        const url = new URL(String(input), window.location.href);
+        return `${url.pathname}${url.search} ${statuses[index]}`;
+      });
+    },
+    restore: () => fetches.mockRestore(),
+  };
+}
+
+// The blocks route answers a document alone, so the editor of an issue's tree artifact reads no
+// blocks of it, and its load sends no read the server refuses.
+test("the editor of a converted issue's tree artifact sends no blocks read and no read answered 400", async () => {
+  answerRequests(
+    artifactRecordHandler((id) => (id === treeArtifact.id ? treeArtifact : undefined))
+  );
+  const requests = watchedRequests();
+  const { editors, sync, view } = renderProofDocument({
+    document: treeArtifact,
+    fake: fakeSpecRuntime({ fragment: "prosemirror", text: "The issue's own nodes" }),
+    queryClient: holdingTheIssue(null),
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.fragment).toBe("prosemirror");
+    await act(async () => {});
+    const answered = await requests.answered();
+    const treeBlocks = `/api/v1/artifacts/${treeArtifact.id}/blocks`;
+    expect(answered.filter((line) => line.startsWith(treeBlocks))).toEqual([]);
+    expect(answered.filter((line) => line.endsWith(" 400"))).toEqual([]);
+  } finally {
+    requests.restore();
+    view.unmount();
+  }
+});
+
+// A document of the same room reads its blocks, once, for the reference gutter.
+test("the editor of a converted issue's spec reads its blocks once", async () => {
+  const requests = watchedRequests();
+  const { editors, sync, view } = renderProofDocument({ queryClient: holdingTheIssue(null) });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    await act(async () => {});
+    const answered = await requests.answered();
+    const specBlocks = `/api/v1/artifacts/${artifact.id}/blocks`;
+    expect(answered.filter((line) => line.startsWith(specBlocks))).toEqual([`${specBlocks} 200`]);
+  } finally {
+    requests.restore();
+    view.unmount();
+  }
+});
+
+/** A document of CORE-1's room beside its spec: not the issue's primary spec, whose title the
+ *  page offers no correction of (`correctionIsOffered`), and awaiting its approval, as the
+ *  artifact read answers a document's (the server answers no approval of a tree artifact,
+ *  `approvalTargets` in api/reviews.go). */
+const roomDocument: Artifact = {
+  ...artifact,
+  approval: { latest_version: 1, state: "awaiting" },
+  id: "artifact-notes",
+  name: "notes.md",
+  primary: false,
+  ref_key: "CORE-1/notes-md",
+  slug: "notes-md",
+};
+
+/** The controls of a document's page that write through a route answering a document alone,
+ *  which refuses an issue's tree artifact: naming a version (`createNamedVersion`,
+ *  api/artifacts.go), the upload that repairs a stored tree outside the Proof schema, under the
+ *  artifact's name (`storeArtifact`, api/artifacts.go, which finds the tree artifact by that name
+ *  and refuses it `400 ARTIFACT_KIND_MISMATCH`), a rebuild of a history that cannot load
+ *  (`rebuildArtifact`, api/artifact_rebuild.go), a correction of the title (`renameArtifact`,
+ *  api/artifact_rename.go), and the review of an approval it awaits (`recordArtifactReview`,
+ *  api/reviews.go). The others refuse it `400 NOT_DOCUMENT`. */
+const DOCUMENT_ONLY_CONTROLS = [
+  "Name version",
+  "Upload",
+  "Rebuild from the latest version",
+  "Correct title",
+  "Approve",
+  "Request changes",
+] as const;
+
+/** The two refusals of an admission the page of a document offers a write for, each with its
+ *  words and the control of DOCUMENT_ONLY_CONTROLS it offers: a stored tree outside the Proof
+ *  schema, repaired by an upload, and a history that cannot load, rebuilt. */
+const WRITABLE_REFUSALS = [
+  {
+    code: "DOC_SCHEMA",
+    error: "the stored document is outside the Proof schema",
+    offer: "Upload",
+  },
+  {
+    code: "DOCUMENT_UNLOADABLE",
+    error: "the document's stored history cannot load",
+    offer: "Rebuild from the latest version",
+  },
+] as const;
+
+/** `document` on its own page, as the issue's page draws it (`ArtifactRoutePanel`): the editor,
+ *  whose text read the server refuses with `refusal`, and the header around it, drawn with the
+ *  toolbar the editor reports. Answers what the editor's alert says and which of
+ *  DOCUMENT_ONLY_CONTROLS the page offers. */
+async function documentPage(
+  document: Artifact,
+  fragment: string,
+  refusal: (typeof WRITABLE_REFUSALS)[number]
+): Promise<{ alert: string; controls: string[] }> {
+  answerRequests(artifactRecordHandler((id) => (id === document.id ? document : undefined)));
+  // The harness's spy of the text read (`answerTextReadsWithTheSeededText`), answering this row.
+  spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: refusal.code, error: refusal.error })
+  );
+  const queryClient = holdingTheIssue(null);
+  const { toolbar, view } = renderProofDocument({
+    document,
+    fake: fakeSpecRuntime({ fragment, text: "" }),
+    queryClient,
+  });
+  try {
+    const alert = await within(view.container).findByRole("alert");
+    await waitFor(() => expect(toolbar.current).toBeDefined());
+    const reported: DocumentToolbar | undefined = toolbar.current;
+    const header = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ArtifactHeader
+            artifact={document}
+            highlight={false}
+            showVersionPicker
+            toolbar={reported}
+            version={undefined}
+          >
+            {null}
+          </ArtifactHeader>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      return {
+        alert: alert.textContent ?? "",
+        controls: DOCUMENT_ONLY_CONTROLS.filter(
+          (name) => screen.queryByRole("button", { name }) !== null
+        ),
+      };
+    } finally {
+      header.unmount();
+    }
+  } finally {
+    view.unmount();
+  }
+}
+
+// An issue's tree artifact reads and edits as a document, and every other route of a document
+// refuses it: its page offers no control that writes through one. A stored tree outside the
+// schema and a history that cannot load are each the load's failure there, said in the alert,
+// with no repair and no rebuild.
+test("the page of a converted issue's tree artifact offers no control its document routes refuse", async () => {
+  for (const refusal of WRITABLE_REFUSALS) {
+    const page = await documentPage(treeArtifact, "prosemirror", refusal);
+    expect({ code: refusal.code, controls: page.controls }).toEqual({
+      code: refusal.code,
+      controls: [],
+    });
+    expect(page.alert).toContain(refusal.error);
+  }
+});
+
+// The same page of a document of the room offers each of them, the repair or the rebuild as its
+// text read is refused.
+test("the page of a document of a converted issue's room offers each control of a document", async () => {
+  for (const refusal of WRITABLE_REFUSALS) {
+    const page = await documentPage(roomDocument, ROOM_FRAGMENT, refusal);
+    expect({ code: refusal.code, controls: page.controls }).toEqual({
+      code: refusal.code,
+      controls: ["Name version", refusal.offer, "Correct title", "Approve", "Request changes"],
+    });
   }
 });
 

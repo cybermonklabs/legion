@@ -57,8 +57,8 @@
 # both read converted: false. It gives both back and runs no command: both read converted: true
 # within 300 s, and the store census reads no difference.
 #
-# The sockets speak the Hocuspocus framing the browser's provider speaks, through a Bun program
-# this driver writes into its own work directory (issue_room_cutover_peer_program).
+# The sockets speak the Hocuspocus framing the browser's provider speaks, through the Bun program
+# lib-tree.sh's tree_peer_program writes into the run's work directory.
 #
 # Inputs: DATABASE_URL, PROJECT, BASELINE_SHA (the commit the baseline server is stamped with),
 # DISPATCH_TOKEN (the agent bearer every server here accepts), DEV_SIGNIN_LOGIN (optional, default
@@ -107,12 +107,7 @@ database_url="$DATABASE_URL"
 readonly person_login="${DEV_SIGNIN_LOGIN:-alice}"
 checkout="${LEGION_WORKSPACE:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
 readonly checkout
-dispatch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-readonly dispatch_dir
-[[ -d "$dispatch_dir/node_modules/yjs" && -d "$dispatch_dir/node_modules/lib0" ]] || {
-  printf 'the socket peer imports yjs and lib0 from %s/node_modules: run bun install first\n' "$dispatch_dir" >&2
-  exit 2
-}
+tree_peer_require
 base_commit="$(git -C "$checkout" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
   printf 'BASELINE_SHA %s names no commit of %s\n' "$BASELINE_SHA" "$checkout" >&2
   exit 2
@@ -150,40 +145,6 @@ trap 'exit 143' TERM
 
 # --- helpers -------------------------------------------------------------------------------------
 
-# issue_room_cutover_database_parts: database_url split into the server it names (database_server,
-# its URL with the `postgres` database in place of its own) and its database's name
-# (database_name). It refuses a URL whose database is not on this machine or whose name does not
-# end `_upgrade`, the database the Verification preamble gives the upgrade drivers.
-issue_room_cutover_database_parts() {
-  loopback_database_url "$database_url" ||
-    tree_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
-    tree_refuse "DATABASE_URL is no postgres:// URL naming a database"
-  database_server="${BASH_REMATCH[1]}${BASH_REMATCH[3]}/postgres${BASH_REMATCH[5]}"
-  database_name="${BASH_REMATCH[4]}"
-  [[ "$database_name" =~ ^[a-z0-9_]+_upgrade$ ]] ||
-    tree_refuse "DATABASE_URL names the database $database_name: this driver drops and creates only a database whose name ends _upgrade"
-}
-
-# issue_room_cutover_empty_database SECTION: drops the database and creates it empty, so the
-# earlier release's own Store.Migrate writes its schema and the pass's rows are its only content.
-# Every server is stopped first.
-issue_room_cutover_empty_database() {
-  baseline_psql "$database_server" -q \
-    -c "drop database if exists \"$database_name\" with (force)" -c "create database \"$database_name\"" >"$work/reset" 2>&1 ||
-    fail "$1" "empty the database $database_name" "psql: $(<"$work/reset")"
-  pass "$1" "dropped the database $database_name and created it empty"
-}
-
-# issue_room_cutover_key SECTION WHAT VALUE and issue_room_cutover_uuid SECTION WHAT VALUE: VALUE
-# is an issue key, or a uuid as Dispatch writes one, which the SQL below names.
-issue_room_cutover_key() {
-  [[ "$3" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "$2" "'$3' is no issue key"
-}
-issue_room_cutover_uuid() {
-  [[ "$3" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$1" "$2" "'$3' is no uuid"
-}
-
 # issue_room_cutover_boot_beside NAME BINARY MODE: boots BINARY over the database beside whatever
 # is live, through lib-baseline.sh's baseline_boot, with tree_hold_env's settings where MODE is
 # `held` and none where it is `plain`, the caller's BASELINE_EXTRA_ENV pairs kept. Its pid is in
@@ -218,8 +179,8 @@ issue_room_cutover_write_issue() {
   corpus_issue "$section" "$title" "$work/$label-spec.md"
   written="$corpus_key"
   written_spec="$corpus_spec"
-  issue_room_cutover_key "$section" "the key of $title" "$written"
-  issue_room_cutover_uuid "$section" "the spec of $written" "$written_spec"
+  tree_key "$section" "the key of $title" "$written"
+  tree_uuid "$section" "the spec of $written" "$written_spec"
   {
     printf ':::check{#c-%s serves="dispatch://%s/spec#b-r-%s" surface="cli" run="bash e2e/acceptance/issue-room-cutover.sh" negative_control="Convert one document alone and two rooms stand."}\nThe %s issue is one room.\n:::\n\n' \
       "$label" "$written" "$label" "$label"
@@ -234,8 +195,8 @@ issue_room_cutover_write_issue() {
   } >"$work/$label-plan.md"
   corpus_upload "$section" "$written" plan.md "$work/$label-plan.md"
   written_plan="$corpus_doc"
-  issue_room_cutover_uuid "$section" "the verification-md of $written" "$written_verification"
-  issue_room_cutover_uuid "$section" "the plan-md of $written" "$written_plan"
+  tree_uuid "$section" "the verification-md of $written" "$written_verification"
+  tree_uuid "$section" "the plan-md of $written" "$written_plan"
 }
 
 # issue_room_cutover_outcome FILE KEY: what a conversion's output in FILE printed for the issue
@@ -280,15 +241,6 @@ issue_room_cutover_run() {
   printf 'convert-issues --project %s%s exited %s:\n%s\n' "$project" "${1:+ $1}" "$tree_envoy_status" "$(<"$work/$name.out")"
 }
 
-# issue_room_cutover_converted SECTION ISSUE: ISSUE's converted member on GET
-# /api/v1/issues/{key}/tree, in converted, and its tree artifact in tree_value.
-issue_room_cutover_converted() {
-  tree_read agent "$2"
-  tree_want 200 "$1" "read $2's tree"
-  converted="$(jq -r '.converted' "$work/body")"
-  tree_value="$(jq -r '.tree // ""' "$work/body")"
-}
-
 # issue_room_cutover_snapshot: one line that changes where any row of document_rooms, doc_updates
 # or graph_tuples does, in snapshot.
 issue_room_cutover_snapshot() {
@@ -306,9 +258,7 @@ issue_room_cutover_snapshot() {
 issue_room_cutover_census_reads_zero() {
   local section="$1" what="$2" summary key
   shift 2
-  tree_envoy_dispatch_status census --store
-  [[ "$tree_envoy_status" -le 1 ]] ||
-    fail "$section" "run the store census" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/out")"
+  tree_store_census "$section"
   summary="$(grep -E '^census: store rows_checked=' "$work/out" || true)"
   printf '%s\n' "$summary"
   [[ "$summary" =~ differences=0([^0-9,]|$) ]] ||
@@ -318,18 +268,6 @@ issue_room_cutover_census_reads_zero() {
       fail "$section" "$what" "$(grep -E "difference at .*${key}([^0-9]|\$)" "$work/out" | head -n 10)"
   done
   pass "$section" "$what"
-}
-
-# issue_room_cutover_first_part_of DOCUMENT NAME: the seq of the first part_of the conversion wrote,
-# after seq_before, for the nodes the room room_tree (address room_ref) holds of DOCUMENT, in
-# first_seq; `none` where it wrote none.
-issue_room_cutover_first_part_of() {
-  query "$section" "read the first part_of the conversion wrote for the nodes of $2" "
-    select coalesce(min(t.seq)::text, 'none') from graph_tuples t
-    join issue_room_blocks r on r.tree_artifact_id = '$room_tree' and r.document_id = '$1'
-      and t.from_kind = 'block' and t.from_id = '$room_ref' || '#' || r.block_id
-    where t.kind = 'part_of' and t.asserted and t.seq > $seq_before"
-  first_seq="$answer"
 }
 
 # issue_room_cutover_rows DOCUMENT: DOCUMENT's rows of the three stored tables, `<doc_updates>
@@ -352,284 +290,6 @@ issue_room_cutover_text() {
   jq -j '.markdown' "$work/body" >"$3" || fail "$1" "read the text of $2" "no markdown in: $(body)"
 }
 
-# issue_room_cutover_cookie: the person's session cookie out of tree_sign_in's jar, as the Cookie
-# header's value, in $work/cookie, which the socket peer reads.
-issue_room_cutover_cookie() {
-  local domain flag path secure expiry name value
-  : >"$work/cookie"
-  while IFS=$'\t' read -r domain flag path secure expiry name value; do
-    [[ "$name" == dsession ]] || continue
-    printf 'dsession=%s' "$value" >"$work/cookie"
-  done <"$work/jar"
-  [[ -s "$work/cookie" ]] || fail setup "read the person's session cookie" "the jar holds no dsession cookie"
-}
-
-# issue_room_cutover_peer_program: writes the socket peer, a Bun program, to
-# $work/issue-room-cutover-peer.ts, beside a link to this package's node_modules, which it imports
-# from. `bun issue-room-cutover-peer.ts <server> <cookie file> <schema version>` holds document
-# sockets, each by a name, as the person whose Cookie header the file holds, and answers each
-# command it reads on stdin with one line on stdout, in the Hocuspocus framing the browser's
-# provider speaks (each frame starts with the document name asked for, the token frame carries the
-# schema version, a sync step 1 follows the Authenticated answer, and the server answers each update
-# it is sent with one SyncStatus frame):
-#   open NAME DOCUMENT       opens NAME on DOCUMENT and syncs it; a closed NAME reconnects keeping
-#                            its document, so its sync step 1 presents the state vector it held:
-#                            `opened NAME <scope> <fragment,...>`, or `refused NAME <why>`
-#   fragments NAME           `fragments NAME <fragment,...>`, every shared type but the marks map
-#   append NAME FRAGMENT J   appends the block the JSON J describes - {type, id, text, attrs?} - at
-#                            the end of FRAGMENT and waits for the server's answer:
-#                            `appended NAME <1|0>`, or `unsent NAME` on a closed socket
-#   blocks NAME FRAGMENT     `blocks NAME <json>`: each element of FRAGMENT with a blockId, {id,
-#                            type, text}, in document order
-#   wait-close NAME SECONDS  `closed NAME <code> <reason>` once the socket closes, else `open NAME`
-#   close NAME               `closed NAME`
-#   quit
-issue_room_cutover_peer_program() {
-  [[ -e "$work/node_modules" ]] || ln -s "$dispatch_dir/node_modules" "$work/node_modules"
-  cat >"$work/issue-room-cutover-peer.ts" <<'PEER'
-import * as Y from "yjs";
-import * as encoding from "lib0/encoding";
-import * as decoding from "lib0/decoding";
-
-// Bun's WebSocket client takes request headers; the DOM WebSocket type does not.
-const BunWebSocket = WebSocket as unknown as new (
-  url: string,
-  options: { readonly headers: Record<string, string> }
-) => WebSocket;
-
-const messageSync = 0;
-const messageAuth = 2;
-const messageSyncStatus = 8;
-const syncStep1 = 0;
-const syncStep2 = 1;
-const syncUpdate = 2;
-const authToken = 0;
-const authDenied = 1;
-const authAuthenticated = 2;
-const answerWithinMs = Number(process.env.PEER_ANSWER_MS ?? "60000");
-
-const [server, cookieFile, schemaVersion] = Bun.argv.slice(2);
-if (server === undefined || cookieFile === undefined || schemaVersion === undefined) {
-  console.error("usage: bun issue-room-cutover-peer.ts <server> <cookie file> <schema version>");
-  process.exit(2);
-}
-const origin = new URL(server).origin;
-const cookie = (await Bun.file(cookieFile).text()).trim();
-
-type Peer = {
-  doc: Y.Doc;
-  asked: string;
-  socket?: WebSocket;
-  scope?: string;
-  denied?: string;
-  synced: boolean;
-  sent: number;
-  statuses: number[];
-  closed?: string;
-};
-const peers = new Map<string, Peer>();
-
-function frame(name: string, write: (encoder: encoding.Encoder) => void): Uint8Array {
-  const encoder = encoding.createEncoder();
-  encoding.writeVarString(encoder, name);
-  write(encoder);
-  return encoding.toUint8Array(encoder);
-}
-
-function sendSync(peer: Peer, subtype: number, payload: Uint8Array): boolean {
-  if (peer.socket === undefined || peer.socket.readyState !== WebSocket.OPEN) return false;
-  peer.socket.send(
-    frame(peer.asked, (encoder) => {
-      encoding.writeVarUint(encoder, messageSync);
-      encoding.writeVarUint(encoder, subtype);
-      encoding.writeVarUint8Array(encoder, payload);
-    })
-  );
-  if (subtype !== syncStep1) peer.sent += 1;
-  return true;
-}
-
-async function until(test: () => boolean, ms = answerWithinMs): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (!test()) {
-    if (Date.now() > deadline) return false;
-    await Bun.sleep(50);
-  }
-  return true;
-}
-
-function receive(peer: Peer, data: ArrayBuffer): void {
-  const decoder = decoding.createDecoder(new Uint8Array(data));
-  decoding.readVarString(decoder);
-  const type = decoding.readVarUint(decoder);
-  if (type === messageAuth) {
-    const subtype = decoding.readVarUint(decoder);
-    const text = decoding.readVarString(decoder);
-    if (subtype === authAuthenticated) {
-      peer.scope = text;
-      sendSync(peer, syncStep1, Y.encodeStateVector(peer.doc));
-    } else if (subtype === authDenied) {
-      peer.denied = text;
-    }
-    return;
-  }
-  if (type === messageSyncStatus) {
-    peer.statuses.push(decoding.readVarUint(decoder));
-    return;
-  }
-  if (type !== messageSync) return;
-  const subtype = decoding.readVarUint(decoder);
-  const payload = decoding.readVarUint8Array(decoder);
-  if (subtype === syncStep1) {
-    sendSync(peer, syncStep2, Y.encodeStateAsUpdate(peer.doc, payload));
-    return;
-  }
-  if (subtype === syncStep2 || subtype === syncUpdate) {
-    Y.applyUpdate(peer.doc, payload, "server");
-    if (subtype === syncStep2) peer.synced = true;
-  }
-}
-
-async function open(name: string, asked: string): Promise<string> {
-  let peer = peers.get(name);
-  if (peer !== undefined && peer.closed === undefined) return `refused ${name} it is open already`;
-  if (peer === undefined) {
-    const doc = new Y.Doc();
-    peer = { doc, asked, synced: false, sent: 0, statuses: [] };
-    peers.set(name, peer);
-    const held = peer;
-    doc.on("update", (update: Uint8Array, source: unknown) => {
-      if (source !== "server") sendSync(held, syncUpdate, update);
-    });
-  }
-  Object.assign(peer, { asked, scope: undefined, denied: undefined, closed: undefined, synced: false, sent: 0, statuses: [] });
-  const url = `${origin.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(asked)}?schema_version=${encodeURIComponent(schemaVersion)}`;
-  const socket = new BunWebSocket(url, { headers: { Cookie: cookie, Origin: origin } });
-  socket.binaryType = "arraybuffer";
-  peer.socket = socket;
-  const held = peer;
-  socket.addEventListener("open", () =>
-    socket.send(
-      frame(asked, (encoder) => {
-        encoding.writeVarUint(encoder, messageAuth);
-        encoding.writeVarUint(encoder, authToken);
-        encoding.writeVarString(encoder, schemaVersion);
-      })
-    )
-  );
-  socket.addEventListener("message", (event) => {
-    if (event.data instanceof ArrayBuffer) receive(held, event.data);
-  });
-  socket.addEventListener("close", (event) => {
-    held.closed = `${event.code} ${event.reason || "-"}`;
-  });
-  socket.addEventListener("error", () => {
-    held.closed ??= "error -";
-  });
-  const settled = await until(() => held.synced || held.denied !== undefined || held.closed !== undefined);
-  if (held.denied !== undefined) return `refused ${name} denied: ${held.denied}`;
-  if (held.closed !== undefined) return `refused ${name} closed: ${held.closed}`;
-  if (!settled) return `refused ${name} no sync within ${answerWithinMs / 1000} s`;
-  await until(() => held.statuses.length >= held.sent);
-  return `opened ${name} ${held.scope} ${fragments(held)}`;
-}
-
-// The fragments a socket's document holds: every shared type but the marks map (docs' marksMapName).
-function fragments(peer: Peer): string {
-  return [...peer.doc.share.keys()].filter((name) => name !== "marks").sort().join(",");
-}
-
-function build(spec: { type: string; id: string; text: string; attrs?: Record<string, unknown> }): Y.XmlElement {
-  const element = new Y.XmlElement(spec.type);
-  element.setAttribute("blockId", spec.id);
-  for (const [key, value] of Object.entries(spec.attrs ?? {})) {
-    element.setAttribute(key, value as string);
-  }
-  if (spec.type === "paragraph" || spec.type === "heading") {
-    element.insert(0, [new Y.XmlText(spec.text)]);
-  } else {
-    const paragraph = new Y.XmlElement("paragraph");
-    paragraph.setAttribute("blockId", `${spec.id}-text`);
-    paragraph.insert(0, [new Y.XmlText(spec.text)]);
-    element.insert(0, [paragraph]);
-  }
-  return element;
-}
-
-function blocks(fragment: Y.XmlFragment): { id: string; type: string; text: string }[] {
-  const found: { id: string; type: string; text: string }[] = [];
-  const walk = (node: Y.XmlElement | Y.XmlFragment) => {
-    for (const child of node.toArray()) {
-      if (!(child instanceof Y.XmlElement)) continue;
-      const id = child.getAttribute("blockId");
-      if (typeof id === "string" && id !== "") {
-        const text = child
-          .toArray()
-          .map((part) => (part instanceof Y.XmlText ? part.toString() : part instanceof Y.XmlElement ? part.toString() : ""))
-          .join("");
-        found.push({ id, type: child.nodeName, text: text.replace(/<[^>]*>/g, "") });
-      }
-      walk(child);
-    }
-  };
-  walk(fragment);
-  return found;
-}
-
-async function run(line: string): Promise<string> {
-  const [command = "", name = "", ...rest] = line.trim().split(" ");
-  const peer = peers.get(name);
-  switch (command) {
-    case "open":
-      return open(name, rest[0] ?? "");
-    case "quit":
-      for (const held of peers.values()) held.socket?.close();
-      process.exit(0);
-  }
-  if (peer === undefined) return `error ${name} no socket of that name`;
-  switch (command) {
-    case "fragments":
-      return `fragments ${name} ${fragments(peer)}`;
-    case "append": {
-      const fragment = rest[0] ?? "";
-      const spec = JSON.parse(rest.slice(1).join(" "));
-      if (peer.closed !== undefined) return `unsent ${name}`;
-      const before = peer.sent;
-      peer.doc.transact(() => {
-        const target = peer.doc.getXmlFragment(fragment);
-        target.insert(target.length, [build(spec)]);
-      }, "local");
-      if (peer.sent === before) return `unsent ${name}`;
-      const answered = await until(() => peer.statuses.length >= peer.sent || peer.closed !== undefined);
-      if (!answered || peer.statuses.length < peer.sent) return `unsent ${name}`;
-      return `appended ${name} ${peer.statuses[peer.statuses.length - 1]}`;
-    }
-    case "blocks":
-      return `blocks ${name} ${JSON.stringify(blocks(peer.doc.getXmlFragment(rest[0] ?? "")))}`;
-    case "wait-close": {
-      await until(() => peer.closed !== undefined, Number(rest[0] ?? "10") * 1000);
-      return peer.closed === undefined ? `open ${name}` : `closed ${name} ${peer.closed}`;
-    }
-    case "close":
-      peer.socket?.close();
-      await until(() => peer.closed !== undefined, 10_000);
-      return `closed ${name}`;
-    default:
-      return `error ${name} unknown command ${command}`;
-  }
-}
-
-for await (const line of console) {
-  if (line.trim() === "") continue;
-  try {
-    console.log(await run(line));
-  } catch (error) {
-    console.log(`error - ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-PEER
-}
-
 # issue_room_cutover_peer_start SECTION: starts the socket peer against $base as the person, on
 # the block schema version that server serves, as a coprocess whose stdin and stdout the driver
 # holds; a peer already running is stopped first, since each one serves one server.
@@ -639,12 +299,7 @@ issue_room_cutover_peer_start() {
   tree_send GET /api/v1/schema/blocks
   tree_want 200 "$1" "read the block schema $base serves"
   schema="$(jq -r '.version' "$work/body")"
-  issue_room_cutover_cookie
-  coproc ISSUE_ROOM_CUTOVER_PEER {
-    PEER_ANSWER_MS=$((peer_answer_seconds * 1000)) exec bun "$work/issue-room-cutover-peer.ts" "$base" "$work/cookie" "$schema" 2>>"$work/peer.err"
-  }
-  peer_pid="$ISSUE_ROOM_CUTOVER_PEER_PID"
-  exec {peer_in}>&"${ISSUE_ROOM_CUTOVER_PEER[1]}" {peer_out}<&"${ISSUE_ROOM_CUTOVER_PEER[0]}"
+  tree_peer_start "$schema"
 }
 
 # issue_room_cutover_peer_stop: stops the socket peer, closing every socket it holds; safe when
@@ -659,42 +314,10 @@ issue_room_cutover_peer_stop() {
   peer_out=""
 }
 
-# issue_room_cutover_peer SECTION WHAT COMMAND…: sends COMMAND to the peer and reads its one line
-# into reply; a peer that answers nothing within its bound, or answers `error`, fails naming WHAT.
-issue_room_cutover_peer() {
-  local section="$1" what="$2"
-  shift 2
-  printf '%s\n' "$*" >&"$peer_in" ||
-    fail "$section" "$what" "the socket peer stopped: $(tail -n 20 "$work/peer.err" 2>/dev/null)"
-  IFS= read -r -t $((peer_answer_seconds + 30)) reply <&"$peer_out" ||
-    fail "$section" "$what" "the socket peer answered nothing to '$1': $(tail -n 20 "$work/peer.err" 2>/dev/null)"
-  [[ "$reply" != error* ]] || fail "$section" "$what" "the socket peer answered: $reply"
-  printf 'peer: %s -> %s\n' "$1 ${2:-}" "$reply"
-}
-
-# issue_room_cutover_open SECTION NAME DOCUMENT: opens the socket NAME on DOCUMENT, which must be
-# admitted writable; its fragments in fragments.
-issue_room_cutover_open() {
-  issue_room_cutover_peer "$1" "open a document socket on $3" open "$2" "$3"
-  [[ "$reply" =~ ^opened\ $2\ read-write\ (.*)$ ]] ||
-    fail "$1" "a document socket on $3 is admitted writable" "the peer answered: $reply"
-  fragments="${BASH_REMATCH[1]}"
-}
-
 # issue_room_cutover_append SECTION NAME FRAGMENT ID WORDS: NAME appends a paragraph ID of WORDS
 # to FRAGMENT, and the room applies it.
 issue_room_cutover_append() {
-  issue_room_cutover_peer "$1" "write a block through the socket $2" append "$2" "$3" \
-    "$(jq -cn --arg id "$4" --arg w "$5" '{type: "paragraph", id: $id, text: $w}')"
-  [[ "$reply" == "appended $2 1" ]] ||
-    fail "$1" "the room applies the block the socket $2 writes into the fragment $3" "the peer answered: $reply"
-}
-
-# issue_room_cutover_holds NAME FRAGMENT ID: whether the socket NAME's document holds the block ID
-# in FRAGMENT.
-issue_room_cutover_holds() {
-  issue_room_cutover_peer holds "read the blocks the socket $1 draws" blocks "$1" "$2"
-  jq -e --arg id "$3" 'any(.[]; .id == $id)' <<<"${reply#blocks "$1" }" >/dev/null
+  tree_peer_append "$1" "$2" "$3" "$(jq -cn --arg id "$4" --arg w "$5" '{type: "paragraph", id: $id, text: $w}')"
 }
 
 # issue_room_cutover_owed ISSUE: a document of ISSUE that owes its block index, in owed, empty
@@ -720,8 +343,7 @@ issue_room_cutover_names_document() {
 # --- setup: the earlier release over an emptied database --------------------------------------
 
 section=setup
-issue_room_cutover_database_parts
-issue_room_cutover_empty_database "$section"
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 baseline_start
 [[ -z "$baseline_commit" || "$baseline_commit" == "$base_commit" ]] ||
   fail "$section" "the baseline is the build of BASELINE_SHA" "it was built from $baseline_commit, and BASELINE_SHA names $base_commit"
@@ -733,7 +355,7 @@ base="$baseline_url"
 tree_init
 tree_sign_in "$section" "$person_login"
 tree_create_project "$section" "$project" "The cutover of an issue's three rooms"
-issue_room_cutover_peer_program
+tree_peer_program
 sections=$((sections + 1))
 
 # --- base: three issues the earlier release writes, A's documents edited through its sockets ----
@@ -754,10 +376,10 @@ issue_room_cutover_peer_start "$section"
 edits=0
 for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
   edits=$((edits + 1))
-  issue_room_cutover_open "$section" "edit-$edits" "$document"
+  tree_peer_open "$section" "edit-$edits" "$document"
   issue_room_cutover_append "$section" "edit-$edits" prosemirror "p-old-${document:0:8}" \
     "A paragraph the earlier release's socket wrote into this document."
-  issue_room_cutover_peer "$section" "close the socket on $document" close "edit-$edits"
+  tree_peer "$section" "close the socket on $document" close "edit-$edits"
 done
 issue_room_cutover_peer_stop
 corpus_wait_settled "$section"
@@ -798,10 +420,10 @@ create trigger issue_room_cutover_refuse before insert on document_rooms
 SQL
 pass "$section" "the trigger issue_room_cutover_refuse raises for $second's spec $second_spec"
 issue_room_cutover_peer_start "$section"
-issue_room_cutover_open "$section" held "$held_spec"
+tree_peer_open "$section" held "$held_spec"
 [[ "$fragments" == prosemirror ]] ||
   fail "$section" "the socket on $held_issue's spec, before the conversion, is admitted to the spec's own room" "its fragments: $fragments"
-issue_room_cutover_peer "$section" "read what the held socket draws" blocks held prosemirror
+tree_peer "$section" "read what the held socket draws" blocks held prosemirror
 printf '%s\n' "${reply#blocks held }" >"$work/held-before.json"
 pass "$section" "a socket on $held_issue's spec is held across the conversion"
 query "$section" "read the database's clock before the conversion" "select clock_timestamp()"
@@ -814,21 +436,21 @@ issue_room_cutover_run "$section" first
 issue_room_cutover_outcome "$work/first.out" "$whole"
 [[ "$outcome" == converted ]] ||
   fail "$section" "convert-issues prints $whole converted" "it prints $outcome for it: ${outcome_line:-no line}"
-issue_room_cutover_converted "$section" "$whole"
+tree_converted "$section" "$whole"
 [[ "$converted" == true ]] || fail "$section" "$whole reads converted: true" "it reads converted: $converted"
 room_tree="$tree_value"
-issue_room_cutover_uuid "$section" "$whole's tree" "$room_tree"
+tree_uuid "$section" "$whole's tree" "$room_tree"
 query "$section" "read $whole's tree's address" "select ref_key from artifacts where id = '$room_tree'"
 room_ref="$answer"
 readonly room_tree room_ref
 want_value "$section" "the three document_rooms rows of $whole name its tree $room_tree" 3 "
     select count(*) from document_rooms where artifact_id in ('$whole_spec', '$whole_verification', '$whole_plan') and room = '$room_tree'"
-issue_room_cutover_open "$section" probe-whole "$room_tree"
+tree_peer_open "$section" probe-whole "$room_tree"
 for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
   [[ ",$fragments," == *",$document,"* ]] ||
     fail "$section" "$whole's room holds each document's content in its own fragment" "its fragments: $fragments, not $document"
 done
-issue_room_cutover_peer "$section" "close the probe of $whole's room" close probe-whole
+tree_peer "$section" "close the probe of $whole's room" close probe-whole
 for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
   issue_room_cutover_text "$section" "$document" "$work/$document.after.md"
   cmp -s "$work/capture/$document.md" "$work/$document.after.md" ||
@@ -836,11 +458,11 @@ for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
       "$(diff "$work/capture/$document.md" "$work/$document.after.md" | head -n 20)"
 done
 pass "$section" "$whole's room holds a fragment of each document, and each text equals its capture character for character"
-issue_room_cutover_first_part_of "$whole_verification" verification-md
+tree_first_part_of "$section" "$room_tree" "$room_ref" "$seq_before" "$whole_verification" verification-md
 verification_seq="$first_seq"
-issue_room_cutover_first_part_of "$whole_plan" plan-md
+tree_first_part_of "$section" "$room_tree" "$room_ref" "$seq_before" "$whole_plan" plan-md
 plan_seq="$first_seq"
-issue_room_cutover_first_part_of "$whole_spec" spec
+tree_first_part_of "$section" "$room_tree" "$room_ref" "$seq_before" "$whole_spec" spec
 spec_seq="$first_seq"
 read_seqs="verification-md=$verification_seq plan-md=$plan_seq spec=$spec_seq"
 [[ "$verification_seq" =~ ^[0-9]+$ && "$plan_seq" =~ ^[0-9]+$ && "$spec_seq" =~ ^[0-9]+$ ]] ||
@@ -882,42 +504,42 @@ want_value "$section" "$second holds no document_rooms row, no tree and no doc_u
     select (select count(*) from document_rooms d join artifacts a on a.id = d.artifact_id where a.issue_key = '$second') || '|' ||
            (select count(*) from issue_trees where issue_key = '$second') || '|' ||
            (select count(*) from doc_updates u join artifacts a on a.id = u.artifact_id where a.issue_key = '$second' and a.kind = 'tree')"
-issue_room_cutover_converted "$section" "$second"
+tree_converted "$section" "$second"
 [[ "$converted" == false ]] || fail "$section" "$second, whose conversion failed, reads converted: false" "it reads converted: $converted"
-issue_room_cutover_peer "$section" "wait for the held socket to close" wait-close held 60
+tree_peer "$section" "wait for the held socket to close" wait-close held 60
 [[ "$reply" == "closed held "* ]] ||
   fail "$section" "the conversion closes the socket held on $held_issue's spec" "the peer answered: $reply"
 pass "$section" "the conversion closed the socket held on $held_issue's spec (${reply#closed held })"
-issue_room_cutover_peer "$section" "write through the closed socket" append held prosemirror \
+tree_peer "$section" "write through the closed socket" append held prosemirror \
   "$(jq -cn '{type: "paragraph", id: "p-after-close", text: "Written through the held socket after its close."}')"
 [[ "$reply" == "unsent held" ]] || fail "$section" "no write of the held socket reaches a document after the close" "the peer answered: $reply"
 issue_room_cutover_outcome "$work/first.out" "$held_issue"
 [[ "$outcome" == converted ]] ||
   fail "$section" "convert-issues prints $held_issue converted" "it prints $outcome for it: ${outcome_line:-no line}"
-issue_room_cutover_converted "$section" "$held_issue"
+tree_converted "$section" "$held_issue"
 held_tree="$tree_value"
-issue_room_cutover_uuid "$section" "$held_issue's tree" "$held_tree"
+tree_uuid "$section" "$held_issue's tree" "$held_tree"
 corpus_wait_settled "$section"
 for document in "$held_spec" "$held_verification" "$held_plan" "$held_tree"; do
   issue_room_cutover_text "$section" "$document" "$work/$document.converted.md"
 done
-issue_room_cutover_open "$section" held "$held_spec"
+tree_peer_open "$section" held "$held_spec"
 for document in "$held_spec" "$held_verification" "$held_plan"; do
   [[ ",$fragments," == *",$document,"* ]] ||
     fail "$section" "the held socket's reconnection is admitted to $held_issue's room" "its fragments: $fragments, not $document"
 done
-issue_room_cutover_peer "$section" "read the converted spec the reconnection draws" blocks held "$held_spec"
+tree_peer "$section" "read the converted spec the reconnection draws" blocks held "$held_spec"
 [[ "$(jq 'length' <<<"${reply#blocks held }")" -gt 0 ]] ||
   fail "$section" "the reconnection reads the converted tree" "its spec fragment holds no block"
 pass "$section" "the held socket reconnected with the state vector it held, was admitted to $held_issue's room and reads the converted tree"
-issue_room_cutover_open "$section" probe-held "$held_tree"
-issue_room_cutover_peer "$section" "read the tree's own fragment of $held_issue's room" blocks probe-held prosemirror
+tree_peer_open "$section" probe-held "$held_tree"
+tree_peer "$section" "read the tree's own fragment of $held_issue's room" blocks probe-held prosemirror
 landed="$(jq -r --slurpfile before "$work/held-before.json" \
   '[.[] | .id] as $now | [$before[0][] | .id | select(. as $id | $now | index($id))] | join(", ")' <<<"${reply#blocks probe-held }")"
 [[ -z "$landed" ]] ||
   fail "$section" "no write of the held socket reaches a document after the close" "blocks of its old room landed in $held_issue's tree fragment: $landed"
-issue_room_cutover_peer "$section" "close the probe" close probe-held
-issue_room_cutover_peer "$section" "close the held socket" close held
+tree_peer "$section" "close the probe" close probe-held
+tree_peer "$section" "close the held socket" close held
 corpus_wait_settled "$section"
 for document in "$held_spec" "$held_verification" "$held_plan" "$held_tree"; do
   issue_room_cutover_text "$section" "$document" "$work/$document.reconnected.md"
@@ -931,23 +553,23 @@ sections=$((sections + 1))
 # --- rooms: the spec and the Verification document of A are one room -----------------------------
 
 section=rooms
-issue_room_cutover_open "$section" spec "$whole_spec"
-issue_room_cutover_open "$section" verification "$whole_verification"
+tree_peer_open "$section" spec "$whole_spec"
+tree_peer_open "$section" verification "$whole_verification"
 readonly into_spec="p-spec-${stamp//-/}" into_verification="p-verification-${stamp//-/}"
 issue_room_cutover_append "$section" spec "$whole_spec" "$into_spec" "A block written through the spec's socket."
 issue_room_cutover_append "$section" verification "$whole_verification" "$into_verification" \
   "A block written through the Verification document's socket."
 deadline=$((SECONDS + 60))
-until issue_room_cutover_holds spec "$whole_verification" "$into_verification" &&
-  issue_room_cutover_holds verification "$whole_spec" "$into_spec"; do
+until tree_peer_holds holds spec "$whole_verification" "$into_verification" &&
+  tree_peer_holds holds verification "$whole_spec" "$into_spec"; do
   ((SECONDS < deadline)) ||
     fail "$section" "the writes through $whole's spec and Verification document land in one room" \
       "after 60 s each socket still lacks the other's block: the two writes land in two rooms of one issue"
   sleep 1
 done
 pass "$section" "the blocks written through $whole's spec and its Verification document land in one room, each socket reading both"
-issue_room_cutover_peer "$section" "close the spec's socket" close spec
-issue_room_cutover_peer "$section" "close the Verification document's socket" close verification
+tree_peer "$section" "close the spec's socket" close spec
+tree_peer "$section" "close the Verification document's socket" close verification
 issue_room_cutover_peer_stop
 corpus_wait_settled "$section"
 sections=$((sections + 1))
@@ -1038,8 +660,8 @@ printf 'The spec of an issue born beside two announcing builds.\n\n:::requiremen
 corpus_issue "$section" "An issue born while two announcing builds are live" "$work/born-spec.md"
 born="$corpus_key" born_spec="$corpus_spec"
 readonly born born_spec
-issue_room_cutover_key "$section" "the born issue's key" "$born"
-issue_room_cutover_uuid "$section" "the born issue's spec" "$born_spec"
+tree_key "$section" "the born issue's key" "$born"
+tree_uuid "$section" "the born issue's spec" "$born_spec"
 want_value "$section" "$born's spec holds a document_rooms row to $born's room from its first write" 1 "
     select count(*) from document_rooms d join issue_trees t on t.artifact_id = d.room
     where d.artifact_id = '$born_spec' and t.issue_key = '$born'"
@@ -1107,7 +729,7 @@ sections=$((sections + 1))
 
 section=roll
 tree_stop_head
-issue_room_cutover_empty_database "$section"
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 issue_room_cutover_boot_beside roll-base "$baseline_binary" plain
 beside_pid="$beside_boot_pid"
 base="$beside_boot_url"
@@ -1122,18 +744,18 @@ printf 'The spec of an issue this head creates beside the baseline build.\n\n:::
 corpus_issue "$section" "An issue this head creates during a roll" "$work/roll-spec.md"
 rolled="$corpus_key" rolled_spec="$corpus_spec"
 readonly rolled rolled_spec
-issue_room_cutover_key "$section" "the rolled issue's key" "$rolled"
-issue_room_cutover_uuid "$section" "the rolled issue's spec" "$rolled_spec"
+tree_key "$section" "the rolled issue's key" "$rolled"
+tree_uuid "$section" "the rolled issue's spec" "$rolled_spec"
 query "$section" "read the document_rooms row of $rolled's spec" "select count(*) from document_rooms where artifact_id = '$rolled_spec'"
 [[ "$answer" == 0 ]] ||
   fail "$section" "an issue created while a process announcing no issue room is live is not born converted" \
     "$rolled holds a document_rooms row although the process $roll_process is live"
 pass "$section" "$rolled, created beside the baseline process $roll_process, holds no document_rooms row"
 issue_room_cutover_peer_start "$section"
-issue_room_cutover_open "$section" rolled "$rolled_spec"
+tree_peer_open "$section" rolled "$rolled_spec"
 [[ "$fragments" == prosemirror ]] ||
   fail "$section" "the spec socket of $rolled is admitted to the spec's own room, as today" "its fragments: $fragments"
-issue_room_cutover_peer "$section" "close the spec socket of $rolled" close rolled
+tree_peer "$section" "close the spec socket of $rolled" close rolled
 issue_room_cutover_peer_stop
 pass "$section" "the spec socket of $rolled is admitted to the spec's own room"
 baseline_stop_pid "$beside_pid"
@@ -1142,7 +764,7 @@ tree_wait_backfill "$section"
 tree_wait_announcement "$section"
 issue_room_cutover_run "$section" roll
 [[ "$tree_envoy_status" == 0 ]] || fail "$section" "the conversion runs once the baseline stopped" "it exited $tree_envoy_status: $(tail -n 10 "$work/roll.out")"
-issue_room_cutover_converted "$section" "$rolled"
+tree_converted "$section" "$rolled"
 [[ "$converted" == true ]] || fail "$section" "the conversion converts $rolled once the baseline stopped" "it reads converted: $converted"
 pass "$section" "once the baseline stopped, the conversion converted $rolled"
 sections=$((sections + 1))
@@ -1151,7 +773,7 @@ sections=$((sections + 1))
 
 section=deferral
 tree_stop_head
-issue_room_cutover_empty_database "$section"
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 issue_room_cutover_boot_beside defer-base "$baseline_binary" plain
 beside_pid="$beside_boot_pid"
 base="$beside_boot_url"
@@ -1195,7 +817,7 @@ for issue in "$large" "$small"; do
 done
 pass "$section" "the server's log holds the step's deferred line for $large and for $small"
 for issue in "$large" "$small"; do
-  issue_room_cutover_converted "$section" "$issue"
+  tree_converted "$section" "$issue"
   if [[ "$converted" != false ]]; then
     issue_room_cutover_owed "$issue"
     fail "$section" "$issue reads converted: false while the leases are held" "it reads converted: $converted while ${owed:-no document} of it owes its block index"
@@ -1207,7 +829,7 @@ deadline=$((SECONDS + tree_wait_seconds))
 while true; do
   stayed=""
   for issue in "$large" "$small"; do
-    issue_room_cutover_converted "$section" "$issue"
+    tree_converted "$section" "$issue"
     [[ "$converted" == true ]] || stayed+=" $issue"
   done
   [[ -n "$stayed" ]] || break

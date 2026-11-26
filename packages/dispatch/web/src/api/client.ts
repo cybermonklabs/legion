@@ -19,7 +19,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
-import { decisionsFromTree } from "./decisions-tree";
+import { decisionsFromRead, decisionsFromTree } from "./decisions-tree";
 
 import {
   type Answer,
@@ -483,6 +483,18 @@ export function isNoRoute(error: unknown): boolean {
     error.status === 404 &&
     error.code === "NOT_FOUND" &&
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
+  );
+}
+
+// Whether `error` is what a request throws once every attempt met a Dispatch process with no route
+// for it (`answered`'s `exhausted`): no process that answered serves the route, as a server of the
+// release before answers for a route this build added.
+function isNoRouteOnEveryAttempt(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.message === NO_ROUTE_ROLLING_RELEASE_MESSAGE
   );
 }
 
@@ -1303,6 +1315,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/tree", { key }, query);
   }
 
+  /** The issue whose spec the issue `key` is a view on, as its spec view's tree read answers
+   *  `view_of`, or null where it is none. A server of the release before serves no tree read and
+   *  holds no view, so a read every attempt of which met no route answers null. */
+  async getIssueViewOf(key: string): Promise<string | null> {
+    try {
+      return (await this.getIssueTree(key, { view: "spec" })).view_of;
+    } catch (error) {
+      if (isNoRouteOnEveryAttempt(error)) return null;
+      throw error;
+    }
+  }
+
   /** What a reference to the issue or one of its documents shows: title, status and each
    *  document's name, kind and latest version, without the full issue read. */
   getIssueSummary(key: string) {
@@ -1715,9 +1739,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. */
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. A server of
+   *  the release before serves no tree read: where every attempt of the first page met no route,
+   *  the entries are read from that server's Decisions read instead (`decisionsFromRead`). */
   async getIssueDecisions(key: string) {
-    const first = await this.getIssueTree(key, { view: "decisions" });
+    const first = await this.getIssueTree(key, { view: "decisions" }).catch((error: unknown) => {
+      if (isNoRouteOnEveryAttempt(error)) return null;
+      throw error;
+    });
+    if (first === null) {
+      // kept for one release: decisions-route
+      return decisionsFromRead(key, await this.read("/api/v1/issues/{key}/decisions", { key }));
+    }
     const nodes = [...(first.nodes ?? [])];
     const tuples = [...(first.tuples ?? [])];
     let cursor = first.cursor;

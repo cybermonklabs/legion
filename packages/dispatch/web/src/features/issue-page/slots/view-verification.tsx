@@ -116,11 +116,11 @@ export function useVerificationReads(issueKey: string): {
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and the line that counts a statement's checks
   // elsewhere would call the issue's own checks "elsewhere". The results read names the document
-  // holding each check. This matches the document whose blocks `useIssueTree` reads from the issue's
-  // verification query (`roleDocument`); no other document's blocks place a check. The slot watches
-  // that read under the same key with an
-  // observer that is never enabled, so it sends no request of its own and sees whatever
-  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
+  // holding each check. This matches the document whose blocks `useIssueTree` reads from the
+  // issue's verification query (`roleDocument`); no other document's blocks place a check. The
+  // slot watches that read under the same key with an observer that is never enabled, so it
+  // sends no request of its own and sees whatever `useIssueTree`'s observer fetches; its
+  // `refetch` still fetches, which is what Retry asks.
   // Where the results read holds no check no blocks read is needed, and the observer of no
   // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`, which
   // counts all four of the tree's documents: a refused plan or decisions read must not hold this

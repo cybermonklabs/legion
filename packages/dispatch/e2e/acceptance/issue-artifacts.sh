@@ -141,36 +141,6 @@ boots=0
 
 # --- the helpers of this driver ---------------------------------------------------------------------
 
-# issue_artifacts_reset_database: drops the database DATABASE_URL names and creates it empty,
-# through the `postgres` database of the same server with the same role. It drops only a database on
-# this machine whose name begins infra_1253_upgrade, and refuses every other with status 2: never
-# infra_1253, which `bun run dispatch:local` serves.
-issue_artifacts_reset_database() {
-  local scheme authority name query host
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] || {
-    printf '%s: DATABASE_URL is no postgres:// URL naming a database\n' "$driver" >&2
-    exit 2
-  }
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  host="${authority##*@}"
-  if [[ "$host" == \[* ]]; then host="${host%%]*}]"; else host="${host%%:*}"; fi
-  case "$host" in
-    127.0.0.1 | localhost | '[::1]') ;;
-    *)
-      printf '%s: DATABASE_URL is on %s, not this machine; this driver empties only this pod'"'"'s own infra_1253_upgrade\n' "$driver" "$host" >&2
-      exit 2
-      ;;
-  esac
-  [[ "$name" =~ ^infra_1253_upgrade[a-z0-9_]*$ ]] || {
-    printf '%s: DATABASE_URL names %s; this driver empties only a database whose name begins infra_1253_upgrade\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "drop and create the database $name" "psql: $(<"$work/reset")"
-  printf 'database %s dropped and created empty\n' "$name"
-}
-
 # issue_artifacts_boot_head [EXTRA]: boots this head, held as every upgrade boot is, with the pair
 # EXTRA beside the run's own for this boot alone; it sets base to its address. Each boot logs to a
 # file of its own.
@@ -452,7 +422,7 @@ readonly image_sha256 image_size
 # --- setup: the release before over an empty database ----------------------------------------------
 
 section=setup
-issue_artifacts_reset_database
+tree_reset_database "$database_url" 'infra_1253_upgrade*' "$section"
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE

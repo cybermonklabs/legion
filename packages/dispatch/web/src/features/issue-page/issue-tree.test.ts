@@ -979,6 +979,37 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   ]);
 });
 
+// R10: a plan task's `needs` names an issue beside the tasks it waits on, an item kind the
+// attribute declares (`items: ["issue"]` in `pmdoc/schema/blocks.json`). The tree reads each
+// `block[]` value under the item kinds its attribute declares, as the Plan tab and the document's
+// drawing read it: read under none, a value naming an issue is no value the server holds, it
+// parses to nothing, and the task drew no needs chip at all, the task's as well as the issue's.
+test("a needs that names an issue draws a needs chip of the issue beside the task's", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const issue = "dispatch://CORE-2";
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t0", "plan_task"), block("t1", "plan_task", { needs: `${task} ${issue}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map((chip) => ({
+      label: chip.label,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { label: "needs", ref: task },
+    { label: "needs", ref: issue },
+  ]);
+});
+
 // One needs chip per task needed. The server accepts a task needed by a pinned and
 // an unpinned pointer at once, and both need the one task, so it is one chip: its unpinned
 // pointer's, which names the block's current words. A task only pinned pointers name is one chip,

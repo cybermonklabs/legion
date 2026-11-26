@@ -104,19 +104,6 @@ issue_tree_child_view_issue() {
   keys+=("$corpus_key")
 }
 
-# issue_tree_child_view_block_node SECTION DOCUMENT BLOCK: the store address of block BLOCK of the
-# document whose artifact id is DOCUMENT, as its document_blocks row names it, read in the room the
-# document is edited in (its document_rooms row's room, else the document itself), in
-# issue_tree_child_view_node; empty where no row holds the block.
-issue_tree_child_view_block_node() {
-  with_vars "$1" "read the node of $3 of $2" \
-    "select coalesce((select b.node_id from document_blocks b
-       where b.artifact_id = coalesce((select r.room from document_rooms r where r.artifact_id = :'doc'::uuid), :'doc'::uuid)
-         and b.block_id = :'block'), '')" \
-    doc="$2" block="$3"
-  issue_tree_child_view_node="$answer"
-}
-
 # issue_tree_child_view_requirement_rows SECTION DOCUMENT: the block ids of the requirement blocks
 # the store holds in the room the document DOCUMENT is edited in (its document_rooms row's room,
 # else the document itself): of the spec of a converted issue, every requirement block of any of
@@ -212,8 +199,8 @@ expect V1 "$child is a view on $parent" "$(jq -cn --arg p "$parent" '$p')" '.vie
 expect V1 "$child's check c1 hangs from $child, since it serves no requirement of its own issue" \
   "$(jq -cn --arg c "$child" '[{kind: "issue", id: $c}]')" \
   '[.nodes[] | select(.supertag == "check" and .block_id == "c1") | {kind: .parent.kind, id: .parent.id}]'
-issue_tree_child_view_block_node V1 "$parent_spec" r1
-readonly r1_node="$issue_tree_child_view_node"
+tree_block_node V1 "$parent_spec" r1
+readonly r1_node="$tree_block_node_id"
 [[ -n "$r1_node" ]] || fail V1 "read the node of $parent's r1" "no document_blocks row holds r1 of $parent_spec"
 tree_read agent "$parent" verification
 tree_want 200 V1 "read the verification view of $parent"

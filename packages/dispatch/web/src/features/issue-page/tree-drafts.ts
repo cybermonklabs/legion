@@ -16,6 +16,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { declaredPointerItems } from "../doc/schema";
 import { isDecisionEntry, personDecisionAsk } from "../issue/decision-entries";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
@@ -725,10 +726,17 @@ function addDocumentBlocks(
         kind: "artifact",
         slug,
       });
+      // Each `block[]` attribute read under the item kinds it declares (`declaredPointerItems`):
+      // read under none, a plan task's needs naming an issue, or a parent naming a comment,
+      // parses to nothing and the tree would drop the whole value.
       const pointers: Record<string, readonly string[]> = {};
       for (const attribute of block.attributes ?? []) {
         if (attribute.kind === "block[]") {
-          pointers[attribute.name] = parseBlockPointerValue(attribute.value) ?? [];
+          pointers[attribute.name] =
+            parseBlockPointerValue(
+              attribute.value,
+              declaredPointerItems(block.type, attribute.name)
+            ) ?? [];
         }
       }
       // The document's rank, and the block's place inside it as a fraction of one, so no two

@@ -30,8 +30,8 @@ if [ "$#" -ne 3 ]; then
   exit 2
 fi
 for log in "$@"; do
-  if [ ! -r "$log" ]; then
-    echo "tree-read-db-medians.sh: no readable log $log" >&2
+  if [ ! -r "$log" ] || [ ! -s "$log" ]; then
+    echo "tree-read-db-medians.sh: no readable, non-empty log $log" >&2
     exit 2
   fi
 done

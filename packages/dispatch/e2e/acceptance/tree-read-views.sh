@@ -119,21 +119,6 @@ trap 'exit 143' TERM
 
 # --- the driver's own helpers ----------------------------------------------------------------
 
-# tree_read_views_section NAME: starts the section NAME, which the closing line counts.
-tree_read_views_section() {
-  sections=$((sections + 1))
-  printf -- '--- section %s\n' "$1"
-}
-
-# tree_read_views_expect FILE SECTION WHAT WANT JQ-ARGS…: lib.sh's expect over the answer kept in
-# FILE rather than over the last one, which it puts back as $work/body first.
-tree_read_views_expect() {
-  local file="$1"
-  shift
-  [[ "$file" == "$work/body" ]] || cp "$file" "$work/body"
-  expect "$@"
-}
-
 # tree_read_views_get SECTION AS PATH FILE: GET PATH as AS - `agent`, the agent bearer; or a login
 # lib.sh's sign_in signed in, with its cookie - answered 200, kept in FILE.
 tree_read_views_get() {
@@ -170,14 +155,6 @@ tree_read_views_node() {
     fail "$section" "the read holds the block $block${issue:+ of $issue} once" "it holds $held"
   node_kind="$(jq -r '.[0].kind' <<<"$held")"
   node_id="$(jq -r '.[0].id' <<<"$held")"
-}
-
-# tree_read_views_edit_person SECTION WHAT DOCUMENT OPS: alice applies the edit ops OPS to DOCUMENT,
-# as seed-corpus.sh's corpus_edit applies them as the agent.
-tree_read_views_edit_person() {
-  tree_person_send POST "/api/v1/artifacts/$3/edits" "$(jq -cn --argjson ops "$4" '{ops: $ops}')"
-  tree_want 200 "$1" "$2"
-  jq -e '.changed == true' "$work/body" >/dev/null || fail "$1" "$2" "the edit changed nothing: $(body)"
 }
 
 # tree_read_views_opener SECTION ISSUE SLUG BLOCK: the opening line of the typed block BLOCK as the
@@ -228,7 +205,7 @@ tree_read_views_ask_id() {
 
 # --- setup -------------------------------------------------------------------------------------
 
-tree_read_views_section setup
+tree_section setup
 tree_init
 tree_sign_in setup "$login"
 sign_in setup "$login" " (for a read or write that names its cookie)"
@@ -256,7 +233,7 @@ pass setup "r1 will name $named_constraint, not $pre_mortem_source (pre-mortem's
 
 # --- the seed ------------------------------------------------------------------------------------
 
-tree_read_views_section seed
+tree_section seed
 cat >"$work/spec-a.md" <<SPEC
 The summary paragraph: we $quote, said the summary, before the decision says it again.
 
@@ -289,9 +266,9 @@ head_block="$(jq -r '.blocks[0].ref // empty' "$work/head-blocks.json")"
 [[ -n "$head_block" ]] || fail seed "read the first block of the comment $head" "$(head -c 600 "$work/head-blocks.json")"
 readonly head_block
 readonly criterion_words="I want the urgent asks first."
-tree_read_views_edit_person seed "$login writes the criterion k1 into the tree of $key" "$tree" "$(jq -cn --arg p "$head_block" --arg w "$criterion_words" \
+tree_person_edit seed "$login writes the criterion k1 into the tree of $key" "$tree" "$(jq -cn --arg p "$head_block" --arg w "$criterion_words" \
   '[{op: "insert", after: "end", markdown: (":::criterion{#k1 parent=\"" + $p + "\"}\n" + $w + "\n:::")}]')"
-tree_read_views_edit_person seed "$login writes the requirement r1 under the criterion" "$spec" "$(jq -cn \
+tree_person_edit seed "$login writes the requirement r1 under the criterion" "$spec" "$(jq -cn \
   --arg p "dispatch://$key/artifact/$tree_slug#b-k1" --arg w "$requirement_words" \
   '[{op: "insert", after: "end", markdown: (":::requirement{#r1 parent=\"" + $p + "\"}\n" + $w + "\n:::")}]')"
 readonly shaped_pointer="dispatch://$key/spec#b-r1"
@@ -379,40 +356,40 @@ child_tree="$(jq -r '.tree // empty' "$work/b-born.json")"
 [[ -n "$child_tree" ]] || fail seed "$child is born converted with its tree" "$(head -c 600 "$work/b-born.json")"
 readonly child_tree
 readonly design_words="The child's design block: the urgency field comes first."
-tree_read_views_edit_person seed "$login gives $child a design block" "$child_tree" \
+tree_person_edit seed "$login gives $child a design block" "$child_tree" \
   "$(jq -cn --arg w "$design_words" '[{op: "insert", after: "end", markdown: $w}]')"
 corpus_wait_settled seed
 pass seed "seeded the child $child: cc1 with the result $child_result, t0 and t1, and a design block"
 
 # --- converted, the tree artifact, view_of -----------------------------------------------------------
 
-tree_read_views_section converted
+tree_section converted
 tree_read_views_get converted agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" converted "$key, born converted, reads converted true, its tree, and view_of null" \
+tree_kept_expect "$work/a.json" converted "$key, born converted, reads converted true, its tree, and view_of null" \
   "$(jq -cn --arg t "$tree" '[true, $t, null]')" '[.converted, .tree, .view_of]'
 for document in "$spec" "$verification" "$plan"; do
   tree_read_views_get converted agent "/api/v1/artifacts/$document" "$work/document.json"
-  tree_read_views_expect "$work/document.json" converted "the tree of $key is the room the artifact read answers for $document" \
+  tree_kept_expect "$work/document.json" converted "the tree of $key is the room the artifact read answers for $document" \
     "\"$tree\"" '.room'
 done
 tree_read_views_get converted agent "/api/v1/artifacts/$tree" "$work/tree-read.json"
 tree_read_views_get converted agent "/api/v1/artifacts/$tree/text" "$work/tree-text.json"
-tree_read_views_expect "$work/tree-text.json" converted "GET /api/v1/artifacts/{tree}/text answers the criterion written into $key" 'true' \
+tree_kept_expect "$work/tree-text.json" converted "GET /api/v1/artifacts/{tree}/text answers the criterion written into $key" 'true' \
   --arg w "$criterion_words" '.markdown | contains($w)'
 tree_read_views_get converted agent "/api/v1/issues/$key" "$work/a-issue.json"
-tree_read_views_expect "$work/a-issue.json" converted "the issue read's documents do not name the tree artifact" '[]' \
+tree_kept_expect "$work/a-issue.json" converted "the issue read's documents do not name the tree artifact" '[]' \
   --arg t "$tree" '[.artifacts[]? | select(.id == $t or .kind == "tree") | .id]'
 tree_read_views_get converted agent "/api/v1/issues/$child/tree" "$work/b.json"
-tree_read_views_expect "$work/b.json" converted "the child $child, which holds no requirement, reads view_of $key" "\"$key\"" '.view_of'
+tree_kept_expect "$work/b.json" converted "the child $child, which holds no requirement, reads view_of $key" "\"$key\"" '.view_of'
 tree_person_send POST "/api/v1/issues/$child/artifacts/spec/edits" \
   "$(jq -cn '{ops: [{op: "insert", after: "end", markdown: ":::requirement{#cr9}\nThe child'"'"'s own requirement.\n:::"}]}')"
 tree_want 409 converted "a requirement written on $child is refused"
-tree_read_views_expect "$work/body" converted "the refusal is REQUIREMENT_BELONGS_TO_ANCESTOR naming $key" '[true,true]' \
+tree_kept_expect "$work/body" converted "the refusal is REQUIREMENT_BELONGS_TO_ANCESTOR naming $key" '[true,true]' \
   --arg k "$key" '[.code == "REQUIREMENT_BELONGS_TO_ANCESTOR", (.error | contains($k))]'
 
 # --- the spec view's context -----------------------------------------------------------------------
 
-tree_read_views_section spec-context
+tree_section spec-context
 tree_read_views_node spec-context "$work/a.json" d1
 readonly decision_node="$node_id"
 tree_read_views_get spec-context agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec.json"
@@ -422,24 +399,24 @@ held="$(jq -c --arg d "$decision_node" --arg r "$requirement_node" '[([.nodes[] 
   fail spec-context "?view=spec answers the decision whose shaped names the requirement as context, with the tuple" \
     "the decision $decision_node and its shaped tuple to the requirement $requirement_node are missing (context held, tuple held: $held)"
 pass spec-context "?view=spec answers the decision $decision_node, whose shaped names $requirement_node, as context with the tuple"
-tree_read_views_expect "$work/a-spec.json" spec-context "?view=spec answers the constraint r1's constrained_by names as context, with the tuple" \
+tree_kept_expect "$work/a-spec.json" spec-context "?view=spec answers the constraint r1's constrained_by names as context, with the tuple" \
   '[["context"],1]' --arg c "$named_constraint" --arg r "$requirement_node" \
   '[[.nodes[] | select(.kind == "constraint" and .id == $c) | .role],
     ([.tuples[] | select(.kind == "constrained_by" and .from.id == $r and .to.id == $c)] | length)]'
-tree_read_views_expect "$work/a-spec.json" spec-context "?view=spec answers the criterion and the requirement as the query's" \
+tree_kept_expect "$work/a-spec.json" spec-context "?view=spec answers the criterion and the requirement as the query's" \
   '[["criterion","query"],["requirement","query"]]' \
   '[.nodes[] | select(.block_id == "k1" or .block_id == "r1") | [.supertag, .role]] | sort'
 
 # --- the catalogue's context -----------------------------------------------------------------------
 
-tree_read_views_section catalogue
+tree_section catalogue
 tree_person_send POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$requirement_node" \
   '{on: $on, kind: "pre-mortem", visibility: "project", findings: ["The urgency may be unset."]}')"
 tree_want 201 catalogue "$login invokes a pre-mortem on r1"
 tree_field catalogue "$login invokes a pre-mortem on r1" .id
 readonly lens="$tree_value"
 tree_read_views_get catalogue agent "/api/v1/issues/$key/tree" "$work/a-lens.json"
-tree_read_views_expect "$work/a-lens.json" catalogue "the read with no view answers the lens as the tree's node" '["tree"]' \
+tree_kept_expect "$work/a-lens.json" catalogue "the read with no view answers the lens as the tree's node" '["tree"]' \
   --arg l "$lens" '[.nodes[] | select(.kind == "lens" and .id == $l) | .role]'
 missing=""
 [[ "$(jq -c --arg l "$lens" '[[.nodes[] | select(.kind == "lens_kind" and .id == "pre-mortem") | .role],
@@ -450,7 +427,7 @@ missing=""
   "$work/a-lens.json")" == '[["context"],1]' ]] || missing+=" the constraint $named_constraint with r1's constrained_by tuple;"
 [[ -z "$missing" ]] || fail catalogue "the read with no view answers the catalogue nodes its tuples name as context" "missing:${missing%;}"
 pass catalogue "the read with no view answers the pre-mortem lens_kind and the constraint $named_constraint as context, each with its tuple"
-tree_read_views_expect "$work/a-lens.json" catalogue "the read answers no other lens_kind and no other constraint" '[]' \
+tree_kept_expect "$work/a-lens.json" catalogue "the read answers no other lens_kind and no other constraint" '[]' \
   --arg c "$named_constraint" '[.nodes[] | select((.kind == "lens_kind" and .id != "pre-mortem") or (.kind == "constraint" and .id != $c)) | "\(.kind):\(.id)"]'
 for absent in "$pre_mortem_source:the pre-mortem kind's source constraint" "$unnamed_constraint:a constraint nothing names"; do
   id="${absent%%:*}" what="${absent#*:}"
@@ -461,31 +438,31 @@ done
 
 # --- the plan view, the verification view, the coverage and the tree of a parent ----------------
 
-tree_read_views_section parent
+tree_section parent
 tree_read_views_get parent agent "/api/v1/issues/$key/tree?view=plan" "$work/a-plan.json"
-tree_read_views_expect "$work/a-plan.json" parent "?view=plan answers the parent's plan tasks and the child's, each marked with its issue" \
+tree_kept_expect "$work/a-plan.json" parent "?view=plan answers the parent's plan tasks and the child's, each marked with its issue" \
   "$(jq -cn --arg c "$child" '[["",  "t0"],["", "t1"],[$c, "t0"],[$c, "t1"]]')" \
   '[.nodes[] | select(.supertag == "plan_task") | [(.issue // ""), .block_id]] | sort'
-tree_read_views_expect "$work/a-plan.json" parent "?view=plan answers them in one order, each with its position, needs and size" '[true,true]' \
+tree_kept_expect "$work/a-plan.json" parent "?view=plan answers them in one order, each with its position, needs and size" '[true,true]' \
   '[.nodes[] | select(.supertag == "plan_task")] as $tasks
    | [($tasks | all(.plan != null and (.plan | has("position") and has("needs") and has("size")))),
       ([$tasks[] | .plan.position] as $p | ($p | all(. != null)) and $p == ($p | sort))]'
 tree_read_views_get parent agent "/api/v1/issues/$key/tree?view=verification" "$work/a-verification.json"
-tree_read_views_expect "$work/a-verification.json" parent \
+tree_kept_expect "$work/a-verification.json" parent \
   "?view=verification answers the child's check through serves, marked with the child, with the child issue as its parent, and its result" \
   "$(jq -cn --arg c "$child" --arg r "$child_result" '[[$c, "issue", $c], [$r]]')" \
   --arg r "$child_result" '[([.nodes[] | select(.block_id == "cc1") | [.issue, .parent.kind, .parent.id]] | first),
     [.nodes[] | select(.kind == "result" and .id == $r) | .id]]'
-tree_read_views_expect "$work/a-verification.json" parent \
+tree_kept_expect "$work/a-verification.json" parent \
   "?view=verification answers the parent's check and its result as the query's and the requirement above them as context" \
   '[["check","query"],["requirement","context"],["result","query"]]' --arg r "$first_result" \
   '[.nodes[] | select((.block_id == "c1" and (.issue // "") == "") or (.block_id == "r1" and (.issue // "") == "") or (.kind == "result" and .id == $r))
     | [(if .kind == "result" then "result" else .supertag end), .role]] | sort'
 tree_read_views_get parent agent "/api/v1/issues/$key/coverage" "$work/a-coverage.json"
-tree_read_views_expect "$work/a-coverage.json" parent "the parent's coverage reads r1 as covered" '[true,[]]' \
+tree_kept_expect "$work/a-coverage.json" parent "the parent's coverage reads r1 as covered" '[true,[]]' \
   '[.requirements[] | select(.block_id == "r1")] | first | [(.checks >= 1), [.gaps[]? | select(contains("no check"))]]'
 tree_read_views_get parent agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" parent \
+tree_kept_expect "$work/a.json" parent \
   "the parent's read with no view answers the child's plan tasks through serves, marked with the child, with the child issue as their parent" \
   "$(jq -cn --arg c "$child" '[[$c, "issue", $c, "t0"], [$c, "issue", $c, "t1"]]')" --arg c "$child" \
   '[.nodes[] | select(.supertag == "plan_task" and .issue == $c) | [.issue, .parent.kind, .parent.id, .block_id]] | sort'
@@ -516,7 +493,7 @@ pass parent "the plan tasks t1 of $key ($parent_t1) and of $child ($child_t1) sh
 
 # --- each view of the one graph ----------------------------------------------------------------
 
-tree_read_views_section views
+tree_section views
 tree_read_views_get views agent "/api/v1/issues/$key/tree?view=decisions" "$work/a-decisions.json"
 tree_read_views_get views agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec.json"
 jq -c '[.nodes[] | "\(.kind):\(.id)"]' "$work/a.json" >"$work/a-nodes.json"
@@ -524,22 +501,22 @@ for view in spec verification plan decisions; do
   file="$work/a-$view.json"
   # A node reaches a view only through the graph: every node a view answers, the read with no view
   # answers.
-  tree_read_views_expect "$file" views "?view=$view answers no node the read with no view does not" '[]' \
+  tree_kept_expect "$file" views "?view=$view answers no node the read with no view does not" '[]' \
     --slurpfile graph "$work/a-nodes.json" '[.nodes[] | "\(.kind):\(.id)" | select(. as $n | $graph[0] | index($n) == null)]'
-  tree_read_views_expect "$file" views "each node ?view=$view answers as the query's carries its parent's id, supertag and first line" '[]' \
+  tree_kept_expect "$file" views "each node ?view=$view answers as the query's carries its parent's id, supertag and first line" '[]' \
     '[.nodes[] | select(.role == "query")
       | select(.parent == null or (.parent.id // "") == "" or (.parent.supertag // "") == "" or (.parent.first_line // "") == "")
       | "\(.kind):\(.id)"]'
 done
-tree_read_views_expect "$work/a-spec.json" views "?view=spec answers as the query's only criteria, requirements and the memo callout" '[]' \
+tree_kept_expect "$work/a-spec.json" views "?view=spec answers as the query's only criteria, requirements and the memo callout" '[]' \
   '[.nodes[] | select(.role == "query" and ((.supertag == "criterion" or .supertag == "requirement" or .supertag == "callout") | not)) | "\(.kind):\(.id)"]'
-tree_read_views_expect "$work/a-verification.json" views "?view=verification answers as the query's only checks and results" '[]' \
+tree_kept_expect "$work/a-verification.json" views "?view=verification answers as the query's only checks and results" '[]' \
   '[.nodes[] | select(.role == "query" and ((.kind == "result" or .supertag == "check") | not)) | "\(.kind):\(.id)"]'
-tree_read_views_expect "$work/a-plan.json" views "?view=plan answers as the query's only plan nodes" '[]' \
+tree_kept_expect "$work/a-plan.json" views "?view=plan answers as the query's only plan nodes" '[]' \
   '[.nodes[] | select(.role == "query" and ((.supertag == "plan_task" or .supertag == "plan_role") | not)) | "\(.kind):\(.id)"]'
-tree_read_views_expect "$work/a-decisions.json" views "?view=decisions answers as the query's only asks, decisions and readings" '[]' \
+tree_kept_expect "$work/a-decisions.json" views "?view=decisions answers as the query's only asks, decisions and readings" '[]' \
   '[.nodes[] | select(.role == "query" and ((.kind == "ask" or .supertag == "decision" or .supertag == "reading") | not)) | "\(.kind):\(.id)"]'
-tree_read_views_expect "$work/a-decisions.json" views "?view=decisions answers the answered ask a1 with its answer, the decision d1, and g1 under d1" \
+tree_kept_expect "$work/a-decisions.json" views "?view=decisions answers the answered ask a1 with its answer, the decision d1, and g1 under d1" \
   "$(jq -cn --arg a "$answered_ask" --arg d "$decision_node" '[$a, "Urgency, then age.", $d, $d]')" \
   --arg a "$answered_ask" --arg d "$decision_node" \
   '[([.nodes[] | select(.kind == "ask" and .id == $a) | .id] | first), ([.nodes[] | select(.kind == "ask" and .id == $a) | .attributes.answer] | first),
@@ -554,17 +531,17 @@ pass views "?view=decisions answers the reading $reading_id under the answered a
 
 # --- each node's members ---------------------------------------------------------------------------
 
-tree_read_views_section members
+tree_section members
 tree_read_views_trees members "/api/v1/issues/$key/tree" "$work/a-trees.json"
-tree_read_views_expect "$work/a-trees.json" members "every node of the read with no view carries visibility and made_at" '[]' \
+tree_kept_expect "$work/a-trees.json" members "every node of the read with no view carries visibility and made_at" '[]' \
   '[.nodes[] | select((has("visibility") and has("made_at")) | not) | "\(.kind):\(.id)"]'
-tree_read_views_expect "$work/a-trees.json" members "the comment thread reads project and the time the driver wrote it, within one second" '[true]' \
+tree_kept_expect "$work/a-trees.json" members "the comment thread reads project and the time the driver wrote it, within one second" '[true]' \
   --arg h "$head" --argjson from "$written_before" --argjson to "$written_after" \
   '[.nodes[] | select(.kind == "comment" and .id == $h)
     | .visibility == "project" and ((.made_at | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t | $t >= $from - 1 and $t <= $to + 1)]'
-tree_read_views_expect "$work/a-trees.json" members "the lens reads the visibility the driver wrote it with" '["project"]' \
+tree_kept_expect "$work/a-trees.json" members "the lens reads the visibility the driver wrote it with" '["project"]' \
   --arg l "$lens" '[.nodes[] | select(.kind == "lens" and .id == $l) | .visibility]'
-tree_read_views_expect "$work/a-trees.json" members "each node of the tree but an issue's whose text is not empty carries text_tree" '[]' \
+tree_kept_expect "$work/a-trees.json" members "each node of the tree but an issue's whose text is not empty carries text_tree" '[]' \
   '[.nodes[] | select(.role == "tree" and .kind != "issue" and (.text // "") != "" and (.text_tree == null)) | "\(.kind):\(.id)"]'
 tree_read_views_trees members "/api/v1/issues/$key/artifacts/spec/blocks" "$work/a-spec-blocks.json"
 tree_read_views_trees members "/api/v1/issues/$key/comments" "$work/a-comments.json"
@@ -583,13 +560,13 @@ for display in "r1:requirement:$(jq -c '[.[]? | select(.id == "r1") | .text_tree
     fail members "the $kind $block answers the text_tree its own read answers, byte for byte" "the tree read answers $got, its own read $want"
   pass members "the $kind $block answers the text_tree its own read answers, byte for byte"
 done
-tree_read_views_expect "$work/a.json" members "the read with no view carries the serves, shaped, needs and constrained_by tuples among its nodes" \
+tree_kept_expect "$work/a.json" members "the read with no view carries the serves, shaped, needs and constrained_by tuples among its nodes" \
   '["constrained_by","needs","serves","shaped"]' \
   '[.tuples[] | .kind | select(. == "serves" or . == "shaped" or . == "needs" or . == "constrained_by")] | unique'
 
 # --- a version of the spec query -------------------------------------------------------------------
 
-tree_read_views_section version
+tree_section version
 tree_read_views_version version "$spec"
 readonly tied_version="$newest_version"
 tree_read_views_opener version "$key" spec d1
@@ -601,12 +578,12 @@ tree_read_views_get version agent "/api/v1/issues/$key/tree?view=spec" "$work/a-
 for read in "then:$work/a-spec-then.json:1" "now:$work/a-spec-now.json:0"; do
   name="${read%%:*}" rest="${read#*:}"
   file="${rest%:*}" want="${rest##*:}"
-  tree_read_views_expect "$file" version "?view=spec $name (version $tied_version, then the head) holds the shaped tie from d1 to r1 $want times" "$want" \
+  tree_kept_expect "$file" version "?view=spec $name (version $tied_version, then the head) holds the shaped tie from d1 to r1 $want times" "$want" \
     --arg d "$decision_node" --arg r "$requirement_node" '[.tuples[] | select(.kind == "shaped" and .from.id == $d and .to.id == $r)] | length'
 done
 tree_send GET "/api/v1/issues/$key/tree?view=spec&v=$((tied_version + 1000))"
 tree_want 404 version "a version the spec query does not have is refused"
-tree_read_views_expect "$work/body" version "a version the spec query does not have answers QUERY_VERSION_NOT_FOUND" '"QUERY_VERSION_NOT_FOUND"' '.code'
+tree_kept_expect "$work/body" version "a version the spec query does not have answers QUERY_VERSION_NOT_FOUND" '"QUERY_VERSION_NOT_FOUND"' '.code'
 tree_read_views_opener version "$key" spec d1
 opener="$tree_value"
 corpus_edit version "write the shaped tuple of d1 again" "$spec" \
@@ -614,7 +591,7 @@ corpus_edit version "write the shaped tuple of d1 again" "$spec" \
 
 # --- comments, the decision's review state and its Keep ------------------------------------------
 
-tree_read_views_section comments
+tree_section comments
 tree_read_views_comment comments "$key" "Does urgency come before age?" \
   "$(jq -cn --arg a "$spec" --arg q "$quote" '{artifact: $a, quote: $q, block_id: "d1"}')"
 readonly anchored="$tree_value"
@@ -631,7 +608,7 @@ done
 [[ -n "$later_comment" ]] || fail comments "write a later comment whose id sorts below $earlier_comment" "40 writes found none"
 readonly later_comment
 tree_read_views_get comments agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" comments "the comment anchored inside d1's paragraph by its block stands under the decision" \
+tree_kept_expect "$work/a.json" comments "the comment anchored inside d1's paragraph by its block stands under the decision" \
   "\"$decision_node\"" --arg c "$anchored" '[.nodes[] | select(.kind == "comment" and .id == $c) | .parent.id][0]'
 # The conversation stands before the issue's ranked children, in the order it was written (R8 at
 # spec v246); a memo callout, which stands first, is no ranked child this asks of.
@@ -649,14 +626,14 @@ pass comments "the read answers $earlier_comment and then $later_comment, before
 tree_read_views_get comments agent "/api/v1/issues/$key/tree?view=decisions" "$work/a-decisions.json"
 state="$(jq -c --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision | {waiting_review, kept, replaced}][0]' "$work/a-decisions.json")"
 [[ "$state" != null ]] || fail comments "?view=decisions answers d1 with its review state" "it answers no decision $decision_node"
-tree_read_views_expect "$work/a.json" comments "the read with no view answers d1's review state as ?view=decisions does" "$(jq -cS . <<<"$state")" \
+tree_kept_expect "$work/a.json" comments "the read with no view answers d1's review state as ?view=decisions does" "$(jq -cS . <<<"$state")" \
   --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision | {waiting_review, kept, replaced}][0]'
 sum="$(jq -r --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.text_sha256][0] // empty' "$work/a.json")"
 [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || fail comments "the read answers d1's text_sha256" "$(head -c 600 "$work/a.json")"
 tree_person_send POST "/api/v1/artifacts/$spec/blocks/d1/keep" "$(jq -cn --arg s "$sum" '{text_sha256: $s}')"
 [[ "$status" == 200 || "$status" == 201 ]] || fail comments "$login keeps d1 through the Keep route" "$tree_last_request answered HTTP $status: $(body)"
 tree_read_views_get comments agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" comments "the next read answers d1 kept by $login" "\"$login\"" \
+tree_kept_expect "$work/a.json" comments "the next read answers d1 kept by $login" "\"$login\"" \
   --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.kept.kept_by][0]'
 tree_read_views_get comments agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
 # Every member the decisions read answers for d1, equal on the decision node of the read with no view.
@@ -673,12 +650,12 @@ members="$(jq -r --slurpfile read "$work/a-decisions-read.json" --arg d "$decisi
 pass comments "the read with no view answers on d1 every member the decisions read answers for it, each equal"
 decided="$(jq -c --arg d "$decision_node" '[.tuples[] | select(.kind == "decided_by" and .from.id == $d) | .to] | first // empty' "$work/a.json")"
 [[ -n "$decided" ]] || fail comments "the read answers d1's decided_by tuple" "it holds none: $(jq -c '[.tuples[] | select(.kind == "decided_by")]' "$work/a.json")"
-tree_read_views_expect "$work/a.json" comments "the read answers the node d1's decided_by names as context" '["context"]' \
+tree_kept_expect "$work/a.json" comments "the read answers the node d1's decided_by names as context" '["context"]' \
   --argjson e "$decided" '[.nodes[] | select(.kind == $e.kind and .id == $e.id) | .role]'
 
 # --- a result against the words it was recorded for ---------------------------------------------
 
-tree_read_views_section results
+tree_section results
 tree_read_views_node results "$work/a.json" c1
 readonly check_node="$node_id"
 corpus_result results "$key" c1 pass "$corpus_commit_two" implementer
@@ -687,7 +664,7 @@ tree_read_views_get results agent "/api/v1/issues/$key/tree" "$work/a.json"
 check_sum="$(jq -r --arg c "$check_node" '[.nodes[] | select(.id == $c) | .check.text_sha256][0] // empty' "$work/a.json")"
 check_version="$(jq -r --arg c "$check_node" '[.nodes[] | select(.id == $c) | .check.changed_version][0] // empty' "$work/a.json")"
 [[ -n "$check_sum" && -n "$check_version" ]] || fail results "the check c1 answers its text_sha256 and changed_version" "$(head -c 600 "$work/a.json")"
-tree_read_views_expect "$work/a.json" results "the result answers its verdict, retracted null and check_sha256 equal to the check's text_sha256" \
+tree_kept_expect "$work/a.json" results "the result answers its verdict, retracted null and check_sha256 equal to the check's text_sha256" \
   "$(jq -cn --arg s "$check_sum" '["pass", null, $s]')" --arg r "$result" \
   '[.nodes[] | select(.kind == "result" and .id == $r) | .result | [.verdict, .retracted, .check_sha256]][0]'
 corpus_edit results "change the check c1's words" "$verification" \
@@ -697,26 +674,26 @@ moved="$(jq -c --arg c "$check_node" '[.nodes[] | select(.id == $c) | .check | [
 [[ "$(jq -r '.[0]' <<<"$moved")" != "$check_sum" && "$(jq -r '.[1]' <<<"$moved")" != "$check_version" ]] ||
   fail results "the check's text_sha256 and changed_version move after its words change" \
     "the check $check_node answers $moved, as before the change ($check_sum, version $check_version)"
-tree_read_views_expect "$work/a.json" results "the result's check_sha256 stays the sum it was recorded against" "\"$check_sum\"" \
+tree_kept_expect "$work/a.json" results "the result's check_sha256 stays the sum it was recorded against" "\"$check_sum\"" \
   --arg r "$result" '[.nodes[] | select(.kind == "result" and .id == $r) | .result.check_sha256][0]'
 tree_person_send POST "/api/v1/results/$result/retract" "$(jq -cn --arg r "$retraction_reason" '{reason: $r}')"
 [[ "$status" == 200 || "$status" == 201 ]] || fail results "$login retracts the result $result" "$tree_last_request answered HTTP $status: $(body)"
 tree_read_views_get results agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" results "the retracted result answers retracted with the reason" "\"$retraction_reason\"" \
+tree_kept_expect "$work/a.json" results "the retracted result answers retracted with the reason" "\"$retraction_reason\"" \
   --arg r "$result" '[.nodes[] | select(.kind == "result" and .id == $r) | .result.retracted.reason][0]'
 
 # --- a link's two facts, and the digest the Verification approval records ----------------------
 
-tree_read_views_section links
+tree_section links
 # tree_read_views_link WHAT CHANGED STALE: the decision node's one link reads changed_since_tie
 # CHANGED and stale STALE, and answers the link as GET /api/v1/issues/{key}/decisions answers it,
 # member for member.
 tree_read_views_link() {
   tree_read_views_get links agent "/api/v1/issues/$key/tree" "$work/a.json"
   tree_read_views_get links agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
-  tree_read_views_expect "$work/a.json" links "$1: d1's link reads changed_since_tie $2 and stale $3" "[$2,$3]" \
+  tree_kept_expect "$work/a.json" links "$1: d1's link reads changed_since_tie $2 and stale $3" "[$2,$3]" \
     --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links[0] | .changed_since_tie, .stale]'
-  tree_read_views_expect "$work/a.json" links "$1: d1's link is answered as the decisions read answers it, member for member" \
+  tree_kept_expect "$work/a.json" links "$1: d1's link is answered as the decisions read answers it, member for member" \
     "$(jq -cS '[.decisions[] | select(.block_id == "d1") | .links][0]' "$work/a-decisions-read.json")" \
     --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision.links][0]'
 }
@@ -743,7 +720,7 @@ tree_read_views_link "after d1's own words changed" true true
 
 # --- an answered ask that shaped the requirement ----------------------------------------------------
 
-tree_read_views_section ask
+tree_section ask
 corpus_edit ask "an agent writes the ask a3 into the spec" "$spec" "$(jq -cn \
   '[{op: "insert", after: "end", markdown: ":::ask{#a3 urgency=\"low\" multiple=\"false\"}\nWhich age breaks a tie?\n\n- Oldest: The oldest first\n- Newest: The newest first\n:::"}]')"
 corpus_wait_settled ask
@@ -752,35 +729,35 @@ readonly shaping_ask="$tree_value"
 corpus_answer ask "$shaping_ask" "The oldest breaks a tie." Oldest
 tree_read_views_opener ask "$key" spec a3
 opener="$tree_value"
-tree_read_views_edit_person ask "$login gives a3 a shaped tuple to r1" "$spec" \
+tree_person_edit ask "$login gives a3 a shaped tuple to r1" "$spec" \
   "$(jq -cn --arg f "$opener" --arg s "$shaped_pointer" '[{op: "replace", find: $f, with: ($f | sub("}$"; " shaped=\"" + $s + "\"}"))}]')"
 tree_read_views_get ask agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec.json"
-tree_read_views_expect "$work/a-spec.json" ask "?view=spec answers the answered ask a3 as context, with its shaped tuple to r1" '[["context"],1]' \
+tree_kept_expect "$work/a-spec.json" ask "?view=spec answers the answered ask a3 as context, with its shaped tuple to r1" '[["context"],1]' \
   --arg a "$shaping_ask" --arg r "$requirement_node" \
   '[[.nodes[] | select(.kind == "ask" and .id == $a) | .role], ([.tuples[] | select(.kind == "shaped" and .from.id == $a and .to.id == $r)] | length)]'
 
 # --- anchors ---------------------------------------------------------------------------------------
 
-tree_read_views_section anchors
+tree_section anchors
 tree_read_views_comment anchors "$key" "Is the order always by urgency?" \
   "$(jq -cn --arg a "$spec" '{artifact: $a, quote: "orders the asks", block_id: "r1"}')"
 readonly on_requirement="$tree_value"
 tree_read_views_get anchors agent "/api/v1/issues/$key/tree" "$work/a.json"
-tree_read_views_expect "$work/a.json" anchors "a comment whose anchor names the converted spec, a quote and r1's block_id hangs under r1" \
+tree_kept_expect "$work/a.json" anchors "a comment whose anchor names the converted spec, a quote and r1's block_id hangs under r1" \
   "\"$requirement_node\"" --arg c "$on_requirement" '[.nodes[] | select(.kind == "comment" and .id == $c) | .parent.id][0]'
 readonly refused_body="A comment on words the decision does not hold."
 tree_person_send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg b "$refused_body" --arg a "$spec" \
   '{body: $b, anchor: {artifact: $a, quote: "words the decision never held", block_id: "d1"}}')"
 tree_want 400 anchors "a comment whose anchor names d1 with a quote d1 does not hold is refused"
-tree_read_views_expect "$work/body" anchors "the refusal is INVALID_ANCHOR naming block_id" '[true,true]' \
+tree_kept_expect "$work/body" anchors "the refusal is INVALID_ANCHOR naming block_id" '[true,true]' \
   '[.code == "INVALID_ANCHOR", (.error | contains("block_id"))]'
 tree_read_views_get anchors agent "/api/v1/issues/$key/comments" "$work/a-comments.json"
-tree_read_views_expect "$work/a-comments.json" anchors "the issue holds no such comment" '0' \
+tree_kept_expect "$work/a-comments.json" anchors "the issue holds no such comment" '0' \
   --arg b "$refused_body" '[.. | objects | select(.body? == $b)] | length'
 
 # --- a run of the command bar -------------------------------------------------------------------
 
-tree_read_views_section run
+tree_section run
 request "cookie:$login" POST /api/v1/going/requests "$(jq -cn --arg p "$project" '{words: "Which plan holds the order?", project: $p}')"
 tree_last_request="POST /api/v1/going/requests as $login"
 tree_want 201 run "$login starts a run of the command bar"
@@ -800,14 +777,14 @@ held="$(jq -c --arg r "$run" --arg c "$run_comment" --arg k "$key" '[[.nodes[] |
     "the run $run reads $held (interaction roles, the comment's tuples, the issue's tuples)"
 pass run "$login's read answers the run $run as context with the comment's changed_by_run tuple, and the issue holds none"
 tree_read_views_get run "$reader" "/api/v1/issues/$key/tree" "$work/a-bob.json"
-tree_read_views_expect "$work/a-bob.json" run "$reader's read answers the comment and neither the tuple nor the interaction" '[1,0]' \
+tree_kept_expect "$work/a-bob.json" run "$reader's read answers the comment and neither the tuple nor the interaction" '[1,0]' \
   --arg r "$run" --arg c "$run_comment" '[([.nodes[] | select(.kind == "comment" and .id == $c)] | length),
     ([.nodes[] | select(.id == $r)] + [.tuples[] | select(.to.id == $r or .from.id == $r)] | length)]'
 ! grep -qF -- "$run" "$work/a-bob.json" || fail run "$reader's answer names the run nowhere" "it names $run"
 
 # --- an issue that has not converted ------------------------------------------------------------
 
-tree_read_views_section unconverted
+tree_section unconverted
 cat >"$work/spec-c.md" <<'SPEC'
 A paragraph of the unconverted spec's prose.
 
@@ -850,7 +827,7 @@ for set in "$unconverted/spec#rc:proposed" "$unconverted/$unconverted_slug#cc:ov
   tree_want 200 unconverted "$login sets ${set%:*} ${set##*:}"
 done
 tree_read_views_trees unconverted "/api/v1/issues/$unconverted/tree" "$work/c.json"
-tree_read_views_expect "$work/c.json" unconverted "$unconverted reads converted false and tree null" '[false,null]' '[.converted, .tree]'
+tree_kept_expect "$work/c.json" unconverted "$unconverted reads converted false and tree null" '[false,null]' '[.converted, .tree]'
 missing="$(jq -r '[.nodes[] | .block_id] as $held | ["rc", "cc"][] | select(. as $b | $held | index($b) == null)' "$work/c.json")"
 [[ -z "$missing" ]] || fail unconverted "the read with no view answers the typed blocks of an issue that has not converted" \
   "the blocks ${missing//$'\n'/ and } are missing"
@@ -863,7 +840,7 @@ for typed in "rc|spec|$unconverted_spec|proposed|issue|$unconverted" "cc|$unconv
   want="$(jq -cn --arg s "$state" --arg pk "$parent_kind" --arg pi "$parent_id" --arg d "$document" --arg slug "$slug" \
     --argjson p "$position" --argjson tt "$(jq -c --arg b "$block" '[.[] | select(.id == $b) | .text_tree][0]' "$work/c-blocks.json")" \
     '{count: 1, state: $s, parent: [$pk, $pi], visibility: "project", made_at: true, text_tree: $tt, document: {artifact_id: $d, slug: $slug, position: $p}}')"
-  tree_read_views_expect "$work/c.json" unconverted \
+  tree_kept_expect "$work/c.json" unconverted \
     "$block of $unconverted is answered once, under the parent R1 gives it, with its state, visibility, made_at, text_tree and document" \
     "$(jq -cS . <<<"$want")" --arg b "$block" \
     '[.nodes[] | select(.block_id == $b)] as $held | $held[0]
@@ -873,7 +850,7 @@ done
 
 # --- a node whose parent the reader may not see ------------------------------------------------
 
-tree_read_views_section visibility
+tree_section visibility
 tree_person_send POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$requirement_node" --arg v "$hidden_verdict" --arg f "$hidden_finding" \
   '{on: $on, kind: "pre-mortem", visibility: "author", verdict: $v, findings: [$f]}')"
 tree_want 201 visibility "$login invokes the pre-mortem lens her risk stands under"
@@ -900,10 +877,10 @@ with_vars visibility "widen the test risk to project visibility" \
   fail visibility "the test risk has project visibility" "the update returned '$answer', want $risk"
 pass visibility "the test risk $risk is project-visible under the author-only lens $hidden_lens"
 tree_read_views_get visibility "$login" "/api/v1/issues/$key/tree" "$work/a-alice.json"
-tree_read_views_expect "$work/a-alice.json" visibility "read as $login, the risk's parent is the lens" "\"$hidden_lens\"" \
+tree_kept_expect "$work/a-alice.json" visibility "read as $login, the risk's parent is the lens" "\"$hidden_lens\"" \
   --arg r "$risk" '[.nodes[] | select(.kind == "risk" and .id == $r) | .parent.id][0]'
 tree_read_views_get visibility "$reader" "/api/v1/issues/$key/tree" "$work/a-bob.json"
-tree_read_views_expect "$work/a-bob.json" visibility "read as $reader, the risk stands under the requirement, after its own children" \
+tree_kept_expect "$work/a-bob.json" visibility "read as $reader, the risk stands under the requirement, after its own children" \
   "$(jq -cn --arg r "$requirement_node" '[$r, true]')" --arg risk "$risk" --arg r "$requirement_node" \
   '(.nodes | to_entries) as $all
    | ([$all[] | select(.value.kind == "risk" and .value.id == $risk)][0]) as $lifted
@@ -914,15 +891,15 @@ for hidden in "$hidden_lens" "$hidden_verdict" "$hidden_finding"; do
     fail visibility "$reader's answer names nothing of the hidden lens" "it names $hidden: no node, parent or tuple may"
 done
 pass visibility "$reader's answer names neither the hidden lens's id, its has_kind or part_of tuple, its verdict nor its finding's text"
-tree_read_views_expect "$work/a-bob.json" visibility "the pre-mortem lens_kind is in $reader's answer once, as the context of the visible lens" \
+tree_kept_expect "$work/a-bob.json" visibility "the pre-mortem lens_kind is in $reader's answer once, as the context of the visible lens" \
   '["context"]' '[.nodes[] | select(.kind == "lens_kind" and .id == "pre-mortem") | .role]'
 
 # --- the decisions read through this release ------------------------------------------------------
 
-tree_read_views_section decisions-read
+tree_section decisions-read
 tree_read_views_get decisions-read agent "/api/v1/issues/$key/decisions" "$work/a-decisions-read.json"
 tree_read_views_get decisions-read agent "/api/v1/issues/$key/tree?view=decisions" "$work/a-decisions.json"
-tree_read_views_expect "$work/a-decisions.json" decisions-read \
+tree_kept_expect "$work/a-decisions.json" decisions-read \
   "GET /api/v1/issues/{key}/decisions answers the decision nodes of ?view=decisions, each with the same review state" \
   "$(jq -cS '[.decisions[] | {block_id, waiting_review, kept: (.kept != null), replaced}] | sort_by(.block_id)' "$work/a-decisions-read.json")" \
   '[.nodes[] | select(.decision != null) | .decision | {block_id, waiting_review, kept: (.kept != null), replaced}] | sort_by(.block_id)'
@@ -952,11 +929,11 @@ pass decisions-read "packages/dispatch/web/src, packages/envoy-client/src and pa
 
 # --- the child's spec view ------------------------------------------------------------------------
 
-tree_read_views_section child
+tree_section child
 tree_read_views_get child agent "/api/v1/issues/$child/tree?view=spec" "$work/b-spec.json"
-tree_read_views_expect "$work/b-spec.json" child "the child's ?view=spec answers its design block as context" '["context"]' \
+tree_kept_expect "$work/b-spec.json" child "the child's ?view=spec answers its design block as context" '["context"]' \
   --arg w "$design_words" '[.nodes[] | select((.text // "" | sub("\\s+$"; "")) == $w) | .role]'
-tree_read_views_expect "$work/b-spec.json" child "the child's ?view=spec answers the ancestor's requirement its check serves as context" \
+tree_kept_expect "$work/b-spec.json" child "the child's ?view=spec answers the ancestor's requirement its check serves as context" \
   "$(jq -cn --arg k "$key" '[["context", $k]]')" --arg r "$requirement_node" '[.nodes[] | select(.id == $r) | [.role, .issue]]'
 
 # --- the order of an issue's children ---------------------------------------------------------------
@@ -965,17 +942,17 @@ tree_read_views_expect "$work/b-spec.json" child "the child's ?view=spec answers
 # ask first, in the order they were written, then its ranked requirements by rank - o2 before o1,
 # whose id sorts first - and o3, whose From: line names the comment, under that comment. A person
 # writes the requirements, as she writes r1 of A. A failure names the first node out of that order.
-tree_read_views_section order
+tree_section order
 printf 'The order of the list, as its issue states it.\n' >"$work/spec-d.md"
 tree_read_views_create order "The order of an issue's children" "$work/spec-d.md"
 readonly order_key="$corpus_key" order_spec="$corpus_spec"
-tree_read_views_edit_person order "$login writes o2 and then o1 into the spec of $order_key" "$order_spec" "$(jq -cn \
+tree_person_edit order "$login writes o2 and then o1 into the spec of $order_key" "$order_spec" "$(jq -cn \
   '[{op: "insert", after: "end", markdown: ":::requirement{#o2}\nThe list shows the urgent asks first.\n:::\n\n:::requirement{#o1}\nThe list shows the urgency of each ask.\n:::"}]')"
 corpus_comment person order "$order_key" "Which asks does the list show first?"
 readonly order_comment="$corpus_item"
 corpus_ask order "$order_key" "Does urgency come before age?"
 readonly order_ask="$corpus_item"
-tree_read_views_edit_person order "$login writes o3, whose From: line names the comment $order_comment" "$order_spec" "$(jq -cn \
+tree_person_edit order "$login writes o3, whose From: line names the comment $order_comment" "$order_spec" "$(jq -cn \
   --arg c "dispatch://$order_key/comment/$order_comment" \
   '[{op: "insert", after: "end", markdown: (":::requirement{#o3}\nThe list answers the question of the comment.\n\nFrom: " + $c + "\n:::")}]')"
 corpus_wait_settled order
@@ -1004,7 +981,7 @@ order="$(jq -r --arg k "$order_key" --argjson want "$(jq -cn --arg c "comment:$o
 [[ -z "$order" ]] ||
   fail order "the read answers $order_key's comment and its ask first, in the order they were written, then its ranked requirements by rank" "$order"
 pass order "the read answers $order_key's comment $order_comment, then its ask $order_ask, then o2 and o1 by rank"
-tree_read_views_expect "$work/d.json" order "o3, whose From: line names the comment $order_comment, stands under that comment, after it" \
+tree_kept_expect "$work/d.json" order "o3, whose From: line names the comment $order_comment, stands under that comment, after it" \
   "$(jq -cn --arg c "$order_comment" '["comment", $c, true]')" --arg c "$order_comment" --arg r "$order_from" \
   '(.nodes | to_entries) as $all
    | ([$all[] | select(.value.id == $r)][0]) as $o3

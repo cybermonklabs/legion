@@ -116,19 +116,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_relations_read_far_ends SECTION KIND ISSUE: the far ends of the current KIND tuples out of
-# the issue node ISSUE - for each far end, the newest tuple naming it is asserted - each written
-# <to_kind>:<to_id>, sorted and joined by commas, in $answer.
-issue_relations_read_far_ends() {
-  with_vars "$1" "read the current $2 tuples out of $3" \
-    "select coalesce(string_agg(t.to_kind || ':' || t.to_id, ',' order by t.to_kind, t.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = 'issue' and from_id = :'issue' and kind = :'kind' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) t
-     where t.asserted" \
-    issue="$3" kind="$2"
-}
-
 # issue_relations_read_create SECTION TITLE JSON: the agent creates an issue of `project` titled
 # TITLE, the members of the JSON object JSON added to the create, forced past the near-copy check;
 # sets issue_relations_read_key and adds it to the issues the run closes.
@@ -342,11 +329,11 @@ keys+=("$duplicate")
 pass R5 "dispatch issue --duplicate-of $issue created $duplicate"
 run R5 "set $duplicate's filed_from" issue-update --issue "$duplicate" --filed-from "$message_ref"
 pass R5 "dispatch issue-update --filed-from $message_ref wrote $duplicate"
-issue_relations_read_far_ends R5 duplicate_of "$duplicate"
+tree_far_ends R5 issue duplicate_of "$duplicate"
 [[ "$answer" == "issue:$issue" ]] ||
   fail R5 "the store holds $duplicate's duplicate_of tuple at $issue" "its current duplicate_of tuples name '$answer'"
 pass R5 "the store holds $duplicate's duplicate_of tuple at $issue"
-issue_relations_read_far_ends R5 filed_from "$duplicate"
+tree_far_ends R5 issue filed_from "$duplicate"
 [[ "$answer" == "message:$message_id" ]] ||
   fail R5 "the store holds $duplicate's filed_from tuple at the message $message_id" "its current filed_from tuples name '$answer'"
 pass R5 "the store holds $duplicate's filed_from tuple at the message $message_id"
@@ -355,7 +342,7 @@ pass R5 "the store holds $duplicate's filed_from tuple at the message $message_i
 
 tree_send PATCH "/api/v1/issues/$duplicate" "$(jq -cn --arg s "$sibling" --argjson a "$(tree_actor)" '{needs: [$s], actor: $a}')"
 tree_want 200 R6 "make $duplicate wait on $sibling"
-issue_relations_read_far_ends R6 needs "$duplicate"
+tree_far_ends R6 issue needs "$duplicate"
 readonly tuples_read="$answer"
 with_vars R6 "read the issue_links rows of $duplicate" \
   "select coalesce(string_agg(issue_key || ' ' || kind || ' ' || target_key, ',' order by target_key), '')

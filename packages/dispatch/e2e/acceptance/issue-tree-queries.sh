@@ -115,40 +115,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_tree_queries_section NAME: starts the section NAME, which the closing line counts.
-issue_tree_queries_section() {
-  sections=$((sections + 1))
-  printf -- '--- section %s\n' "$1"
-}
-
-# issue_tree_queries_empty_database: drops and creates again the database DATABASE_URL names, so
-# the base release's own Store.Migrate writes its schema and this driver's issue is all it holds. It
-# drops only a loopback database whose name begins infra_1253_, connecting to the `postgres`
-# database of the same server, as seed-decisions.sh's seed_reset_database drops its own.
-issue_tree_queries_empty_database() {
-  local url="$database_url" scheme authority name query
-  [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] || {
-    printf '%s: DATABASE_URL is no postgres:// URL naming a database\n' "$driver" >&2
-    exit 2
-  }
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  [[ "$name" =~ ^infra_1253_[a-z0-9_]+$ ]] || {
-    printf '%s: DATABASE_URL names the database %s: this driver drops and creates only one whose name begins infra_1253_\n' "$driver" "$name" >&2
-    exit 2
-  }
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "drop and create the database $name" "psql: $(<"$work/reset")"
-  pass setup "dropped and created the database $name empty"
-}
-
-# issue_tree_queries_keep SECTION PATH FILE: GET PATH as the agent, answered 200, kept in FILE.
-issue_tree_queries_keep() {
-  tree_send GET "$2"
-  tree_want 200 "$1" "read $2"
-  cp "$work/body" "$3"
-}
-
 # issue_tree_queries_differences SECTION WHAT EARLIER LATER: every field of the answer in EARLIER
 # that the answer in LATER does not hold the same, entry for entry and word for word, each printed
 # as one line naming WHAT and its path. A field EARLIER does not hold is not compared, so a member a
@@ -196,8 +162,8 @@ issue_tree_queries_report() {
 
 # --- setup -------------------------------------------------------------------------------------
 
-issue_tree_queries_section setup
-issue_tree_queries_empty_database
+tree_section setup
+tree_reset_database "$database_url" 'infra_1253_?*' setup
 baseline_start
 # The bearer both servers accept, printed nowhere, inherited by no child process.
 token="$baseline_token"
@@ -211,7 +177,7 @@ tree_create_project setup "$project" "The issue tree's queries"
 
 # --- the earlier release writes the issue ----------------------------------------------------------
 
-issue_tree_queries_section earlier
+tree_section earlier
 cat >"$work/spec.md" <<'SPEC'
 :::callout{#memo kind="note" title=""}
 The issue holds four queries over one graph. Each query is read as the earlier release read it. The comparison prints every difference.
@@ -283,7 +249,7 @@ corpus_result earlier "$key" c-format fail "$corpus_commit_two" implementer
 corpus_wait_settled earlier
 
 # The coverage before the issue holds a plan: no requirement reads "has no plan task".
-issue_tree_queries_keep earlier "/api/v1/issues/$key/coverage" "$work/coverage-unplanned.json"
+tree_keep earlier "/api/v1/issues/$key/coverage" "$work/coverage-unplanned.json"
 expect earlier "before the plan the earlier coverage read answers has_plan false and no line has no plan task" '[false,[]]' \
   '[.has_plan, [(.gaps[]?, .requirements[].gaps[]?) | select(contains("has no plan task"))]]'
 
@@ -306,7 +272,7 @@ pass earlier "the earlier release wrote the plan $plan of $key"
 corpus_wait_settled earlier
 
 # The person keeps one decision through the Keep route, with the sum the earlier read answers for it.
-issue_tree_queries_keep earlier "/api/v1/issues/$key/decisions" "$work/decisions-unkept.json"
+tree_keep earlier "/api/v1/issues/$key/decisions" "$work/decisions-unkept.json"
 kept_sum="$(jq -r '[.decisions[]? | select(.block_id == "d-kept") | .text_sha256][0] // ""' "$work/decisions-unkept.json")"
 [[ "$kept_sum" =~ ^[0-9a-f]{64}$ ]] ||
   fail earlier "the earlier decisions read answers the decision d-kept with its text_sha256" "$(head -c 600 "$work/decisions-unkept.json")"
@@ -318,12 +284,12 @@ corpus_wait_settled earlier
 
 # --- the reads before the move ------------------------------------------------------------------
 
-issue_tree_queries_section before
-issue_tree_queries_keep before "/api/v1/issues/$key/coverage" "$work/coverage-before.json"
-issue_tree_queries_keep before "/api/v1/issues/$key/results" "$work/results-before.json"
-issue_tree_queries_keep before "/api/v1/issues/$key/decisions" "$work/decisions-before.json"
+tree_section before
+tree_keep before "/api/v1/issues/$key/coverage" "$work/coverage-before.json"
+tree_keep before "/api/v1/issues/$key/results" "$work/results-before.json"
+tree_keep before "/api/v1/issues/$key/decisions" "$work/decisions-before.json"
 for slug in "${compared_slugs[@]}"; do
-  issue_tree_queries_keep before "/api/v1/issues/$key/artifacts/$slug/text?blocks=true" "$work/text-$slug.json"
+  tree_keep before "/api/v1/issues/$key/artifacts/$slug/text?blocks=true" "$work/text-$slug.json"
   jq -e '.blocks | type == "array"' "$work/text-$slug.json" >/dev/null ||
     fail before "the earlier release reads the blocks of $slug" "no blocks: $(head -c 600 "$work/text-$slug.json")"
 done
@@ -376,21 +342,21 @@ pass before "the earlier release's server stopped; its database stays"
 
 # --- this head converts the issue -----------------------------------------------------------------
 
-issue_tree_queries_section upgrade
+tree_section upgrade
 tree_boot_head head
 base="$tree_head_url"
 tree_wait_backfill upgrade
 tree_wait_announcement upgrade
 tree_convert upgrade
 printf '%s\n' "$(tail -n 20 "$work/out")"
-issue_tree_queries_keep upgrade "/api/v1/issues/$key/tree" "$work/tree.json"
+tree_keep upgrade "/api/v1/issues/$key/tree" "$work/tree.json"
 cp "$work/tree.json" "$work/body"
 expect upgrade "$key reads converted true on one page" '[true,null]' '[.converted, .cursor]'
 
 # --- coverage and results ------------------------------------------------------------------------
 
-issue_tree_queries_section coverage
-issue_tree_queries_keep coverage "/api/v1/issues/$key/coverage" "$work/coverage-after.json"
+tree_section coverage
+tree_keep coverage "/api/v1/issues/$key/coverage" "$work/coverage-after.json"
 [[ "$(jq '.requirements | length' "$work/coverage-after.json")" == "$(jq '.requirements | length' "$work/coverage-before.json")" ]] ||
   fail coverage "the coverage read of the converted issue answers the requirements the earlier read did" \
     "it answers $(head -c 1200 "$work/coverage-after.json")"
@@ -398,14 +364,14 @@ issue_tree_queries_differences coverage "GET /api/v1/issues/$key/coverage" "$wor
 cp "$work/coverage-after.json" "$work/body"
 expect coverage "the line r-backup has no plan task stands on the converted issue, which holds a plan" '1' \
   '[(.gaps[]?, .requirements[].gaps[]?) | select(contains("has no plan task") and contains("r-backup"))] | unique | length'
-issue_tree_queries_keep coverage "/api/v1/issues/$key/results" "$work/results-after.json"
+tree_keep coverage "/api/v1/issues/$key/results" "$work/results-after.json"
 issue_tree_queries_differences coverage "GET /api/v1/issues/$key/results" "$work/results-before.json" "$work/results-after.json"
 
 # --- the four queries and the tree read -----------------------------------------------------------
 
-issue_tree_queries_section queries
+tree_section queries
 for view in spec verification plan decisions; do
-  issue_tree_queries_keep queries "/api/v1/issues/$key/tree?view=$view" "$work/view-$view.json"
+  tree_keep queries "/api/v1/issues/$key/tree?view=$view" "$work/view-$view.json"
 done
 # The relation each typed block holds, by the block ids of its two ends, off the one graph: the read
 # with no view, which holds every requirement, check and plan task of the issue.
