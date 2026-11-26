@@ -3084,6 +3084,7 @@ test("every string the box draws, in each of its states, is a word or sentence o
     const uploadClock = userOnFakeClock();
     page = renderPage();
     await uploadClock.click(writeField());
+    // user-event's paste carries text, never files.
     fireEvent.paste(writeField(), { clipboardData: { files: [file] } });
     await untilAttempted(uploadArtifact, uploadsBefore + 1);
     await stopTheLateWrite(page.client);
