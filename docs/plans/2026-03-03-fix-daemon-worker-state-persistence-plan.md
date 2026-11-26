@@ -250,4 +250,4 @@ Expected: ALL ~640 tests pass
 ### Tools Needed
 - Bun test runner for unit tests
 - TypeScript compiler (`tsc`) for type checking
-- Biome for lint/format checking
+- Biome for lint/format checking (a throwaway unrelated edit for a CI proof)
