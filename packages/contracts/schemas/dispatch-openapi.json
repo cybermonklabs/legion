@@ -1870,7 +1870,7 @@
     },
     "/api/v1/artifacts/{id}/events": {
       "get": {
-        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY.",
+        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; an unknown type or an empty value is 400 INVALID_QUERY.",
         "operationId": "getApiV1ArtifactsByIdEvents",
         "parameters": [
           {
@@ -1914,6 +1914,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -7018,7 +7025,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
+        "description": "Page an issue's event log (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; an unknown type or an empty value is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -7062,6 +7069,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
