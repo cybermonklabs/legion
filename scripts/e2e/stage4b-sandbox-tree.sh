@@ -6695,8 +6695,8 @@ begin production-check-bound
 # and close, at the linger's expiry, read that linger.
 until_true 900 "the bound to start the last look of $tree1's production check" last_look_started "$tree1"
 state_file check-look-2
-# The pod is back for the look, or never left: 1 to 3 minutes in acceptance runs for a pod placed
-# afresh on the pool. The daemon's task names the last look and its rule (a requirement still
+# The pod is back for the look, or never left: 1 to 3 minutes in acceptance runs, placed like any
+# pod. The daemon's task names the last look and its rule (a requirement still
 # unobserved there is pending, which closes the check as not run: write on the pull request why
 # the check did not run within the bound, report pending), and the proof sends the issue nothing:
 # the close of the check is the observation.
