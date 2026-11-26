@@ -28,7 +28,7 @@ func TestVerifierCarriesHeld(t *testing.T) {
 			t.Fatalf("Verify %d of a token the broker answers held = %+v, %v; want a caller for %s with Held set", request, decided, err, held.Person)
 		}
 	}
-	if live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); err != nil || !live.Held {
+	if live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); err != nil || !live.Caller().Held {
 		t.Fatalf("Live of a token the broker answers held = %+v, %v; want Held set", live, err)
 	}
 	if rig.broker.Count() != 1 {
@@ -80,7 +80,7 @@ func TestVerifierKeepsNoNotHeldAnswerPastNotHeldUntil(t *testing.T) {
 		t.Fatalf("Verify a millisecond before the deadline = %+v, %v (lapsed %t) after %d introspections; want the kept answer, not lapsed, and 1 introspection",
 			decided, err, rig.verifier.Lapsed(decided), rig.broker.Count())
 	}
-	if live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); err != nil || !live.NotHeldUntil.Equal(deadline) || rig.broker.Count() != 1 {
+	if live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); err != nil || !live.Caller().NotHeldUntil.Equal(deadline) || rig.broker.Count() != 1 {
 		t.Fatalf("Live a millisecond before the deadline = %+v, %v after %d introspections; want the kept answer and 1 introspection", live, err, rig.broker.Count())
 	}
 	rig.clock.advance(time.Millisecond)
