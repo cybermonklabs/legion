@@ -246,7 +246,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// the contract, in a turn when its daemon was upgraded, still sends pass or fail, which the route
 	// ignores so that the completion is taken and the states decide; no other role ever sent one,
 	// so another role's below the contract is refused alike.
-	if req.Verdict != "" && (c.PluginContract >= CheckStatesContract || grant.Role != claim.RoleTester) {
+	if req.Verdict != "" && (c.PluginContract >= entryNumber(CheckStatesContract) || grant.Role != claim.RoleTester) {
 		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_NOT_TAKEN",
 			"a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded")
 		return

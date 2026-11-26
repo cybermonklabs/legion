@@ -33,33 +33,16 @@ package api
 // one that names no commit 400 `TESTED_HEAD_REQUIRED`, before anything is recorded, from a plugin
 // at this contract or below it, since the move reads the states at that head and at no other; the
 // `legion` tool refuses a `test` record naming no head before it posts. No shape of
-// `GET /legion/v1/state` moves. This contract is served with no code of its own (193's entry): no
-// key path or value of any answer moves, and no request field, so a caller at it is served what
-// one at 220 is, and its records in `contract-shapes.json` and `request-shapes.json` are 220's
-// under its own number. `VERDICT_NOT_TAKEN` and `TESTED_HEAD_REQUIRED` are values of the
-// refusal's `code`, which no reader enumerates.
-// (This entry took 206 at first, above main's 202: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
-// 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.
-// The forward merge of 2026-11-22 that brought in 2feade15 brought main's 205 (the entry of 205
-// above). A reading of every open pull request at that merge, which ended at
-// 2026-11-22T10:01:29Z, found 206 (#3712), 207 to 220 and 223 and 224 declared, so this entry
-// moved to 221, the lowest number above main's 205 that no other open pull request declares. The
-// forward merge of 2026-11-23 that brought in 5685883d brought main's 213, below 221, so this
-// entry kept 221. The forward merge of 2026-11-24 that brought in 4bd9a2b4 brought main's 217, 219
-// and 220 (the entries above), and a reading of every open pull request at that merge, which ended
-// at 2026-11-24T11:41:39Z, found 221 declared by #4049, #4392, #4682 and #5164 as well, and 222,
-// 223 and 224 declared, so this entry moved to 225, the lowest number above the base's 220 that no
-// other open pull request declares. Read the base's own number and every open pull request again
-// at every forward merge rather than from this line.)
+// `GET /legion/v1/state` moves, and no request field: the entry adds no row to any table, so a
+// caller at it is served what one at the contract before it is. `VERDICT_NOT_TAKEN` and
+// `TESTED_HEAD_REQUIRED` are values of the refusal's `code`, which no reader enumerates.
 //
-// CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
-// entry of 225 above): a plugin at it or above has its completion naming one refused
-// VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
-// across the upgrade still completes and Dispatch's check states decide its phase. A later bump
-// of DaemonAPIVersion leaves it where it is. It stands above every contract declared before the
-// check states' change, which a plugin that still sends a verdict can state
-// (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
+// CheckStatesContract is the id of this entry, at whose number (entryNumber(CheckStatesContract))
+// a phase completion carries no verdict: a plugin at that number or above has its completion
+// naming one refused VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so
+// a worker mid-turn across the upgrade still completes and Dispatch's check states decide its
+// phase. The number stands above every contract that is no entry, which a plugin that still sends
+// a verdict can state (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
 const CheckStatesContract = 20261125203834
 
 func init() {

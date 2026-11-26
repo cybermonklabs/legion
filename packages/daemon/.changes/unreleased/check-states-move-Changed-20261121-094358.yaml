@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    Daemon API contract 225: Dispatch's check states at the tested head decide the testing phase, and
+    Daemon API contract entry `20261125203834` check-states: Dispatch's check states at the tested head decide the testing phase, and
     a phase completion carries no verdict. The daemon holds each `check.state_changed` event of an
     issue it records (the head's set of checks, the check's state and the event's serial) in the
     event's own transaction. A tester completes naming its `test` record and no verdict; the move
@@ -13,8 +13,8 @@ body: |-
     could not read (`read_failed`) among them. A wait at the completion tells the architect once,
     in a `phase-finished` notice whose `reason` names what the move waits for; a move back names
     those checks in its notice's `reason`.
-    A phase completion naming a verdict from a plugin at contract 225 or later is refused `400
-    VERDICT_NOT_TAKEN`; a tester's plugin below 225 still sends one, which the daemon ignores.
+    A phase completion naming a verdict from a plugin at that entry's contract or later is refused `400
+    VERDICT_NOT_TAKEN`; a tester's plugin below it still sends one, which the daemon ignores.
     The refusals `TESTER_VERDICT_REQUIRED` and `VERDICT_ROLE_FORBIDDEN` are gone, the reviewer's
     task no longer names `Tester's verdict:`, and a `phase-finished` notice no longer carries
     `verdict`. Migration `20261125000602_phase_verdict_gone` keeps `phases.verdict`, which a daemon

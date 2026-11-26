@@ -109,6 +109,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "A plan rating is required", compares: []comparisonSite{
 		comparedIn("internal/api/handoff.go", "server.answerCompletion", "c.PluginContract >= PlanRatingContract"),
 	}},
+	// The check states' entry (contract_20261125203834_check-states.go): a phase completion that
+	// names a verdict from a plugin at the entry's number or above is refused VERDICT_NOT_TAKEN,
+	// and a tester's plugin below it has its verdict ignored.
+	{row: "A phase completion carries no verdict", compares: []comparisonSite{
+		comparedIn("internal/api/handoff.go", "server.answerCompletion", "c.PluginContract >= entryNumber(CheckStatesContract)"),
+	}},
 	// The daemon that knows no contract of its own marks no edge (Deps.PluginContract 0), which
 	// is the roll edge's own first term.
 	{row: "The roll edge", compares: []comparisonSite{

@@ -3080,7 +3080,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 #### Rolling back the release whose testing move follows Dispatch's check states
 
-This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 225, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
+This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (the daemon API contract entry `20261125203834` check-states, `packages/daemon/internal/api/contract_20261125203834_check-states.go`, whose id is `CheckStatesContract`).
 A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
 At the head that record names, a check with no state, or with no result while its CI run still goes, holds the move whatever the other checks read; then every check passing moves the issue to `reviewing`, and otherwise it goes back to `implementing` with a task naming each check that does not pass, a state Dispatch could not read (`read_failed`) among them.
 
