@@ -902,6 +902,11 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 				reader = &record.CIReader{Phase: at, Entry: row.Entry}
 			}
 		}
+		if failure, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, w.Task, fix.Check, fix.Head); err != nil {
+			return err
+		} else if failure != nil && start.Starts > 0 && !start.StartedAt.Before(failure.At) {
+			continue
+		}
 		if e.toldByStart(start, fix) {
 			continue
 		}
