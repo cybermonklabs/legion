@@ -107,15 +107,17 @@
 #                   base <sha> contract <n>                     the merge base and its number
 #                   onmain <n> <number>                         entry <n>, which the ref holds as its
 #                                                               numbered entry <number>
-#                   onmain <n> <file>                           entry <n>, which the ref holds as the
-#                                                               entry file <file>, by its text or its
-#                                                               constant
+#                   onmain <n> <file>                           entry <n>, whose text the ref's entry
+#                                                               file <file> opens with, or whose
+#                                                               constant it declares
 #                   entry <n> <constant> <slug> <file:line|->   each entry it would convert
 #                   move <file>:<line> <field> <constant>       each row it would move
 #                   undo <file>                                 each derived copy it would undo
 #                   <file>:<line>: <text>                       each line it would leave
 #                 The entries an onmain line names are refused by the conversion, and the report
-#                 leaves them out of the lines after it.
+#                 leaves them out of the lines after it. An entry that a file holds by its constant
+#                 can be the branch's own, whose name another change took, so where the report
+#                 leaves out such an entry it does not say the branch adds no entry of its own.
 #
 # Exits 0 when the branch is converted (or adds no numbered entry), and also where a row of a
 # frozen table left for the author keeps step 5 from writing an entry's fixture, which records that
@@ -933,7 +935,9 @@ def analyze(mode, head, main, main_name, state_path, requests_path="", requests_
         die(held_refusal(held, entries, main_name))
     entries = [e for e in own if e["number"] not in held]
     if not entries:
-        print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
+        # An entry held by its constant can be the branch's own, whose name another change took.
+        if all(by_text for _, by_text in held.values()):
+            print(f"{head[:10]} adds no numbered entry of its own to {VERSION_GO}: nothing to convert")
         return None
     numbers = {e["number"]: e for e in entries}
     for e in entries:
