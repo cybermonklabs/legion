@@ -3024,11 +3024,15 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
-	// StatusWriteQueued says whether the outbox still holds a Dispatch status write of issue — due,
-	// running, backing off or waiting behind an older row: a status the daemon counted on the
-	// issue's record when it queued it (R16 of dispatch://INFRA-3320) that Dispatch may not show
-	// yet.
-	StatusWriteQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// CountedStatusWriteQueued says whether the outbox still holds a Dispatch status write of issue
+	// that its record has already passed — due, running, backing off or waiting behind an older
+	// row: every kind of status row but a person's handover (PersonHandoverStatusRow). An ordinary
+	// row is a status the daemon counted on the record when it queued it (R16 of
+	// dispatch://INFRA-3320), a re-assertion writes the status the record kept, and a close is
+	// owed on the record (Issue.PendingClose). A person's handover is counted on no record when it
+	// is queued, so its row, even while it waits, is no write the record has passed: its echo is
+	// what brings the todo to the record.
+	CountedStatusWriteQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
 	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it

@@ -187,6 +187,46 @@ func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t
 	}
 }
 
+// The echo of a person's handover takes the parked root while the handover's own row is still in
+// the outbox: Dispatch publishes the event of the todo before the outbox has finished the row that
+// wrote it, and the consumer can apply that event first. A handover is counted on no record when
+// it is queued (dispatchArtifact), so its own row is no later write the record has passed, as a
+// row the record counted is (dispatchIssue), and nothing else brings the todo to the record: the
+// outbox's answer to a landed write moves only an issue the daemon does not record
+// (applyOwnWrite). The echo is taken as a person's todo is (backInWork): a closed root opens a new
+// run, and a root a stop left at admitted comes back into Legion's work there.
+func TestTheEchoOfAPersonsHandoverTakesTheRootWhileItsRowIsStillQueued(t *testing.T) {
+	t.Parallel()
+	stopped := closedRoot("backlog")
+	stopped.Phase, stopped.HoldsGate, stopped.DispatchStatus = phase.Admitted, true, "backlog"
+	for _, tc := range []struct {
+		name       string
+		recorded   record.Issue
+		generation uint64
+	}{
+		{"a closed root", closedRoot("backlog"), 2},
+		{"a root a stop left at admitted", stopped, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, tc.recorded)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			applyFacts(t, pool, engine)("approval", approvalOf(askPerson, parkedRootView("backlog")))
+			if got, want := statusWrites(t, pool, "LEGION-208"), []record.StatusWrite{personHandoverWrite("backlog")}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("status writes = %#v, want the handover's row %#v still queued as its echo arrives", got, want)
+			}
+
+			applyMirrored(t, pool, engine, "echo", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 10, Type: "issue.updated",
+				Status: "todo", Title: "root", Rank: "U", HandedOver: true, DaemonActor: true})
+			got := storedIssue(t, pool, "LEGION-208")
+			if got.Status != "todo" || got.Phase != phase.Admitted || got.Generation != tc.generation || !record.InLegionsWork(got) {
+				t.Fatalf("the root once Dispatch echoes the handover's todo = phase %s, generation %d, status %s; want it in Legion's work at admitted, generation %d, status todo",
+					got.Phase, got.Generation, got.Status, tc.generation)
+			}
+		})
+	}
+}
+
 // A person's approval that queues a parked root as their handover records on the root's gate only
 // what applyArtifact would record: an approval of a version older than the gate's latest, one the
 // gate has already seen superseded by a later changes request of that version, and any approval
