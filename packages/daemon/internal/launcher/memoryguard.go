@@ -429,25 +429,22 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 	return classes
 }
 
-// shimOwnChildren are the direct children of shim that the shim started itself. A shim that reaps
-// orphans, given reapOrphansFlag (the controller pod's single-role shim, reapingShim), also has for
-// direct children the orphans its tree leaves, which nothing in the tree tells from its own but
-// their age and their executable: its own are the agent, the oldest direct child that is not the
-// secrets binary, since an orphan descends from the agent's commands and so is younger than the
-// agent, and the secrets keygen and renewer, the executable the shim's --agent-secrets-bin names
-// run as `keygen` or `renew`. Any other direct child is an orphan the shim adopted. An orphan that
-// runs that executable as `keygen` or `renew` is taken for the shim's own: that is the rule's
-// cost. A shim that reaps none, which has no other children, answers all of its direct children.
+// shimOwnChildren are the direct children of shim that the shim started itself. The controller
+// pod's single-role shim, the one shim this classifier reads, reaps orphans (reapOrphansFlag,
+// which reapingShim gives it), so it also has for direct children the orphans its tree leaves,
+// which nothing in the tree tells from its own but their age and their executable: its own are
+// the agent, the oldest direct child that is not the secrets binary, since an orphan descends from
+// the agent's commands and so is younger than the agent, and the secrets keygen and renewer, the
+// executable the shim's shimwire.AgentSecretsBinFlag names run as shimwire.AgentSecretsKeygen or
+// shimwire.AgentSecretsRenew. Any other direct child is an orphan the shim adopted. An orphan that
+// runs that executable as either task is taken for the shim's own: that is the rule's cost.
 func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryguard.Process {
 	children := t.Children(shim.PID)
 	options := shim.Args
 	if end := slices.Index(options, "--"); end >= 0 {
 		options = options[:end]
 	}
-	if !slices.Contains(options, reapOrphansFlag) {
-		return children
-	}
-	secrets := flagValue(options, "--agent-secrets-bin")
+	secrets := flagValue(options, "--"+shimwire.AgentSecretsBinFlag)
 	resolved := secrets
 	if secrets != "" {
 		if path, err := filepath.EvalSymlinks(secrets); err == nil {
@@ -459,7 +456,7 @@ func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryg
 	for _, p := range children {
 		task := argument(p, 1)
 		switch {
-		case secrets != "" && p.Exe != "" && (p.Exe == secrets || p.Exe == resolved) && (task == "keygen" || task == "renew"):
+		case secrets != "" && p.Exe != "" && (p.Exe == secrets || p.Exe == resolved) && (task == shimwire.AgentSecretsKeygen || task == shimwire.AgentSecretsRenew):
 			own = append(own, p)
 		case !agent:
 			agent = true

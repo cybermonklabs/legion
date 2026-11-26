@@ -78,7 +78,7 @@ func (s *shim) identity() (*shimwire.AgentSecretsHello, error) {
 	if thumbprint == "" {
 		ctx, cancel := context.WithTimeout(s.loop, keygenTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, a.Binary, "keygen", "--out", a.KeyDir)
+		cmd := exec.CommandContext(ctx, a.Binary, shimwire.AgentSecretsKeygen, "--out", a.KeyDir)
 		cmd.Env = s.cfg.Env
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -208,7 +208,7 @@ func (s *shim) startRenewer(enrollmentID string) {
 	go func() {
 		defer s.renewers.Done()
 		for s.loop.Err() == nil {
-			cmd := exec.CommandContext(s.loop, a.Binary, "renew", "--pod-token-file", a.TokenFile)
+			cmd := exec.CommandContext(s.loop, a.Binary, shimwire.AgentSecretsRenew, "--pod-token-file", a.TokenFile)
 			tail := &lastLineWriter{}
 			cmd.Env = s.cfg.Env
 			cmd.Stdout = os.Stderr

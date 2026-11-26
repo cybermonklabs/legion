@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -86,10 +87,10 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	podSafety := flags.Bool("pod-safety", false, "start OMP on a pod's baseline (internal/podsafety)")
 	flags.DurationVar(&given.stopGrace, "stop-grace", 0, "how long the runtime gives this shim to exit after its stop signal before killing it (a pod's terminationGracePeriodSeconds, which the launcher passes); the wait for an in-flight CodeGraph warm-up stays inside it and is never under 3s, so the daemon refuses a worker_stop_timeout_seconds under 9 for pods; unset is the daemon's default worker_stop_timeout_seconds")
 	flags.BoolVar(&given.warmCodegraph, "warm-codegraph", false, "once Oh My Pi has started, build the CodeGraph index of the workspace LEGION_WORKSPACE names, in the background (a role's shim in an issue pod; never a tmux pane's or the controller's)")
-	flags.BoolVar(&given.reapOrphans, "reap-orphans", false, "become the child subreaper of everything this shim starts and reap their orphans (Linux; the controller pod's launcher passes it when no role-init is above the shim, internal/shim's Config.ReapOrphans)")
+	flags.BoolVar(&given.reapOrphans, shimwire.ReapOrphansFlag, false, "become the child subreaper of everything this shim starts and reap their orphans (Linux; the controller pod's launcher passes it when no role-init is above the shim, internal/shim's Config.ReapOrphans)")
 	flags.StringVar(&given.keyDir, "agent-secrets-key-dir", "", "the pod's tmpfs directory for its agent-secrets key and enrollment id")
 	flags.StringVar(&given.tokenFile, "pod-token-file", "", "the projected service-account token for the secrets broker's audience")
-	flags.StringVar(&given.agentSecretsBin, "agent-secrets-bin", "", "the agent-secrets binary that generates the key and renews the lease")
+	flags.StringVar(&given.agentSecretsBin, shimwire.AgentSecretsBinFlag, "", "the agent-secrets binary that generates the key and renews the lease")
 	cmd.RunE = runs(func(ctx context.Context, args []string) int {
 		return runWorkerShim(ctx, cmd, given, *podSafety, args, stdout, stderr)
 	})

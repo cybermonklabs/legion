@@ -1028,7 +1028,7 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 
 // reapOrphansFlag is the flag that makes `legion worker-shim` the child subreaper of everything it
 // starts, reaping their orphans itself (internal/shim's Config.ReapOrphans).
-const reapOrphansFlag = "--reap-orphans"
+const reapOrphansFlag = "--" + shimwire.ReapOrphansFlag
 
 // reapingShim is argv with reapOrphansFlag after `legion worker-shim`, where argv runs the shim,
 // and argv as it is otherwise. The controller pod's single-role form starts the shim as this
