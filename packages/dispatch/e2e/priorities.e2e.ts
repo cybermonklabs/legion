@@ -306,14 +306,19 @@ function documentOverflow(page: Page): Promise<number> {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 }
 
-/** The headers of a table whose words its column cuts: a header's sort control that holds more
- *  than its box shows. A header whose words wrap onto a second line shows them whole. */
+/** The headers of a table whose words its column cuts: a header's sort control, or the box inside
+ *  it that ends the name in an ellipsis (`DataTable`'s `TruncatedText`), that holds more than it
+ *  shows. A header whose words wrap onto a second line shows them whole. */
 function cutHeaders(table: Locator): Promise<string[]> {
   return table
     .locator('thead th button[title^="Sort"]')
     .evaluateAll((buttons) =>
       buttons
-        .filter((button) => button.scrollWidth > button.clientWidth)
+        .filter((button) =>
+          [button, ...button.querySelectorAll("*")].some(
+            (part) => part.scrollWidth > part.clientWidth
+          )
+        )
         .map((button) => button.textContent ?? "")
     );
 }

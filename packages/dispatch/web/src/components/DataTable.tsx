@@ -559,11 +559,9 @@ function TableHeaderCell<TData>({
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
-            title={`${typeof column.columnDef.header === "string" ? `${column.columnDef.header}. ` : ""}${
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }`}
+            // The hint opens with "Sort", as main's does, and names the column, which the name's
+            // ellipsis may have cut.
+            title={`Sort${typeof column.columnDef.header === "string" ? ` by ${column.columnDef.header}` : ""} (shift-click to add a second sort)${pinned ? "" : "; drag to move the column"}`}
             type="button"
           >
             {numeric ? mark : null}

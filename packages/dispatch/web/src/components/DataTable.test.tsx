@@ -214,8 +214,8 @@ test("sorts by a column's value when its header is pressed", async () => {
 });
 
 // A pointer reader hovers a sortable header's name and reads the title of the innermost element
-// that has one: it names the column, which the name's ellipsis may have cut, and keeps the hint
-// that shift-click adds a second sort and that the header drags.
+// that has one: it opens with "Sort", names the column, which the name's ellipsis may have cut,
+// and keeps the hint that shift-click adds a second sort and that the header drags.
 test("hovering a sortable header's name shows its name and the sort and drag hint", async () => {
   draw(<Deploys />);
 
@@ -223,7 +223,7 @@ test("hovering a sortable header's name shows its name and the sort and drag hin
   const name = within(table).getByText("Minutes");
   expect(name.closest("[title]")).toHaveAttribute(
     "title",
-    "Minutes. Sort (shift-click to add a second sort); drag to move the column"
+    "Sort by Minutes (shift-click to add a second sort); drag to move the column"
   );
 });
 
