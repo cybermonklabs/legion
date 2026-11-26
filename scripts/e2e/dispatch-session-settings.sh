@@ -237,30 +237,35 @@ database_created=1
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
-envoy_port=$(bun "$driver" free-port)
-dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
-# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it.
+# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it. Each serves on a
+# port the kernel chose, held from that choice until it serves on it (lib/rig.sh's start_held), so
+# no other process can take the port in between; `env -i` clears the descriptor's variable the
+# helper sets, so each names its own: the helper hands the socket over as descriptor 3. start_held
+# assigns each port once it is held.
+envoy_port="" dispatch_port=""
 dispatch_identity_start
-env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+start_held listener envoy_port ENVOY_LISTEN_FD -- \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
-listener_pid=$!
-record_start "$listener_pid" || true
+  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-# The subshell turns the shell's xtrace off before it expands DATABASE_URL, the connection string
-# run_database_url_env rebuilt, which carries the DSN's password, so a run under `bash -x` traces
-# no part of it. It then execs env, so Dispatch runs as the pid the subshell started as.
-(set +x; exec env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
-  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
-  DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
+# Its DATABASE_URL is the connection string run_database_url_env rebuilt, which carries the DSN's
+# password, so xtrace is off while the start line is expanded and put back as it was after it: a
+# run under `bash -x` traces no part of it. The port is `{port}`, which held-port.py puts in, so
+# no expansion here needs one either.
+case $- in *x*) dispatch_start_traced=1 ;; *) dispatch_start_traced=0 ;; esac
+set +x
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
+  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
+  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
-  "$work/dispatch") >"$evidence/logs/dispatch.log" 2>&1 &
-dispatch_pid=$!
-record_start "$dispatch_pid" || true
+  "$work/dispatch"
+((dispatch_start_traced == 0)) || set -x
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every
