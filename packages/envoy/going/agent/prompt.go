@@ -168,12 +168,26 @@ Rules:
 - Keep each time a link, such as [5 days ago](dispatch-time:2026-11-18T11:35:00Z), its words and its address as the reply writes them.
 - Say each fact once, and state the answer you settled on: never a correction of yourself or your working.`
 
+// askSpecRule is the rule systemPrompt adds for a run in Ask: a create of an issue carries a spec
+// written from the person's words, since the server refuses a create with none there and on the
+// line File as a new issue (api's goingCallRun.specRequired, R9), whose own prompt asks for the
+// spec (newIssuePrompt). A run in Auto-review is told nothing of it: there a create with a title
+// alone is the create Auto-review may let through (R5). Without it, a run in Ask proposed a
+// create with no spec, was refused, and proposed the plan again, one more model step for each
+// create (c15's runs at 6607a6b4), as the architect ruled
+// (dispatch://INFRA-1588/comment/be48460a-0a7c-4a8d-a4ae-30c89fc32f2b).
+const askSpecRule = `
+- A new issue, a dispatch_issue change, carries spec: a short spec in markdown, written from the person's words alone, of what they want and why, in a few sentences.`
+
 // system is the system message of the run's every model call but Auto-review's and the rewrite
 // of a reply held back as long (rewritePrompt): systemPrompt, with newIssuePrompt for a new-issue
-// run.
+// run, and with askSpecRule for any other run in Ask.
 func (w *worker) system() string {
 	if w.run.Kind == agentwire.RunNewIssue {
 		return systemPrompt + newIssuePrompt
+	}
+	if w.run.Mode != modeAutoReview {
+		return systemPrompt + askSpecRule
 	}
 	return systemPrompt
 }

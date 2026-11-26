@@ -1827,3 +1827,30 @@ func TestASlipIsNoFailureOfThePersons(t *testing.T) {
 		t.Errorf("the server's refusal of a tool it does not have reads as %q (slip %t), want the slip %q", words, slip, unknownToolLabel.Past)
 	}
 }
+
+// TestOnlyARunInAskIsToldThatACreateCarriesASpec: the server refuses a create of an issue with no
+// spec in a run in Ask, so that run's system message says a create carries one; a run in
+// Auto-review, where a create with a title alone is the create Auto-review may let through, is
+// told nothing of it; and a new-issue run is told by its own prompt, once.
+func TestOnlyARunInAskIsToldThatACreateCarriesASpec(t *testing.T) {
+	for _, row := range []struct {
+		name      string
+		run       agentwire.ClaimedRun
+		told      bool
+		ownPrompt bool
+	}{
+		{"a run in Ask", agentwire.ClaimedRun{Mode: "ask"}, true, false},
+		{"a run stored with no mode", agentwire.ClaimedRun{}, true, false},
+		{"a run in Auto-review", agentwire.ClaimedRun{Mode: modeAutoReview}, false, false},
+		{"a new-issue run in Auto-review", agentwire.ClaimedRun{Kind: agentwire.RunNewIssue, Mode: modeAutoReview}, false, true},
+	} {
+		run := row.run
+		system := (&worker{run: &run}).system()
+		if told := strings.Contains(system, askSpecRule); told != row.told {
+			t.Errorf("%s: its system message holds the create's spec rule: %t, want %t", row.name, told, row.told)
+		}
+		if own := strings.Contains(system, newIssuePrompt); own != row.ownPrompt {
+			t.Errorf("%s: its system message holds the new-issue prompt: %t, want %t", row.name, own, row.ownPrompt)
+		}
+	}
+}
