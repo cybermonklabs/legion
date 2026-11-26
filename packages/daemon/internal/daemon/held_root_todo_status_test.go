@@ -35,7 +35,9 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
 	// heldSentence is the why of the root's hold that a person reads beside the board's move,
 	// naming the issue beneath it.
-	const heldSentence = "LEGION-208 waits before its retro for these issues beneath it: LEGION-209. Legion starts the retro when the last one leaves."
+	const heldSentence = "LEGION-208 waits before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
+		"Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
+		"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
 	for _, tc := range []struct {
 		name string
 		// moved is the status the board is moved to before the last issue leaves, "" for none, and
