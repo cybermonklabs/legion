@@ -192,8 +192,8 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeStatusChangeRefusal(w, err, none)
 		return
 	}
-	// The call reads its issues as the caller reads them (loadIssue), so the reader is resolved
-	// here, before any step holds a connection.
+	// The reader is resolved before any step holds a connection. At S3ab loadIssue binds no
+	// reader; S3c-issues makes it bind the caller's.
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return

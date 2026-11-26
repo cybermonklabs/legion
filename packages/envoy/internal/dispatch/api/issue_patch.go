@@ -70,8 +70,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	// The issue is read as the caller reads it (loadIssue), so the reader is resolved here,
-	// before the write holds a connection.
+	// The reader is resolved before the write holds a connection. At S3ab loadIssue binds no
+	// reader; S3c-issues makes it bind the caller's.
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
@@ -97,10 +97,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 type issueWriteCall struct {
 	// writer is who writes: its actor is the actor every row and event of the write records.
 	writer issueWriter
-	// who is the reader the write reads its issues as (loadIssue, the lock step, the parent's
-	// read): the request's resolved reader for a route, and the server's own (everyReader) for a
-	// write no caller asked for, such as R25's fix at boot. The zero actor is the closed viewer,
-	// which reads no issue, so every call names one.
+	// who is the reader the write's reads are made as. At S3ab loadIssue binds no reader, so
+	// who is carried but not yet bound in the issue's query; S3c-issues binds it. The zero actor
+	// is the closed viewer, which reads no issue, so every call names one.
 	who model.Actor
 	// key is the issue the write writes.
 	key string

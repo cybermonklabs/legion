@@ -28,11 +28,13 @@ import (
 // token, never as a session, because a session's own credential is the broker's
 // (stubBrokerTokens, S7).
 //
-// The seed's rule, which holds from S2: a caller sees a project when their person sees it (the
-// membership answer) and their credential lists no projects or lists it. At this head every
-// caller is answered both projects by GET /api/v1/projects, PRIV included, with bob and carol
-// both on PRIV's list: the read binds an open viewer while the deployment holds no restricted
-// member, which is this slice's own premise.
+// The seed's rule (access.CredentialCovers, access.Credential.Sees): a credential that lists no
+// projects sees every project that is not private; one that lists projects sees those alone among
+// the private ones. A browser lists nothing and is its person, so it sees what its person sees. A
+// token that lists no projects does not see a private project. At this head every caller is
+// answered both projects by GET /api/v1/projects, PRIV included, with bob and carol both on
+// PRIV's list: the read binds an open viewer while the deployment holds no restricted member,
+// which is this slice's own premise.
 const (
 	seedPublic  = "PUB"
 	seedPrivate = "PRIV"
