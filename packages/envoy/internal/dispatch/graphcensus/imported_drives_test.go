@@ -750,7 +750,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// session, which the listener takes at once.
 		Name: "inboxwrite/record.go#Queue, a person's own reply under an Agent thread", Database: r.database,
 		Sites: []string{"inboxwrite/record.go#Queue", "api/messages.go#createStoredMessage",
-			"graphstore/people.go#QueueAuthored", "api/comment_create.go#queueRecordAndMentions",
+			"graphstore/people.go#QueueAuthored",
 			"api/message_delivery.go#completeMessageDelivery", "graphstore/people.go#QueueReached"},
 		Drive: func(t *testing.T) {
 			reply := decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/agents/"+messageSession+"/messages",
