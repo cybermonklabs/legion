@@ -1254,14 +1254,25 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		return a.readmit(ctx, tx, *stored, o, false)
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
-	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
-	// is not live: a running tree's member keeps what the record says, because the tree is the
-	// thing that says the work is under way, and the row the member holds, or does not hold, says
-	// nothing about it: it keeps that row through every phase that keeps one, worked or not
-	// (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while it
-	// waits on another issue (releaseSlotsForWaits).
+	// daemon itself wrote and Dispatch had not shown yet. Its status is taken only while the
+	// issue's tree is not live: a running tree's member keeps the status the record says, because
+	// the tree is the thing that says the work is under way, and the row the member holds, or does
+	// not hold, says nothing about it: it keeps that row through every phase that keeps one, worked
+	// or not (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while
+	// it waits on another issue (releaseSlotsForWaits). Its priorities are Dispatch's alone, though,
+	// and the listing can be the one read that carries them: the first boot after Dispatch resolves
+	// priorities lists a member's inherited P0 at the member's own sequence, with no event of the
+	// member's (C1 of dispatch://INFRA-5636). So the echo writes the own and the resolved priority it
+	// shows, and nothing else of the record.
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
+			if stored.Priority == o.Priority && stored.Resolved == o.Resolved {
+				return nil
+			}
+			stored.Priority, stored.Resolved = o.Priority, o.Resolved
+			if err := a.engine.WriteIssue(ctx, tx, *stored); err != nil {
+				return fmt.Errorf("record the priorities the listing shows of %s: %w", stored.Key, err)
+			}
 			return nil
 		}
 	}
