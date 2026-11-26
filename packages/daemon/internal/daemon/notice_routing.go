@@ -148,8 +148,9 @@ func (n noticeRoute) issue(key string) (record.Issue, error) {
 }
 
 // earlierNoticeFor is the oldest of the snapshot's earlier notices that goes to architect as the
-// claims run now — its id and the moment it is due — or 0 and the zero moment when there is none.
-// Each earlier notice's architect is resolved again rather than recorded when it was held, since a
+// claims run now — its id, the moment it is due, and whether it is a catch-up the wake pacing
+// still holds in its queue — or 0, the zero moment and false when there is none. Each earlier
+// notice's architect is resolved again rather than recorded when it was held, since a
 // sub-architect can start or end, and a parent change, while it waits, and by the rule its own
 // publish follows (noticeArchitect). An earlier row whose architect cannot be resolved, or whose
 // walk meets an unknown chain, is no architect's yet, so it holds back no later notice; it
@@ -160,8 +161,11 @@ func (n noticeRoute) issue(key string) (record.Issue, error) {
 // a row waiting out its architect's parked launch, at that launch's turn or parkedWakeBound on,
 // whichever comes first (parkedWait) — and the row behind it runs once, then (deliverNotice's
 // wait.Until), rather than climbing its backoff to it. So a park that ends before its turn holds
-// the row behind it for at most the bound as well.
-func earlierNoticeFor(snapshot noticeSnapshot, architect claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
+// the row behind it for at most the bound as well. A catch-up the pacing still holds in its
+// queue is due at no moment until the pacer lets its place out (record.CatchUpIsHeld): held is
+// true for it and the moment is the zero time, and the row behind it waits for the pacer's
+// estimate of that place instead (deliverNotice).
+func earlierNoticeFor(snapshot noticeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
 	for _, other := range snapshot.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -176,10 +180,13 @@ func earlierNoticeFor(snapshot noticeSnapshot, architect claim.Token, runs func(
 			continue
 		}
 		if owner, err := noticeArchitect(snapshot.noticeRoute, issue, notice, runs); err == nil && owner == architect {
-			return other.ID, other.NextAt
+			if record.CatchUpIsHeld(other.NextAt) {
+				return other.ID, time.Time{}, true
+			}
+			return other.ID, other.NextAt, false
 		}
 	}
-	return 0, time.Time{}
+	return 0, time.Time{}, false
 }
 
 // noticeArchitect is the architect claim notice, of issue, goes to. A catch-up goes to the

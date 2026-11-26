@@ -453,7 +453,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 		if !start.Carried || !start.GateCarried {
 			return fmt.Errorf("the architect's start of CAPTURE-10 reads carried %t and gate %t, want both from its own record", start.Carried, start.GateCarried)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, steps, *issues["CAPTURE-10"], 1, "", time.Now(), time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, steps, *issues["CAPTURE-10"], 1, "", time.Now())
 	}); err != nil {
 		t.Fatal(err)
 	}

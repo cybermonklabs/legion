@@ -260,9 +260,9 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // while it waits for its turn. The pacing does not exempt the resume (supervise's exemptWake lets
 // only an operator's requests through), so over a wave it can wait more than an hour, the machine
 // holding the claim launching with no process and its view naming the waiting wake (supervise's
-// parkWake, ClaimView.WakeWaiting). The row waits through that park because a phase-ended message
-// or a hook prompt published then would be kept for the listener's one hour from that publish,
-// which can end before the pod starts. So a waiting wake that starts a process
+// waitOnMachine, ClaimView.WakeWaiting). The row waits through that park because a phase-ended
+// message or a hook prompt published then would be kept for the listener's one hour from that
+// publish, which can end before the pod starts. So a waiting wake that starts a process
 // (supervise.StartsProcess) over a claim that records no process holds the row until the launch
 // runs, whichever launch it is. A relaunch parked over a process the claim still records holds
 // nothing: the machine keeps that claim's state, and its live session can take the publish now.

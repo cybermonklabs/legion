@@ -166,22 +166,40 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 // enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
+	if kept == nil {
+		row, err := queuedRow(ctx, tx, store, issue, payload, at)
+		if err != nil {
+			return err
+		}
+		return store.Enqueue(ctx, tx, row)
+	}
+	_, err := enqueueNamingID(ctx, tx, store, issue, payload, kept, at)
+	return err
+}
+
+// enqueueNamingID is EnqueueNaming for a caller that needs the id of the row it writes: the row
+// is always written with that id kept (Store.EnqueueID), which refuses another project's key where
+// Store.Enqueue skips it, and kept, where it is not nil, is claimed for that row.
+func enqueueNamingID(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload,
+	kept *record.KeptDecisions, at time.Time) (int64, error) {
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
-		return err
-	}
-	if kept == nil {
-		return store.Enqueue(ctx, tx, row)
+		return 0, err
 	}
 	id, err := store.EnqueueID(ctx, tx, row)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	members, err := record.KeptMembers(ctx, tx, store, issue)
-	if err != nil {
-		return err
+	if kept != nil {
+		members, err := record.KeptMembers(ctx, tx, store, issue)
+		if err != nil {
+			return 0, err
+		}
+		if err := store.ClaimKeptDecisionsOf(ctx, tx, issue, members, *kept, id); err != nil {
+			return 0, err
+		}
 	}
-	return store.ClaimKeptDecisionsOf(ctx, tx, issue, members, *kept, id)
+	return id, nil
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
@@ -234,7 +252,8 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // nothing, and what it is owed waits KEPT for its next start or ready to name, since a catch-up
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not
-// wake, so it is due at once (the zero moment QueueCatchUp reads as now). Nor does one carry the
+// wake, so it is due at once: it is written at now and no hold of the wake pacing takes it
+// (queueCatchUpOn's hold is nil). Nor does one carry the
 // sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
 // own machine sends carries that sentence whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
@@ -277,7 +296,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := queueCatchUpOn(ctx, tx, store, steps, chains, root, launches[root.Key], "", now, time.Time{}); err != nil {
+		if err := queueCatchUpOn(ctx, tx, store, steps, chains, root, launches[root.Key], "", now, nil); err != nil {
 			return err
 		}
 	}

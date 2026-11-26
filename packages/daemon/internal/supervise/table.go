@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -177,9 +178,10 @@ const (
 	// lifecycle check failed with no cleanup reserved, or a launch whose write failed. The claim waits
 	// launching with no process until it fires.
 	TimerRelaunch TimerKind = "relaunch"
-	// TimerWake is the turn the wake pacing gave a launch it held back (reserveWake): the launch
-	// runs when it fires (wakeNow). A claim with no process of its own waits launching with none
-	// until then; one whose process still runs waits exactly as the wake found it.
+	// TimerWake is the let-out of the place the wake pacing holds a launch in (reserveWake,
+	// bindWake): the pacer's release of that place fires it, and the launch runs when it does
+	// (wakeNow). A claim with no process of its own waits launching with none until then; one whose
+	// process still runs waits exactly as the wake found it.
 	TimerWake TimerKind = "wake"
 	// TimerPromptRetry is the wait before a task a provider error took back is sent to the same
 	// session again (promptRetryDelay), armed on that task's own delivery id.
@@ -244,14 +246,15 @@ type StalePlugin struct {
 // the claim's generation as the boot read it, so a claim a launch has moved on since is decided
 // nothing (relaunchRecordedDeath).
 //
-// Turn is the moment the boot reserved for that relaunch in the wake pacing, as RequestSpawn.Turn
-// is for an unfinished launch: the boot reserves the turns of both in one pass, in the order their
-// claims' work was owed, so a recorded death waits behind a launch whose work has waited longer.
-// The zero time is a replay the gate reserves a turn for itself.
+// Place is the place the boot took for that relaunch in the wake pacing, as RequestSpawn.Place is
+// for an unfinished launch: the boot places both in one pass, a recorded death in the pacing's
+// first queue (WakeQueue, dispatch://INFRA-5682 R2) and each queue's places in the order their
+// claims' work was owed. nil is a replay the gate joins a place for itself. A place the replay
+// does not take up is given up as its decision ends (Machine.handle).
 type RecordedDeath struct {
 	Claim      claim.Token
 	Generation uint64
-	Turn       time.Time
+	Place      *wakepace.Place
 }
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
@@ -443,21 +446,23 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
-	// Turn is a moment the caller has already reserved for this launch in the wake pacing, and the
-	// zero time for every caller but one: the boot's relaunch of the launches the previous daemon
-	// left waiting (internal/daemon's launchUnfinished), which hands the turns out in the order its
-	// claims' work was owed before it posts every launch at once, so the queue a restart rebuilds
-	// keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	// Place is a place the caller has already taken for this launch in the wake pacing, and nil
+	// for every caller but one: the boot's relaunch of the launches the previous daemon left
+	// waiting (internal/daemon's launchUnfinished), which places every launch in its queue in the
+	// order its claim's work was owed before it posts them all at once, so the queue a restart
+	// rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
 	//
-	// The rule the gate holds a carried turn to (revive, launchAfter, reserveWake), stated here
-	// alone: a turn still to come is the launch's turn, and it parks for it; one the launch reached
-	// less than one interval late (WakePace.Interval) is its turn late, and it runs at once; one it
-	// reached one interval or more late is reserved a turn afresh, and the spent turn stays
-	// charged, as a dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller
-	// posted together that reached its gate that late would otherwise run in one instant, outside
-	// the rate and the burst. The gate logs the last case. A launch the gate does not reach —
-	// refused, or held by a project pause — leaves its turn spent the same way.
-	Turn time.Time
+	// The rule the gate holds a carried place to (revive, launchAfter, reserveWake, placeFor),
+	// stated here alone: the gate takes the place up, and a place that still waits is the launch's
+	// place, and it parks on it; one the pacer let out less than one interval (WakePace.Interval)
+	// before the gate reached it is its turn come a little early, and it runs at once; one the
+	// pacer let out an interval or more before is not run at once, and the launch joins its queue
+	// afresh, since every launch the caller posted together that reached its gate that late would
+	// otherwise run in one instant, outside the rate and the burst. The gate logs the last case. A
+	// launch the gate does not reach — refused, or held by a project pause — gives its place up
+	// as its decision ends (Machine.handle), and the turn it would have taken goes to the wake
+	// behind it.
+	Place *wakepace.Place
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -547,6 +552,21 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
+}
+
+// MessageMarked is the daemon's word that a wake for a waiting Envoy message reached this claim:
+// the listener's report of a message for the claim's role or session, or a start row whose wake
+// carried one (dispatch://INFRA-5682 R1). At is the mark the store holds once the daemon has
+// written it there, which is the earliest that stands. The claim's mark becomes At where none
+// stands (Claim.MessageMarkAt, markMessage), and a wake of the claim waiting in the pacing's
+// second queue moves to the first, so a role whose message Envoy keeps an hour is not woken
+// behind a restart's backlog. It writes nothing to the store: the daemon persists the mark before
+// it posts this, and posts it before the start it belongs to, so the launch that start raises
+// joins the first queue. A claim in any state may be marked, and the mark decides nothing else,
+// so every state takes it and none moves.
+type MessageMarked struct {
+	Claim claim.Token
+	At    time.Time
 }
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
@@ -777,6 +797,7 @@ func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
 func (ResumePause) isEvent()          {}
+func (MessageMarked) isEvent()        {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
 // by its kind, because each wait means a different thing.
@@ -838,6 +859,8 @@ const (
 	onPodUpdateSignalled eventKind = "pod_update_signalled"
 
 	onResumePause eventKind = "resume_pause"
+
+	onMessageMarked eventKind = "message_marked"
 
 	timerPrefix eventKind = "timer:"
 )
@@ -920,6 +943,8 @@ func kindOf(ev Event) eventKind {
 		return onCompactEnded
 	case ResumePause:
 		return onResumePause
+	case MessageMarked:
+		return onMessageMarked
 	}
 	return ""
 }
@@ -1390,6 +1415,13 @@ func fillTable(t *builder) {
 	// (runWake), and one that is sent its task can be found in a turn already (sendPending).
 	t.row(onResumePause, "the project's pause is over: drop that pause's held suspension, let out the launch its gate held, and send the task that waits", resumePause,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, slices.Concat(live, processless)...)
+
+	// A wake for a waiting Envoy message reaching the claim (MessageMarked). A claim in any state
+	// may be marked, and the mark decides nothing but the queue a paced wake of the claim waits in
+	// (WakeQueue), so every state takes it and none moves: a wake that waits in the pacing's second
+	// queue moves to the first, and nothing else changes.
+	t.row(onMessageMarked, "a wake for a waiting message marks the claim: its paced wake goes to the message queue", messageMarked,
+		nil, slices.Concat(live, processless)...)
 }
 
 type builder struct{ rules map[key]rule }
@@ -2599,7 +2631,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, time.Time{})
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2614,10 +2646,10 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
-// spawn launches a queued claim, at the turn its caller reserved when it carries one
-// (RequestSpawn.Turn), and otherwise at the turn the gate reserves.
+// spawn launches a queued claim, in the place its caller took for it when it carries one
+// (RequestSpawn.Place), and otherwise in the place the gate joins for it.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Turn, nil)
+	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Place, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2757,7 +2789,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
+	return m.revive(ctx, exemptWake(ev), nil, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2811,7 +2843,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
+	return m.revive(ctx, exemptWake(ev), nil, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2870,7 +2902,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if r, ok := ev.(RequestRetry); ok {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
-	return m.revive(ctx, exemptWake(ev), time.Time{}, func() {
+	return m.revive(ctx, exemptWake(ev), nil, func() {
 		budgets := Budgets{}
 		if oneAttemptLeft {
 			budgets = m.claim.Budgets.OneAttemptLeft(m.deps.Limits)
@@ -3098,7 +3130,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", time.Time{}, nil)
+	return m.revive(ctx, d.ID == "", nil, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
