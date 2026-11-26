@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -379,6 +380,56 @@ func TestAReplayedRefusalWhileTheSendIsInFlightLeavesTheConfirmedTask(t *testing
 			gated.release <- struct{}{}
 			h.m.Wait()
 		})
+	}
+}
+
+// A replayed refusal is an earlier connection's, of a prompt sent before the send in flight under
+// the same id, so it answers nothing of that send (lateRefused): a restart re-sends the task under
+// the id the earlier daemon's prompt was acknowledged under, a turn starts while the re-send is in
+// flight, and the shim replays Oh My Pi's refusal of the earlier prompt. The re-send's own answer
+// is still to come, so the turn's end, read before the re-send's acknowledgement, retires nothing
+// (resultPending's send window), and that acknowledgement, read after it, is the re-send's: the
+// prompt waits on its result (Machine.outstanding), and the result that says its turn ran settles
+// the task. Taken for the re-send's answer, the refusal would have closed the send window, so the
+// turn's end retired the task, and the fence dropped the acknowledgement as moot (fenceOutcome).
+func TestAReplayedRefusalLeavesTheReSendUnderItsIdUnanswered(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+	first := h.wantPrompts(1)[0].DeliveryID
+	h.restart()
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	// Handle, not must: must waits for the send, which the gate is holding.
+	handle := func(ev Event) {
+		t.Helper()
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	handle(StreamHello{Claim: testToken, Generation: h.generation()})
+	if resent := testwait.Receive(t, "the re-send", gated.entered); resent != first {
+		t.Fatalf("the restart re-sent %s, want %s, the id the earlier prompt was acknowledged under: this test proves nothing", resent, first)
+	}
+	handle(StreamTurnStart{Claim: testToken})
+	if p := h.pending(); p.ID != first || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending once the turn started = %+v, want %s confirmed by it: this test proves nothing", p, first)
+	}
+
+	handle(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyAnswer, Replayed: true, ConnSequence: gated.Sequence()})
+	handle(StreamTurnEnd{Claim: testToken})
+	if c := h.claim(); c.Pending == nil || c.Pending.ID != first || c.ServingGeneration == 7 {
+		t.Fatalf("after the turn's end, read before the re-send's acknowledgement: pending %+v serving %d, want %s kept for the re-send's answer: the replayed refusal answered the earlier connection's prompt", c.Pending, c.ServingGeneration, first)
+	}
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+	if outstanding := h.outstanding(); !slices.Contains(outstanding, first) {
+		t.Fatalf("after the re-send's acknowledgement the prompts waiting on a result are %v, want %s: the acknowledgement is the re-send's", outstanding, first)
+	}
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: true})
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the re-send's result: pending %+v serving %d, want the task settled, run 7 served", c.Pending, c.ServingGeneration)
 	}
 }
 
