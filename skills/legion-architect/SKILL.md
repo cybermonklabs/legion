@@ -91,7 +91,7 @@ A retro that cannot write the body: `skill://legion-architect/references/accepta
 
 ## 6. Acceptance and the merge
 
-In `accepting`, no worker holds the phase:
+In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
@@ -102,8 +102,7 @@ Merge holds, finding asks, refusals and what follows: `skill://legion-architect/
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow, except one held at `admitted`.
-Nothing after it is yours (`skill://legion-architect/references/acceptance-steps.md`, "The close").
+The merge closes the issue; nothing after it is yours (`skill://legion-architect/references/acceptance-steps.md`, "The close").
 
 ## Escalation judgment
 

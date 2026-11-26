@@ -14,5 +14,6 @@ The controller lifts a hold by deleting its line; send it no message about a hol
 
 ## The close
 
-An issue held at `admitted` does not keep its parent in `merging`: the merge closes the parent, and the issue starts after that close.
-A root's close lingers the tree for `linger_hours`, so an issue held at `admitted` under the root starts only when the linger hands it over.
+The merge closes the issue once every issue beneath it has left the workflow, except one held at `admitted`, which starts after that close, and under a root only when the linger hands it over.
+An issue held at `admitted` does not keep its parent in `merging`.
+A root's close lingers the tree for `linger_hours`.
