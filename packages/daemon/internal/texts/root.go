@@ -52,9 +52,23 @@ func (r Root) Close() error { return r.dir.Close() }
 // link points, whenever a role put it there: a link at base, at an element of rel, or at a path in
 // the root the build has yet to make is refused in words naming that path and what is there. The
 // plugins' own directories, which the image owns, are read following their links.
-func BuildRoot(f Folder, envoyRoot, legionRoot, base, rel string) (_ Root, err error) {
+func BuildRoot(f Folder, envoyRoot, legionRoot, base, rel string) (Root, error) {
+	base = filepath.Clean(base)
+	parent, err := rolefile.OpenDirectory(unix.AT_FDCWD, base, base)
+	if err != nil {
+		return Root{}, fmt.Errorf("build the texts root in %s: %w", filepath.Join(base, filepath.FromSlash(rel)), err)
+	}
+	defer unix.Close(parent)
+	return BuildRootAt(f, envoyRoot, legionRoot, parent, base, rel)
+}
+
+// BuildRootAt is BuildRoot under the directory dirfd, which its caller holds open, having reached
+// it following no link, and which is base as the errors and the root's Dir print it: base's path
+// is never opened, so whatever a role has done to that path since, the root is made under the
+// directory dirfd is. dirfd stays open, the caller's to close.
+func BuildRootAt(f Folder, envoyRoot, legionRoot string, dirfd int, base, rel string) (_ Root, err error) {
 	dest := filepath.Join(base, filepath.FromSlash(rel))
-	dir, err := openRoot(base, rel, dest)
+	dir, err := openRoot(dirfd, base, rel, dest)
 	if err != nil {
 		return Root{}, fmt.Errorf("build the texts root in %s: %w", dest, err)
 	}
@@ -111,21 +125,15 @@ func BuildRoot(f Folder, envoyRoot, legionRoot, base, rel string) (_ Root, err e
 	return Root{Dir: dest, Touched: touched, dir: dir}, nil
 }
 
-// openRoot is the directory at rel under base, dest, made where it is absent, for a build: base is
-// opened as rolefile.RemoveTree opens a parent, so a link at base is refused, and each element of
-// rel is made or opened under the one before it (makeDirs). A root that already holds anything is
-// refused, naming the first entry and what it is.
-func openRoot(base, rel, dest string) (*os.File, error) {
+// openRoot is the directory at rel under the directory dirfd, which is base, dest, made where it
+// is absent, for a build: each element of rel is made or opened under the one before it
+// (makeDirs), so a link at any of them is refused. A root that already holds anything is refused,
+// naming the first entry and what it is.
+func openRoot(dirfd int, base, rel, dest string) (*os.File, error) {
 	if !fs.ValidPath(rel) || rel == "." {
 		return nil, fmt.Errorf("%q is no clean relative path under %s", rel, base)
 	}
-	base = filepath.Clean(base)
-	parent, err := rolefile.OpenDirectory(unix.AT_FDCWD, base, base)
-	if err != nil {
-		return nil, err
-	}
-	fd, err := makeDirs(parent, base, rel)
-	_ = unix.Close(parent)
+	fd, err := makeDirs(dirfd, base, rel)
 	if err != nil {
 		return nil, err
 	}

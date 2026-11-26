@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
+	"golang.org/x/sys/unix"
 )
 
 // WorkspaceRecreatedVariable is how a role launcher tells the generation it starts whether that
@@ -1258,7 +1259,8 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // start answers as a texts refusal: the daemon then sends the start of the arm's control, so
 // nothing has been written. Anything else is the pod's own fault and an ordinary refusal of the
 // start: a PI_CONFIG_FILES that does not end with the root's settings layer, settings Oh My Pi
-// would refuse to start on, or a state home the roots cannot be removed from or built in.
+// would refuse to start on, a root that is not on the issue's volume, or a state home the roots
+// cannot be reached, removed from or built in.
 func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 	folder, err := texts.Read(given.Folder)
 	if err != nil {
@@ -1289,28 +1291,31 @@ func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 }
 
 // buildTextsRoot builds the extension root of folder at given.Root, which clearTextsRoots cleared,
-// and writes in it the settings layer over base (textsBase). The role's state home, which holds
-// it, is made first where no child of the role has made it yet (the shim makes Oh My Pi's
-// directories in it once the first child runs); the root is then built under it, legion-texts and
-// the root's own directory among what it makes, through directory descriptors alone
-// (texts.BuildRoot, texts.WriteSettingsLayer). Every role of the issue can write the state home,
-// and this launcher sees every role's private directories: so a link a role puts at legion-texts,
-// at the root or anywhere the build has yet to make, after the clear or while the build runs, is
-// refused rather than followed, and nothing is made or written where it points. A root a failed
-// build left is removed (rolefile.RemoveTree), so no partial root is left for a child to load.
+// and writes in it the settings layer over base (textsBase). It reaches the role's TextsRootsDir
+// from the issue's volume again, as the clear did, making what is absent there (openTextsRoots):
+// the shim makes Oh My Pi's directories in the state home only once the first child runs. The root
+// is then made under that directory's descriptor and built through directory descriptors alone
+// (texts.BuildRootAt, texts.WriteSettingsLayer). Every role of the issue can write the scratch,
+// its state directory and every state home, and this launcher sees every role's private
+// directories: so a link a role puts at any of them, at legion-texts, at the root or anywhere the
+// build has yet to make, after the clear or while the build runs, is refused rather than followed,
+// and nothing is made or written where it points. A root a failed build left is removed under the
+// same descriptor of TextsRootsDir, never through its path (rolefile.RemoveTreeAt), so no partial
+// root is left for a child to load.
 func buildTextsRoot(folder texts.Folder, given shimwire.LauncherTexts, base []string) error {
-	stateHome := filepath.Dir(filepath.Dir(given.Root))
-	err := os.MkdirAll(stateHome, 0o755)
+	roots, err := openTextsRoots(given.Root)
+	if err != nil {
+		return fmt.Errorf("build the extension root %s of the folder of texts %s: %w", given.Root, given.Folder, err)
+	}
+	defer unix.Close(roots)
+	name := filepath.Base(given.Root)
+	root, err := texts.BuildRootAt(folder, given.EnvoyRoot, given.LegionRoot, roots, filepath.Dir(given.Root), name)
 	if err == nil {
-		var root texts.Root
-		root, err = texts.BuildRoot(folder, given.EnvoyRoot, given.LegionRoot, stateHome, shimwire.TextsRootsDir+"/"+filepath.Base(given.Root))
-		if err == nil {
-			_, err = texts.WriteSettingsLayer(root, base, root.Touched)
-			_ = root.Close()
-		}
+		_, err = texts.WriteSettingsLayer(root, base, root.Touched)
+		_ = root.Close()
 	}
 	if err != nil {
-		if removeErr := rolefile.RemoveTree(given.Root); removeErr != nil {
+		if removeErr := rolefile.RemoveTreeAt(roots, name, given.Root); removeErr != nil {
 			return fmt.Errorf("build the extension root %s of the folder of texts %s: %v; remove what the build left: %v", given.Root, given.Folder, err, removeErr)
 		}
 		return fmt.Errorf("build the extension root %s of the folder of texts %s: %w", given.Root, given.Folder, err)
@@ -1370,44 +1375,85 @@ func textsBase(root string, env []string) ([]string, error) {
 // shimwire.TextsRootsDir: g<generation>.
 var textsRootName = regexp.MustCompile(`^g[0-9]+$`)
 
-// clearTextsRoots readies root, a start's extension root, `<state home>/legion-texts/g<N>`
-// (shimwire.TextsRoot, which LauncherStart.Validate held it to), for its build: it removes every
-// root an earlier start of the role built beside it, each directory of the role's TextsRootsDir
-// named g<generation>, root's own name among them, without following any link in it
-// (rolefile.RemoveTree), since every role of the issue can write the state home. Nothing else is
-// touched: an entry of another name stays, and so does one of that name that is no directory. No
-// child of the role runs when it is called (start's checks), so no root it removes serves a
-// process. A state home or TextsRootsDir that is not there holds nothing to remove; one that is no
-// directory, such as a link a role left there, is refused here, and so is anything still at root.
-// These refusals are the early ones, which name the start's fault before anything is built: a link
-// a role puts there after them the build refuses itself (buildTextsRoot).
-func clearTextsRoots(root string) error {
-	dir := filepath.Dir(root)
-	for _, at := range []string{filepath.Dir(dir), dir} {
-		info, err := os.Lstat(at)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return nil
-		case err != nil:
-			return fmt.Errorf("read %s, where the launcher builds the roots of folders of texts: %v", at, err)
-		case !info.IsDir():
-			return fmt.Errorf("%s is a %s, not the directory the launcher builds the roots of folders of texts under", at, rolefile.Kind(info.Mode()))
-		}
+// textsVolume is the issue's volume (VolumeRoot), from which the launcher reaches every root of a
+// folder of texts it clears and builds (openTextsRoots): a mount point, which no role can rename
+// or put a link in place of, where every directory below it on the way to a root is one a role can
+// write. A test points it at a directory of its own, as it points roleHome and roleHomeMounts.
+var textsVolume = VolumeRoot
+
+// openTextsRoots is a descriptor of the directory that holds root, a start's extension root,
+// `<state home>/legion-texts/g<N>`: its TextsRootsDir, reached from the issue's volume
+// (textsVolume) by a walk that follows no link. The volume is opened as rolefile.RemoveTree opens
+// a parent, which refuses a link at it, and each element of root's path below it down to
+// TextsRootsDir, the scratch, its state directory and the state home among them, is made where it
+// is absent, 0755 under the process's umask, or opened as it is, under the descriptor of the one
+// before it (rolefile.MakeDirectory). Every role of the issue can rename and replace each of
+// those, and this launcher sees every role's private directories, so a link a role put at any of
+// them, and anything else that is no directory, is refused in words naming its path and what is
+// there, and nothing is made where a link points. A root that is not under the volume is refused
+// naming both: no role's state home is anywhere else.
+func openTextsRoots(root string) (int, error) {
+	volume := filepath.Clean(textsVolume)
+	rel, err := filepath.Rel(volume, root)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return -1, fmt.Errorf("the root %s of the folder of texts is not under the issue's volume %s, where the launcher builds every root", root, volume)
 	}
-	entries, err := os.ReadDir(dir)
+	fd, err := rolefile.OpenDirectory(unix.AT_FDCWD, volume, volume)
+	if err != nil {
+		return -1, fmt.Errorf("open the issue's volume %s, where the launcher builds the roots of folders of texts: %w", volume, err)
+	}
+	names := strings.Split(rel, string(filepath.Separator))
+	at := volume
+	for _, name := range names[:len(names)-1] {
+		at = filepath.Join(at, name)
+		next, err := rolefile.MakeDirectory(fd, name, at, 0o755)
+		_ = unix.Close(fd)
+		if err != nil {
+			return -1, fmt.Errorf("reach %s, where the launcher builds the roots of folders of texts: %w", filepath.Dir(root), err)
+		}
+		fd = next
+	}
+	return fd, nil
+}
+
+// clearTextsRoots readies root, a start's extension root, `<state home>/legion-texts/g<N>`
+// (shimwire.TextsRoot, which LauncherStart.Validate held it to), for its build: it reaches the
+// role's TextsRootsDir from the issue's volume, making what is absent on the way (openTextsRoots),
+// and removes every root an earlier start of the role built there, each directory named
+// g<generation>, root's own name among them, under that directory's descriptor and without
+// following any link in it (rolefile.RemoveTreeAt), since every role of the issue can write the
+// state home. Nothing else is touched: an entry of another name stays, and so does one of that
+// name that is no directory. No child of the role runs when it is called (start's checks), so no
+// root it removes serves a process. A root that is not on the volume, and a link or anything else
+// that is no directory on the way to TextsRootsDir or at it, are refused here, and so is anything
+// still at root. These refusals are the early ones, which name the start's fault before anything
+// is built: a link a role puts there after them the build refuses itself (buildTextsRoot).
+func clearTextsRoots(root string) error {
+	fd, err := openTextsRoots(root)
+	if err != nil {
+		return err
+	}
+	dir, name := filepath.Dir(root), filepath.Base(root)
+	roots := os.NewFile(uintptr(fd), dir)
+	defer roots.Close()
+	entries, err := roots.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read %s, where the launcher builds the roots of folders of texts: %v", dir, err)
 	}
+	var left fs.DirEntry
 	for _, entry := range entries {
-		if !entry.IsDir() || !textsRootName.MatchString(entry.Name()) {
-			continue
-		}
-		if err := rolefile.RemoveTree(filepath.Join(dir, entry.Name())); err != nil {
-			return fmt.Errorf("remove the root of folders of texts an earlier generation built: %v", err)
+		switch {
+		case !textsRootName.MatchString(entry.Name()):
+		case entry.IsDir():
+			if err := rolefile.RemoveTreeAt(fd, entry.Name(), filepath.Join(dir, entry.Name())); err != nil {
+				return fmt.Errorf("remove the root of folders of texts an earlier generation built: %v", err)
+			}
+		case entry.Name() == name:
+			left = entry
 		}
 	}
-	if info, err := os.Lstat(root); err == nil {
-		return fmt.Errorf("%s is a %s, which the launcher does not remove, where it builds the root of a folder of texts", root, rolefile.Kind(info.Mode()))
+	if left != nil {
+		return fmt.Errorf("%s is a %s, which the launcher does not remove, where it builds the root of a folder of texts", root, rolefile.Kind(left.Type()))
 	}
 	return nil
 }

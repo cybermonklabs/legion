@@ -7,8 +7,8 @@
 // never waits, and refuses anything but a regular file in words naming it; ReadBounded refuses a
 // file larger than its caller's bound rather than read on; MakeDirectory and CreateRegular make a
 // directory or a new file under a directory's descriptor and refuse whatever a role put at its
-// name, a link among it, rather than make or write anything where it points; RemoveTree follows
-// no link and waits on nothing anywhere it walks.
+// name, a link among it, rather than make or write anything where it points; RemoveTree and
+// RemoveTreeAt follow no link and wait on nothing anywhere they walk.
 package rolefile
 
 import (
@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -246,7 +247,22 @@ func RemoveTree(path string) error {
 		return err
 	}
 	defer unix.Close(parent)
-	if err := removeAt(parent, &node{name: parentPath}, name); err != nil {
+	return RemoveTreeAt(parent, name, filepath.Join(parentPath, name))
+}
+
+// RemoveTreeAt removes name, an entry of the directory dirfd, and everything under it, as
+// RemoveTree removes a path, for a caller that holds dirfd already, having reached it following no
+// link: no path is opened to find name's directory, so a link a role has since put on the path the
+// caller walked to it, in place of that directory or above it, never takes the removal anywhere
+// else. path is name as the errors print it, ending in name. A link at name or anywhere below it
+// is unlinked, and what it names never opened; nothing on the walk is waited on; and a name that
+// is not there answers nil. A name that is not one element of a path ("", ".", "..", or one
+// holding a separator) answers EINVAL, and nothing is removed.
+func RemoveTreeAt(dirfd int, name, path string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+		return &fs.PathError{Op: "RemoveTreeAt", Path: path, Err: unix.EINVAL}
+	}
+	if err := removeAt(dirfd, &node{name: filepath.Dir(path)}, name); err != nil {
 		return &fs.PathError{Op: err.op, Path: err.at.path(), Err: err.err}
 	}
 	return nil

@@ -58,15 +58,18 @@ cat "/proc/$$/environ" > "$TOLD/environ"
 exec sleep 600`
 
 // textsCase is one role launcher of the start rig (newRig) that is handed folders of texts: the two
-// plugins its starts load, the role's state home its roots are built under, the operator's settings
-// overlay its PI_CONFIG_FILES names first (which ignores the skill operator-skill, so a root's
-// settings layer has a base it must keep), the config root its profile resolves to, which is under
-// the home, and the launcher's view of the container's home and of the directory that holds what
-// is mounted under it (useHomeView), which are directories of the case's own.
+// plugins its starts load, the issue's volume the launcher reaches every root from (useTextsVolume)
+// and the role's state home on it, under the volume's scratch/state as in a pod, which its roots
+// are built under, the operator's settings overlay its PI_CONFIG_FILES names first (which ignores
+// the skill operator-skill, so a root's settings layer has a base it must keep), the config root
+// its profile resolves to, which is under the home, and the launcher's view of the container's
+// home and of the directory that holds what is mounted under it (useHomeView), which are
+// directories of the case's own.
 type textsCase struct {
 	t                     *testing.T
 	g                     *rig
 	envoy, legion         string
+	volume                string
 	stateHome, overlay    string
 	configRoot, workspace string
 	home, homeMounts      string
@@ -84,17 +87,33 @@ func useHomeView(t *testing.T, home, mounts string) {
 	t.Cleanup(func() { roleHome, roleHomeMounts = previousHome, previousMounts })
 }
 
+// useTextsVolume points the issue's volume the launcher reaches every root of a folder of texts
+// from (textsVolume) at a directory of the test's own, since a machine running the tests has no
+// /legion, and puts the pod's back when the test ends. It is called before the rig starts, as
+// useHomeView is, and a test that calls it is not parallel.
+func useTextsVolume(t *testing.T, volume string) {
+	t.Helper()
+	previous := textsVolume
+	textsVolume = volume
+	t.Cleanup(func() { textsVolume = previous })
+}
+
 func newTextsCase(t *testing.T) *textsCase {
 	t.Helper()
 	base := t.TempDir()
+	volume := filepath.Join(base, "volume")
 	c := &textsCase{
 		t:     t,
 		envoy: filepath.Join(base, "pi-envoy"), legion: filepath.Join(base, "pi-legion"),
-		stateHome: filepath.Join(base, "scratch", "state", "tester"), overlay: filepath.Join(base, "operator", "overlay.yml"),
+		volume: volume, stateHome: filepath.Join(volume, "scratch", "state", "tester"), overlay: filepath.Join(base, "operator", "overlay.yml"),
 		configRoot: filepath.Join(base, "home", ".omp"), workspace: filepath.Join(base, "workspace"),
 		home: filepath.Join(base, "home"), homeMounts: filepath.Join(base, "home-mounts"),
 	}
+	if err := os.Mkdir(volume, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	useHomeView(t, c.home, c.homeMounts)
+	useTextsVolume(t, c.volume)
 	c.g = newRig(t)
 	for p, body := range legionPluginTexts {
 		writeTextsFile(t, c.pluginFile(p), body)
@@ -535,73 +554,114 @@ func TestAPodFaultBuildingTheTextsRootIsAnOrdinaryStartRefusal(t *testing.T) {
 	}
 }
 
-// A link a role plants at the state home's legion-texts, pointing at a directory outside the state
-// home, another role's, is never built through, whether the start finds it there or a role puts
-// it there after the clear: a start that finds it is refused before anything is built, as an
-// ordinary refusal naming it (clearTextsRoots), and no child starts; a link put there once the
-// clear passed, in place of the plain legion-texts the clear saw, is refused by the build itself,
-// naming it as a symlink (buildTextsRoot). Either way the directory it points at is left as it was.
+// A link a role puts in place of a directory on the way from the issue's volume to the roots of
+// folders of texts — the scratch, its state directory, the role's state home or its legion-texts,
+// the directory renamed away first — pointing at a directory outside the volume that holds what
+// the launcher would clear and build in there, an earlier root among it, is never followed,
+// whether the start finds it there or a role puts it there after the clear: a start that finds it
+// is refused before anything is built, as an ordinary refusal naming it as a symlink
+// (clearTextsRoots), and no child starts; a link put there once the clear passed is refused by the
+// build itself, which reaches the roots from the volume again, naming it as a symlink
+// (buildTextsRoot). Either way the directory it points at holds what it held: nothing in it is
+// removed, made or written.
 func TestALinkAtTheTextsRootsIsNeverBuiltThrough(t *testing.T) {
-	// plant puts at link a link to a directory of another role's file, and answers that directory
-	// and what it holds.
-	plant := func(t *testing.T, link string) (string, map[string]string) {
+	// plant makes the directory at rel under c's volume where it is absent, with the state home's
+	// legion-texts under it, renames it away, and puts in its place a link to a directory outside
+	// the volume holding another role's file and, at the link's legion-texts, an earlier root g3.
+	// It answers the link, the directory it points at and what that holds.
+	plant := func(t *testing.T, c *textsCase, rel string) (string, string, map[string]string) {
 		t.Helper()
-		target := t.TempDir()
-		writeTextsFile(t, filepath.Join(target, "kept.md"), "Another role's.\n")
-		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		roots := filepath.Join(c.stateHome, shimwire.TextsRootsDir)
+		link := filepath.Join(c.volume, filepath.FromSlash(rel))
+		if err := os.MkdirAll(roots, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Rename(link, link+"-moved"); err != nil {
+			t.Fatal(err)
+		}
+		below, err := filepath.Rel(link, roots)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := t.TempDir()
+		writeTextsFile(t, filepath.Join(target, "kept.md"), "Another role's.\n")
+		writeTextsFile(t, filepath.Join(target, below, "g3", "agents", "oracle.md"), armOracle)
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		return target, tree(t, target)
+		return link, target, tree(t, target)
 	}
 	untouched := func(t *testing.T, target string, before map[string]string) {
 		t.Helper()
 		if after := tree(t, target); !maps.Equal(after, before) {
-			t.Errorf("the start built through the link to %s: it holds %v, was %v", target, after, before)
+			t.Errorf("the start went through the link to %s: it holds %v, was %v", target, after, before)
 		}
 	}
+	// The directories on the way from the volume to the roots, by their paths under it.
+	type place struct{ name, rel string }
+	scratch := place{"the scratch", "scratch"}
+	state := place{"its state directory", "scratch/state"}
+	stateHome := place{"the role's state home", "scratch/state/tester"}
+	roots := place{"legion-texts", "scratch/state/tester/" + shimwire.TextsRootsDir}
 
-	t.Run("planted before the start", func(t *testing.T) {
-		c := newTextsCase(t)
-		roots := filepath.Join(c.stateHome, shimwire.TextsRootsDir)
-		target, before := plant(t, roots)
-		folder, fingerprint := c.folder()
-		told := t.TempDir()
-		got := c.g.start(c.start(7, folder, fingerprint, told))
-		if got.OK || got.Texts != nil || !strings.Contains(got.Error, roots) {
-			t.Fatalf("the start whose legion-texts is a link answered %#v (texts %+v), want an ordinary refusal naming %s", got, got.Texts, roots)
-		}
-		untouched(t, target, before)
-		c.nothingWritten(7)
-		if entries, _ := os.ReadDir(told); len(entries) != 0 {
-			t.Errorf("a child of the refused start ran and wrote %v", entries)
-		}
-	})
+	for _, at := range []place{scratch, state, stateHome, roots} {
+		t.Run("planted at "+at.name+" before the start", func(t *testing.T) {
+			c := newTextsCase(t)
+			link, target, before := plant(t, c, at.rel)
+			folder, fingerprint := c.folder()
+			told := t.TempDir()
+			got := c.g.start(c.start(7, folder, fingerprint, told))
+			if got.OK || got.Texts != nil || !strings.Contains(got.Error, link+" is a symlink") {
+				t.Fatalf("the start whose %s is a link answered %#v (texts %+v), want an ordinary refusal naming %s as a symlink", at.rel, got, got.Texts, link)
+			}
+			untouched(t, target, before)
+			c.nothingWritten(7)
+			if entries, _ := os.ReadDir(told); len(entries) != 0 {
+				t.Errorf("a child of the refused start ran and wrote %v", entries)
+			}
+		})
+	}
 
-	t.Run("planted after the clear", func(t *testing.T) {
-		c := newTextsCase(t)
-		roots := filepath.Join(c.stateHome, shimwire.TextsRootsDir)
-		writeTextsFile(t, filepath.Join(roots, "g3", "agents", "oracle.md"), armOracle)
-		dir, fingerprint := c.folder()
-		given := *c.start(7, dir, fingerprint, t.TempDir()).Texts
-		if err := clearTextsRoots(given.Root); err != nil {
-			t.Fatalf("clearTextsRoots over a plain legion-texts = %v, want it cleared", err)
-		}
-		if err := os.Remove(roots); err != nil {
-			t.Fatalf("the clear left legion-texts holding something: %v", err)
-		}
-		target, before := plant(t, roots)
-		folder, err := texts.Read(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := buildTextsRoot(folder, given, nil); err == nil || !strings.Contains(err.Error(), roots+" is a symlink") {
-			t.Errorf("the build over a link put at legion-texts after the clear = %v, want a refusal naming %s as a symlink", err, roots)
-		}
-		untouched(t, target, before)
-	})
+	for _, at := range []place{state, roots} {
+		t.Run("planted at "+at.name+" after the clear", func(t *testing.T) {
+			c := newTextsCase(t)
+			dir, fingerprint := c.folder()
+			given := *c.start(7, dir, fingerprint, t.TempDir()).Texts
+			if err := clearTextsRoots(given.Root); err != nil {
+				t.Fatalf("clearTextsRoots over plain directories = %v, want it cleared", err)
+			}
+			link, target, before := plant(t, c, at.rel)
+			folder, err := texts.Read(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := buildTextsRoot(folder, given, nil); err == nil || !strings.Contains(err.Error(), link+" is a symlink") {
+				t.Errorf("the build over a link put at %s after the clear = %v, want a refusal naming %s as a symlink", at.rel, err, link)
+			}
+			untouched(t, target, before)
+		})
+	}
+}
+
+// A start whose root is not under the issue's volume, here because its state home is elsewhere,
+// is refused as an ordinary refusal naming the root and the volume, and nothing is made there: the
+// launcher reaches every root from the volume, and no role's state home is anywhere else.
+func TestATextsRootOutsideTheVolumeIsAnOrdinaryStartRefusal(t *testing.T) {
+	c := newTextsCase(t)
+	c.stateHome = filepath.Join(t.TempDir(), "scratch", "state", "tester")
+	folder, fingerprint := c.folder()
+	told := t.TempDir()
+	got := c.g.start(c.start(7, folder, fingerprint, told))
+	if got.OK || got.Texts != nil || !strings.Contains(got.Error, c.root(7)) || !strings.Contains(got.Error, c.volume) {
+		t.Fatalf("the start of a root outside the volume answered %#v (texts %+v), want an ordinary refusal naming %s and %s", got, got.Texts, c.root(7), c.volume)
+	}
+	c.nothingWritten(7)
+	if _, err := os.Lstat(c.stateHome); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused start made %s: %v", c.stateHome, err)
+	}
+	if entries, _ := os.ReadDir(told); len(entries) != 0 {
+		t.Errorf("a child of the refused start ran and wrote %v", entries)
+	}
 }
 
 // A path at or under the home is where the launcher's view of the container holds it: under the

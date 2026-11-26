@@ -266,6 +266,118 @@ func TestRemoveTreeFollowsNoLink(t *testing.T) {
 	})
 }
 
+// RemoveTreeAt removes an entry of a directory its caller holds open, following no link: a link at
+// the entry is unlinked and what it names is left as it was; a tree with a link in it goes whole,
+// and the link's target stays; and the entry is found under the descriptor alone, so with the
+// directory the caller opened moved away and a link to another directory put at its path, the
+// removal takes the entry of the directory it holds and nothing under the link. A name that is not
+// one element of a path is refused with EINVAL and removes nothing, and a name that is not there
+// answers nil.
+func TestRemoveTreeAtFollowsNoLink(t *testing.T) {
+	// held is a new directory, under a directory of its own, and a descriptor of it, which the test
+	// closes when it ends.
+	held := func(t *testing.T) (string, int) {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), "held")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fd, err := OpenDirectory(unix.AT_FDCWD, dir, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = unix.Close(fd) })
+		return dir, fd
+	}
+	// victim is a directory holding g3/precious, which a row's link names and its removal must not
+	// touch.
+	victim := func(t *testing.T) (dir, file string) {
+		t.Helper()
+		dir = t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "g3"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir, write(t, filepath.Join(dir, "g3", "precious"), []byte("kept\n"))
+	}
+	survives := func(t *testing.T, file string) {
+		t.Helper()
+		if body, err := os.ReadFile(file); err != nil || string(body) != "kept\n" {
+			t.Fatalf("%s was touched by the removal: %q, %v", file, body, err)
+		}
+	}
+	gone := func(t *testing.T, path string) {
+		t.Helper()
+		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s is still there (%v)", path, err)
+		}
+	}
+	t.Run("a link at the entry", func(t *testing.T) {
+		target, file := victim(t)
+		dir, fd := held(t)
+		path := link(t, filepath.Join(target, "g3"), filepath.Join(dir, "g3"))
+		if err := RemoveTreeAt(fd, "g3", path); err != nil {
+			t.Fatalf("RemoveTreeAt(%s) = %v, want the link removed", path, err)
+		}
+		gone(t, path)
+		survives(t, file)
+	})
+	t.Run("a tree with a link in it", func(t *testing.T) {
+		target, file := victim(t)
+		dir, fd := held(t)
+		tree := filepath.Join(dir, "g3")
+		if err := os.MkdirAll(filepath.Join(tree, "a", "b"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(tree, "a", "b", "file"), []byte("x"))
+		link(t, filepath.Join(target, "g3"), filepath.Join(tree, "a", "link"))
+		if err := RemoveTreeAt(fd, "g3", tree); err != nil {
+			t.Fatalf("RemoveTreeAt(%s) = %v, want the whole tree removed", tree, err)
+		}
+		gone(t, tree)
+		survives(t, file)
+	})
+	t.Run("a link put in place of the directory it holds", func(t *testing.T) {
+		target, file := victim(t)
+		dir, fd := held(t)
+		tree := filepath.Join(dir, "g3")
+		if err := os.Mkdir(tree, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(tree, "file"), []byte("x"))
+		moved := filepath.Join(filepath.Dir(dir), "moved")
+		if err := os.Rename(dir, moved); err != nil {
+			t.Fatal(err)
+		}
+		link(t, target, dir)
+		if err := RemoveTreeAt(fd, "g3", tree); err != nil {
+			t.Fatalf("RemoveTreeAt(%s) = %v, want the held directory's entry removed", tree, err)
+		}
+		gone(t, filepath.Join(moved, "g3"))
+		survives(t, file)
+	})
+	t.Run("a name that is not one element", func(t *testing.T) {
+		dir, fd := held(t)
+		kept := filepath.Join(dir, "a", "b")
+		if err := os.MkdirAll(kept, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"", ".", "..", filepath.Join("a", "b"), "a" + string(filepath.Separator)} {
+			if err := RemoveTreeAt(fd, name, filepath.Join(dir, name)); !errors.Is(err, unix.EINVAL) {
+				t.Errorf("RemoveTreeAt(%q) = %v, want EINVAL", name, err)
+			}
+			if _, err := os.Lstat(kept); err != nil {
+				t.Fatalf("RemoveTreeAt(%q) removed %s (%v)", name, kept, err)
+			}
+		}
+	})
+	t.Run("what is not there", func(t *testing.T) {
+		dir, fd := held(t)
+		if err := RemoveTreeAt(fd, "missing", filepath.Join(dir, "missing")); err != nil {
+			t.Errorf("RemoveTreeAt of a missing entry = %v, want nil", err)
+		}
+	})
+}
+
 // TestRemoveTreeFollowsNoLink's first row can fail only on a kernel that follows a link under
 // O_DIRECTORY|O_NOFOLLOW, as some gVisor releases do and Linux never does, so on Linux a removal
 // that asks for O_DIRECTORY passes it. Here every directory open of the walk goes through such a
