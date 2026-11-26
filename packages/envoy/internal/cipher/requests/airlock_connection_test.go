@@ -142,7 +142,7 @@ var proxiedProfileFile = policytest.KindsFile(
 func proxiedProfileFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
 	m, enr, key := newAirlockFixture(t, proxiedProfileFile)
-	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
+	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
 	return m, enr, key
 }
 
