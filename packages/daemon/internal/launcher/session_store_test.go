@@ -38,6 +38,7 @@ func shortenResumeLookup(t *testing.T) {
 // refused before anything starts, even when a file of that name is on disk, and a session the table
 // holds starts with no file on disk at all.
 func TestStartUnderSQLStorageResumesOnlyASessionTheTableHolds(t *testing.T) {
+	t.Parallel()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_test")
 	g := newRig(t)
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -134,6 +135,8 @@ func resumesTold(t *testing.T, told string) []string {
 // session answers that it holds no such session (shimwire.SessionGone), and one that cannot be
 // asked answers so (shimwire.SessionStoreUnreachable); neither starts a child.
 func TestStartUnderSQLStorageResumesASessionNamedByItsIDAlone(t *testing.T) {
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
 	const (
 		sessions = "/home/legion/.omp/profiles/legion/agent/sessions"
 		folder   = sessions + "/--legion-workspaces-cybermonklabs-legion-infra-4108--"
@@ -221,6 +224,7 @@ func TestStartUnderSQLStorageResumesASessionNamedByItsIDAlone(t *testing.T) {
 // A generation with no URL file is refused before it starts, naming the variable: the launcher
 // cannot look where Oh My Pi would.
 func TestStartRefusesAResumeWithNoURLFile(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	command := g.childStart(3, filepath.Join(t.TempDir(), "marker"), nil)
 	command.ResumeFile = "/sessions/absent.jsonl"
@@ -239,6 +243,7 @@ func TestStartRefusesAResumeWithNoURLFile(t *testing.T) {
 // container killed mid-write can leave, only decides the notice: the resume starts, told "false",
 // and the launcher logs the record.
 func TestAResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheTableWroteItsSession(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	t.Setenv(WorkspaceRecreatedVariable, "true")
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_recreated_test")
 	g := newRig(t)
@@ -294,6 +299,8 @@ func TestAResumeIsToldWhetherItsWorkspaceWasRecreatedSinceTheTableWroteItsSessio
 // asked again after each backoff wait, reading the URL file afresh, until the table answers. One
 // that stays unreachable past resumeLookupTimeout refuses the start, naming how often it asked.
 func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T) {
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
 	dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_retry_test")
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0003.jsonl")
 	conn, err := ompsessions.Connect(context.Background(), dsnFile)
@@ -375,6 +382,8 @@ func sessionDatabaseAt(t *testing.T, dsn string) (ompsessions.Database, *session
 // holds the agent's spelling of the endpoint, which pgx does not read: a launcher that looked there
 // would reach no database at all.
 func TestAResumeUnderASessionDatabaseIsServedThroughTheProxy(t *testing.T) {
+	// Not parallel: it writes the package variable resumeLookupBackoff (shortenResumeLookup), which
+	// parallel tests read.
 	dsn := testdb.PlainDatabase(t, "legion_launcher_proxy_test")
 	database, dialer := sessionDatabaseAt(t, dsn)
 	shortenResumeLookup(t)
@@ -452,6 +461,7 @@ func (s *identityStub) present() error {
 // here mints on demand instead. The agent's own client is Bun's, and pgx through the same socket
 // stands in for it, which is also the client the launcher itself looks a resume up with.
 func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (sessionDatabaseAt).
 	database, dialer := sessionDatabaseAt(t, testdb.PlainDatabase(t, "legion_launcher_expiry_test"))
 	identity := &identityStub{}
 	identity.mint()
@@ -497,6 +507,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 // the fixed root its own namespaces bind the role's private directory back at, and never the
 // launcher's path under the roles directory, where the socket is really bound.
 func TestAnIssuePodsSessionURLNamesTheSocketAsTheRoleSeesIt(t *testing.T) {
+	// Not parallel: it writes the package variable roleFixedRoot, which parallel tests read.
 	fixed := t.TempDir()
 	saved := roleFixedRoot
 	roleFixedRoot = fixed

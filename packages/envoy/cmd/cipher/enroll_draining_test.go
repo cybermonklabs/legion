@@ -14,6 +14,7 @@ import (
 // DRAINING (an install is about to restart it) retries, as register does, and enrolls with the
 // restarted helper rather than exiting 1.
 func TestEnrollHelperRetriesADrainingHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at enroll_draining_test.go:20).
 	sock, calls := drainingHelper(t, 2)
 	dir := filepath.Join(t.TempDir(), "keys")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -30,6 +31,7 @@ func TestEnrollHelperRetriesADrainingHelper(t *testing.T) {
 // TestEnrollHelperStopsRetryingDrainingAtItsWait: a helper still draining once the wait budget
 // has passed (none here) is reported with its DRAINING code, exit 1, after that one call.
 func TestEnrollHelperStopsRetryingDrainingAtItsWait(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at enroll_draining_test.go:36); it sets a package variable the package's other tests read (enrollDrainWait set at enroll_draining_test.go:39).
 	sock, calls := drainingHelper(t, 1<<30)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), "keys"))

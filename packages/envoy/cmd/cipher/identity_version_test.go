@@ -64,6 +64,7 @@ const (
 // release of the helper process that answers on the socket, read from the helper itself, both
 // where the helper is the source and where it only answered.
 func TestIdentitySourceNamesTheHelpersVersion(t *testing.T) {
+	t.Parallel()
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
@@ -99,6 +100,7 @@ func TestIdentitySourceNamesTheHelpersVersion(t *testing.T) {
 // that answered, by its pid on the socket (here the test process, which serves the fake), so a
 // reader can see which release is running without trusting the pin.
 func TestIdentitySourceNamesAnOlderHelper(t *testing.T) {
+	t.Parallel()
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -117,6 +119,7 @@ func TestIdentitySourceNamesAnOlderHelper(t *testing.T) {
 // pid is only shown to a reader. The pin is replaced by one that fails as such a kernel does, so
 // this holds on any kernel; the fake helper runs in this test process, whose pid the line names.
 func TestAnOlderHelperIsNamedOnAKernelWithoutPeerPidfd(t *testing.T) {
+	t.Parallel()
 	sock := versionedHelper(t, helperSignsAnswer, olderHelperVersionAns)
 	noPidfd := func(*net.UnixConn) (*helper.Peer, error) {
 		return nil, fmt.Errorf("SO_PEERPIDFD: %w", syscall.ENOPROTOOPT)
