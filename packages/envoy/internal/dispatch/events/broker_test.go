@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
@@ -385,10 +386,10 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 		t.Fatalf("seed parent and child: %v", err)
 	}
 	// The deadline bounds only the two patches, started once the database is provisioned and
-	// seeded, which on a loaded machine can take longer than the patches ever should. It is a
-	// ceiling on a hang, not a measure of speed: an inverted lock order ends in Postgres's
-	// deadlock error, and a patch that waits on the other for good never ends.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// seeded. It is a ceiling on a hang, not a measure of speed, so it is the test binary's
+	// (testwait.Context): an inverted lock order ends in Postgres's deadlock error, and a patch
+	// that waits on the other for good never ends.
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	broker := NewBroker()
 	childEvent := model.Event{
@@ -750,8 +751,8 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 		}},
 	} {
 		t.Run(owner.name, func(t *testing.T) {
-			// A ceiling on a hang, not a measure of speed.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// A ceiling on a hang, not a measure of speed: the test binary's (testwait.Context).
+			ctx, cancel := context.WithCancel(testwait.Context(t))
 			defer cancel()
 			open, err := database.Pool.Begin(ctx)
 			if err != nil {
