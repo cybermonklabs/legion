@@ -1,0 +1,5 @@
+spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx1
+statement messages-reach-sessions: not met (check a-production-restart-loses-no-message is false)
+statement a-stored-message-survives-a-restart: not met (check a-production-restart-loses-no-message is false)
+  check a-production-restart-loses-no-message: false (failed, counted from d1)
+  check the-graph-holds-a-delivery-of-each-message: unknown (disagree)

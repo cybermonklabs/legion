@@ -643,7 +643,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	var others []string
 	defer func() {
 		for _, role := range others {
-			go runKeptRoleDrain(cfg, role)
+			startHandover(cfg, role, runKeptRoleDrain)
 		}
 	}()
 	stop := func(err error) (bus.StoredTakeoverRecord, bool, error) {
@@ -948,7 +948,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		slog.String("holder", holder),
 		slog.String("event_id", eventID),
 		slog.Uint64("stream_seq", msg.StreamSeq))
-	go runKeptRoleDrain(m.cfg, role)
+	startHandover(m.cfg, role, runKeptRoleDrain)
 	return true
 }
 

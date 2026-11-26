@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every sweep pass read the newest message of every takeover record subject, finished or not, and a
@@ -79,21 +80,17 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		}
 		reads := map[string]int{}
 		for {
-			select {
-			case msg := <-wire:
-				if msg.Subject == mark {
-					return bySubject, reads
-				}
-				var request struct {
-					Last string `json:"last_by_subj"`
-				}
-				if err := json.Unmarshal(msg.Data, &request); err != nil {
-					t.Fatalf("decode %q: %v", msg.Data, err)
-				}
-				reads[request.Last]++
-			case <-time.After(30 * time.Second):
-				t.Fatal("the mark did not come back within 30 s")
+			msg := testwait.Receive(t, "the mark to come back", wire)
+			if msg.Subject == mark {
+				return bySubject, reads
 			}
+			var request struct {
+				Last string `json:"last_by_subj"`
+			}
+			if err := json.Unmarshal(msg.Data, &request); err != nil {
+				t.Fatalf("decode %q: %v", msg.Data, err)
+			}
+			reads[request.Last]++
 		}
 	}
 

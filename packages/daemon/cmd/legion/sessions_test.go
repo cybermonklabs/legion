@@ -110,6 +110,7 @@ func (r *sessionsImportRig) held(path string) (string, bool) {
 // exits 1. Run again it copies nothing twice, and a session an agent has since written is refused
 // and left as it was.
 func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.T) {
+	t.Parallel()
 	architect := agentSessions + "/--legion-workspaces-sjawhar-legion-legion-1--/2026-10-08T12-00-00-000Z_0001.jsonl"
 	tester := agentSessions + "/--legion-workspaces-sjawhar-legion-legion-1--/2026-10-08T13-00-00-000Z_0002.jsonl"
 	lost := agentSessions + "/--legion-workspaces-sjawhar-legion-legion-1--/2026-10-08T14-00-00-000Z_0003.jsonl"
@@ -193,6 +194,7 @@ func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.
 }
 
 func TestSessionsImportFindsAClosedClaimsSessionByID(t *testing.T) {
+	t.Parallel()
 	const (
 		token            = "legion-legion-legion-1-architect"
 		session          = "01a18950-3b61-70b7-82d4-c80464927f8e"
@@ -249,6 +251,7 @@ func TestSessionsImportFindsAClosedClaimsSessionByID(t *testing.T) {
 }
 
 func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
+	t.Parallel()
 	const (
 		token     = "legion-legion-legion-1-architect"
 		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
@@ -286,6 +289,7 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 }
 
 func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
+	t.Parallel()
 	const (
 		token     = "legion-legion-legion-1-architect"
 		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
@@ -389,6 +393,7 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 // and every refusal names the component on the tree volume it stopped at, never the path the claim
 // recorded.
 func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
+	t.Parallel()
 	const (
 		token     = "legion-legion-legion-1-architect"
 		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
@@ -470,6 +475,7 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 // goes, and each waits for the import's answer with no span of its own (refuses), because the
 // regression is a hang rather than a wrong answer.
 func TestSessionsImportRefusesNamedPipes(t *testing.T) {
+	t.Parallel()
 	const (
 		token     = "legion-legion-legion-1-architect"
 		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
@@ -511,6 +517,7 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 // The claims list is the one `legion claims list --json` prints, read from stdin with `-`; anything
 // else is refused before the database is opened, as is a missing flag.
 func TestSessionsImportRefusesWhatIsNotAClaimsList(t *testing.T) {
+	// Not parallel: it replaces os.Stdin of the whole process.
 	r := newSessionsImportRig(t, nil)
 	if err := os.WriteFile(r.claims, []byte(`[{"token":"legion-legion-legion-1-architect"}]`), 0o600); err != nil {
 		t.Fatal(err)
