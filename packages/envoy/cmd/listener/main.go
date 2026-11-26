@@ -1091,6 +1091,7 @@ func runListener(credentialWait time.Duration) {
 	}
 	oidcAccounts, err := resolveListenerOIDCAccounts(os.Getenv, oidcIssuer)
 	if err != nil {
+		time.Sleep(32 * time.Second)
 		log.Fatal(err)
 	}
 	googleAudience, googleAccounts, err := resolveListenerGoogleConfig(os.Getenv)
