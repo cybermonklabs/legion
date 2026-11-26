@@ -412,8 +412,10 @@ func allowOK(allow []Allow, r *Request) bool {
 // that names none allows one to every host of the kind. So an allow that is missing (nil), or
 // that holds a row of no host, does not narrow the hosts, and it answers nil and false: the
 // kind's hosts stand. Otherwise it answers each host its rows name, once and in the order they
-// first name it, compared as written, and true; for an allow that is present and empty, which
-// allows nothing, that is an empty list that is not nil, since such an allow reaches no host.
+// first name it, after fold.ASCII, as allowOK compares a row's host, and true; so two rows of
+// "API.GitHub.com" and "api.github.com" are one host, as they are to the proxy. For an allow that
+// is present and empty, which allows nothing, that is an empty list that is not nil, since such an
+// allow reaches no host.
 //
 // It is the one statement of this rule for every reader that shows or compares where a name's
 // credential may go: the approval page an approver reads, and `envoy-broker profiles check`'s
@@ -427,8 +429,8 @@ func AllowHosts(allow []Allow) (hosts []string, narrowed bool) {
 		if row.Host == "" {
 			return nil, false
 		}
-		if !slices.Contains(hosts, row.Host) {
-			hosts = append(hosts, row.Host)
+		if host := fold.ASCII(row.Host); !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
 		}
 	}
 	return hosts, true

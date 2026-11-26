@@ -171,6 +171,7 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 		tag(plain("NARROW_KEY"), map[string]string{policy.TagProxy: "github", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue}),
 		tag(federation("FED_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "30m"}),
 		tag(policytest.TypeSecret("LOGIN_KEY", appOwner, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)), map[string]string{policy.TagProxy: "gcp"}),
+		tag(plain("SESSION_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagDefaultGrant: policy.DefaultGrantSession}),
 		plain("BARE_KEY"),
 		tag(federation("CAP_KEY"), map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"}),
 		tag(plain("UNKNOWN_KEY"), map[string]string{policy.TagProxy: "gitlab"}),
@@ -180,7 +181,7 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 		tag(plain("DEFAULT_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagDefaultGrant: "forever"}),
 		tag(plain("TYPE_BAD_KEY"), map[string]string{policy.TagProxy: "slack", policy.TagType: "no-such-type"}),
 	}
-	wantServed := []string{"SWAP_KEY", "SIGN_KEY", "NARROW_KEY", "FED_KEY", "LOGIN_KEY", "BARE_KEY", "CAP_KEY"}
+	wantServed := []string{"SWAP_KEY", "SIGN_KEY", "NARROW_KEY", "FED_KEY", "LOGIN_KEY", "SESSION_KEY", "BARE_KEY", "CAP_KEY"}
 	wantRefused := []string{"UNKNOWN_KEY", "WAY_KEY", "NARROWED_BAD_KEY", "GRANT_BAD_KEY", "DEFAULT_BAD_KEY", "TYPE_BAD_KEY"}
 	loader := policytest.Loader(secrets.NewLocal(rows...), daemonService)
 	loader.Profiles = profiles
@@ -212,12 +213,16 @@ func TestSecretOfTagsIsTheLoadsReading(t *testing.T) {
 			t.Errorf("SecretOfTags(%s) refuses it %q, %q; the load serves it", name, reason, detail)
 			continue
 		}
-		if got.Proxy != served.Proxy || got.Way != served.Way || got.ProxyNarrowed != served.ProxyNarrowed || got.MaxGrant != served.MaxGrant || got.Type() != served.Type() || got.ProfileDigest != served.ProfileDigest || got.Source != served.Source {
+		if got.Proxy != served.Proxy || got.Way != served.Way || got.ProxyNarrowed != served.ProxyNarrowed || got.MaxGrant != served.MaxGrant ||
+			got.SessionDefault != served.SessionDefault || got.Type() != served.Type() || got.ProfileDigest != served.ProfileDigest || got.Source != served.Source {
 			t.Errorf("SecretOfTags(%s) = %+v; the load serves %+v", name, got, served)
 		}
 	}
 	if got := set.Secrets["SIGN_KEY"]; got.Way != proxyrules.WaySign || got.MaxGrant != 2*time.Hour {
 		t.Errorf("SIGN_KEY = %+v; want it signed with a 2h cap, so the row checks a way and a cap", got)
+	}
+	if got := set.Secrets["SESSION_KEY"]; !got.SessionDefault {
+		t.Errorf("SESSION_KEY = %+v; want its default-grant read as a session's, so the row checks that field", got)
 	}
 }
 

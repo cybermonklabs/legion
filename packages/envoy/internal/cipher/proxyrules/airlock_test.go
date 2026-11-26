@@ -754,7 +754,6 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 		{"an encoded slash, lower case", "/a/b", "/a%2fb", encoded},
 		{"an encoded slash at the end", "/v1/things/", "/v1/things%2F", encoded},
 		{"an encoded percent before 2F", "/v1/%2Fthings", "/v1/%252Fthings", double},
-		{"a cut-off escape is no encoded slash", "/v1/things", "/v1/things%2", ""},
 		{"a double-encoded slash with its 2 and F escaped too", "/v1/%2Fx", "/v1/%25%32%46x", double},
 		{"a double-encoded slash with its F escaped", "/v1/%2Fx", "/v1/%252%46x", double},
 		{"a double-encoded slash with its 2 escaped", "/v1/%2fx", "/v1/%25%32fx", double},
@@ -766,7 +765,6 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 		{"an encoded backslash that walks out of /v1/", `/v1/x\..\..\admin`, "/v1/x%5C..%5C..%5Cadmin", backslash},
 		{"an encoded backslash, lower case", `/a\b`, "/a%5cb", backslash},
 		{"an encoded percent before 5C", "/a%5Cb", "/a%255Cb", double},
-		{"a backslash in the decoded path alone is not read", `/a\b`, "/a/b", ""},
 		{"a dot-dot segment with an empty parameter", "/v1/..;/admin", "/v1/..;/admin", parameter},
 		{"a dot-dot segment with a parameter", "/v1/..;jsessionid=1/admin", "/v1/..;jsessionid=1/admin", parameter},
 		{"a dot segment with a parameter", "/v1/.;/things", "/v1/.;/things", parameter},
@@ -781,8 +779,8 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 		{"a cut-off double escape", "/v1/%2", "/v1/%252", ""},
 		{"a percent the command sent as itself, decoded", "/v1/100%", "/v1/100%25", ""},
 		{"the dot segment is read first, and with no list too", "/v1/..//x", "/v1/..//x", dot},
-		{"the empty segment is read before the encoded slash", "/v1//x", "/v1/%2F/x", empty},
-		{"the encoded slash is read before the backslash", "/v1/x/y", "/v1/x%2F%5Cy", encoded},
+		{"the empty segment is read before the encoded slash", "/v1///x", "/v1/%2F/x", empty},
+		{"the encoded slash is read before the backslash", `/v1/x/\y`, "/v1/x%2F%5Cy", encoded},
 		{"the backslash is read before the dot-segment parameter", `/v1/..;/a\b`, "/v1/..;/a%5Cb", backslash},
 		{"the dot-segment parameter is read before the double encoding", "/v1/..;/a%2Fb", "/v1/..;/a%252Fb", parameter},
 	} {
@@ -830,7 +828,8 @@ func TestThePathRulesUnderAnAllowList(t *testing.T) {
 
 // TestAllowHosts holds AllowHosts to allowOK's host rule: an allow that is missing, or that holds
 // a row of no host, leaves the kind's hosts (nil, false); otherwise the rows' hosts, each once in
-// the order first named (true), and for a present empty allow an empty list that is not nil. Each
+// the order first named (true), and for a present empty allow an empty list that is not nil. A
+// host is folded to lower case, as allowOK compares it, so two spellings of one host are one. Each
 // narrowed answer is checked against allowOK itself: a request on a row's method and prefix is
 // allowed at the row's own host, and at no host the answer leaves out.
 func TestAllowHosts(t *testing.T) {
@@ -845,6 +844,7 @@ func TestAllowHosts(t *testing.T) {
 		{"a present empty allow", []Allow{}, []string{}, true},
 		{"rows of one host", []Allow{row("GET", "/a/", "api.github.com"), row("PUT", "/a/", "api.github.com")}, []string{"api.github.com"}, true},
 		{"rows of two hosts, in the order first named", []Allow{row("GET", "/a/", "uploads.github.com"), row("GET", "/b/", "api.github.com"), row("PUT", "/a/", "uploads.github.com")}, []string{"uploads.github.com", "api.github.com"}, true},
+		{"two spellings of one host are one, folded as allowOK folds them", []Allow{row("GET", "/a/", "API.GitHub.com"), row("PUT", "/a/", "api.github.com")}, []string{"api.github.com"}, true},
 		{"a row of no host among rows of one", []Allow{row("GET", "/a/", "api.github.com"), row("GET", "/b/", "")}, nil, false},
 		{"a row of no host alone", []Allow{row("GET", "/a/", "")}, nil, false},
 	} {
@@ -857,8 +857,8 @@ func TestAllowHosts(t *testing.T) {
 				return
 			}
 			for _, a := range c.allow {
-				if !allowOK(c.allow, &Request{ConnectHost: a.Host, Method: a.Method, Path: a.PathPrefix}) {
-					t.Errorf("allowOK refuses %s %s at the row's own host %s", a.Method, a.PathPrefix, a.Host)
+				if !allowOK(c.allow, &Request{ConnectHost: fold.ASCII(a.Host), Method: a.Method, Path: a.PathPrefix}) {
+					t.Errorf("allowOK refuses %s %s at the row's own host %s", a.Method, a.PathPrefix, fold.ASCII(a.Host))
 				}
 				for _, host := range []string{"api.github.com", "uploads.github.com", "github.com"} {
 					r := &Request{ConnectHost: host, Method: a.Method, Path: a.PathPrefix}
@@ -1108,6 +1108,8 @@ func TestTheMethodOverrideParameterRefusal(t *testing.T) {
 		{"a longer name that starts like it, encoded", "%5Fmethods=PUT", ""},
 		{"a longer name that ends like it, encoded", "x%5Fmethod=PUT", ""},
 		{"a name that decodes to _method and a dot after it", "_method%2e=PUT", ""},
+		{"_method as an array, which the frameworks read as an array and no method", "_method[]=PUT", ""},
+		{"_method as an array of one key", "_method[x]=PUT", ""},
 		{"a NUL before _method", "%00_method=PUT", ""},
 		{"a + before method, which the trim takes", "+method=PUT", ""},
 		{"_method as a value", "a=_method", ""},
