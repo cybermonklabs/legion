@@ -306,6 +306,26 @@ for (const { click, href = ACTIVITY, link, what } of LEFT_TO_THE_BROWSER) {
   });
 }
 
+// A link in an editable text is the editor's: a plain click puts the caret in it, which the
+// document editor does on purpose, and the page must not move there.
+test("a link inside an editable text is left to the editor, and the router stays where it is", () => {
+  const view = drawAt(
+    OPENED,
+    // biome-ignore lint/a11y/useSemanticElements: the case draws the attribute the editor's text carries.
+    <div contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>
+      <a href={ACTIVITY}>Words</a>
+    </div>
+  );
+  try {
+    expect(press("Words"), "a click on a link in an editable text was followed in place").toBe(
+      true
+    );
+    expect(address()).toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** A rendered link whose own handler takes a plain click, as a row's words take theirs: it moves
  *  to the issue's collaborators itself, wherever its `href` points. */
 function TakenLink(): ReactNode {

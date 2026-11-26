@@ -18,6 +18,10 @@ const PARAMETER = "issue_page";
 /** The one value of `PARAMETER` that opens the new page; any other is as no parameter. */
 const NEW_PAGE = "new";
 
+/** An editable text and what stands in it: a plain click on a link there puts the caret in the
+ *  link, as the document editor does, and is no press of the link. */
+const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
+
 /**
  * The key of the issue whose address `pathname` + `search` is, where that address carries
  * `?issue_page=new`, and undefined for every other address: an issue's address without it or with
@@ -28,6 +32,12 @@ export function newPageIssue(pathname: string, search: string): string | undefin
   return parseIssuePath(pathname, search)?.key;
 }
 
+/** Whether an address, its `pathname` and `search`, is one of the issue `key` that names no
+ *  `issue_page` of its own: the addresses `?issue_page=new` is added to. */
+function keeps(key: string, pathname: string, search: string): boolean {
+  return parseIssuePath(pathname)?.key === key && !new URLSearchParams(search).has(PARAMETER);
+}
+
 /**
  * `to`, read as a path, with `?issue_page=new` added where it is an address of the issue `key`
  * that names no `issue_page` of its own, after the parameters it has, its hash kept; every other
@@ -36,8 +46,7 @@ export function newPageIssue(pathname: string, search: string): string | undefin
 function keepNewPage(key: string, to: To): Partial<Path> {
   const path = typeof to === "string" ? parsePath(to) : to;
   const search = path.search ?? "";
-  if (parseIssuePath(path.pathname ?? "")?.key !== key) return path;
-  if (new URLSearchParams(search).has(PARAMETER)) return path;
+  if (!keeps(key, path.pathname ?? "", search)) return path;
   return { ...path, search: `${search.length > 1 ? `${search}&` : "?"}${PARAMETER}=${NEW_PAGE}` };
 }
 
@@ -86,10 +95,7 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
     };
     return { ...outer, navigator: keeping };
   }, [key, outer]);
-  // The navigator handed on, read as a link is pressed: the listener below is added once for each
-  // issue kept, and the navigator is made again whenever the router's own changes.
-  const handedOn = useRef(context.navigator);
-  handedOn.current = context.navigator;
+  const { navigator: handedOn } = context;
   useEffect(() => {
     if (key === undefined) return;
     // In the bubble phase on the document, so every handler of the page has run first: React
@@ -97,19 +103,20 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
     const follow = (event: MouseEvent) => {
       if (event.defaultPrevented || !isPlainClick(event)) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
-      if (!(anchor instanceof HTMLAnchorElement)) return;
+      // A link inside an editable text is the editor's: a plain click puts the caret in it.
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.closest(EDITABLE) !== null) return;
       if (anchor.hasAttribute("download") || anchor.hasAttribute("target")) return;
       const url = new URL(anchor.href, window.location.href);
       if (url.origin !== window.location.origin) return;
       // A link that names the parameter itself, a hash link among them (its `href` is resolved
       // against the address, which carries it), is the browser's.
-      if (parseIssuePath(url.pathname)?.key !== key || url.searchParams.has(PARAMETER)) return;
+      if (!keeps(key, url.pathname, url.search)) return;
       event.preventDefault();
-      handedOn.current.push({ hash: url.hash, pathname: url.pathname, search: url.search });
+      handedOn.push({ hash: url.hash, pathname: url.pathname, search: url.search });
     };
     document.addEventListener("click", follow);
     return () => document.removeEventListener("click", follow);
-  }, [key]);
+  }, [key, handedOn]);
   return (
     <UNSAFE_NavigationContext.Provider value={context}>
       {children}
