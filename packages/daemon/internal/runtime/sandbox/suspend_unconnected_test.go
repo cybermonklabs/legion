@@ -43,6 +43,8 @@ var failedInitStatuses = map[string]corev1.ContainerStatus{
 // "did not connect": on 2026-11-24 a tester whose pods died of a full disk in workspace-init was
 // held so from 08:46:47Z to 08:56:57Z.
 func TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce(t *testing.T) {
+	// Not parallel: it holds Suspend's answer, timed on the wall clock, to under the rig's 2 s boot
+	// timeout, a bound other tests' load could move.
 	for name, status := range failedInitStatuses {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), inInit(status)}, withoutController())
@@ -79,6 +81,7 @@ func TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce(t *testing.T) {
 // pod's sandbox leaves it until that connection drops: a connected launcher is the answer to wait
 // for, whatever the pod's status says.
 func TestSuspendOfAConnectedLauncherStillWaitsForTheStop(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(*corev1.Pod){
 		"its pod running": nil,
 		"its pod back in workspace-init": func(p *corev1.Pod) {

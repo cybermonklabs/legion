@@ -504,7 +504,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 // reads what Oh My Pi writes however this package models it. The daemon must take it: a result
 // it drops is a prompt the supervisor waits on for the life of the process, and the next task
 // for that claim is refused as pending behind it. So the result reaches the supervisor whole —
-// the message and the four members a later decision reads, never the message parsed — and the
+// the message and the members a later decision reads, never the message parsed — and the
 // connection takes the next delivery.
 func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	h := startListener(t, harnessOptions{})
@@ -535,6 +535,32 @@ func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	p.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
 	if err := awaitResult(t, next); err != nil {
 		t.Fatalf("the delivery after the failed turn: %v", err)
+	}
+}
+
+// Oh My Pi's class of a failure reaches the supervisor with the rest of the error object: a
+// gateway relays OpenAI's cyber-policy refusal as a 503, which on its status alone is "not now",
+// and only the code says that sending the same content again is refused again (supervise's
+// classifyProviderError). The line is the shape Oh My Pi's promptError writes, verbatim.
+func TestAPromptResultCarriesItsCodeToTheSupervisor(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	first, result := h.prompt(p, "delivery-1", "implement the plan")
+	p.send(shimwire.Response{ID: first.ID, Command: shimwire.TypePrompt, Success: true})
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	p.send(shimwire.AgentEnd{})
+	p.writeRaw(`{"type":"prompt_result","id":"` + first.ID + `","agentInvoked":true,"status":"error","sessionSettled":true,` +
+		`"error":{"message":"503 cyber_policy: synthetic refusal text","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}` + "\n")
+	for _, want := range []Event{
+		TurnEnd{Claim: testClaim},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+	} {
+		if got := h.next(); got != want {
+			t.Fatalf("event = %#v, want %#v", got, want)
+		}
 	}
 }
 

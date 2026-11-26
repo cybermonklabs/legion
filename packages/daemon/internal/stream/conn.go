@@ -578,11 +578,12 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			}
 			if frame.Error != nil {
 				// Oh My Pi's error object, not the message alone: the structured members are what
-				// a failure is judged on. Code, its class of the failure, is left: no decision reads it.
+				// a failure is judged on, its class (Code) among them.
 				event.Retryable = frame.Error.Retryable
 				event.HTTPStatus = frame.Error.HTTPStatus
 				event.Provider = frame.Error.Provider
 				event.Model = frame.Error.Model
+				event.Code = frame.Error.Code
 			}
 			c.events.push(event)
 		}
