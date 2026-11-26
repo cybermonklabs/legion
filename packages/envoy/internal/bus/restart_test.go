@@ -168,8 +168,9 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	srv.Stop(t)
 	srv.Start(t)
-	// Drain returns context.DeadlineExceeded once its 15 s deadline passes, so its own answer says
-	// whether the reconnect ended it first.
+	// Drain returns context.DeadlineExceeded once its deliveries' share of the 15 s runs out, at
+	// 12 s (the 3 s drainHookReserve kept for the hooks), or its own deadline passes, so its own
+	// answer says whether the reconnect ended it first.
 	if err := testwait.Receive(t, "the drain to end", drained); errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the reconnect during the drain did not end it before its deadline: %v", err)
 	}
