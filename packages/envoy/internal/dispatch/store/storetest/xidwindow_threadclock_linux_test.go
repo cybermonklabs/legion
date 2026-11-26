@@ -147,10 +147,12 @@ func TestADropThatStartsDuringAReadWaitsForIt(t *testing.T) {
 	}
 	reading := readXidThreadClock()
 	xidHeldClockReading = nil
-	<-dropped
+	// Only the hook starts the drop that closes dropped, so a read that never reached the hook
+	// fails here, by name, before any wait on the drop.
 	if reads != 1 {
 		t.Fatalf("the read held this thread's clock %d times, want once, with the drop started while it held it, or this run proves nothing", reads)
 	}
+	testwait.Receive(t, "the clock drop after the read releases its lock", dropped)
 	if !held.dropped {
 		t.Fatal("the drop returned with the clock not dropped, so this run proves nothing")
 	}
