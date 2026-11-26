@@ -20,6 +20,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
+import { alive } from "./process-alive";
 import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
@@ -138,21 +139,10 @@ tmuxHost.test("resolves tmux at the socket-path boundary the teardown row budget
   }
 });
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  // A zombie still answers signal 0; it is gone for every purpose here.
-  return !readFileSync(`/proc/${pid}/stat`, "utf8")
-    .replace(/^.*\) /, "")
-    .startsWith("Z");
-};
 const sessionOf = (pid: number) =>
   Number(
     readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /, "")
+      .replace(/^[\s\S]*\) /, "")
       .split(" ")[3]
   );
 // The broker LEADER and every live process it started that is still in its session, by the
