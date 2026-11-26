@@ -578,7 +578,9 @@ func valueStripCases() map[string]valueStripCase {
 		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
 		// which no reader below gateBasisContract admits: the pod is served the issue's `phase` as
 		// `admitted` and neither other key where it names the word, and every other phase word as
-		// the body at gateBasisContract serves it.
+		// the body at gateBasisContract serves it. The word `step` is no word of this strip: the
+		// band of deploymentRolesContract, above this pod, serves an issue at step, its hold from
+		// step and a pending task at step as at `implementing` first (withoutDeploymentRoles).
 		droppedPhase: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: entryNumber(gateBasisContract),
 			carries: func(t *testing.T, body []byte) bool {
@@ -594,6 +596,10 @@ func valueStripCases() map[string]valueStripCase {
 				for place, word := range phaseWordsServed(t, whole) {
 					got, carried := served[place]
 					switch {
+					case word == string(phase.Step) && got != string(phase.Implementing):
+						t.Errorf("the {%d, %d} pod is served %s as %q, want implementing: the band of deploymentRolesContract serves step as implementing below it",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					case word == string(phase.Step):
 					case word != string(phase.AwaitingChildren) && got != word:
 						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip takes only the word its process refuses",
 							pauseContract, entryNumber(gateBasisContract), place, got, word)
