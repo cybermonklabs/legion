@@ -530,8 +530,8 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 		{Session: jobPodSession, Principal: fixedJobPrincipal},
 		{Session: readerSession, Principal: readerPrincipal},
 		{Session: nightlySession, Principal: nightlyPrincipal},
-		{Session: resultsSession, Principal: resultsPrincipal},
 		{Session: jobRunSession, Principal: fixedJobWorkflowPrincipal},
+		{Session: resultsSession, Principal: resultsPrincipal},
 		{Session: machineSession, Principal: fixedPrincipal},
 		{Session: jobMachineSession, Principal: fixedJobMachinePrincipal},
 	}

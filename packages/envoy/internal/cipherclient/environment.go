@@ -199,13 +199,16 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
 	case IdentityGitHubActions:
+		// A job's run names its token by the runner's endpoint (ActionsIDTokenRequestURLVar); with no
+		// endpoint, a file that holds the run's token (MachineTokenFileVar) stands in for it. The
+		// refusal of neither names the endpoint's variable alone, as every refusal of a kind's first
+		// variable does (testdata/machine-identities.json).
 		requestURL := strings.TrimSpace(getenv(ActionsIDTokenRequestURLVar))
 		if requestURL == "" {
 			if path := strings.TrimSpace(getenv(MachineTokenFileVar)); path != "" {
 				return NewWorkflowRunTokenFile(path), nil
 			}
-			return nil, fmt.Errorf("%s is required by %s=%s: the runner sets it in a job granted id-token: write. Else %s names a file that holds the run's token",
-				ActionsIDTokenRequestURLVar, IdentityVar, kind, MachineTokenFileVar)
+			return nil, fmt.Errorf("%s is required by %s=%s", ActionsIDTokenRequestURLVar, IdentityVar, kind)
 		}
 		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
 		if err != nil {
