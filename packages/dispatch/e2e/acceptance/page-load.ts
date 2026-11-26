@@ -48,8 +48,11 @@
  * - `socket <outcome> <url> count=<n> loads=<the loads>` for each socket the page opened
  *   (`sent-with-token`, `sent-unchanged`, or `refused` with Dispatch's reason after it), then
  *   `socket-frames sent=<n> refused=<n>`, the frames the page sent and those the rule refused;
- * - `load <n> error: <message>` for a load that could not be read to its end, and
- *   `load <n> first-screen rows with no Element Timing entry: <rows>`, each where it happened;
+ * - for each load, before any reading: `load <n> drew-first-screen=<yes|no> after=<ms>`, whether
+ *   a frame of it held a row of the view and after how many ms from the navigation, or how long it
+ *   waited for one (`none` for a load that never navigated); `load <n> stopped: <bound>: <why>`
+ *   for a load that stopped at a bound; and `load <n> first-screen rows with no Element Timing
+ *   entry: <rows>` where it happened;
  * - one reading line for each bound, as `readingLine` prints it
  *   (`<bound> rate=1 readings=<the five loads'> limit=<l> fourth=<v> <pass or fail>`): the paint
  *   of the first screen's rows, each act's three bounds, the longest task after the first drawing
@@ -64,10 +67,17 @@
  * - last, `page-load: pass`, or `page-load: fail: <the bound, request or socket>: <the readings>`,
  *   each failure joined to the next by `; `.
  *
+ * **No load holds the run.** Each wait of a load has a bound (`LOAD_BOUNDS`): its setup, the
+ * navigation and the first drawing of a row of the view (180 s), the load's end, each act, and
+ * each read of the page. A load that waits past one stops there, prints `load <n> stopped:
+ * <bound>: <the wait> did not end within <ms> ms` (or the wait's own failure, named by its bound),
+ * reads `none` for whatever it had not read, and the run goes on with the next load. A load that
+ * drew no row reads `none` for every bound, which counts as over each limit.
+ *
  * It exits 0 on a pass, 1 on a fail, and 2 when it cannot run: no `--issue`, no `DISPATCH_URL`, a
- * token file that is missing, unreadable or empty, a tree read that does not answer, or no browser.
- * It says why on stderr, and it checks each of these but the browser's own start before it starts
- * one.
+ * token file that is missing, unreadable or empty, a tree read that does not answer, no browser,
+ * or a browser that opens no context for a load. It says why on stderr, and it checks each of
+ * these but the browser's own before it starts one.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -85,6 +95,7 @@ import {
   LOAD_ACTS,
   LOAD_ROW_SELECTOR,
   LOADS,
+  type LoadAct,
   makeSteps,
   VIEW_ROW_SELECTOR,
 } from "../issue-page-load";
@@ -525,18 +536,28 @@ export interface PageShape {
   readonly rows: number;
 }
 
+/** Whether a load drew the first screen's rows at all: whether a frame held a row of the view
+ *  (`FrameEntry.rows`, the first drawing of the rows), and after how many ms: from the navigation's
+ *  start to that frame, or where none came, how long the load waited for one. */
+export interface FirstRows {
+  readonly after: number;
+  readonly drawn: boolean;
+}
+
 /** What one load read. A reading is null where the load gave none: a first screen with a row that
- *  has no Element Timing entry, or a load that failed before it read it (`error`). */
+ *  has no Element Timing entry, or a load that stopped before it read it (`stopped`). */
 export interface LoadReading {
   /** Each act of `AFTER_LOAD_ACTS`, in its order. */
   readonly acts: readonly ActReading[];
-  readonly error: string | null;
+  readonly firstRows: FirstRows | null;
   readonly firstScreen: Reading;
   readonly largestContentfulPaint: Reading;
   readonly layoutShift: Reading;
   /** After the first drawing of the view row, over the load and the acts after it. */
   readonly longestTask: Reading;
   readonly shape: PageShape | null;
+  /** The wait the load stopped in, and why (`within`); null for a load read to its end. */
+  readonly stopped: string | null;
   /** The first screen's rows that have no Element Timing entry. */
   readonly unpainted: readonly string[];
 }
@@ -558,12 +579,13 @@ const UNREAD_ACT: ActReading = { act: null, loading: null, read: null, shown: nu
 /** A load that read nothing. */
 const UNREAD_LOAD: LoadReading = {
   acts: AFTER_LOAD_ACTS.map(() => UNREAD_ACT),
-  error: null,
+  firstRows: null,
   firstScreen: null,
   largestContentfulPaint: null,
   layoutShift: null,
   longestTask: null,
   shape: null,
+  stopped: null,
   unpainted: [],
 };
 
@@ -669,8 +691,13 @@ export function failures(record: PageLoadRecord): string[] {
 /** The record's lines, in the order the header of this file lists them, the verdict last. */
 export function recordLines(record: PageLoadRecord): string[] {
   const failed = failures(record);
+  // Each load says first whether it drew the first screen's rows at all, then where it stopped,
+  // before any of the readings it gave.
   const notes = record.loads.flatMap((load, at) => [
-    ...(load.error === null ? [] : [`load ${at + 1} error: ${load.error}`]),
+    `load ${at + 1} drew-first-screen=${load.firstRows?.drawn === true ? "yes" : "no"} after=${
+      load.firstRows === null ? "none" : Math.round(load.firstRows.after)
+    }`,
+    ...(load.stopped === null ? [] : [`load ${at + 1} stopped: ${load.stopped}`]),
     ...(load.unpainted.length === 0
       ? []
       : [
@@ -824,55 +851,220 @@ function loadavg(): string {
   }
 }
 
-/** Makes every act of `AFTER_LOAD_ACTS` once on the page, as Row 5 makes them: each once the page
- *  has gone quiet again, from where the act before left it. Answers the index each act's measured
- *  step was armed under. */
-async function makeActs(page: Page, requests: LoadRequests): Promise<number[]> {
-  const settle = () => waitForLoadEnd(page, requests);
-  const measured: number[] = [];
-  let next = 0;
-  for (const act of AFTER_LOAD_ACTS) {
-    const made = await makeSteps(page, next, act.steps, "now", settle);
-    measured.push(made.last);
-    next = (await makeSteps(page, made.next, act.after, "now")).next;
-  }
-  await waitForLoadEnd(page, requests);
-  return measured;
+/** One bound on a wait of a load: its name, one word, and its length. */
+export interface LoadBound {
+  readonly ms: number;
+  readonly name: string;
 }
 
-/** Reads one load of `page` from its navigation's commit: as it ends, its first screen's paint,
- *  its largest contentful paint, its layout shift and the shape of what it drew, as Row 1 of
- *  `c-load-1440` reads them; then the acts after it, and the longest task over both. A load that
- *  fails keeps what it read before the failure, and names the failure. */
-async function readLoad(page: Page, requests: LoadRequests): Promise<LoadReading> {
-  let reading = UNREAD_LOAD;
+/** The bounds on the waits of one load (`boundedLoad`). */
+export interface LoadBounds {
+  readonly act: LoadBound;
+  readonly close: LoadBound;
+  readonly firstScreen: LoadBound;
+  readonly loadEnd: LoadBound;
+  readonly read: LoadBound;
+  readonly setup: LoadBound;
+}
+
+/** The bound of every wait of a load, so that no page can hold the run: a load that waits past
+ *  one stops there, prints the bound it stopped at, reads `none` for whatever it had not read, and
+ *  the run goes on with the next load. Each is far past what a load of INFRA-1196 takes, and past
+ *  the waits of `e2e/load-instruments.ts` inside it (90 s for a load's end, 60 s for a step's
+ *  target, 10 s for its result), which end a wait the page answers; these end one it does not,
+ *  such as a read the page's main thread never runs. */
+export const LOAD_BOUNDS: LoadBounds = {
+  /** One act of `AFTER_LOAD_ACTS` and the steps that put the page back after it, each step's own
+   *  waits included. */
+  act: { ms: 180_000, name: "act-wait" },
+  /** The close of the load's browser context, and of the browser after the last load. */
+  close: { ms: 30_000, name: "close-wait" },
+  /** From the navigation to the first frame that holds a row of the view: past the 165 s after
+   *  which a cold load of INFRA-663 (9,252 comments) on part N's base had drawn no page
+   *  (Verification v7, `c-real-data`). */
+  firstScreen: { ms: 180_000, name: "first-screen-wait" },
+  /** The load's end (`waitForLoadEnd`), as the load ends and again after its acts. */
+  loadEnd: { ms: 120_000, name: "load-end-wait" },
+  /** One read of what the instruments hold, which waits for the page's main thread to run it. */
+  read: { ms: 60_000, name: "page-read-wait" },
+  /** The load's context, its routes, the event head and the instruments, before the navigation. */
+  setup: { ms: 60_000, name: "setup-wait" },
+};
+
+/** What `within` races its wait against. */
+const EXPIRED = Symbol("expired");
+
+/** `work`, or where it has not settled within `bound`, a failure whose message names the bound and
+ *  `subject`, the wait it ended: `<bound>: <subject> did not end within <ms> ms`. A failure of
+ *  `work` itself is named by the bound too. The work goes on after its bound fires, until the
+ *  load's context closes under it, and its failure then is no one's to read. */
+async function within<T>(bound: LoadBound, subject: string, work: Promise<T>): Promise<T> {
+  void work.catch(() => undefined);
+  const expired = Promise.withResolvers<typeof EXPIRED>();
+  const timer = setTimeout(() => expired.resolve(EXPIRED), bound.ms);
+  let settled: Awaited<T> | typeof EXPIRED;
   try {
-    const end = await waitForLoadEnd(page, requests);
-    // The first screen is the rows in the viewport as the load ends, which `waitForLoadEnd` has
-    // just reached: that instant is the one R1 reads, and a wait would read a later one.
-    const screen = firstScreenPaint(await firstScreenOf(page));
-    const shape = await pageShape(page);
-    const atEnd = await recordOf(page);
-    reading = {
-      ...reading,
-      firstScreen: screen.unpainted.length > 0 ? null : screen.reading,
-      largestContentfulPaint: largestContentfulPaint(atEnd.lcp, end),
-      layoutShift: layoutShift(atEnd.cls),
-      longestTask: longestTaskAfterViewRow(atEnd),
-      shape,
-      unpainted: screen.unpainted,
+    settled = await Promise.race([work, expired.promise]);
+  } catch (error) {
+    throw new Error(`${bound.name}: ${subject} failed: ${messageOf(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (settled === EXPIRED) {
+    throw new Error(`${bound.name}: ${subject} did not end within ${bound.ms} ms`);
+  }
+  return settled;
+}
+
+/** What a load reads as it ends. */
+export type EndReading = Pick<
+  LoadReading,
+  "firstScreen" | "largestContentfulPaint" | "layoutShift" | "longestTask" | "shape" | "unpainted"
+>;
+
+/** What a load reads once its acts are made: each act's reading, by the index its measured step
+ *  was armed under, and the longest task after the first drawing of the view row over the load. */
+export interface ActsReading {
+  readonly acts: readonly ActReading[];
+  readonly longestTask: Reading;
+}
+
+/** The waits of one load's page, which `boundedLoad` makes in order, each within its bound. */
+export interface PageSteps {
+  /** Navigates, and answers once a frame holds a row of the view: that frame's time, in ms from
+   *  the navigation's start. */
+  firstRows(): Promise<number>;
+  /** Waits for the load's end (`waitForLoadEnd`), and answers when it was. */
+  loadEnd(): Promise<number>;
+  /** Makes `act` once the page has gone quiet, its steps armed from index `next` on, then the
+   *  steps that put the page back; answers its measured step's index and the index after. */
+  makeAct(act: LoadAct, next: number): Promise<{ readonly last: number; readonly next: number }>;
+  /** Reads the acts whose measured steps were armed under `measured`. */
+  readActs(measured: readonly number[]): Promise<ActsReading>;
+  /** Reads what the load drew as it ended at `end`. */
+  readEnd(end: number): Promise<EndReading>;
+}
+
+/** `second` after `first`, where the load stopped at more than one bound. */
+function alsoStopped(first: string | null, second: string): string {
+  return first === null ? second : `${first}; then ${second}`;
+}
+
+/**
+ * One load, each of its waits within its bound of `bounds`: the setup (`open`), the navigation
+ * and the first drawing of a row of the view, the load's end and the read of it, as Row 1 of
+ * `c-load-1440` reads it, then each act after the load, as Row 5 makes them, the page's end after
+ * them, and the read of the acts. A load that stops keeps what it read before, reads `none` for
+ * the rest, and names in `stopped` the wait it stopped in; one that stops before its first rows
+ * reads nothing but how long it waited for them (`now`, the wall clock). An act that stops ends
+ * the acts, since the act after it would start from a page the act left half done, and the acts
+ * made before it are still read.
+ */
+export async function boundedLoad(
+  open: () => Promise<PageSteps>,
+  bounds: LoadBounds = LOAD_BOUNDS,
+  now: () => number = Date.now
+): Promise<LoadReading> {
+  let page: PageSteps;
+  try {
+    page = await within(bounds.setup, "the load's setup", open());
+  } catch (error) {
+    return { ...UNREAD_LOAD, stopped: messageOf(error) };
+  }
+  const asked = now();
+  let reading: LoadReading;
+  try {
+    const after = await within(
+      bounds.firstScreen,
+      "the wait for a row of the view",
+      page.firstRows()
+    );
+    reading = { ...UNREAD_LOAD, firstRows: { after, drawn: true } };
+  } catch (error) {
+    return {
+      ...UNREAD_LOAD,
+      firstRows: { after: now() - asked, drawn: false },
+      stopped: messageOf(error),
     };
-    const measured = await makeActs(page, requests);
-    const last = await recordOf(page);
+  }
+  try {
+    const end = await within(bounds.loadEnd, "the wait for the load's end", page.loadEnd());
+    const read = await within(bounds.read, "the read of the load's end", page.readEnd(end));
+    reading = { ...reading, ...read };
+  } catch (error) {
+    return { ...reading, stopped: messageOf(error) };
+  }
+  const measured: number[] = [];
+  let stopped: string | null = null;
+  try {
+    let next = 0;
+    for (const act of AFTER_LOAD_ACTS) {
+      const made = await within(bounds.act, act.name, page.makeAct(act, next));
+      measured.push(made.last);
+      next = made.next;
+    }
+    await within(bounds.loadEnd, "the wait for the page's end after the acts", page.loadEnd());
+  } catch (error) {
+    stopped = messageOf(error);
+  }
+  try {
+    const read = await within(bounds.read, "the read of the acts", page.readActs(measured));
     reading = {
       ...reading,
-      acts: measured.map((index) => actReading(last, index)),
-      longestTask: longestTaskAfterViewRow(last),
+      acts: AFTER_LOAD_ACTS.map((_, at) => read.acts[at] ?? UNREAD_ACT),
+      longestTask: read.longestTask,
     };
   } catch (error) {
-    reading = { ...reading, error: messageOf(error) };
+    stopped = alsoStopped(stopped, messageOf(error));
   }
-  return reading;
+  return { ...reading, stopped };
+}
+
+/** The waits of a load of `page` at `address`, its requests watched by `requests`. */
+function pageSteps(page: Page, requests: LoadRequests, address: string): PageSteps {
+  const settle = () => waitForLoadEnd(page, requests);
+  return {
+    firstRows: async () => {
+      // Neither wait takes a timeout of Playwright's own: the first-screen bound holds the
+      // navigation and the first drawing together (`boundedLoad`), and its line names it.
+      await page.goto(address, { timeout: 0, waitUntil: "commit" });
+      const drawn = await page.waitForFunction(
+        (rows) => (document.querySelector(rows) === null ? false : performance.now()),
+        VIEW_ROW_SELECTOR,
+        { polling: "raf", timeout: 0 }
+      );
+      const at = await drawn.jsonValue();
+      if (at === false) throw new Error("the page answered a drawn row with no time");
+      return at;
+    },
+    loadEnd: settle,
+    makeAct: async (act, next) => {
+      const made = await makeSteps(page, next, act.steps, "now", settle);
+      return { last: made.last, next: (await makeSteps(page, made.next, act.after, "now")).next };
+    },
+    readActs: async (measured) => {
+      const last = await recordOf(page);
+      return {
+        acts: measured.map((index) => actReading(last, index)),
+        longestTask: longestTaskAfterViewRow(last),
+      };
+    },
+    readEnd: async (end) => {
+      // The first screen is the rows in the viewport as the load ends, which `waitForLoadEnd` has
+      // just reached: that instant is the one R1 reads, and a wait would read a later one.
+      const screen = firstScreenPaint(await firstScreenOf(page));
+      const shape = await pageShape(page);
+      const atEnd = await recordOf(page);
+      return {
+        firstScreen: screen.unpainted.length > 0 ? null : screen.reading,
+        largestContentfulPaint: largestContentfulPaint(atEnd.lcp, end),
+        layoutShift: layoutShift(atEnd.cls),
+        longestTask: longestTaskAfterViewRow(atEnd),
+        shape,
+        unpainted: screen.unpainted,
+      };
+    },
+  };
 }
 
 /** What a run's loads record, each item by the load that made it. */
@@ -882,18 +1074,23 @@ interface Sent {
   readonly sockets: LoggedSocket[];
 }
 
-/** Load `load` of five: a new context, so its cache is empty, with the request route, answering
- *  the identity read with the event log's head as it stands just before the load, the socket
- *  route, the reader's choice of the new page and the instruments installed before the
- *  navigation. */
+/** Load `load` of five: a new context, so its cache is empty, and in it (`boundedLoad`'s setup)
+ *  the request route, answering the identity read with the event log's head as it stands just
+ *  before the load, the socket route, the reader's choice of the new page and the instruments,
+ *  installed before the navigation. A context the browser cannot open within its bound fails the
+ *  run, since no load could be made; the context is closed within its bound after the load. */
 async function measuredLoad(
   browser: Browser,
   settings: RunSettings,
   load: number,
   sent: Sent
 ): Promise<LoadReading> {
-  const context = await browser.newContext({ viewport: VIEWPORT });
-  try {
+  const context = await within(
+    LOAD_BOUNDS.setup,
+    "the load's browser context",
+    browser.newContext({ viewport: VIEWPORT })
+  );
+  const reading = await boundedLoad(async () => {
     await withIssuePage(context, READER_LOGIN);
     const head = await readEventHead(settings.origin, settings.token);
     await context.route(
@@ -919,12 +1116,13 @@ async function measuredLoad(
     });
     const requests = watchLoadRequests(page);
     const address = new URL(presetPath(settings.issue, "conversation"), settings.origin);
-    await page.goto(address.href, { waitUntil: "commit" });
-    return await readLoad(page, requests);
+    return pageSteps(page, requests, address.href);
+  });
+  try {
+    await within(LOAD_BOUNDS.close, "the close of the load's context", context.close());
+    return reading;
   } catch (error) {
-    return { ...UNREAD_LOAD, error: messageOf(error) };
-  } finally {
-    await context.close();
+    return { ...reading, stopped: alsoStopped(reading.stopped, messageOf(error)) };
   }
 }
 
@@ -972,7 +1170,9 @@ async function main(): Promise<number> {
     say(`the browser could not open load ${loads.length + 1}: ${messageOf(error)}`);
     return 2;
   } finally {
-    await browser.close();
+    await within(LOAD_BOUNDS.close, "the close of the browser", browser.close()).catch(
+      (error: unknown) => say(messageOf(error))
+    );
   }
   const record: PageLoadRecord = {
     converted,

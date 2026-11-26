@@ -4,21 +4,29 @@
  *  counted, and the identity read is answered in the browser), what it does with each socket the
  *  page opens (the handshake to the Dispatch host carries the token, one to another host does not)
  *  and which frames the page may send on it, the read of the event head, the verdict over five
- *  loads at the limits of `c-production`, the lines it prints, none of which holds the token, and
- *  what it needs before it starts a browser. The script itself drives a browser against a running
- *  Dispatch, which these cases do not start. */
+ *  loads at the limits of `c-production`, the lines it prints, none of which holds the token, the
+ *  bound on each wait of a load, at which a load stops and the run goes on, and what it needs
+ *  before it starts a browser. The script itself drives a browser against a running Dispatch,
+ *  which these cases do not start: a bounded load's page is a stand-in whose waits end at once or
+ *  never. */
 import { expect, test } from "bun:test";
 
 import type { LiveClientFrame } from "../../web/src/api/types";
 import {
   ACT_LIMIT_MS,
   AFTER_LOAD_ACTS,
+  boundedLoad,
   type DialSocket,
+  type EndReading,
   FIRST_SCREEN_LIMIT_MS,
   failures,
+  LOAD_BOUNDS,
+  type LoadBound,
+  type LoadBounds,
   type LoadReading,
   type LoggedRequest,
   type PageLoadRecord,
+  type PageSteps,
   type PolicyRoute,
   type PolicySocket,
   printedLines,
@@ -178,6 +186,7 @@ function frame(shown: number): FrameEntry {
     rows: true,
     shown,
     time: shown - 10,
+    typeface: 0,
     viewRow: true,
   };
 }
@@ -187,16 +196,18 @@ function heldAct(shown: number): ActReading {
   return { act: "j", loading: shown, read: null, shown };
 }
 
-/** One load whose every reading stands at its limit of `c-production`, each act read as `act`. */
+/** One load whose every reading stands at its limit of `c-production`, each act read as `act`,
+ *  its first rows drawn 800 ms after the navigation. */
 function loadAt(act: ActReading): LoadReading {
   return {
     acts: AFTER_LOAD_ACTS.map(() => act),
-    error: null,
+    firstRows: { after: 800, drawn: true },
     firstScreen: FIRST_SCREEN_LIMIT_MS,
     largestContentfulPaint: FIRST_SCREEN_LIMIT_MS,
     layoutShift: LAYOUT_SHIFT,
     longestTask: ACT_LIMIT_MS,
     shape: { bytes: 48_000, elements: 3_200, rows: 60 },
+    stopped: null,
     unpainted: [],
   };
 }
@@ -543,7 +554,7 @@ test("the verdict holds each limit and leaves the server's time out of a read", 
 test("no line the script prints holds the token", () => {
   const loads = Array.from({ length: 5 }, (_, at) => ({
     ...loadAt(heldAct(ACT_LIMIT_MS)),
-    error: at === 0 ? `the load failed: a read of ?token=${TOKEN} timed out` : null,
+    stopped: at === 0 ? `load-end-wait: a read of ?token=${TOKEN} failed` : null,
   }));
   const record = recordOf(loads, {
     frames: [{ allowed: false, load: 1, text: `{"token":"${TOKEN}"}`, url: LIVE }],
@@ -557,17 +568,214 @@ test("no line the script prints holds the token", () => {
       { load: 2, method: "POST", outcome: "failed-in-browser", url: `${DISPATCH}/x/${TOKEN}` },
     ],
   });
-  // The record holds the token in an address, a frame and an error, so the printer has it to hide.
+  // The record holds the token in an address, a frame and a stop, so the printer has it to hide.
   expect(recordLines(record).filter((line) => line.includes(TOKEN))).toHaveLength(4);
   const printed = printedLines(record, TOKEN);
   expect(printed.filter((line) => line.includes(TOKEN))).toEqual([]);
   expect(printed).toContain(
     "request sent-unchanged GET https://elsewhere.example/?t=<the token> count=1 loads=1"
   );
-  expect(printed).toContain(
-    "load 1 error: the load failed: a read of ?token=<the token> timed out"
-  );
+  expect(printed).toContain("load 1 stopped: load-end-wait: a read of ?token=<the token> failed");
   expect(printed.at(-1)?.startsWith("page-load: fail: ")).toBe(true);
+});
+
+/** `LOAD_BOUNDS` with each of `keys`' bounds at 1 ms, which a wait that never settles reaches, and
+ *  which a step that answers in the same turn of the event loop, as every fake step below does,
+ *  beats. */
+function boundsWith(...keys: (keyof LoadBounds)[]): LoadBounds {
+  const bounds: Record<keyof LoadBounds, LoadBound> = { ...LOAD_BOUNDS };
+  for (const key of keys) bounds[key] = { ...LOAD_BOUNDS[key], ms: 1 };
+  return bounds;
+}
+
+/** A wait the page never ends. */
+function pending<T>(): Promise<T> {
+  return Promise.withResolvers<T>().promise;
+}
+
+/** A wall clock that answers `times` in turn. */
+function clockOf(...times: number[]): () => number {
+  return () => times.shift() ?? Number.NaN;
+}
+
+/** What a fake page reads as its load ends. */
+const END: EndReading = {
+  firstScreen: 1_200,
+  largestContentfulPaint: 1_300,
+  layoutShift: 0.01,
+  longestTask: 80,
+  shape: { bytes: 48_000, elements: 3_200, rows: 60 },
+  unpainted: [],
+};
+
+/** A page whose every wait ends at once, its first rows drawn 812 ms after the navigation and its
+ *  load ended at 2,000 ms, but those `changes` replaces; and each wait it was asked for. */
+function pageOf(changes: Partial<PageSteps> = {}) {
+  const calls: string[] = [];
+  const steps: PageSteps = {
+    firstRows: async () => {
+      calls.push("first rows");
+      return 812;
+    },
+    loadEnd: async () => {
+      calls.push("load end");
+      return 2_000;
+    },
+    makeAct: async (act, next) => {
+      calls.push(act.name);
+      return { last: next, next: next + 1 };
+    },
+    readActs: async (measured) => {
+      calls.push(`read acts ${measured.join(",")}`);
+      return { acts: measured.map(() => heldAct(120)), longestTask: 90 };
+    },
+    readEnd: async (end) => {
+      calls.push(`read end ${end}`);
+      return END;
+    },
+    ...changes,
+  };
+  return { calls, open: async () => steps };
+}
+
+/** Every reading of a load that read none. */
+function unreadOf(reading: LoadReading) {
+  return {
+    acts: reading.acts.filter((act) => act.shown !== null),
+    readings: [
+      reading.firstScreen,
+      reading.largestContentfulPaint,
+      reading.layoutShift,
+      reading.longestTask,
+      reading.shape,
+    ],
+  };
+}
+
+test("a load read to its end makes each wait once, in order, and stops at no bound", async () => {
+  expect(LOAD_BOUNDS.firstScreen).toEqual({ ms: 180_000, name: "first-screen-wait" });
+  const { calls, open } = pageOf();
+  const reading = await boundedLoad(open);
+  expect(calls).toEqual([
+    "first rows",
+    "load end",
+    "read end 2000",
+    ...AFTER_LOAD_ACTS.map((act) => act.name),
+    "load end",
+    `read acts ${AFTER_LOAD_ACTS.map((_, at) => at).join(",")}`,
+  ]);
+  expect(reading).toEqual({
+    ...END,
+    acts: AFTER_LOAD_ACTS.map(() => heldAct(120)),
+    firstRows: { after: 812, drawn: true },
+    longestTask: 90,
+    stopped: null,
+  });
+});
+
+test("a load that draws no row of the view within its bound stops there, says so before its readings, reads none, and the run goes on", async () => {
+  const drawn = Promise.withResolvers<number>();
+  const { calls, open } = pageOf({ firstRows: () => drawn.promise });
+  const stopped = await boundedLoad(open, boundsWith("firstScreen"), clockOf(1_000, 181_000));
+  expect(stopped.firstRows).toEqual({ after: 180_000, drawn: false });
+  expect(stopped.stopped).toBe(
+    "first-screen-wait: the wait for a row of the view did not end within 1 ms"
+  );
+  expect(unreadOf(stopped)).toEqual({ acts: [], readings: [null, null, null, null, null] });
+  // No wait after the first rows was asked for.
+  expect(calls).toEqual([]);
+  // The page's wait fails once the context closes under it, after its load has stopped: nothing
+  // reads that failure, and it raises nothing.
+  drawn.reject(new Error("Target page, context or browser has been closed"));
+
+  const base = loadAt(heldAct(ACT_LIMIT_MS));
+  const record = recordOf([stopped, stopped, base, base, base]);
+  const lines = recordLines(record);
+  const paint = lines.findIndex((line) => line.startsWith("first-screen.conversation.paint-ms "));
+  const said = [
+    "load 1 drew-first-screen=no after=180000",
+    "load 1 stopped: first-screen-wait: the wait for a row of the view did not end within 1 ms",
+    "load 2 drew-first-screen=no after=180000",
+    "load 3 drew-first-screen=yes after=800",
+  ].map((line) => lines.indexOf(line));
+  expect(said.every((at) => at !== -1 && at < paint)).toBe(true);
+  expect(lines).toContain("page-shape.conversation rate=1 load=1 none");
+  // Two loads that drew nothing fail the first screen's bound, as two loads that gave no reading
+  // fail any; one may, as one load in five may read over any limit.
+  expect(failures(record)).toContain(
+    "first-screen.conversation.paint-ms: rate=1 readings=none,none,3750,3750,3750 limit=3750 fourth=none"
+  );
+  expect(lines.at(-1)?.startsWith("page-load: fail: first-screen.conversation.paint-ms: ")).toBe(
+    true
+  );
+  expect(failures(recordOf([stopped, base, base, base, base]))).toEqual([]);
+});
+
+test("a load that never ends, or whose end the page never lets the script read, stops at that bound and reads none", async () => {
+  const endless = pageOf({ loadEnd: () => pending() });
+  const unended = await boundedLoad(endless.open, boundsWith("loadEnd"));
+  expect(endless.calls).toEqual(["first rows"]);
+  expect(unended.firstRows).toEqual({ after: 812, drawn: true });
+  expect(unended.stopped).toBe(
+    "load-end-wait: the wait for the load's end did not end within 1 ms"
+  );
+  expect(unreadOf(unended)).toEqual({ acts: [], readings: [null, null, null, null, null] });
+
+  const unread = pageOf({ readEnd: () => pending() });
+  const unanswered = await boundedLoad(unread.open, boundsWith("read"));
+  expect(unread.calls).toEqual(["first rows", "load end"]);
+  expect(unanswered.stopped).toBe(
+    "page-read-wait: the read of the load's end did not end within 1 ms"
+  );
+  expect(unreadOf(unanswered).readings).toEqual([null, null, null, null, null]);
+
+  // A wait that fails on its own, within its bound, stops the load as well, named by its bound.
+  const failing = pageOf({
+    loadEnd: async () => {
+      throw new Error("the load never had 1000 ms with no request in flight and no long task");
+    },
+  });
+  expect((await boundedLoad(failing.open)).stopped).toBe(
+    "load-end-wait: the wait for the load's end failed: the load never had 1000 ms with no " +
+      "request in flight and no long task"
+  );
+});
+
+test("an act that does not end stops the acts at its bound, the acts made before it are read, and those after it read none", async () => {
+  const stuck = AFTER_LOAD_ACTS[2];
+  if (stuck === undefined) throw new Error("the acts after a load at 1440 px are fewer than three");
+  const made: string[] = [];
+  const { calls, open } = pageOf({
+    makeAct: (act, next) => {
+      made.push(act.name);
+      return act === stuck ? pending() : Promise.resolve({ last: next, next: next + 1 });
+    },
+  });
+  const reading = await boundedLoad(open, boundsWith("act"));
+  expect(made).toEqual(AFTER_LOAD_ACTS.slice(0, 3).map((act) => act.name));
+  expect(calls).toEqual(["first rows", "load end", "read end 2000", "read acts 0,1"]);
+  expect(reading.stopped).toBe(`act-wait: ${stuck.name} did not end within 1 ms`);
+  expect(reading.acts.map((act) => act.shown)).toEqual(
+    AFTER_LOAD_ACTS.map((_, at) => (at < 2 ? 120 : null))
+  );
+  expect([reading.firstScreen, reading.longestTask]).toEqual([1_200, 90]);
+
+  // Where the read of the acts stops too, the record names both bounds.
+  const twice = pageOf({ makeAct: () => pending(), readActs: () => pending() });
+  expect((await boundedLoad(twice.open, boundsWith("act", "read"))).stopped).toBe(
+    `act-wait: ${AFTER_LOAD_ACTS[0]?.name} did not end within 1 ms; then page-read-wait: the ` +
+      "read of the acts did not end within 1 ms"
+  );
+});
+
+test("a load whose setup does not end stops before its navigation, and says it drew nothing", async () => {
+  const reading = await boundedLoad(() => pending(), boundsWith("setup"));
+  expect(reading.firstRows).toBeNull();
+  expect(reading.stopped).toBe("setup-wait: the load's setup did not end within 1 ms");
+  const base = loadAt(heldAct(ACT_LIMIT_MS));
+  expect(recordLines(recordOf([reading, base, base, base, base]))).toContain(
+    "load 1 drew-first-screen=no after=none"
+  );
 });
 
 test("the script cannot run without DISPATCH_URL, an issue or a readable token file, and says why", () => {
