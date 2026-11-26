@@ -739,10 +739,12 @@ type RequestDeliver struct {
 	// controller keeper's start message (internal/daemon's controllerKeeper.ready). A suspended
 	// claim refuses it with a *RefusedError, queuing nothing and launching nothing (deliverResuming),
 	// since the next launch's ready sends it again; and it is no operator's delivery to the pacing
-	// (operatorDelivery). Without it an operator's suspension that landed between the controller's
-	// ready and this message would be undone by the message, which reads as an operator's delivery
-	// and resumes the claim whoever suspended it, keeping a session older than its age
-	// (replaceAgedSession, dispatch://INFRA-2045 R3).
+	// (operatorDelivery). Without it an operator's suspension of the controller at or after its
+	// ready would be undone by the message, which reads as an operator's delivery and resumes the
+	// claim whoever suspended it, keeping a session older than its age (replaceAgedSession,
+	// dispatch://INFRA-2045 R3): a suspension that lands between the ready and the message, and one
+	// an operator made while the controller was launching, held until that ready and ended there
+	// (holdSuspendUntilReady), after which the ready route still hands the keeper its turn.
 	ResumesNothing bool
 }
 
@@ -3173,20 +3175,22 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 	return m.sendPending(ctx)
 }
 
-// deliverResuming queues a task on a suspended claim and resumes it for that task. The workflow's
-// task (an outbox delivery, which carries a durable id) resumes a claim unless an operator
-// suspended it: an operator's suspension answers ErrHeldByOperator, queuing
-// nothing, and its start waits for the operator's resume. The operator's own delivery resumes the
-// claim whoever suspended it.
+// deliverResuming queues a task on a suspended claim and resumes it for that task, for two of the
+// three kinds of task. The workflow's task (an outbox delivery, which carries a durable id) resumes
+// a claim unless an operator suspended it: an operator's suspension answers ErrHeldByOperator,
+// queuing nothing, and its start waits for the operator's resume. The operator's own delivery (no
+// id) resumes the claim whoever suspended it. The daemon's own task of no id, the controller
+// keeper's start message (RequestDeliver.ResumesNothing), resumes nothing: a suspended claim
+// refuses it with a *RefusedError, queuing nothing, and the next launch's ready sends it again.
 //
-// Which of the two it is decides the pacing too, and the id is what says which (RequestDeliver.ID,
-// which the API's deliver route leaves empty). The workflow's own task is a wake of the daemon's
-// own and waits its turn like every other (reserveWake): the task waits on the claim until the
-// launch it waits for runs. The operator's task never waits — a person is waiting on it, as they
-// are on the resume and the retry the same route sends (exemptWake) — so it launches where it
-// arrives and takes nothing from the rate. A wake the pacing already holds over the claim is
-// dropped before this row is reached, so the claim this decides is the claim the gate found
-// (dropsWaitingWake, dropWakeFor).
+// Which of the first two it is decides the pacing too, and the id is what says which
+// (RequestDeliver.ID, which the API's deliver route leaves empty). The workflow's own task is a
+// wake of the daemon's own and waits its turn like every other (reserveWake): the task waits on
+// the claim until the launch it waits for runs. The operator's task never waits — a person is
+// waiting on it, as they are on the resume and the retry the same route sends (exemptWake) — so it
+// launches where it arrives and takes nothing from the rate. A wake the pacing already holds over
+// the claim is dropped before this row is reached, so the claim this decides is the claim the gate
+// found (dropsWaitingWake, dropWakeFor).
 func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	d := ev.(RequestDeliver)
 	if d.ResumesNothing {

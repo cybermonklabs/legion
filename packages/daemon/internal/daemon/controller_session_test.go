@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -351,8 +352,65 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 0 || len(spawns) != 0 {
 			t.Fatalf("the start message launched %d resumes and %d spawns, want none", len(resumes), len(spawns))
 		}
-		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 {
-			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one", lines)
+		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 || lines[0]["level"] != "INFO" {
+			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one at Info", lines)
+		}
+	})
+
+	t.Run("an operator's suspension of a launching controller, held until its ready, is not undone by the start message", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateFailed, Session: old})
+		// The keeper retries the failed controller after its first wait, as a daemon-driven relaunch
+		// of a session older than its age, which spawns a fresh agent.
+		start := time.Now()
+		k.now = func() time.Time { return start }
+		keepOnce(t, k)
+		k.now = func() time.Time { return start.Add(61 * time.Second) }
+		keepOnce(t, k)
+		m, _ := sup.Machine(claim.ControllerToken("legion"))
+		token := m.Claim().Token
+		if state := m.Claim().State; state != supervise.StateLaunching {
+			t.Fatalf("the controller is %s after the keeper's retry, want launching", state)
+		}
+		// The operator suspends the launching controller: the suspension is held until its ready.
+		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "an operator stops the controller", By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
+			t.Fatalf("the operator's suspension of a launching controller answered %v, want it held until ready", err)
+		}
+		// The fresh agent comes up, and its ready ends in the held suspension.
+		conn := fake.NewConn()
+		sup.deps.Conns.(*fake.Conns).Register(token, conn)
+		fresh := sessionAged(now, 0)
+		for _, ev := range []supervise.Event{
+			supervise.StreamHello{Claim: token, Generation: m.Claim().Generation},
+			supervise.RequestRegister{Claim: token, Generation: m.Claim().Generation, Session: fresh, SessionFile: "/sessions/fresh.jsonl",
+				CapabilityHash: []byte("capability"), PluginContract: sup.deps.PluginContract},
+			supervise.RequestReady{Claim: token, Generation: m.Claim().Generation, Session: fresh},
+		} {
+			if err := m.Handle(context.Background(), ev); err != nil {
+				t.Fatalf("handle %T: %v", ev, err)
+			}
+		}
+		if c := m.Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByOperator {
+			t.Fatalf("after its ready the controller is %s, suspended by %q, want the operator's held suspension in force", c.State, c.SuspendedBy)
+		}
+		launches := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn"))
+		// The ready route still hands the keeper its turn.
+		k.ready(m.Claim())
+		m.Wait()
+
+		after := controllerOf(t, sup)
+		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != fresh || after.Pending != nil {
+			t.Fatalf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
+				after.State, after.SuspendedBy, after.Session, after.Pending, fresh)
+		}
+		if got := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); got != launches {
+			t.Fatalf("the start message launched the controller %d times, want never", got-launches)
+		}
+		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 || lines[0]["level"] != "INFO" {
+			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one at Info", lines)
+		}
+		if len(conn.Prompts()) != 0 {
+			t.Fatalf("the suspended controller was prompted %d times, want never", len(conn.Prompts()))
 		}
 	})
 }

@@ -237,8 +237,9 @@ func (k *controllerKeeper) leaveHeld() { k.heldLogged, k.heldReason = "", "" }
 // each one runs the skill's start procedure before any wake. A start message still pending from an
 // earlier launch — its turn interrupted by the death this launch replaced — is sent on this ready
 // instead, so none is queued behind it. The message is the daemon's own and resumes nothing
-// (RequestDeliver.ResumesNothing): a claim an operator suspended after this ready and before the
-// message refuses it and stays suspended, and the next launch's ready sends it again.
+// (RequestDeliver.ResumesNothing): a claim an operator suspended at or after this ready — between
+// the ready and the message, or while it was launching, the suspension held until this ready and
+// ended there — refuses it and stays suspended, and the next launch's ready sends it again.
 func (k *controllerKeeper) ready(c supervise.Claim) {
 	m, ok := k.supervisor.Machine(c.Token)
 	if !ok {
