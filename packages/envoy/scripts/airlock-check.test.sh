@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercises k7's required operator inputs before it creates a work directory or starts a stack.
 # A stand-in mktemp stops the accepted run at that boundary, without network calls or builds.
+# Then, under fakes, k7's fixture and consumer boundary (airlock/k7-consumers.sh), and k8a's
+# broker start, k6's az wrapper and the run's result line, each read out of airlock-check.sh.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,6 +73,35 @@ label='all four inputs pass preflight and reach setup'; check test "$status" -eq
 label='the accepted run reaches the work directory boundary'; check test "${output#*'airlock-input-test: reached work directory creation'}" != "$output"
 check_id=k6 run_check
 label='other checks do not require the k7 inputs'; check test "$status" -eq 93
+
+# --- The result, read out of airlock-check.sh and run on its own: a run that asserted nothing
+# proved nothing, so report says UNKNOWN and fails; one property of two failing fails by count. Its
+# pass, fail, judge and report run in a subshell, apart from this test's own check.
+airlock_report() { # <judge status>...: report's exit status and its last line
+  (
+    for name in pass fail judge report; do
+      definition="$(sed -n "/^${name}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+      [[ -n "$definition" ]] || { echo "airlock-check.sh defines no ${name}()"; exit 0; }
+      eval "$definition"
+    done
+    # shellcheck disable=SC2034 # report reads each
+    CHECK_ID=test EXPECTED=() OBSERVED=() CONTROL=() VERDICTS=() PASSED=0 TOTAL=0 NOT_JUDGED=0
+    for verdict in "$@"; do judge "$verdict" "a property" "seen"; done
+    verdict=0
+    report >"$work/report.out" || verdict=$?
+    echo "$verdict:$(tail -n1 "$work/report.out")"
+  )
+}
+status=0
+output="$(airlock_report)"
+label="airlock-check.sh's report says UNKNOWN and fails when the run judged no property"
+check test "$output" = "3:check test: UNKNOWN: no property was judged, so nothing passed"
+output="$(airlock_report 0 1)"
+label="airlock-check.sh's report fails a run with one property of two failing"
+check test "$output" = "1:check test: failed (1 of 2)"
+output="$(airlock_report 0 0)"
+label="airlock-check.sh's report passes a run whose every property passed"
+check test "$output" = "0:check test: passed"
 
 # The fixture and Google-consumer boundary is called directly below. It does not parse text from
 # airlock-check.sh, so splitting or changing that caller cannot change this fixture test.

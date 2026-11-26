@@ -22,14 +22,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
+// Scheduling is the placement the operator gives Legion's pods, which share the cluster's general
+// nodes: a pod selects and tolerates what this names and, in a microVM, its ComputeClass, and
+// nothing else (placement).
 type Scheduling struct {
-	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
+	// NodeSelector is every pod's node selector; it may not set legion.dev/pool (poolKey). A
 	// microVM pod, an issue's or the project controller's, names its own ComputeClass in place of
 	// any this names (placement).
 	NodeSelector map[string]string
-	// Tolerations are appended to the Legion pool's own toleration, less one of another
-	// ComputeClass on a microVM pod, an issue's or the project controller's (placement).
+	// Tolerations are every pod's tolerations, less one of another ComputeClass on a microVM pod,
+	// an issue's or the project controller's, which tolerates its own class's taint after them
+	// (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
 }
