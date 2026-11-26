@@ -2,16 +2,21 @@ kind: Fixed
 custom:
   Issue: pr5701
 body: |-
-  A send or publish whose message is larger than the NATS server's max payload, its headers
-  included, is answered `413` naming the message's size and the bound, with no `Retry-After`, however
+  A send or publish of a message that is over the NATS server's max payload before the listener adds
+  its own fields - the envelope as the route builds it, with the message id header its publish
+  carries - is answered `413` naming the message's size and the bound, with no `Retry-After`, however
   long the listener took to read it. Before, the size was checked only inside the publish, after the
   publish had read the route's 3.5 s deadline, so a large message whose decoding spent that budget on
   a busy listener was answered `503 {"error":"envoy: the message bus did not answer: context deadline
   exceeded"}` with `Retry-After: 1`, and the client sent it again and again. Both routes now check the
   size once the request's own fields are checked, before the sender limit, so such a message is a
   `413` at any count, not a `429`; a send of one to an unknown session is a `413`, not a `404`; and a
-  send of one to a stopped session reports no wake for it. Every send of the bus - a stored or core
-  publish, a role forward, a publish window's send and a relay frame - also checks the size, headers
-  included, before it waits on a reconnect or reads its deadline, so a webhook whose envelope is past
-  the max payload is answered `422` and logged `<source> publish refused`, never a `503` its sender
-  redelivers.
+  send of one to a stopped session reports no wake for it. A message that is over the bound only once
+  the listener adds its sender stamp, or only as a role forward under its own key and header, is
+  answered `413` by the publish or the forward itself, after those reads.
+  Every send of the bus - a stored or core publish, a role forward, a publish window's send and a
+  relay frame - now checks the size, headers included, before it waits on a reconnect or reads its
+  deadline, so a webhook whose envelope is past the max payload is answered `422` and logged
+  `<source> publish refused`, never a `503` its sender redelivers. A publish window keeps checking
+  its own deadline first, so a send past that deadline is the `ErrWindowDeadline` its caller sends
+  again rather than a refusal it counts.

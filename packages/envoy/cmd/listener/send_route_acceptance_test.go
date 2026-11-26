@@ -428,14 +428,14 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 // the failure this route's line exists to end.
 //
 // The two answers that must not be swept into that 503 are asserted in the same test, against the
-// same live bus: an envelope past the server's max payload is still the caller's own 413, and a
-// subject NATS does not accept is still a 400, neither carrying Retry-After, since retrying
-// either sends the same bytes to the same refusal. The invalid subject is reached through the
-// publish route, not the send route: a send's subject is built from target_session, and a target
-// that would make an invalid agent subject is first read from the session bucket, where nats.go
-// refuses the key and the route answers 404 before the bus ever sees the subject. A publish's
-// topic goes to the bus as written, so `notifications..x` clears the handler's prefix checks and
-// is refused by the bus's own subject check (bus.ErrInvalidSubject).
+// same live bus: a message past the server's max payload is still the caller's own 413, which the
+// route answers before it asks the bus anything (refuseTooLargeToPublish), and a subject NATS does
+// not accept is still a 400 from the bus's own subject check, neither carrying Retry-After, since
+// retrying either sends the same bytes to the same refusal. The invalid subject is reached through
+// the publish route, not the send route: a send's subject is built from target_session, and a
+// target that would make an invalid agent subject is read from the session bucket first, where
+// nats.go refuses the key and the route answers 404. A publish's topic goes to the bus as written,
+// so `notifications..x` clears the prefix checks and the bus refuses it (bus.ErrInvalidSubject).
 func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) {
 	t.Parallel()
 	const target = "ses_refused_publish_target"
@@ -481,8 +481,8 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 	})
 	t.Logf("bus refused the publish: %s", refusal.Error)
 
-	// An envelope past the server's max payload: nats.go refuses it before sending, which the bus
-	// reports as bus.ErrTooLarge, and that is the caller's own 413, not a bus that did not answer.
+	// A message past the server's max payload: the route refuses it as bus.ErrTooLarge before any
+	// bus work (refuseTooLargeToPublish), the caller's own 413, not a bus that did not answer.
 	oversized, oversizedRecord := serveRecorded(t,
 		func(logger *logging.Logger) http.HandlerFunc { return sendHandler(state, logger) },
 		postJSON("/v1/messages/send", sendBody(map[string]any{

@@ -74,7 +74,7 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
-		return c.refused(err, messageBytes(msg))
+		return c.refused(err, msg)
 	}
 	return confirmFlushed(conn, msg.Subject, before, deadline)
 }

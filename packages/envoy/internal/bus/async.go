@@ -135,13 +135,14 @@ type RequestOptions struct {
 // call from several goroutines at once.
 //
 // The window's sends never write at or past deadline, read again at each check so a deadline that
-// moves on (a hold's renewal) is the one in force. A send checks it once it has refused what it
-// refuses whatever the deadline - a subject NATS would not accept or the stream does not capture,
-// and a message past the server's max payload (checkSend), which would otherwise read as the
-// deadline's refusal - and before anything else; its first send waits for a connection no later
-// than it, and every send checks it again once pinned, the last act before the write; a send that
-// finds it passed at any of these answers ErrWindowDeadline, in the channel when the send returns,
-// and sends nothing. A nil deadline is none. A Probe sends no envelope and does not check it.
+// moves on (a hold's renewal) is the one in force. A send checks it before anything else, as
+// before: a send past the deadline answers ErrWindowDeadline whatever else is wrong with its
+// message, so a caller that counts a refusal once per event counts none for it
+// (internal/dispatch/outbox's sendChains). Its first send waits for a connection no later than
+// the deadline, and every send checks it again once pinned, the last act before the write; a send
+// that finds it passed at any of these answers ErrWindowDeadline, in the channel when the send
+// returns, and sends nothing. A nil deadline is none. A Probe sends no envelope and does not
+// check it.
 func (c *Client) WindowUntil(deadline func() time.Time) Sender {
 	return &window{client: c, deadline: deadline}
 }
@@ -192,11 +193,18 @@ func outcomeOf(answer func() error, err error) <-chan error {
 
 // send writes item to the window's connection on subject, under msgID as its Nats-Msg-Id when
 // that is not empty, and returns what waits for the stream's answer. The envelope is encoded as
-// it is, so a copy stored away from its own topic keeps that topic (PublishStoredAsync). A message
-// past the server's max payload, its header included, is ErrTooLarge before the window's deadline
-// is read or a connection waited for (checkSend): a window sends envelopes its callers built,
-// Dispatch's outbox among them, of any size they were given.
+// it is, so a copy stored away from its own topic keeps that topic (PublishStoredAsync). Its
+// refusals come in the order they always did: the window's deadline first, then the subject and
+// the stream's subjects, then the size of the message, headers included (checkSend), which is
+// answered before the wait for a connection. A window sends envelopes its callers built,
+// Dispatch's outbox among them, of any size they were given, so the size check belongs here; it
+// comes after the deadline because a send past it must keep the ErrWindowDeadline its caller
+// takes for a send to make again, not an ErrRefused that caller counts once per event
+// (internal/dispatch/outbox's sendChains).
 func (w *window) send(subject string, item contracts.Envelope, msgID string) (func() error, error) {
+	if err := w.expired(); err != nil {
+		return nil, err
+	}
 	if err := checkSubject(subject); err != nil {
 		return nil, err
 	}
@@ -209,9 +217,6 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 	}
 	msg := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(msgID)}
 	if err := w.client.checkSend(msg); err != nil {
-		return nil, err
-	}
-	if err := w.expired(); err != nil {
 		return nil, err
 	}
 	if err := w.pinToSend(); err != nil {
@@ -382,7 +387,7 @@ func (w *window) sendJetStream(msg *nats.Msg) (func() error, error) {
 	sentAt := time.Now()
 	future, err := w.js.PublishMsgAsync(msg)
 	if err != nil {
-		return nil, w.unsent(err, messageBytes(msg))
+		return nil, w.unsent(err, msg)
 	}
 	return func() error { return w.acknowledged(future, msg.Subject, sentAt, signal) }, nil
 }
@@ -431,6 +436,9 @@ func (w *window) Request(subject string, item contracts.Envelope, opts RequestOp
 
 // request sends item as Request describes and returns what waits for its answer.
 func (w *window) request(subject string, item contracts.Envelope, opts RequestOptions) (func() error, error) {
+	if err := w.expired(); err != nil {
+		return nil, err
+	}
 	if opts.MsgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
 	}
@@ -442,12 +450,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		return nil, err
 	}
 	msg := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(opts.MsgID)}
-	// The size check comes before the window's deadline is read and its connection waited for, as
+	// The size check comes after the window's deadline and before the wait for a connection, as
 	// send's does: a request carries an envelope its caller built.
 	if err := w.client.checkSend(msg); err != nil {
-		return nil, err
-	}
-	if err := w.expired(); err != nil {
 		return nil, err
 	}
 	if err := w.pinToSend(); err != nil {
@@ -460,7 +465,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(msg.Reply, replies)
 	if err != nil {
-		return nil, w.unsent(err, messageBytes(msg))
+		return nil, w.unsent(err, msg)
 	}
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
@@ -472,7 +477,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
-		return nil, w.unsent(err, messageBytes(msg))
+		return nil, w.unsent(err, msg)
 	}
 	return func() error {
 		defer inboxSub.Unsubscribe()
@@ -711,14 +716,14 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 	}
 }
 
-// unsent names nats.go's refusal to send a message of size bytes: ErrUnavailable when the
-// connection is not connected (the client keeps no reconnect buffer, so nats.go sends nothing then)
-// or more acknowledgements are pending than nats.go takes, and otherwise as refused names it.
-func (w *window) unsent(err error, size int) error {
+// unsent names nats.go's refusal to send msg: ErrUnavailable when the connection is not connected
+// (the client keeps no reconnect buffer, so nats.go sends nothing then) or more acknowledgements
+// are pending than nats.go takes, and otherwise as refused names it.
+func (w *window) unsent(err error, msg *nats.Msg) error {
 	if !w.current() || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrConnectionDraining) ||
 		errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrReconnectBufExceeded) ||
 		errors.Is(err, nats.ErrTooManyStalledMsgs) {
 		return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
 	}
-	return w.client.refused(err, size)
+	return w.client.refused(err, msg)
 }

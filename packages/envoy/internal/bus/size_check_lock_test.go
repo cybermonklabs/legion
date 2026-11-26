@@ -5,10 +5,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -16,10 +17,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// smallMaxPayload is the max payload of the server this file starts: far under the 1 MiB default,
+// so every message its rows measure is a few kilobytes whatever the machine's load. It is
+// kvchunktest.MaxPayload's value, written out because that package imports this one.
+const smallMaxPayload = 64 << 10
+
 // handshakeHoldingProxy forwards the first connection it accepts to upstream, and holds every later
 // one open and silent: a server that takes a reconnect's dial and never answers its handshake, so
 // nats.go's reconnect attempt holds its connection lock across that handshake (nats.go v1.55.0
-// doReconnect, :3554-3581) until the handshake's timeout. held receives each held connection.
+// doReconnect, :3554-3581) until the handshake's own timeout. held receives each held connection.
 type handshakeHoldingProxy struct {
 	ln       net.Listener
 	upstream string
@@ -89,52 +95,66 @@ func (p *handshakeHoldingProxy) cutFirst() {
 	}
 }
 
+// stillHeld reports whether the held connection the proxy took is still open and unanswered, so
+// the reconnect attempt that dialled it still holds nats.go's connection lock.
+func (p *handshakeHoldingProxy) stillHeld(held net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Contains(p.open, held) && p.first != nil
+}
+
 // The size checks read the max payload the client keeps (Client.maxPayload) and no state of
 // nats.go's, so they answer while a reconnect attempt holds nats.go's connection lock across its
-// handshake, which nats.Conn.MaxPayload waits for. The client's connection is cut and its reconnect
-// reaches a server that takes the dial and never answers the handshake, which nats.go waits for up
-// to connectTimeout (5 s) holding the lock. TooLargeToPublish, and a publish of the same message,
-// must answer ErrTooLarge well inside that. The control is nats.Conn.MaxPayload itself in the same
-// moment: it does not answer within the same bound, so the lock was held while the checks answered.
+// handshake, which nats.Conn.MaxPayload waits for. The verdict is an order, not a duration: the
+// checks answer while the held handshake is still unanswered and the control read of
+// nats.Conn.MaxPayload, started before them, has still not returned. Nothing here is timed, and
+// the server's max payload is the small one above, so each message the checks measure is a few
+// kilobytes whatever the machine's load.
+//
+// The client's connection is cut, and its reconnect reaches a server that takes the dial and never
+// answers the handshake, which nats.go waits out holding the lock (up to connectTimeout, 5 s).
+// The only bound here is the test binary's own deadline, through testwait.
 func TestTheSizeChecksAnswerWhileAReconnectHoldsTheConnectionLock(t *testing.T) {
 	t.Parallel()
-	_, upstream := testnats.Start(t)
+	_, upstream := testnats.StartConfig(t, "max_payload: "+strconv.Itoa(smallMaxPayload)+"\njetstream {}\n", []string{"-js"}, true)
 	proxy := newHandshakeHoldingProxy(t, strings.TrimPrefix(upstream, "nats://"))
 	client, err := Connect([]string{"nats://" + proxy.ln.Addr().String()}, WithName(t.Name()))
 	if err != nil {
 		t.Fatalf("connect through the proxy: %v", err)
 	}
 	t.Cleanup(client.Close)
-	maxPayload := client.knownMaxPayload()
-	if maxPayload <= 0 {
-		t.Fatalf("UNKNOWN: the connected client keeps a max payload of %d, so its checks refuse nothing", maxPayload)
+	maxPayload := client.maxPayload.Load()
+	if maxPayload != smallMaxPayload {
+		t.Fatalf("UNKNOWN: the connected client keeps a max payload of %d, want the server's %d", maxPayload, smallMaxPayload)
 	}
 	const topic = contracts.RoleTopicPrefix + "held-handshake"
+	// A few kilobytes past the small bound: the encode the checks make is the same work whatever
+	// the machine's load.
 	big := sizeEnvelope(topic, strings.Repeat("p", int(maxPayload)+1))
 
 	proxy.cutFirst()
-	testwait.Receive(t, "the client's reconnect to reach the server that holds its handshake", proxy.held)
+	held := testwait.Receive(t, "the client's reconnect to reach the server that holds its handshake", proxy.held)
 
-	// The bound the checks must answer within, well inside the handshake's 5 s.
-	const answerWithin = time.Second
+	// The control: a read of the same value through nats.go, which takes the lock the reconnect
+	// holds. It must not have answered by the time the checks below have.
 	locked := make(chan int64, 1)
 	go func() { locked <- client.Connection().MaxPayload() }()
 
-	started := time.Now()
 	if err := client.TooLargeToPublish(big); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("TooLargeToPublish while the reconnect holds the lock = %v, want ErrTooLarge", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := client.PublishCoreContext(ctx, topic, big); !errors.Is(err, ErrTooLarge) {
+	if err := client.PublishCoreContext(context.Background(), topic, big); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("the core publish while the reconnect holds the lock = %v, want ErrTooLarge", err)
 	}
-	if elapsed := time.Since(started); elapsed >= answerWithin {
-		t.Fatalf("the size checks answered after %s while the reconnect held the lock, want inside %s", elapsed, answerWithin)
-	}
+
+	// Both answers came while the handshake was still held and the control had not returned, so
+	// the lock was held throughout and neither check waited for it.
 	select {
 	case read := <-locked:
-		t.Fatalf("control: nats.Conn.MaxPayload answered %d inside %s, so the reconnect held no lock and the row shows nothing", read, answerWithin)
-	case <-time.After(answerWithin):
+		t.Fatalf("UNKNOWN: nats.Conn.MaxPayload answered %d before the checks did, so the reconnect was not holding the lock while they ran", read)
+	default:
+	}
+	if !proxy.stillHeld(held) {
+		t.Fatal("UNKNOWN: the held handshake ended before the checks answered, so the reconnect was not holding the lock while they ran")
 	}
 }
