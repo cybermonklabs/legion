@@ -750,7 +750,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: daemonDispatchClient(cfg, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),

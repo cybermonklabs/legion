@@ -29,15 +29,16 @@ export interface AuthenticatedUser {
  *  fleet its machine belongs to, the Kubernetes account an exchange entry lists or a job's identity
  *  as its job entry lists it, null otherwise.
  *  `session` is the session the credential itself proved, which only an access token the secrets
- *  broker issued does, and `project` the one project key that credential lets the caller write,
- *  null where it names none. `sign_in_required` is whether Dispatch refuses every write of the
- *  credential until a person signs in on its machine (`SIGN_IN_REQUIRED`), the decision its write
- *  check makes, and false for a read-only credential, which no sign-in lets write. A client reads
- *  an absent `service`, `session`, `project` or `sign_in_required` as
- *  a Dispatch older than that field, not as null or false: `service` is absent from one older than
- *  verified service tokens, `session` and `project` from one older than broker-issued tokens, and
- *  `sign_in_required` from one older than the field, whose rule the client then reads from the
- *  owner, the service and the session.
+ *  broker issued does, and `project` the project key that credential's token names, null where
+ *  it names none. Such a token writes other projects' objects as a credential that names none
+ *  does, a private project it does not name excepted. `sign_in_required` is whether Dispatch
+ *  refuses every write of the credential until a person signs in on its machine
+ *  (`SIGN_IN_REQUIRED`), the decision its write check makes, and false for a read-only
+ *  credential, which no sign-in lets write. A client reads an absent `service`, `session`,
+ *  `project` or `sign_in_required` as a Dispatch older than that field, not as null or false:
+ *  `service` is absent from one older than verified service tokens, `session` and `project` from
+ *  one older than broker-issued tokens, and `sign_in_required` from one older than the field,
+ *  whose rule the client then reads from the owner, the service and the session.
  *
  *  `project_scope` is a broker-issued token's project scope, absent for every other credential:
  *  `named` for a token an operator's or a job's entry mapped to its project, and for an exchange
