@@ -869,21 +869,32 @@ func (c *gitCollector) missingOf(failure gitFailure, pr int, head, base, reason 
 		detail = fmt.Sprintf("%s: %v", detail, run.err)
 	default:
 		detail = fmt.Sprintf("%s: git exits %d", detail, run.code)
-		if said := lastLine(run.stderr); said != "" {
+		if said := stderrSummary(run.stderr); said != "" {
 			detail += ": " + said
 		}
 	}
 	return GitMissing{PR: pr, Head: head, Base: base, Reason: reason, Detail: detail}
 }
 
-// lastLine is the last line of text that holds more than white space, cut to 300 bytes.
-func lastLine(text []byte) string {
-	lines := strings.Split(strings.TrimSpace(string(text)), "\n")
-	line := strings.TrimSpace(lines[len(lines)-1])
-	if len(line) > 300 {
-		line = line[:300]
+// stderrSummary is what a missing input's detail says of git's own words: each line of text that
+// holds more than white space, trimmed, once, in sorted order, joined with "; " and cut to 300
+// bytes. It is no last line, because two processes write one stderr: for a commit the remote does
+// not hold, `git fetch` and the `git upload-pack` it runs each write a `fatal:` line to it, in
+// whichever order they happen to run, and two collections of the same inputs must write the same
+// bytes.
+func stderrSummary(text []byte) string {
+	var lines []string
+	for line := range bytes.Lines(text) {
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			lines = append(lines, string(line))
+		}
 	}
-	return line
+	slices.Sort(lines)
+	summary := strings.Join(slices.Compact(lines), "; ")
+	if len(summary) > 300 {
+		summary = summary[:300]
+	}
+	return summary
 }
 
 // dropMissing takes each missing input drop says of out of the input as it stands.
@@ -1063,7 +1074,7 @@ func (r *gitClone) present(ctx context.Context, shas []string) (map[string]bool,
 	lines := strings.Split(strings.TrimSuffix(string(run.stdout), "\n"), "\n")
 	if !run.ok() || len(lines) != len(shas) {
 		return nil, fmt.Errorf("git cat-file --batch-check of %d commits in %s: exit %d, %s, %d lines: %s", len(shas), r.dir, run.code,
-			cmp.Or(run.killed, "not killed"), len(lines), lastLine(run.stderr))
+			cmp.Or(run.killed, "not killed"), len(lines), stderrSummary(run.stderr))
 	}
 	held := make(map[string]bool, len(shas))
 	for i, line := range lines {

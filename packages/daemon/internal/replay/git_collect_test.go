@@ -524,6 +524,36 @@ func TestCollectGitsTwoPhasesInTurnWriteWhatOneRunWrites(t *testing.T) {
 	}
 }
 
+// git fetch and the git upload-pack it runs write one stderr, so for a commit the remote does not
+// hold the two `fatal:` lines come in the order the two processes ran in, which differs from one
+// collection to the next, and two collections of one input must write the same bytes. What a
+// missing input's detail says of git's words, stderrSummary, is each line that holds more than
+// white space, trimmed, once, in sorted order, joined with "; " and cut to 300 bytes: the same text
+// for the two lines in either order. It fails under the last line of stderr, which is whichever
+// line the processes wrote last.
+func TestTheStderrSummaryDoesNotDependOnTheOrderOfItsLines(t *testing.T) {
+	t.Parallel()
+	fetch := "fatal: remote error: upload-pack: not our ref " + unreachableHead
+	uploadPack := "fatal: git upload-pack: not our ref " + unreachableHead
+	many := make([]string, 40)
+	for i := range many {
+		many[i] = fmt.Sprintf("line-%02d", i)
+	}
+	for name, test := range map[string]struct{ stderr, want string }{
+		"fetch's line first":       {fetch + "\n" + uploadPack + "\n", uploadPack + "; " + fetch},
+		"upload-pack's line first": {uploadPack + "\n" + fetch + "\n", uploadPack + "; " + fetch},
+		"nothing":                  {"", ""},
+		"white space alone":        {"  \n\t\r\n", ""},
+		"trimmed and once":         {"  b \r\n\na\nb\n  ", "a; b"},
+		"one long line":            {strings.Repeat("x", 400) + "\n", strings.Repeat("x", 300)},
+		"many lines":               {strings.Join(many, "\n"), strings.Join(many, "; ")[:300]},
+	} {
+		if got := stderrSummary([]byte(test.stderr)); got != test.want {
+			t.Errorf("the summary of stderr with %s is %q, want %q", name, got, test.want)
+		}
+	}
+}
+
 // collect-git refuses, before any read of GitHub or git and with nothing written, a window that
 // holds no merges file of the repository, and a clones' directory inside the window.
 func TestCollectGitRefusesAWindowWithNoMergesAndClonesInside(t *testing.T) {
