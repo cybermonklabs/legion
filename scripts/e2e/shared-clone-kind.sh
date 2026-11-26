@@ -175,7 +175,7 @@ pass
 container=roles
 in_pod() { kind_k -n legion exec "$pod" -c "$container" -- "$@"; }
 clone=/legion/repos/github.com/$repo
-default_refs=$(printf 'refs/heads/master\nrefs/remotes/origin/master')
+default_refs=$(printf 'refs/heads/master\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/master')
 
 refs_in_clone() {
   local proof_pod=${1:-$pod} refs

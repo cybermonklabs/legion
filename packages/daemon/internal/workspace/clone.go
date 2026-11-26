@@ -480,11 +480,19 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, "", err
 	}
+	refsBefore, err := repositoryRefs(ctx, run, gitDir, true)
+	if err != nil {
+		return 0, 0, "", err
+	}
 	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(issue.repository)}, fetchRefs)
 	if _, err := transferWithRetries(ctx, run, request, gitHubTransfer{verb: "fetch", argv: argv, dir: cloneDir}, held, deadline); err != nil {
 		return 0, 0, "", err
 	}
 	after, err := objectsSize(gitDir)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	refsAfter, err := repositoryRefs(ctx, run, gitDir, true)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -496,7 +504,30 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 			return 0, 0, "", err
 		}
 	}
-	return after - before, len(fetchRefs), defaultBranch, nil
+	// origin/HEAD names GitHub's default branch, as a clone leaves it: `jj git init --colocate`
+	// reads it to set the repository's trunk() alias, which without it resolves to the root commit
+	// for a default branch not named main, master or trunk.
+	if _, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+defaultBranch); err != nil {
+		return 0, 0, "", err
+	}
+	return after - before, movedRemoteRefs(refsBefore, refsAfter), defaultBranch, nil
+}
+
+// movedRemoteRefs is how many of origin's remote-tracking refs a fetch made, moved or deleted:
+// the count the fill's log line reports.
+func movedRemoteRefs(before, after map[string]string) int {
+	moved := 0
+	for ref, object := range after {
+		if strings.HasPrefix(ref, "refs/remotes/origin/") && before[ref] != object {
+			moved++
+		}
+	}
+	for ref := range before {
+		if _, kept := after[ref]; strings.HasPrefix(ref, "refs/remotes/origin/") && !kept {
+			moved++
+		}
+	}
+	return moved
 }
 
 // issuePodDefaults reads GitHub's HEAD and keeps the admission-time default when GitHub still

@@ -1308,6 +1308,7 @@ func TestWorkspaceInitProvisionKeepsOnlyTheIssueRefs(t *testing.T) {
 	}
 	if want := []string{
 		"refs/heads/legion/LEGION-42", "refs/heads/main",
+		"refs/remotes/origin/HEAD",
 		"refs/remotes/origin/legion/LEGION-42", "refs/remotes/origin/legion/LEGION-42.task",
 		"refs/remotes/origin/main",
 	}; !slices.Equal(refs, want) {
@@ -1502,5 +1503,39 @@ func TestWorkspaceInitProvisionTracksTheRecordedDefaultAfterGitHubChangesHead(t 
 	}
 	if tracked := v.jj(t, "bookmark", "list", "--tracked", "exact:release", "-T", `name ++ "@" ++ remote ++ "\n"`, "--ignore-working-copy", "-R", v.clone()); !strings.Contains(tracked, "release@origin") {
 		t.Fatalf("tracked release bookmarks %q, want release@origin", tracked)
+	}
+}
+
+// A clone the fill makes leaves origin/HEAD naming GitHub's default branch, as a clone from GitHub
+// does, so jj's trunk() resolves to that branch's tip when it is named neither main nor master nor
+// trunk. Without origin/HEAD, `jj git init --colocate` sets no trunk() alias and trunk() is the
+// root commit.
+func TestWorkspaceInitProvisionSetsTrunkToTheDefaultBranch(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "develop")
+	remote := v.env["WINIT_REMOTE"]
+	develop := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/develop")
+	v.provisionEnv(t)
+
+	code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if head := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "symbolic-ref", "refs/remotes/origin/HEAD"); head != "refs/remotes/origin/develop" {
+		t.Fatalf("origin/HEAD names %q, want refs/remotes/origin/develop", head)
+	}
+	// jj keeps the repository's own configuration, the trunk() alias its init writes among it, in
+	// the config home the provision ran with, so the read takes the provision's environment.
+	command := exec.Command(v.realJJ, "log", "-r", "trunk()", "--no-graph", "-T", "commit_id", "--ignore-working-copy", "-R", v.clone())
+	command.Dir = v.root
+	command.Env = fixtureenv.Isolated(t.TempDir())
+	for name, value := range v.env {
+		command.Env = append(command.Env, name+"="+value)
+	}
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("jj log -r trunk(): %v", err)
+	}
+	if trunk := strings.TrimSpace(string(output)); trunk != develop {
+		t.Fatalf("trunk() is %s, want develop's tip %s", trunk, develop)
 	}
 }
