@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { expect, type Page } from "@playwright/test";
 
 import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
-import { LAYOUT_WIDTHS, type LayoutReading, measureLayout } from "./layout-measure";
+import {
+  LAYOUT_WIDTHS,
+  type LayoutReading,
+  type LayoutWidth,
+  measureLayout,
+} from "./layout-measure";
 import type { LayoutRoute, LayoutSeed, LayoutState } from "./layout-routes";
 import { type InFlightRequests, trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 
@@ -382,6 +387,42 @@ async function loadSettled(
   await waitForRouteSettled(page, route, inFlight);
 }
 
+/** The widths a route marked `reuseWide` reads by resizing the page it read at the width before,
+ *  rather than by loading it fresh: the two past the wide layout's first width, 1280 px
+ *  (`WIDE_LAYOUT_MIN_PX` in `e2e/review-routes.ts`). Every width query the app reads switches at
+ *  1280 px or below (`web/src/features/shell/useDialog.ts`, `issue-page/IssuePresets.tsx`,
+ *  `issue-page/contents-frame.tsx`, `issue-page/identity-block.ts`,
+ *  `project/issues-table-controls.tsx`), and so does the one read of the document's width
+ *  `doc/ProofDocument.tsx` makes as it opens an editor, so 1280, 1440 and 1920 px stand on one
+ *  side of each of them. 360, 900 and 1280 px load fresh on every route: the two compact widths
+ *  and the first wide one are each read on a cold load. */
+const RESIZED_WIDTHS: ReadonlySet<LayoutWidth> = new Set<LayoutWidth>([1440, 1920]);
+
+/** Waits two animation frames in `page`, as `nextFrames` in `e2e/frames.ts` does, which this
+ *  module does not import: that one imports `./issue-page`, which reaches `./seed`. After a
+ *  resize, the first frame is the one the browser draws at the new width, whose size observers
+ *  run before it paints, and by the second what they asked for is drawn. */
+async function nextFrames(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const frames = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+    return frames.promise;
+  });
+}
+
+/** Waits until `route` has settled again on the page the viewport just resized: the two frames
+ *  the resize draws in, then the same wait a load gets (`waitForRouteSettled`), so the route's
+ *  ready locators are asked for again and the Inbox number holds its value for its whole window
+ *  again. Not `resizeSettled` of `e2e/frames.ts`, which waits out the new issue page's resize. */
+async function settleResized(
+  page: Page,
+  route: LayoutRoute,
+  inFlight: InFlightRequests
+): Promise<void> {
+  await nextFrames(page);
+  await waitForRouteSettled(page, route, inFlight);
+}
+
 /** Reads the settled page: the pinned faces loaded in the document that is current now, then
  *  `measureLayout`. */
 async function measureSettledPage(page: Page): Promise<LayoutReading> {
@@ -400,8 +441,8 @@ export function requiredGroupsOf(
   return [...(route.requiredGroups ?? []), ...(state?.requiredGroups ?? [])];
 }
 
-/** A route row's time budget, which follows `checkLayout`'s readings: one per width as the page
- *  loads, and one per width in each of its states. Six seconds a reading is twice what one cost
+/** A route row's time budget, which follows `checkLayout`'s readings: one per width of the plain
+ *  page, and one per width in each of its states. Six seconds a reading is twice what one cost
  *  on CI (2.9 s on the agents row of D's branch, run 45301444362, whose 20 readings ran out of
  *  Playwright's 60 s); a route of few readings keeps that 60 s. */
 export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
@@ -415,8 +456,22 @@ export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
  *  only reads, and the faces `expectPinnedFacesLoaded` loads are the ones the state's own reading
  *  requires anyway. Each later state acts on the page loaded fresh again, so it draws over
  *  nothing an earlier state opened. Fails once, after every reading, with every failure
- *  `judgeReading` found. */
+ *  `judgeReading` found.
+ *
+ *  A route marked `reuseWide` reads each width of `RESIZED_WIDTHS` on the page it read at the
+ *  width before, resized (`settleResized`), where that reading's viewport was its width: the
+ *  document's width (`LayoutReading.viewport`, `document.documentElement.clientWidth`) is the
+ *  width `ProofDocument.tsx` read as it opened its editor, so a page that read another width at
+ *  1280 px may have decided on the compact side, and the next width loads fresh instead. A
+ *  route with states is refused the mark, since a state leaves a drawer or a selection open on
+ *  the page the next width would resize. Every reading is taken and judged the same either way. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
+  if (route.reuseWide === true && (route.states?.length ?? 0) > 0) {
+    throw new Error(
+      `${route.name} is marked reuseWide and has states: a state leaves a drawer or a selection ` +
+        "open, so a route with states loads fresh at every width"
+    );
+  }
   await route.prepare?.(page.context());
   await installLayoutSheet(page);
   // The page answers from routes, so its settle wait reads requests by the document that sent
@@ -430,12 +485,22 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   const address = route.path(seed);
   const minElements = route.minElements?.count;
   const failures: LayoutFailure[] = [];
+  // Whether the plain reading just taken read the width the viewport was set to, which a resize
+  // to the next width needs.
+  let readItsWidth = false;
   for (const width of LAYOUT_WIDTHS) {
+    const resized = route.reuseWide === true && RESIZED_WIDTHS.has(width) && readItsWidth;
     await page.setViewportSize({ height: HEIGHT, width });
-    await loadSettled(page, route, address, inFlight);
+    if (resized) {
+      await settleResized(page, route, inFlight);
+    } else {
+      await loadSettled(page, route, address, inFlight);
+    }
     const plain = { route: route.name, width };
+    const reading = await measureSettledPage(page);
+    readItsWidth = reading.viewport === width;
     failures.push(
-      ...judgeReading(plain, await measureSettledPage(page), {
+      ...judgeReading(plain, reading, {
         groups: requiredGroupsOf(route),
         minElements,
       })

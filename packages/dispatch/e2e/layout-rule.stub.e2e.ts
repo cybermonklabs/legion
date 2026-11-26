@@ -1,9 +1,10 @@
 /** The layout rule read on every page: each route of `e2e/layout-routes.ts`, over the review
  *  corpus and the stress layer of `e2e/layout-seed.ts`, at every width and in every state, by
- *  `checkLayout` (`e2e/layout-check.ts`). A layout reading is what the browser draws from the
- *  page's GET answers and the frames its document and live sockets carry, with no write of the
- *  row's own read back, so each row runs against its recording rather than against a harness
- *  (packages/dispatch/README.md, "The stubbed layer"): the HAR answers the HTTP reads, and
+ *  `checkLayout` (`e2e/layout-check.ts`), which loads the page fresh at each width, or resizes it
+ *  at 1440 and 1920 px for a route marked `reuseWide`. A layout reading is what the browser draws
+ *  from the page's GET answers and the frames its document and live sockets carry, with no write
+ *  of the row's own read back, so each row runs against its recording rather than against a
+ *  harness (packages/dispatch/README.md, "The stubbed layer"): the HAR answers the HTTP reads, and
  *  `e2e/layout-sockets.ts` answers the sockets from the frames the recording run kept.
  *
  *  A row fails on a breach `e2e/layout-breaches.ts` does not accept, on an entry its readings did
@@ -27,8 +28,8 @@ const test = stubbed(() => seedLayoutStress({ boundMs: expectTimeout }));
 test.use({ locale: "en-US", timezoneId: "UTC" });
 
 for (const route of layoutRoutes) {
-  // SLOW(>=2s): a load of a drawn page at each of five widths, and again for each of its states
-  // after the first, each settled and measured.
+  // SLOW(>=2s): a drawn page at each of five widths, loaded fresh at each or resized at the widest
+  // two, and loaded again for each of its states after the first, each settled and measured.
   test(`${route.name} breaks no layout rule from 360 to 1920 px @pr`, async ({
     page,
     scene,

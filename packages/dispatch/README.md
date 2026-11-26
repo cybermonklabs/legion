@@ -1172,11 +1172,14 @@ reader's choice in this browser draws another way (the new issue page, the proje
 the project page and its Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
-each state a route names (the Peek drawer open, rows or agents selected). At each width
-`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
-`measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
-does for anything but a code block, one picture wider than the box, a data table or a board's
-lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+each state a route names (the Peek drawer open, rows or agents selected). At 360, 900 and 1280 px
+`e2e/layout-check.ts` loads the page fresh, and so at 1440 and 1920 px unless the route is marked
+`reuseWide`: it resizes such a page from 1280 px instead, where the reading there was 1280 px
+wide, and waits two animation frames. Either way it then waits for `waitForRouteSettled` and the
+pinned faces, and runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls
+sideways, a box that does for anything but a code block, one picture wider than the box, a data
+table or a board's lanes, something cut off at a side with no ellipsis (a code block's text, a
+picture and a fixed
 layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
 group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
 control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
