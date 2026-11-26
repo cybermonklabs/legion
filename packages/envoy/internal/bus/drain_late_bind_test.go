@@ -95,14 +95,10 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			}
 			testwait.Receive(t, "the first role message to reach the handler", started)
 			// nats.go counts a delivery as pending until its handler returns.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				if pending, _, _ := sub.Pending(); pending == 2 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the second role message never queued behind the first")
-				}
-			}
+			testwait.Until(t, "the second role message to queue behind the first (the last read is how many were pending)", func() (int, bool) {
+				pending, _, _ := sub.Pending()
+				return pending, pending == 2
+			})
 			// Drain's stop lands, and then the bind ends.
 			client.subscriptionsMu.Lock()
 			client.stopMode = clientDraining
