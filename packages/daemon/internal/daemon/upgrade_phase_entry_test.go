@@ -48,8 +48,10 @@ const olderReleasesNewestMigration = 20261112180548
 // is recorded through this release's PutIssue, so each migration that adds a column PutIssue
 // writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
 // the phase entry reads or writes, so it changes nothing the upgrade under test reads.
-// 20261124060500_issue_priority adds issues.priority.
-var appliedWithTheFixture = []int{20261124060500}
+// 20261124060500_issue_priority adds issues.priority, and 20261125181828_p0_bound adds
+// issues.resolved_known, issues.resolved_priority and issues.priority_from (it also makes the table
+// project_p0_bound_changes, which the phase entry does not read).
+var appliedWithTheFixture = []int{20261124060500, 20261125181828}
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
