@@ -2141,9 +2141,14 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			// no connection to write on, so the row is written in a transaction of its own
 			// either way: the row is the one write a run that asked the model must keep.
 			_ = tx.Rollback(ctx)
-			if tx, err = m.Store.Pool.Begin(ctx); err != nil {
+			// tx takes the new transaction only once it began: the deferred Rollback reads
+			// tx, and a Begin that fails (ctx spent while the read waited) answers none, which
+			// that Rollback would call through and panic on.
+			next, err := m.Store.Pool.Begin(ctx)
+			if err != nil {
 				return "", err
 			}
+			tx = next
 		case landed:
 			return JudgedAlreadyApplied, nil
 		default:

@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -69,6 +70,32 @@ func TestAJudgesApprovalWhoseCommitAnswerWasLostLeavesOneRow(t *testing.T) {
 		}
 		if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != AppliedUnknown {
 			t.Errorf("request.judged rows = %+v; want one, applied %q, never false", judged, AppliedUnknown)
+		}
+	})
+
+	// The read's failure spent the run's time: the row's own transaction cannot begin, and
+	// LogJudged answers that, with no row written. It used to keep the failed Begin's nil
+	// transaction in the variable its deferred Rollback reads, and panic on it. A soak of this
+	// package's tests in parallel caught it: the read of
+	// TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow outlasted the run's last second.
+	// The hook ends the run's context as the read fails, as a deadline reached during the read
+	// ends it.
+	t.Run("the run's time ends while the read fails", func(t *testing.T) {
+		m, enr, key := newJudgeFixture(t)
+		req := pendingJudgeable(t, m, enr, key, reason, 600, "DEEL_API_KEY")
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		m.testLandedRead = func(uint32) error {
+			cancel()
+			return context.Canceled
+		}
+		_, err := m.LogJudged(ctx, *req.RecordID, judgeModel, failureRow(AppliedUnknown, lost))
+		m.testLandedRead = nil
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("LogJudged whose run ended during the read = %v; want the row's own transaction refused for the ended run (context.Canceled)", err)
+		}
+		if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+			t.Errorf("request.judged rows = %+v; want none: the run ended before a row could be written", judged)
 		}
 	})
 
