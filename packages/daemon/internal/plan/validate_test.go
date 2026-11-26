@@ -418,6 +418,37 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 			}
 		})
 	}
+	// The bound's edges. A need of MostQuotedBytes-1 bytes is quoted whole, and one of
+	// MostQuotedBytes+1 or +2 bytes is cut to MostQuotedBytes. A character of each width UTF-8
+	// holds, at each place where it holds byte MostQuotedBytes, cuts the need where that character
+	// starts. The faults are a cut one byte late, which keeps a need of MostQuotedBytes+1 whole,
+	// and a cut that splits a character of three or four bytes. The cases above let both pass:
+	// their shortest word past the bound has 201 bytes, and their character has two.
+	edges := []struct{ name, word, kept string }{
+		{"one byte under the bound", strings.Repeat("x", MostQuotedBytes-1), ""},
+		{"one byte past the bound", strings.Repeat("x", MostQuotedBytes+1), strings.Repeat("x", MostQuotedBytes)},
+		{"two bytes past the bound", strings.Repeat("x", MostQuotedBytes+2), strings.Repeat("x", MostQuotedBytes)},
+	}
+	for _, char := range []string{"é", "€", "𝄞"} {
+		for start := MostQuotedBytes - len(char) + 1; start <= MostQuotedBytes; start++ {
+			prefix := strings.Repeat("a", start)
+			edges = append(edges, struct{ name, word, kept string }{
+				fmt.Sprintf("a %d-byte character at byte %d", len(char), start), prefix + char + "z", prefix,
+			})
+		}
+	}
+	for _, edge := range edges {
+		t.Run("a need "+edge.name, func(t *testing.T) {
+			want := "needs " + edge.word + ","
+			if edge.kept != "" {
+				want = fmt.Sprintf("%s… (cut from %d bytes),", edge.kept, len(edge.word))
+			}
+			got := Validate(planOf(t, 1, taskNeeding("a", edge.word)), d)
+			if len(got) == 0 || got[0].Task != "a" || !strings.Contains(got[0].Reason, want) {
+				t.Fatalf("Validate of a need of %d bytes = %.400q, want a reason of task a quoting %q", len(edge.word), got, want)
+			}
+		})
+	}
 	for _, tc := range []struct {
 		name   string
 		blocks []Block
