@@ -48,11 +48,15 @@ func (s *shim) startForwarder() {
 			cmd.Stderr = os.Stderr
 			cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 			cmd.WaitDelay = forwarderStopWait
-			if err := cmd.Start(); err != nil {
+			// Through the shim's guard, as the renewer starts: a shim that reaps orphans
+			// (Config.ReapOrphans) must not take the forwarder's exit before cmd.Wait does.
+			pid, err := s.children.Start(cmd)
+			if err != nil {
 				s.log.Printf("[worker-shim] forwarder could not start: %v; retrying in %s", err, forwarderRestartDelay)
 			} else {
-				s.log.Printf("[worker-shim] forwarder started (pid %d)", cmd.Process.Pid)
+				s.log.Printf("[worker-shim] forwarder started (pid %d)", pid)
 				err := cmd.Wait()
+				s.children.Done(pid)
 				if s.commands.Err() != nil {
 					s.log.Printf("[worker-shim] forwarder exited (%v) during the stop; not starting it again", err)
 					return
