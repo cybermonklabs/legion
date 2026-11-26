@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -79,8 +78,8 @@ type P0BoundLiveView struct {
 
 // The codes of the P0 bound routes' own refusals. Each changes nothing.
 const (
-	// invalidP0Bound is a set that names neither a bound nor none, both, or a bound below 1 or above
-	// 2147483647 (math.MaxInt32), which the store's integer column holds.
+	// invalidP0Bound is a set that names neither a bound nor none, both, or a number that is no
+	// bound (store.ValidP0Bound).
 	invalidP0Bound = "INVALID_P0_BOUND"
 	// p0BoundReasonRequired is a change that says nothing of why it is made.
 	p0BoundReasonRequired = "P0_BOUND_REASON_REQUIRED"
@@ -145,23 +144,23 @@ func (s *server) operatorProjectP0BoundClear(w http.ResponseWriter, r *http.Requ
 		store.P0BoundChange{Mode: store.P0BoundCleared, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: req.Reason})
 }
 
-// setP0Bound refuses a set that names neither a bound nor none, both, or a bound below 1 or above
-// 2147483647, and otherwise changes the bound to the one it names (changeP0Bound).
+// setP0Bound refuses a set that names neither a bound nor none, both, or a number that is no bound
+// (store.ValidP0Bound), and otherwise changes the bound to the one it names (changeP0Bound).
 func (s *server) setP0Bound(w http.ResponseWriter, r *http.Request, answer AnswerID, route string, bound *int, unbounded bool,
 	by store.PauseActor, why string,
 ) {
 	switch {
 	case bound != nil && unbounded:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound,
-			"a set of the P0 bound names bound, a whole number from 1 to 2147483647, or unbounded, for no bound, and this one names both; nothing changed")
+			"a set of the P0 bound names bound, "+store.P0BoundRange+", or unbounded, for no bound, and this one names both; nothing changed")
 	case bound == nil && !unbounded:
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound,
-			"a set of the P0 bound names bound, a whole number from 1 to 2147483647, or unbounded, for no bound, and this one names neither; a clear, which returns to legion.yaml's admission_p0_bound, is its own route; nothing changed")
+			"a set of the P0 bound names bound, "+store.P0BoundRange+", or unbounded, for no bound, and this one names neither; a clear, which returns to legion.yaml's admission_p0_bound, is its own route; nothing changed")
 	case unbounded:
 		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundUnbounded, By: by, Reason: why})
-	case *bound < 1 || *bound > math.MaxInt32:
+	case !store.ValidP0Bound(*bound):
 		s.writeFailure(w, r, http.StatusBadRequest, invalidP0Bound, fmt.Sprintf(
-			"bound is how many P0 issues may hold a slot at once, a whole number from 1 to 2147483647, and %d is not; unbounded sets no bound; nothing changed", *bound))
+			"bound is how many P0 issues may hold a slot at once, %s, and %d is not; unbounded sets no bound; nothing changed", store.P0BoundRange, *bound))
 	default:
 		s.changeP0Bound(w, r, answer, route, store.P0BoundChange{Mode: store.P0BoundSet, Bound: *bound, By: by, Reason: why})
 	}

@@ -42,6 +42,16 @@ type P0BoundChange struct {
 // of none. A clear is no live value.
 func (c P0BoundChange) Stands() bool { return c.Mode == P0BoundSet || c.Mode == P0BoundUnbounded }
 
+// P0BoundMax is the largest P0 bound: the most the bound's integer column holds. A bound is a whole
+// number from 1 to P0BoundMax, wherever it is given: legion.yaml, the routes and this store.
+const P0BoundMax = math.MaxInt32
+
+// P0BoundRange is how every refusal of a bound out of range names the range.
+var P0BoundRange = fmt.Sprintf("a whole number from 1 to %d", P0BoundMax)
+
+// ValidP0Bound says whether n is a bound: a whole number from 1 to P0BoundMax.
+func ValidP0Bound(n int) bool { return n >= 1 && n <= P0BoundMax }
+
 // EffectiveP0Bound is the P0 bound a pass admits under: how many P0 issues may hold a slot at once,
 // or nil for no bound. It is the live value where one stands — newest, the project's newest change
 // (P0BoundTx), found false where none was ever made — and configured, legion.yaml's
@@ -84,15 +94,15 @@ func P0BoundTx(ctx context.Context, tx pgx.Tx, project string) (P0BoundChange, b
 }
 
 // RecordP0BoundChangeTx appends change through tx and answers it with its id. It refuses a mode
-// the table does not hold, a set of a number below 1 or above 2147483647 (the most the bound's
-// integer column holds), a number on a change that sets none, a reason that is only white space
-// and an actor of neither shape before the table's checks would.
+// the table does not hold, a set of a number that is no bound (ValidP0Bound), a number on a change
+// that sets none, a reason that is only white space and an actor of neither shape before the
+// table's checks would.
 func RecordP0BoundChangeTx(ctx context.Context, tx pgx.Tx, change P0BoundChange) (P0BoundChange, error) {
 	var bound *int
 	switch change.Mode {
 	case P0BoundSet:
-		if change.Bound < 1 || change.Bound > math.MaxInt32 {
-			return P0BoundChange{}, fmt.Errorf("set the P0 bound of %s to %d: a bound is from 1 to 2147483647", change.Project, change.Bound)
+		if !ValidP0Bound(change.Bound) {
+			return P0BoundChange{}, fmt.Errorf("set the P0 bound of %s to %d: a bound is %s", change.Project, change.Bound, P0BoundRange)
 		}
 		bound = &change.Bound
 	case P0BoundUnbounded, P0BoundCleared:

@@ -4,6 +4,7 @@ import {
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
+  LegionP0BoundNumber,
   type LegionPhase,
   LegionPlanRegisterRequest,
   type LegionState,
@@ -1050,15 +1051,16 @@ export function createLegionTool(deps: {
                 "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both"
               );
             }
-            if (bound !== undefined && !(isWholeFromOne(bound) && bound <= 2147483647)) {
+            const checked = bound === undefined ? undefined : LegionP0BoundNumber.safeParse(bound);
+            if (checked !== undefined && !checked.success) {
               throw new Error("set_p0_bound's bound is a whole number from 1 to 2147483647");
             }
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(
               await client.p0Bound(
-                bound === undefined
+                checked === undefined
                   ? { grantId, unbounded: true, reason }
-                  : { grantId, bound, reason }
+                  : { grantId, bound: checked.data, reason }
               )
             );
           }

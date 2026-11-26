@@ -1141,8 +1141,9 @@ const legionPauseActor = z.discriminatedUnion("kind", [
 
 /** A P0 bound: how many P0 issues may hold an admission slot at once, a whole number from 1 to
  * 2147483647, the most the daemon's store holds: the daemon refuses a set of any other number
- * (`INVALID_P0_BOUND`) and a legion.yaml whose `admission_p0_bound` is any other. */
-const p0BoundNumber = z.number().int().positive().max(2147483647);
+ * (`INVALID_P0_BOUND`) and a legion.yaml whose `admission_p0_bound` is any other. The plugin's tool
+ * checks a bound with it before it sends one, so a change of the range reaches both. */
+export const LegionP0BoundNumber = z.number().int().positive().max(2147483647);
 
 /** `api.P0BoundView` — the P0 bound (the P0 start's contract entry, dispatch://INFRA-5636): how many P0 issues may
  * hold an admission slot at once, outside the cap. `bound` is the bound in force, null for none;
@@ -1153,11 +1154,11 @@ const p0BoundNumber = z.number().int().positive().max(2147483647);
  * the bound are this view. The controller's `read_state` summary prints the bound in force and the
  * live value (LEGION_ANSWER_READS), so those are required; `configured` is read by no plugin code. */
 const legionP0Bound = z.object({
-  bound: p0BoundNumber.nullable(),
-  configured: p0BoundNumber.nullable().optional(),
+  bound: LegionP0BoundNumber.nullable(),
+  configured: LegionP0BoundNumber.nullable().optional(),
   live: z
     .object({
-      bound: p0BoundNumber.nullable(),
+      bound: LegionP0BoundNumber.nullable(),
       setBy: legionPauseActor,
       setAt: timestamp,
       reason: nonEmptyString,
@@ -2415,7 +2416,7 @@ export const LegionProjectResumeRequest = z.strictObject({
 export const LegionProjectP0BoundRequest = z.union([
   z.strictObject({
     grantId: nonEmptyString,
-    bound: p0BoundNumber,
+    bound: LegionP0BoundNumber,
     reason: nonEmptyString,
   }),
   z.strictObject({ grantId: nonEmptyString, unbounded: z.literal(true), reason: nonEmptyString }),
@@ -2474,7 +2475,7 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
  * clear of the P0 bound (`legion project set-p0-bound` and `clear-p0-bound`, under the operator's
  * bearer, the P0 start's contract entry). The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectP0BoundRequest = z.union([
-  z.strictObject({ bound: p0BoundNumber, reason: nonEmptyString }),
+  z.strictObject({ bound: LegionP0BoundNumber, reason: nonEmptyString }),
   z.strictObject({ unbounded: z.literal(true), reason: nonEmptyString }),
 ]);
 export const LegionOperatorProjectP0BoundClearRequest = z.strictObject({

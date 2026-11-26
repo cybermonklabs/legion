@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -1187,8 +1188,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("admission_cap must be a positive integer")
 	}
 	if file.AdmissionP0Bound != nil {
-		if *file.AdmissionP0Bound < 1 || *file.AdmissionP0Bound > math.MaxInt32 {
-			return Config{}, errors.New("admission_p0_bound must be a whole number from 1 to 2147483647, or left out for no bound")
+		if !store.ValidP0Bound(*file.AdmissionP0Bound) {
+			return Config{}, fmt.Errorf("admission_p0_bound must be %s, or left out for no bound", store.P0BoundRange)
 		}
 		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
 	}
