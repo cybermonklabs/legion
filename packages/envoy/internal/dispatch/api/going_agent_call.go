@@ -433,10 +433,13 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 // nothing takes over what an earlier try of the row landed before the row waited again
 // (adoptLandings), before a translation that reads what of its first requests landed refuses, so
 // the refusal says what landed. A refusal of the tool's after only requests it sends before its
-// own (a close's reason) landed is the call's refusal, which says they stand. A read of an
-// uploaded file's version answers what its file's words make of the route's answer
-// (goingUploadedFile.told), and the roster read the agents list with the claims of each session
-// and the gone sessions that hold one (goingRosterTold).
+// own (a close's reason) landed is the call's refusal, which says they stand. A row's create of an
+// issue refused 409 POSSIBLE_DUPLICATE as a near copy of issues its own plan made, and of no other,
+// is sent again with force as the call's next request, with a landing of its own under the call's
+// key, so a second try of the key whose forced create landed answers that landing
+// (forcedSiblingCopy). A read of an uploaded file's version answers what its file's words make of
+// the route's answer (goingUploadedFile.told), and the roster read the agents list with the claims
+// of each session and the gone sessions that hold one (goingRosterTold).
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -530,7 +533,10 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 			}
 		}
 	}
-	for index, spec := range specs {
+	// len(specs) is read on each pass: a create sent again with force is one more request of the
+	// call (forcedSiblingCopy).
+	for index := 0; index < len(specs); index++ {
+		spec := specs[index]
 		if index < len(landed) && landed[index] != nil {
 			if !landed[index].sends(spec) {
 				return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallChanged,
@@ -582,7 +588,16 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		if _, stale := a.callRun(ctx, request); stale != nil {
 			return agentwire.CallAnswer{}, stale
 		}
-		return answer, nil
+		// A create refused as a near copy of issues its own plan made, and of no other, is sent
+		// again with force, as the call's next request (forcedSiblingCopy).
+		forced, again, failed := a.forcedSiblingCopy(ctx, request, spec, answer)
+		if failed != nil {
+			return agentwire.CallAnswer{}, failed
+		}
+		if !again {
+			return answer, nil
+		}
+		specs = append(specs, forced)
 	}
 	return answer, nil
 }

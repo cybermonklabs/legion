@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A command-bar plan that creates two issues whose specs differ in one word, such as a split of an
+  issue into "CSV export" and "PDF export" under it, now makes both, and the changes that need
+  the second run. The near-copy gate of `POST /api/v1/issues` refused the second create
+  `409 POSSIBLE_DUPLICATE` as a copy of the first, which the same plan had just made, and the
+  moves of sub-issues under it were skipped (`ROW_SKIPPED`). Where every issue such a refusal
+  names was made by another create of the same plan, the server now sends the create again once
+  with `force`, as one more request of the row's call: the person approved both creates, so the
+  gate's question was answered. A second try of the call after the forced create landed answers
+  that create and sends nothing again. A create refused as a near copy of any other issue stays
+  refused: its row shows the gate's words and the issue they name, and each change that needs it
+  is skipped.

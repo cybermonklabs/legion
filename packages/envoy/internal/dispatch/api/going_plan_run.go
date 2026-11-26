@@ -19,7 +19,11 @@ package api
 // A row's words name each row by its action and item, as the page does (goingRowLabel). A row that
 // names the issue an earlier create of its plan makes, as "$N", runs with that issue's key put in
 // its place by the server (resolveNewIssues), while the row as approved, which the agent's call
-// names, keeps "$N".
+// names, keeps "$N". A row's create of an issue that its route refuses 409 POSSIBLE_DUPLICATE as
+// a near copy of issues other creates of its plan made, and of no other issue, is sent again once
+// with force, as the next request of its call (forcedSiblingCopy): the person approved both
+// creates, so the near-copy gate's question was answered. A refusal that names any other issue is
+// the row's answer, and each row that needs the row is skipped.
 //
 // Auto-review (going_modes.go) is a review call of the agent's (agentwire.KindReview), once its
 // model call named the rows the person's words ask for: the server lets through those its mode
@@ -200,25 +204,8 @@ func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.
 	if len(named) == 0 {
 		return row, nil
 	}
-	read, err := a.s.deps.Store.Pool.Query(ctx, goingCreatedKeysSQL, request.Run, plan.plan, named)
+	keys, held, err := a.s.goingCreatedKeys(ctx, request.Run, plan.plan, named)
 	if err != nil {
-		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
-	}
-	keys, held := map[int]string{}, map[int]string{}
-	for read.Next() {
-		var created, status int
-		var key string
-		if err := read.Scan(&created, &key, &status); err != nil {
-			read.Close()
-			return row, goingAgentFailed(agentwire.CallCall, err)
-		}
-		if status == http.StatusCreated {
-			keys[created] = key
-		} else {
-			held[created] = key
-		}
-	}
-	if err := read.Err(); err != nil {
 		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
 	}
 	for _, created := range named {
@@ -272,6 +259,99 @@ func (a *AgentListener) foundIssue(ctx context.Context, create goingPlanRowStore
 		}
 	}
 	return "an issue", true
+}
+
+// goingCreatedKeys reads, for each row of rows of plan of run that is a create of an issue and is
+// done, the key of the issue its route answered (goingCreatedKeysSQL): made holds, by the row, the
+// key of each issue a create made, answered 201, and held the key of each issue Dispatch already
+// held for the external issue a create names, answered 200.
+func (s *server) goingCreatedKeys(ctx context.Context, run string, plan int, rows []int) (made, held map[int]string, err error) {
+	read, err := s.deps.Store.Pool.Query(ctx, goingCreatedKeysSQL, run, plan, rows)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer read.Close()
+	made, held = map[int]string{}, map[int]string{}
+	for read.Next() {
+		var created, status int
+		var key string
+		if err := read.Scan(&created, &key, &status); err != nil {
+			return nil, nil, err
+		}
+		if status == http.StatusCreated {
+			made[created] = key
+		} else {
+			held[created] = key
+		}
+	}
+	return made, held, read.Err()
+}
+
+// forcedSiblingCopy is spec, a create of an issue that request's row sent, with force set, and
+// true, where its route refused it (answer) 409 POSSIBLE_DUPLICATE as a near copy of issues that
+// other creates of the row's plan made, and of no other issue: the issues those create rows, done
+// in this run, made (goingCreatedKeys, answered 201), as resolveNewIssues reads them. The person
+// approved those rows and this one together, so the near-copy gate's question was answered by
+// that approval. A refusal that names any other issue stays the row's answer, and so does every
+// other answer, and every request that is no create of an issue. routeCall sends the create with
+// force as the next request of the call, under its key and with a landing of its own, so a second
+// try of the key answers that landing as the call's own (goingOwnLanded) and sends nothing twice.
+// It is sent once: a create with force is never refused as a near copy (runNearCopyGate), and a
+// create whose body holds force already is never forced again.
+func (a *AgentListener) forcedSiblingCopy(ctx context.Context, request agentwire.CallRequest, spec goingSend, answer agentwire.CallAnswer,
+) (goingSend, bool, *agentwire.Error) {
+	if request.Row == nil || spec.method != http.MethodPost || spec.path != "/api/v1/issues" ||
+		answer.Status != http.StatusConflict || answer.Cut {
+		return spec, false, nil
+	}
+	var refused issueDuplicateError
+	if json.Unmarshal(answer.Body, &refused) != nil || refused.Code != "POSSIBLE_DUPLICATE" || len(refused.Candidates) == 0 {
+		return spec, false, nil
+	}
+	var body map[string]json.RawMessage
+	if json.Unmarshal(spec.body, &body) != nil || body == nil {
+		return spec, false, nil
+	}
+	var forced bool
+	if given, held := body["force"]; held && json.Unmarshal(given, &forced) == nil && forced {
+		return spec, false, nil
+	}
+	plan, err := readGoingPlan(ctx, a.s.deps.Store.Pool, request.Run, request.Row.Plan)
+	if err != nil {
+		return spec, false, goingAgentFailed(agentwire.CallCall, err)
+	}
+	if plan == nil {
+		return spec, false, nil
+	}
+	var creates []int
+	for _, row := range plan.rows {
+		if row.tool == goingIssueCreateTool && row.row != request.Row.Row {
+			creates = append(creates, row.row)
+		}
+	}
+	if len(creates) == 0 {
+		return spec, false, nil
+	}
+	made, _, err := a.s.goingCreatedKeys(ctx, request.Run, plan.plan, creates)
+	if err != nil {
+		return spec, false, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues the plan of %s made: %w", request.Tool, err))
+	}
+	ours := make(map[string]bool, len(made))
+	for _, key := range made {
+		ours[key] = true
+	}
+	for _, candidate := range refused.Candidates {
+		if !ours[candidate.Key] {
+			return spec, false, nil
+		}
+	}
+	body["force"] = json.RawMessage("true")
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return spec, false, goingAgentFailed(agentwire.CallCall, err)
+	}
+	spec.body = encoded
+	return spec, true, nil
 }
 
 // goingNewIssuesNamed is each row whose new issue arguments of tool name as "$N"
@@ -544,14 +624,16 @@ func (a *AgentListener) recordRowPanicked(ctx context.Context, request agentwire
 
 // goingPanickedText is what the row of a call that panicked tells its person, from the requests of
 // its key that landed (landed) among those it sends (specs): that nothing of it is known to have
-// been written; or what was written (goingLandedWords) and that the rest was not; or that all of
-// it was.
+// been written; or, where the call's own request, its last, landed, that all of it was, since a
+// request before it that landed nothing changed nothing - a create refused as a near copy and sent
+// again with force (forcedSiblingCopy); or else what was written (goingLandedWords) and that the
+// rest was not.
 func goingPanickedText(specs []goingSend, landed []*goingLandedRequest) string {
 	written := goingLandedWords(specs, landed)
 	switch {
 	case len(written) == 0:
 		return goingRouteFailedText
-	case len(written) == len(specs):
+	case len(specs) > 0 && !goingPartlyLanded(specs, landed):
 		return "this change failed in the server after all of it was written"
 	case len(written) == 1:
 		return fmt.Sprintf("this change failed in the server partway: %s was written and the rest was not", written[0])
