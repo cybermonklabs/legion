@@ -18,6 +18,7 @@ import (
 // check and the memory guard read as the shim's own (sessionPeer, podClassifier). An argv that
 // runs no shim, as a test's stand-in generation does, is started as it is.
 func TestOnlyTheSingleRoleShimIsToldToReapOrphans(t *testing.T) {
+	t.Parallel()
 	shim := []string{"/usr/local/bin/legion", "worker-shim", "--connect", "unix:///run/legion/stream", "--boot-token-file", "/run/boot", "--", "/opt/omp/bin/omp", "--mode", "rpc"}
 	start := shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: slices.Clone(shim)}
 

@@ -33,6 +33,7 @@ const controllerSecrets = "/usr/local/bin/agent-secrets"
 // rule: there every direct child of the shim is spared and a session process, the adopted orphans
 // with them, which shows the reaping rows read the rule and not an orphan the table lacks.
 func TestAReapingControllerShimsAdoptedOrphansAreNotSpared(t *testing.T) {
+	t.Parallel()
 	for _, reaping := range []bool{true, false} {
 		pod := controllerTree(t, nil)
 		args := []string{"legion", shimArgument}

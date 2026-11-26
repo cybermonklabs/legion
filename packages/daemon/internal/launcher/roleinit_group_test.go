@@ -94,6 +94,7 @@ func stageOwnProc() error {
 // stage dies alone, and role-init and its stand-in shim run on: the plant that drops it from
 // roleStageAttr fails here, and the test kills the leftover by that recorded pid.
 func TestAStageWhoseHangGuardFiresLeavesNoRoleInitBehind(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -209,6 +210,7 @@ func onlyChildOf(parent int) (int, error) {
 // (Setpgid in runRoleShim) the shim led a group of its own, and the orphan, in that group, had
 // role-init for its parent from outside it: both comparisons below fail there.
 func TestARolesOrphanIsReapedByRoleInitInsideItsOwnProcessGroup(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	report, output := roleGroupReport(t, roleGroupPlan{Dir: stageMountPoint(t), Case: "orphan"})
 	if report["status"] != "0" {
@@ -245,6 +247,7 @@ func TestARolesOrphanIsReapedByRoleInitInsideItsOwnProcessGroup(t *testing.T) {
 // own, whose member then has role-init, in another session, for its parent), whose member must be
 // ended by the kernel's SIGHUP.
 func TestARolesProcessGroupIsNotHungUpWhileRoleInitLives(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	report, output := roleGroupReport(t, roleGroupPlan{Dir: stageMountPoint(t), Case: "hup"})
 	if report["status"] != "0" {
@@ -271,6 +274,7 @@ func TestARolesProcessGroupIsNotHungUpWhileRoleInitLives(t *testing.T) {
 // before it would kill it, so a save that is cut short or a role that needs the kill fails here.
 // The drain after a shim that exits on its own is TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills's.
 func TestARoleStopKeepsItsGraceAndItsSaveWithTheShimInRoleInitsGroup(t *testing.T) {
+	t.Parallel()
 	requireRoleNamespaces(t)
 	report, output := roleGroupReport(t, roleGroupPlan{Dir: stageMountPoint(t), Case: "stop", Stop: true, Grace: roleGroupBound})
 	if report["killed"] != "no" {
