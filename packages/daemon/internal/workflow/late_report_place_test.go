@@ -29,6 +29,13 @@ import (
 // (c) lateReport itself, asked of each role as a report of the step the stop ended
 // (stoppedStepReported), refuses the checker's and answers nil for the linter's: the linter's own
 // place, step 2, is not where the task stopped (Walk.placeOfRole against Walk.Place).
+//
+// Both runs started their steps before the stop, so each role's phases row is seeded as enter
+// writes a start: the entry, its task (record.PhaseRow.EntryTask) and the step it is a run of. A
+// report of a phase the issue no longer stands in is of a run only where its row holds that
+// started task (ranUnreported); a claim alone proves no start, since a claim can be made only to
+// look at a production check. Without these rows neither report is of a run, and both are
+// refused HANDOFF_NOT_CURRENT_PHASE.
 func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -36,6 +43,8 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 	seedStepsAt(t, pool, root.Key, root.Generation, 3, map[string]string{"linter": "testing", "checker": "testing"}, "implementer", "linter", "checker")
 	checker := seedPhaseWorker(t, pool, root.Key, "checker", "")
 	linter := seedPhaseWorker(t, pool, root.Key, "linter", "")
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "linter", Claim: linter, Entry: 1, EntryTask: "Lint task a.", StepTask: "a", StepPlace: 2})
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: checker, Entry: 1, EntryTask: "Check task a.", StepTask: "a", StepPlace: 3})
 	apply := applyFacts(t, pool, engine)
 	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
