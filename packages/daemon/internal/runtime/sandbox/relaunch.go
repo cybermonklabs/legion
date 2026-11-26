@@ -749,10 +749,10 @@ func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, st
 	var first time.Time
 	ended := false
 	// await's own budget is only a backstop (launcherBackstop). The check below runs at every
-	// informer event and at least every recheckInterval, and it ends the wait before it extends the
-	// deadline, so the pod is first seen provisioning within the start bound of the wait's start or
-	// never, and no deadline lies past the start bound, the boot timeout and ProvisionBound from
-	// the wait's start.
+	// informer event and recheckInterval after each check began (await), and it ends the wait
+	// before it extends the deadline, so the pod is first seen provisioning within the start bound
+	// of the wait's start or never, and no deadline lies past the start bound, the boot timeout and
+	// ProvisionBound from the wait's start.
 	backstop := launcherBackstop(start, r.bootTimeout, r.ProvisionBound())
 	err := r.await(ctx, backstop, what, func(context.Context) (bool, error) {
 		view, err := r.view(loc.Sandbox.Name)
@@ -873,7 +873,7 @@ func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s 
 // Sandbox. One it creates carries the name of the pod a replacement whose own Create failed left
 // stranded (createSandbox), so the roles that replacement ended are read as displaced from it.
 func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error) {
-	deadline := time.Now().Add(r.bootTimeout)
+	deadline := r.clock.Now().Add(r.bootTimeout)
 	// refused is the relabel the API server refused as invalid, and refusedAt the resourceVersion its
 	// fence tested: a Sandbox read again still at that resourceVersion has not changed since, so the
 	// refusal was the patch's own, and it is the answer.
@@ -884,7 +884,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 		u, err := r.sandboxClient().Get(ctx, l.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			created, err := r.createSandbox(ctx, l)
-			if apierrors.IsAlreadyExists(err) && time.Now().Before(deadline) {
+			if apierrors.IsAlreadyExists(err) && r.clock.Now().Before(deadline) {
 				continue
 			}
 			if err != nil {
@@ -930,7 +930,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 			r.log.Info("sandbox runtime: relabelling a sandbox for its issue's new tree, keeping the Sandbox",
 				"sandbox", l.name, "uid", s.UID, "tree", s.Labels[labelTree], "for", tree, "operatingMode", s.mode())
 			relabelled, err := r.patch(ctx, s, ops...)
-			if apierrors.IsInvalid(err) && time.Now().Before(deadline) {
+			if apierrors.IsInvalid(err) && r.clock.Now().Before(deadline) {
 				// The fence's test failed: the Sandbox changed since the read, or this patch, sent
 				// again after an overloaded answer (resend), was already applied. Read it again and
 				// decide from what it holds now; one still at the tested resourceVersion refused the
@@ -951,7 +951,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 			}
 			return err == nil && current.GetUID() != s.UID, err
 		}
-		if err := r.await(ctx, time.Until(deadline), fmt.Sprintf("sandbox %s (uid %s) to be deleted", l.name, s.UID), gone); err != nil {
+		if err := r.await(ctx, deadline.Sub(r.clock.Now()), fmt.Sprintf("sandbox %s (uid %s) to be deleted", l.name, s.UID), gone); err != nil {
 			return nil, err
 		}
 	}

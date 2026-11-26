@@ -533,6 +533,7 @@ const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storag
 // refused once, naming what the line says of the image's Oh My Pi (its version, or that its legion
 // reports none), the flag, the setting, why the setting needs the flag, and both remedies.
 func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *testing.T) {
+	t.Parallel()
 	why := []string{
 		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
 			"and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start",
@@ -572,6 +573,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 // enrollment with no exchange audience as with none, and so does an older image's line with
 // neither mark, whose pass logs none.
 func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name               string
 		option             rigOption
@@ -733,7 +735,7 @@ func TestProbeImageHoldsTheProvidersSecretToTheDaemonsSeed(t *testing.T) {
 const neverFinishedBudget = 4 * recheckInterval
 
 // runsOut drives one attempt of the probe under test on fc, the clock the rig's runtime waits on
-// (withClock), to the end of budget: once the attempt is in its wait for the pod to start
+// (g.r.clock), to the end of budget: once the attempt is in its wait for the pod to start
 // (onPhase, reported on phases), the runtime's store holds what the row's stand-ins planted
 // (planted), the attempt has moved on to its wait for a started pod to finish, and a check of the
 // attempt's wait has run after all that (step), it moves fc past budget. So the attempt's verdict
@@ -878,7 +880,8 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			fc := clocktest.New(rigNow)
-			g := newProbeRig(t, nil, withClock(fc))
+			g := newProbeRig(t, nil)
+			g.r.clock = fc
 			testCase.setup(g)
 			phases := make(chan string, 8)
 			p := probeOptions(t)

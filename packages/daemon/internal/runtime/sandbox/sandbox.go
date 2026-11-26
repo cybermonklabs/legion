@@ -129,9 +129,15 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
-	// clock is what the runtime's waits run on: each wait's budget and rechecks (await) and a role
-	// launcher's wait's own deadline (awaitRoleLauncher). clock.Real outside the tests; a test
-	// that asserts which of those deadlines a launch meets hands it a clocktest.Fake.
+	// clock is what the runtime's polled waits run on: each await's budget and recheck (every wait
+	// of the probe, a role launcher's, a pod's end, a new pod's, a Sandbox's deletion and a
+	// repository cache's Service), the deadlines awaitRoleLauncher, ensureSandbox and
+	// ensureCacheSandbox measure against, and the deadline relaunch gives a role's start after its
+	// launcher's wait. clock.Real outside the tests; a test that asserts which of those deadlines a
+	// launch meets sets a clocktest.Fake here before it starts the launch. The launch try's own
+	// bound (launchBound), resend's backoff, awaitSandboxDeleted and stopIssuedChild's wait for a
+	// stop stay on the wall clock, and now (Options.Now) is a time source of its own: the present
+	// the runtime reads a pod's or a Sandbox's age against.
 	clock clock.Clock
 	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
 	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
@@ -742,35 +748,43 @@ func (r *Runtime) notify(obj any) {
 	}
 }
 
-// await re-checks done after every informer event, and recheckInterval after each check that saw
-// no event since, until it reports true, fails, or budget passes; what names the wait in the
-// timeout. done is handed ctx bounded by budget, and that one bound is the wait's: a request done
-// makes, a launch's waiting out an overloaded server included (resend), ends with the wait rather
-// than up to a boot timeout past it. The budget and the recheck run on r.clock; the recheck is
-// armed anew after each check, so on a test's fake clock a recheck armed recheckInterval past the
-// fake's moment says a check ran at that moment.
+// await checks done, again after every informer event and recheckInterval after each check began
+// (at once after a check that took longer), until it reports true, fails, or budget passes; what
+// names the wait in the timeout. done is handed ctx bounded by budget, and that one bound is the
+// wait's: a request done makes, a launch's waiting out an overloaded server included (resend),
+// ends with the wait rather than up to a boot timeout past it. The budget and the recheck run on
+// r.clock, and each recheck is armed for the moment its check began, read before the check, plus
+// recheckInterval: so on a test's fake clock a recheck pending one recheckInterval past the fake's
+// moment says a check began at that moment, and a check that began before the fake moved, however
+// late it arms, arms a recheck the move has already reached, which fires at once (step).
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
 	bounded, cancel := r.clock.WithTimeout(ctx, budget)
 	defer cancel()
-	recheck := r.clock.NewTimer(recheckInterval)
-	defer recheck.Stop()
 	for {
 		r.mu.Lock()
 		changed := r.changed
 		r.mu.Unlock()
+		began := r.clock.Now()
 		ok, err := done(bounded)
 		if err != nil || ok {
 			return err
 		}
-		recheck.Reset(recheckInterval)
+		// The recheck's own context: one derived from bounded would end with it and race its end
+		// in the select below.
+		recheck, stop := r.clock.WithDeadline(context.WithoutCancel(ctx), began.Add(recheckInterval))
+		ended := false
 		select {
 		case <-bounded.Done():
+			ended = true
+		case <-changed:
+		case <-recheck.Done():
+		}
+		stop()
+		if ended {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("timed out after %s waiting for %s", budget, what)
-		case <-changed:
-		case <-recheck.C():
 		}
 	}
 }

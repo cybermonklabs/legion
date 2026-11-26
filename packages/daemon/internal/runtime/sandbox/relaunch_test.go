@@ -1364,7 +1364,8 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 	// new pod runs out (waitedOut), so the launch's waits run on the rig's fake clock, moved past
 	// that wait's boot timeout only once the store holds the condition.
 	fc := clocktest.New(rigNow)
-	g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
+	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
+	g.r.clock = fc
 	g.hold.Store(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
@@ -1394,15 +1395,16 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
-	name, waiting := SandboxName(workerToken), fc.Now().Add(g.r.bootTimeout)
-	g.eventually("the store to hold the controller's condition, and the launch to wait for its new pod", func() bool {
+	name := SandboxName(workerToken)
+	g.eventually("the store to hold the controller's condition", func() bool {
 		u, err := g.r.storedObject(name)
 		if err != nil || u == nil {
 			return false
 		}
 		conditions, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
-		return len(conditions) > 0 && slices.ContainsFunc(fc.Armed(), waiting.Equal)
+		return len(conditions) > 0
 	})
+	awaitArmedAt(t, fc, "the launch's wait for its new pod", fc.Now().Add(g.r.bootTimeout), nil)
 	fc.Advance(g.r.bootTimeout)
 
 	err := testwait.Receive(t, "the launch", result)

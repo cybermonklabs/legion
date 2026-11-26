@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -461,46 +462,74 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // the pod provisioning at 1 or 1.5 s on any machine, and its cap is 6 or 6.5 s.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
 	t.Parallel()
-	fc := clocktest.New(rigNow)
-	g := newRig(t, nil, withClock(fc))
+	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
-	spec := workerSpec(t)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-	ended := func() bool { return len(result) > 0 }
-	name := SandboxName(spec.Claim)
-	g.pendingPod(name, pulling)
-	began := g.launcherWaitBegun(fc, g.r.bootTimeout)
+	g.launchProvisioningUntil(clocktest.New(rigNow), workerSpec(t), g.r.bootTimeout, time.Second, 5500*time.Millisecond)
+}
 
-	g.stepTo(fc, began.Add(time.Second), ended)
-	g.provisions(name)
-	g.stepTo(fc, began.Add(5500*time.Millisecond), ended)
-	if ended() {
-		t.Fatalf("Spawn ended %s into its wait for the launcher of a pod still provisioning, before its cap: %v", fc.Now().Sub(began), <-result)
+// fakeClockLaunch is a launch started on a goroutine of its own on a rig whose runtime waits on fc,
+// its pod pulling its image: began is the moment its wait for its role launcher began, and result
+// receives what the launch returns.
+type fakeClockLaunch struct {
+	name   string
+	began  time.Time
+	result chan error
+}
+
+// ended reports whether the launch has returned.
+func (l *fakeClockLaunch) ended() bool { return len(l.result) > 0 }
+
+// launchOnFakeClock has g's runtime wait on fc, starts a launch of spec, puts its pod in its image
+// pull, and returns once the launch waits for its role launcher (launcherWaitBegun), given start,
+// the pod's start bound.
+func (g *rig) launchOnFakeClock(fc *clocktest.Fake, spec runtime.SpawnSpec, start time.Duration) *fakeClockLaunch {
+	g.t.Helper()
+	g.r.clock = fc
+	l := &fakeClockLaunch{name: SandboxName(spec.Claim), result: make(chan error, 1)}
+	go func() { _, err := g.r.Spawn(g.ctx, spec); l.result <- err }()
+	g.pendingPod(l.name, pulling)
+	l.began = g.launcherWaitBegun(fc, start)
+	return l
+}
+
+// launchProvisioningUntil launches spec on fc (launchOnFakeClock), its pod pulling its image until
+// provisionAt into the launch's wait for its role launcher and in workspace-fetch from then, and
+// connects the launcher at connectAt: it fails the test unless the launch still waits then and
+// starts the role once the launcher has connected.
+func (g *rig) launchProvisioningUntil(fc *clocktest.Fake, spec runtime.SpawnSpec, start, provisionAt, connectAt time.Duration) {
+	g.t.Helper()
+	l := g.launchOnFakeClock(fc, spec, start)
+	g.stepTo(fc, l.began.Add(provisionAt), l.ended)
+	g.provisions(l.name)
+	g.stepTo(fc, l.began.Add(connectAt), l.ended)
+	if l.ended() {
+		g.t.Fatalf("Spawn ended %s into its wait for the launcher of a pod still provisioning, before its cap: %v", fc.Now().Sub(l.began), <-l.result)
 	}
-	g.launcherConnects(spec.Claim, name)
-	if err := testwait.Receive(t, "the launch", result); err != nil {
-		t.Fatalf("Spawn = %v %s into its wait, want the role started", err, fc.Now().Sub(began))
+	g.launcherConnects(spec.Claim, l.name)
+	if err := testwait.Receive(g.t, "the launch", l.result); err != nil {
+		g.t.Fatalf("Spawn = %v %s into its wait, want the role started", err, fc.Now().Sub(l.began))
 	}
 }
 
 // launcherWaitBegun waits until the launch under test is in its wait for its role launcher
-// (awaitRoleLauncher) on fc, the clock its rig's runtime waits on (withClock), and returns the
-// moment the wait began: fc stands still until the test moves it, and the wait's backstop
-// (launcherBackstop), given start, the pod's start bound, is the one deadline that far past it.
+// (awaitRoleLauncher) on fc, the clock its rig's runtime waits on, and returns the moment the wait
+// began: fc stands still until the test moves it, and the wait's backstop (launcherBackstop), given
+// start, the pod's start bound, is the one deadline that far past it.
 func (g *rig) launcherWaitBegun(fc *clocktest.Fake, start time.Duration) time.Time {
 	g.t.Helper()
 	began := fc.Now()
-	backstop := began.Add(launcherBackstop(start, g.r.bootTimeout, g.r.ProvisionBound()))
-	testwait.Eventually(g.t, "the launch's wait for its role launcher", func() bool { return slices.ContainsFunc(fc.Armed(), backstop.Equal) })
+	awaitArmedAt(g.t, fc, "the launch's wait for its role launcher", began.Add(launcherBackstop(start, g.r.bootTimeout, g.r.ProvisionBound())), nil)
 	return began
 }
 
 // stepTo moves fc one recheck at a time (step) until it stands at at, or the wait under test is
-// over.
+// over. at must lie a whole number of rechecks ahead: step moves by recheckInterval only.
 func (g *rig) stepTo(fc *clocktest.Fake, at time.Time, ended func() bool) {
 	g.t.Helper()
+	if ahead := at.Sub(fc.Now()); ahead < 0 || ahead%recheckInterval != 0 {
+		g.t.Fatalf("stepTo %s, %s from the fake clock's moment: want a whole number of rechecks (%s) ahead", at.Format(time.RFC3339Nano), ahead, recheckInterval)
+	}
 	for fc.Now().Before(at) && !ended() {
 		g.step(fc, ended)
 	}
@@ -554,14 +583,13 @@ const neverStartedWarning = "sandbox runtime: replacing a pod older than its sta
 // that has failed, names the start bound, and keeps the Sandbox and its uid, so a kept volume's
 // next pod mounts the same claim.
 //
-// On the wall clock, the rig sets the boot timeout and the kept-volume bound short. A launch whose
-// launcher never connects then gives up at its pod's start bound and names it: the kept-volume
-// bound for a kept pod where that bound is longer, the boot timeout for a pod with an ephemeral
-// volume in the same rig, and the boot timeout for a kept pod where the timeout is longer. On the
-// rig's fake clock, when the wait first sees a kept pod provisioning just before its start bound,
-// the wait runs on to the deadline that launcherDeadline sets, and the wait's backstop does not
-// end it first. With keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7
-// minutes.
+// On the rig's fake clock, at short boot timeouts and kept-volume bounds, a launch whose launcher
+// never connects gives up at its pod's start bound and names it: the kept-volume bound for a kept
+// pod where that bound is longer, the boot timeout for a pod with an ephemeral volume in the same
+// rig, and the boot timeout for a kept pod where the timeout is longer. On the same clock, when
+// the wait first sees a kept pod provisioning just before its start bound, the wait runs on to the
+// deadline that launcherDeadline sets, and the wait's backstop does not end it first. With
+// keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7 minutes.
 func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 	t.Parallel()
 	const boot, infraBoot = 120 * time.Second, 600 * time.Second
@@ -699,8 +727,7 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		{"a kept pod, the kept-volume bound shorter than the boot timeout", 2 * time.Second, time.Second, true, 2 * time.Second},
 	} {
 		t.Run("a launch whose launcher never connects: "+tc.name, func(t *testing.T) {
-			fc := clocktest.New(rigNow)
-			g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) {
+			g := newRig(t, nil, withOptions(func(o *Options) {
 				keptVolumes(SandboxMicroVM, childIssue)(o)
 				o.BootTimeout = tc.boot
 			}))
@@ -710,26 +737,22 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 			if tc.keeps {
 				spec = workerSpec(t)
 			}
-			name := SandboxName(spec.Claim)
-			result := make(chan error, 1)
-			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-			ended := func() bool { return len(result) > 0 }
-			g.pendingPod(name, pulling)
-			began := g.launcherWaitBegun(fc, tc.want)
+			fc := clocktest.New(rigNow)
+			l := g.launchOnFakeClock(fc, spec, tc.want)
 
 			// The wait's checks run one recheck apart on the fake clock, so the launch is still
 			// waiting one recheck short of its start bound and has given up at it.
-			g.stepTo(fc, began.Add(tc.want-recheckInterval), ended)
-			if ended() {
-				t.Fatalf("the launch gave up %s into its wait, want its start bound %s: %v", fc.Now().Sub(began), tc.want, <-result)
+			g.stepTo(fc, l.began.Add(tc.want-recheckInterval), l.ended)
+			if l.ended() {
+				t.Fatalf("the launch gave up %s into its wait, want its start bound %s: %v", fc.Now().Sub(l.began), tc.want, <-l.result)
 			}
-			g.stepTo(fc, began.Add(tc.want), ended)
-			err := testwait.Receive(t, "the launch", result)
+			g.stepTo(fc, l.began.Add(tc.want), l.ended)
+			err := testwait.Receive(t, "the launch", l.result)
 			want := "wait for its role launcher: timed out after " + tc.want.String() + " waiting for role launcher " + string(spec.Claim)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("Spawn = %v, want %q", err, want)
 			}
-			if kept := ownsKeptVolume(g.sandbox(name)); kept != tc.keeps {
+			if kept := ownsKeptVolume(g.sandbox(l.name)); kept != tc.keeps {
 				t.Fatalf("the issue's Sandbox owns a kept volume: %t, want %t", kept, tc.keeps)
 			}
 		})
@@ -744,32 +767,15 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 	// once the wait has checked what the stores hold (step), so no step depends on the machine.
 	t.Run("a kept pod first seen provisioning just before its start bound", func(t *testing.T) {
 		const boot, kept, provision = 2 * time.Second, 8 * time.Second, 3 * time.Second
-		fc := clocktest.New(rigNow)
-		g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) {
+		g := newRig(t, nil, withOptions(func(o *Options) {
 			keptVolumes(SandboxMicroVM)(o)
 			o.BootTimeout = boot
 		}))
 		g.r.keptVolumeBound, g.r.provisionBound = kept, provision
 		g.autoStart.Store(false)
 		spec := workerSpec(t)
-		name := SandboxName(spec.Claim)
-		result := make(chan error, 1)
-		go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-		ended := func() bool { return len(result) > 0 }
-		g.pendingPod(name, pulling)
-		began := g.launcherWaitBegun(fc, kept)
-
-		g.stepTo(fc, began.Add(kept-time.Second-recheckInterval), ended)
-		g.provisions(name)
-		g.stepTo(fc, began.Add(10*time.Second), ended)
-		if ended() {
-			t.Fatalf("Spawn ended %s into its wait for the launcher of a pod still provisioning, before its cap: %v", fc.Now().Sub(began), <-result)
-		}
-		g.launcherConnects(spec.Claim, name)
-		if err := testwait.Receive(t, "the launch", result); err != nil {
-			t.Fatalf("Spawn = %v %s into its wait, want the role started", err, fc.Now().Sub(began))
-		}
-		if !ownsKeptVolume(g.sandbox(name)) {
+		g.launchProvisioningUntil(clocktest.New(rigNow), spec, kept, kept-time.Second-recheckInterval, 10*time.Second)
+		if !ownsKeptVolume(g.sandbox(SandboxName(spec.Claim))) {
 			t.Fatal("the issue's Sandbox owns no kept volume")
 		}
 	})

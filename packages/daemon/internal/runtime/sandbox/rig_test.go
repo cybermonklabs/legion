@@ -35,7 +35,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -497,9 +496,6 @@ type rig struct {
 	kube  *kubefake.Clientset
 	conns *fake.Conns
 	now   atomic.Pointer[time.Time]
-	// clock, when set (withClock), is the clock the runtime's waits run on in place of the wall
-	// clock (Runtime.clock).
-	clock clock.Clock
 	// store is the runtime's in-memory durable state, unless an option handed it another.
 	store *fakeStore
 
@@ -809,17 +805,11 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		if err != nil {
 			t.Fatal(err)
 		}
-		if g.clock != nil {
-			p.r.clock = g.clock
-		}
 		g.p, g.r = p, p.r
 	} else {
 		r, err := configure(opts)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if g.clock != nil {
-			r.clock = g.clock
 		}
 		if err := r.start(ctx, g.clients); err != nil {
 			t.Fatal(err)
@@ -875,28 +865,35 @@ func (t generationTracker) specChanged(gvr schema.GroupVersionResource, obj k8sr
 	return !isBefore || !isAfter || !reflect.DeepEqual(before.Object["spec"], after.Object["spec"])
 }
 
-// advance moves the runtime's clock.
+// advance moves the present the runtime reads ages against (now, Options.Now), not the clock its
+// waits run on (Runtime.clock), which a test that sets a clocktest.Fake there moves with step.
 func (g *rig) advance(d time.Duration) {
 	next := g.now.Load().Add(d)
 	g.now.Store(&next)
 }
 
-// withClock has the runtime's waits run on c (Runtime.clock): each wait's budget and recheck, and a
-// role launcher's wait's deadline. A test hands it a clocktest.Fake and moves it with step.
-func withClock(c clock.Clock) rigOption { return func(g *rig, _ *Options) { g.clock = c } }
-
-// step moves fc, the clock the rig's runtime waits on (withClock), recheckInterval forward and
-// returns once a check of the runtime's wait has run at the new moment, or once ended reports true
-// because the wait under test is over. await arms its recheck recheckInterval past each check, so
-// a pending deadline at the new moment plus recheckInterval is such a check, and anything the
-// runtime's stores held before the move is what that check read. Moving by recheckInterval fires
-// the recheck the last check armed, so every step is answered by one.
+// step moves fc, the clock the rig's runtime waits on (the test sets g.r.clock = fc before it
+// starts the wait), recheckInterval forward, and returns once a check of the runtime's wait has
+// begun at the new moment and found the wait not over, or once ended reports true because the
+// wait under test is over. await arms each recheck for the moment its check began plus
+// recheckInterval, so a recheck pending one recheckInterval past the new moment says a check began
+// after the move, and read what the runtime's stores held before it. A check that began before the
+// move arms a recheck the move has reached, which fires at once, so a check of the new moment
+// follows it; and a move of recheckInterval reaches the recheck the last check armed, so every
+// step is answered by one.
 func (g *rig) step(fc *clocktest.Fake, ended func() bool) {
 	g.t.Helper()
 	fc.Advance(recheckInterval)
-	checked := fc.Now().Add(recheckInterval)
-	testwait.Eventually(g.t, "a check of the runtime's wait at "+fc.Now().Format(time.RFC3339Nano), func() bool {
-		return ended() || slices.ContainsFunc(fc.Armed(), checked.Equal)
+	awaitArmedAt(g.t, fc, "a check of the runtime's wait", fc.Now().Add(recheckInterval), ended)
+}
+
+// awaitArmedAt waits until fc has a deadline pending at at (Armed), or until ended, when not nil,
+// reports true; what names what the deadline stands for in the failure at the test binary's
+// deadline.
+func awaitArmedAt(t testing.TB, fc *clocktest.Fake, what string, at time.Time, ended func() bool) {
+	t.Helper()
+	testwait.Eventually(t, what+", a deadline armed for "+at.Format(time.RFC3339Nano), func() bool {
+		return (ended != nil && ended()) || slices.ContainsFunc(fc.Armed(), at.Equal)
 	})
 }
 
