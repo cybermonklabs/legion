@@ -19,7 +19,6 @@ import (
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
 	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error)
-	ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition, expectSHA256 string) (string, error)
 	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error

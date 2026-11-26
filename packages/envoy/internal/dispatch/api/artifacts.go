@@ -94,13 +94,12 @@ type artifactUploadInput struct {
 	// check of the token against the document, so a blank write is never told to name a token
 	// for a write the server would refuse whatever token it named.
 	blank bool
-	// expectSHA256, expectNew and expectVersion are the upload's condition, as the command bar's
-	// in-process caller carries it on the request's context (goingCondition.ExpectSHA256, ExpectNew,
-	// ExpectVersion): the content the document must hold, "" for none; whether the upload is a
-	// create alone; and the artifact the name must find at its latest version, nil for none.
-	// expectArtifact (goingCondition.ExpectArtifact) is the id of the document whose content
-	// expectSHA256 is, which the name must find, "" for none.
-	expectSHA256   string
+	// expectNew, expectVersion and expectArtifact are the upload's condition, as the command bar's
+	// in-process caller carries it on the request's context (goingCondition.ExpectNew,
+	// ExpectVersion, ExpectArtifact): whether the upload is a create alone; the artifact the name
+	// must find at its latest version, nil for none; and the id of the document the name must
+	// find, "" for none, which an undo's write back names beside the token its read returned
+	// (precondition).
 	expectNew      bool
 	expectVersion  *goingArtifactVersion
 	expectArtifact string
@@ -319,30 +318,32 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	// The upload's condition, which the command bar's in-process caller carries on the request's
-	// context (going_conditions.go): a write back of a document's content expects that content of
-	// that very document, a row of a plan whose read before found the document or file of its name
-	// expects that artifact at the version the read found (AgentListener.rowUpload), and every
-	// other upload of the bar is a create alone.
+	// context (going_conditions.go): a write back of a document's content names that very document,
+	// beside the token its read returned as the upload's precondition, a row of a plan whose read
+	// before found the document or file of its name expects that artifact at the version the read
+	// found (AgentListener.rowUpload), and every other upload of the bar is a create alone.
 	condition := goingConditionOf(r)
-	input.expectSHA256, input.expectNew, input.expectVersion = strings.TrimSpace(condition.ExpectSHA256), condition.ExpectNew, condition.ExpectVersion
+	input.expectNew, input.expectVersion = condition.ExpectNew, condition.ExpectVersion
 	input.expectArtifact = strings.TrimSpace(condition.ExpectArtifact)
 	named := 0
-	for _, set := range []bool{input.expectNew, input.expectSHA256 != "", input.expectVersion != nil} {
+	for _, set := range []bool{input.expectNew, input.expectArtifact != "", input.expectVersion != nil} {
 		if set {
 			named++
 		}
 	}
 	if named > 1 {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
-			"a create alone, an expected content and an expected version each say what the name must find: the condition names one of them")
+			"a create alone, an expected document and an expected version each say what the name must find: the condition names one of them")
 		return
 	}
-	if input.expectArtifact != "" && input.expectSHA256 == "" {
+	if input.expectArtifact != "" && input.precondition == nil {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
-			"an expected document says whose content the upload expects: the condition names it beside an expected content")
+			"an expected document is the one whose token the upload names: the condition names it beside the upload's precondition")
 		return
 	}
-	if refusal := condition.writeBackRefusal(input.expectNew || input.expectSHA256 != "" || input.expectVersion != nil, "content it expects the document to hold"); refusal != nil {
+	// A write back is decided by the token it names, as any upload's is, or by the condition on
+	// its context.
+	if refusal := condition.writeBackRefusal(input.expectNew || input.precondition != nil || input.expectVersion != nil, "token or version of what it replaces"); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
 	}
@@ -364,17 +365,6 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	kind, storedType := artifactKind(mediaType, input.contentType, input.content)
-	// An expected content is a document's markdown (docs.Service.ReplaceTextExpecting), which only
-	// the document branch below compares: a file holds none, so an upload of one carrying it would
-	// be written unconditioned. It is a condition this route does not decide for a file, refused as
-	// a write back carrying none is, before anything is written. The bar's undo writes a document
-	// back alone, and a file upload's conditions are a create alone (expectNew) and the version of
-	// the file it writes over (expectVersion), which a file decides as a document does.
-	if kind != "doc" && input.expectSHA256 != "" {
-		s.writeHandlerError(w, errorf(http.StatusInternalServerError, codeGoingConditionMissing,
-			"this upload is a file, which holds no document content for the expected content to decide it by, so nothing was written"))
-		return
-	}
 	if kind == "doc" && target.Session != "" {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, agentOwnsFilesOnly)
 		return
@@ -983,9 +973,9 @@ func (s *server) storeArtifact(
 	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if input.expectSHA256 != "" || input.expectVersion != nil {
+		if input.expectArtifact != "" || input.expectVersion != nil {
 			s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
-				"no document is named %q, so none holds the content or the version the upload expected, and nothing was written", input.name))
+				"no document is named %q, so none is the document or holds the version the upload expected, and nothing was written", input.name))
 			return
 		}
 		created = true
@@ -1020,16 +1010,16 @@ func (s *server) storeArtifact(
 		return
 	} else if input.expectNew {
 		// Decided after the lock above, which every upload to this owner takes before it makes an
-		// artifact, as the expected content is: an artifact of the name made by another writer
+		// artifact, as the expected document is: an artifact of the name made by another writer
 		// before this upload took that lock is never written over.
 		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
 			"%s already holds %s (slug %s), and this upload makes a new document alone, so nothing was written",
 			artifactOwnerText(target), artifact.Name, artifact.Slug))
 		return
 	} else if input.expectArtifact != "" && artifact.ID != input.expectArtifact {
-		// Decided under the lock above, as the expected content is: a document removed and another
-		// made under its slug since the write back's read is never written over, even where it
-		// holds the very content expected.
+		// Decided under the lock above, before the write checks the token the upload names: a
+		// document removed and another made under its slug since the write back's read is never
+		// written over, even where it carries the very token named.
 		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
 			"%q finds another document than the one this upload was to write over, so nothing was written", input.name))
 		return
@@ -1141,10 +1131,6 @@ func (s *server) storeArtifact(
 	if kind == "doc" {
 		if created {
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
-		} else if input.expectSHA256 != "" {
-			// The command bar's write back expects the markdown the document holds, which says
-			// which version it replaces as a token does; a token named beside it is checked too.
-			documentMarkdown, err = s.deps.Docs.ReplaceTextExpecting(documentCtx, artifact.ID, string(input.content), actor, input.precondition, input.expectSHA256)
 		} else {
 			// An upload over a document that already exists replaces every word of it, so it
 			// names the token of the version it is replacing, which the write checks on the tree
@@ -1321,10 +1307,9 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The command bar's write back names the markdown it replaces (expectSHA256), and its upload
-	// over a document or a file the version it replaces (expectVersion), which guard it as a token
-	// does, so neither is an unguarded replacement.
-	if !created && input.precondition == nil && input.expectSHA256 == "" && input.expectVersion == nil {
+	// The command bar's upload over a document or a file names the version it replaces
+	// (expectVersion), which guards it as a token does, so it is no unguarded replacement.
+	if !created && input.precondition == nil && input.expectVersion == nil {
 		if kind == "doc" {
 			s.noteUnguardedReplacement(artifact)
 		} else {

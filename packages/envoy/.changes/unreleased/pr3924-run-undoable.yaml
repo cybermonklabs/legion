@@ -42,9 +42,11 @@ body: |-
   under the document's slug, which no other document of its owner holds, not under its name. A
   name can be another document's slug, and the upload route takes that document first, so such an
   undo was refused as another writer's change, or, where the other document held the same content,
-  wrote over it. The write back also names the document by its id, which the upload route checks
-  under the owner's lock beside the content it expects, so a document removed and another made
-  under its slug since Undo read it is refused, 409 `DOCUMENT_CHANGED`, and never written over.
+  wrote over it. The write back names the document's token Undo's read returned as the upload's
+  `precondition`, so a document another writer changed since that read is refused, 409
+  `PRECONDITION_FAILED`, and Undo keeps it. It also names the document by its id, which the upload
+  route checks under the owner's lock, so a document removed and another made under its slug since
+  Undo read it is refused, 409 `DOCUMENT_CHANGED`, and never written over.
   Where an edit's approval holds no read of the document, or a read that does not hold its
   content, Undo's 409 `GOING_UNDO_BEFORE_UNREAD` now says so, where it said another writer changed
   the document.

@@ -176,7 +176,8 @@ func replaceText(find, with string) []any {
 // and holds no message; a suggestion still open is rejected; a message is named sent, not undone.
 // A run is undone from what its routes recorded beside their landings, so a write whose process
 // ended after it landed is undone all the same, and a document another person changed since is
-// undone by nothing, saying why. Undo is offered while History lists the run's conversation, so a
+// undone by nothing, saying why, whether the undo's read finds the change or the upload's token
+// check finds it after that read. Undo is offered while History lists the run's conversation, so a
 // run 8 days old in a conversation whose newest run is 1 day old is undone, and one whose
 // conversation's newest run is 8 days old answers 404. A second press answers each row whose undo
 // landed from that landing, sending nothing twice, and resumes where the first press ended. Two
@@ -471,6 +472,44 @@ func TestUndoOfOneRun(t *testing.T) {
 		}
 		if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "line bob wrote") {
 			t.Fatalf("the document reads %q after Undo, want bob's line kept", text)
+		}
+	})
+
+	t.Run("a document another writer changes after the undo's read is kept, nothing written back", func(t *testing.T) {
+		issue := rig.issue(t, "Holds notes edited mid-undo")
+		owner := "/api/v1/issues/" + issue
+		notes := uploadDocument(t, rig.mux, owner, "notes.md", "# Notes\n\nThe first line.\n")
+		run := rig.ran(t, "edit the notes edited mid-undo", goingChange("dispatch_doc_edit", map[string]any{
+			"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+		}))
+		var writes atomic.Int32
+		rig.hooks.set(t, http.MethodPost, owner+"/artifacts", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			// bob edits the document after the undo's read, which found the token the run's edit
+			// left, and before its write back, which names that token.
+			if writes.Add(1) == 1 {
+				if response := dispatchRequest(t, rig.mux, http.MethodPost, owner+"/artifacts/"+notes.Artifact.Slug+"/edits",
+					map[string]any{"ops": replaceText("opening line", "line bob wrote")}, "bob"); response.Code >= http.StatusMultipleChoices {
+					t.Errorf("bob's own edit answered %d %s", response.Code, response.Body.String())
+				}
+			}
+			inner.ServeHTTP(w, r)
+		})
+		first := rig.undone(t, run, "dispatch_doc_edit")
+		line := first[0]
+		if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || line.Outcome.Message != goingUndoDocumentChanged {
+			t.Fatalf("Undo of the edit answered %+v, want %s saying %q: the document changed after the undo's read",
+				line, codeGoingUndoChanged, goingUndoDocumentChanged)
+		}
+		// The upload route's refusal tells an uploader to read a fresh token and upload again; the
+		// line a person reads in the bar says none of it.
+		if encoded, err := json.Marshal(line); err != nil || strings.Contains(string(encoded), "dispatch doc-read") {
+			t.Fatalf("Undo of the edit answered %s (%v), want no word of the upload route's advice to run dispatch doc-read", encoded, err)
+		}
+		if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "line bob wrote") {
+			t.Fatalf("the document reads %q after Undo, want bob's line kept and nothing written back", text)
+		}
+		if second := rig.undone(t, run, "dispatch_doc_edit"); !reflect.DeepEqual(first, second) || writes.Load() != 1 {
+			t.Fatalf("the second press answered %+v with the write back sent %d times; want the first press's %+v, sent once", second, writes.Load(), first)
 		}
 	})
 

@@ -2,8 +2,6 @@ package docs
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -758,18 +756,6 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	return seeded.markdown, nil
 }
 
-// ErrDocumentChanged is a replacement made on the condition that the live document still holds a
-// markdown it no longer holds, refused with nothing written: the document changed since the
-// caller read it.
-var ErrDocumentChanged = errors.New("the document no longer holds the content the write expected")
-
-// MarkdownSHA256 is the hex SHA-256 of markdown, as ReplaceTextExpecting's condition names a
-// document's content.
-func MarkdownSHA256(markdown string) string {
-	sum := sha256.Sum256([]byte(markdown))
-	return hex.EncodeToString(sum[:])
-}
-
 // textRefusalError marks a refusal ReplaceText makes of its markdown alone: its parse's
 // (parseWrittenReplacing), the ask rule's refusal that the parse's read-back names instead
 // (askRefusalInstead) among them, and its render's (renderTreeWithLayout). ReplaceText answers
@@ -793,18 +779,6 @@ func (e *textRefusalError) Unwrap() error { return e.error }
 // token of the version the caller believes it is replacing and is checked under the write's own
 // locks; a replacement that names none is taken unchecked (see below).
 func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
-	return s.ReplaceTextExpecting(ctx, artifactID, markdown, actor, precondition, "")
-}
-
-// ReplaceTextExpecting is ReplaceText on a further condition: expectSHA256, where it is not
-// empty, is the hex SHA-256 (MarkdownSHA256) of the markdown the live document must hold, read
-// under the write's own locks beside the precondition, or the replacement is refused with
-// ErrDocumentChanged and nothing written; a tree outside the schema holds no markdown to
-// compare, and is refused too. An expected content says which version the replacement replaces,
-// as a token does, and is checked beside one: a replacement that names a token as well is held to
-// both, and one that names neither is taken unchecked, as ReplaceText takes every replacement
-// that names no token.
-func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition, expectSHA256 string) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined
 	}
@@ -843,9 +817,6 @@ func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown
 		repairing := errors.Is(err, ErrDocOutsideSchema)
 		if err != nil && !repairing {
 			return err
-		}
-		if expectSHA256 != "" && (repairing || MarkdownSHA256(currentMarkdown) != expectSHA256) {
-			return ErrDocumentChanged
 		}
 		if repairing {
 			current = nil

@@ -17,6 +17,9 @@ package api
 // or send one a route of another build would drop: two builds of Dispatch serve one database
 // while a release rolls out, and a route ignores a member it does not declare (decodeJSON), so a
 // condition carried as a member and dropped would write over another writer's change.
+// A token a route reads off every caller's body is no such condition, and a write back sends it
+// there as any caller does: an issue's advances_revision, and an upload's precondition, the
+// document token the undo's read returned. Main's routes declare both, so no build drops either.
 //
 // A write back says it requires its condition (goingCondition.WriteBack): a route refuses one that
 // carries no condition the route decides, 500 GOING_CONDITION_MISSING, and writes nothing
@@ -52,21 +55,20 @@ type goingCondition struct {
 	// string), or the write is refused whole, 409 ISSUE_CHANGED or ASK_CHANGED
 	// (issueExpectationRefusal, askExpectationRefusal).
 	Expect map[string]json.RawMessage
-	// ExpectSHA256 is an upload's: the hex SHA-256 of the markdown the document of the name must
-	// hold, or the upload is refused, 409 DOCUMENT_CHANGED, as it is where no document holds it.
-	ExpectSHA256 string
-	// ExpectArtifact is an upload's beside ExpectSHA256: the id of the document whose markdown that
-	// is, which the name must find, or the upload is refused, 409 DOCUMENT_CHANGED, as it is where
-	// the name finds none. Without ExpectSHA256 it is 400 ARTIFACT_INPUT. While empty it is left out
-	// of the request's digest (goingSend.digest).
+	// ExpectArtifact is an upload's: the id of the document the name must find, or the upload is
+	// refused, 409 DOCUMENT_CHANGED, as it is where the name finds none. An undo's write back names
+	// it beside the token its read returned, which the upload's body carries as its precondition,
+	// as every caller's does, and the write checks under the document's locks (409
+	// PRECONDITION_FAILED). Without a precondition, or with ExpectNew or ExpectVersion, it is 400
+	// ARTIFACT_INPUT. While empty it is left out of the request's digest (goingSend.digest).
 	ExpectArtifact string `json:",omitempty"`
 	// ExpectNew is an upload's: the owner must hold no artifact the name finds, or the upload is
-	// refused, 409 DOCUMENT_EXISTS. With ExpectSHA256 it is 400 ARTIFACT_INPUT.
+	// refused, 409 DOCUMENT_EXISTS.
 	ExpectNew bool
 	// ExpectVersion is an upload's over a document or a file its owner holds: the artifact the name
 	// finds must be this one at this latest version, or the upload is refused, 409
-	// DOCUMENT_CHANGED, as it is where the name finds none. With ExpectNew or ExpectSHA256 it is 400
-	// ARTIFACT_INPUT. While nil it is left out of the request's digest (goingSend.digest).
+	// DOCUMENT_CHANGED, as it is where the name finds none. With ExpectNew or ExpectArtifact it is
+	// 400 ARTIFACT_INPUT. While nil it is left out of the request's digest (goingSend.digest).
 	ExpectVersion *goingArtifactVersion `json:",omitempty"`
 	// ExpectHolder is a release's: the actor who must hold the claim, or the release is refused,
 	// 409 CLAIM_HOLDER_CHANGED.

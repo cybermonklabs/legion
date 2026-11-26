@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -119,10 +118,11 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 // nobody holds and of one alice holds, the release, the reopen, the resolve, and the edits of a
 // comment and of an issue message. The issue's and the project's uploads replace a document, so
 // each names the token of the version it replaces, read off handler when it is sent, as the
-// command bar's upload names it (main's upload precondition). Each edit of a post writes a body no
-// send before it wrote (goingConditionEditBody), so a write a row should have refused cannot leave
-// the post holding the very body a later row's write then writes, which would read as that write
-// changing nothing.
+// command bar's upload names it (main's upload precondition); each is there naming no token too,
+// since the token a write back names is a condition its route decides. Each edit of a post
+// writes a body no send before it wrote (goingConditionEditBody), so a write a row should have
+// refused cannot leave the post holding the very body a later row's write then writes, which
+// would read as that write changing nothing.
 var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend{
 	"issue update": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{"title": "Written in process"})
@@ -139,6 +139,14 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 		target := "/api/v1/projects/DEMO/artifacts"
 		return goingJSONSend(t, http.MethodPost, target, map[string]any{"name": "guide.md", "content": "# Guide\n\nWritten in process.\n",
 			"precondition": uploadBaseNamed(t, handler, target, "guide.md")})
+	},
+	"issue upload naming no token": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingJSONSend(t, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts",
+			map[string]any{"name": "notes.md", "content": "# Notes\n\nWritten in process, naming no token.\n"})
+	},
+	"project upload naming no token": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingJSONSend(t, http.MethodPost, "/api/v1/projects/DEMO/artifacts",
+			map[string]any{"name": "guide.md", "content": "# Guide\n\nWritten in process, naming no token.\n"})
 	},
 	"session upload": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingMultipartSend(t, "/api/v1/agents/"+goingPlanner+"/artifacts", map[string]string{"name": "notes.txt"}, "Written in process.")
@@ -181,7 +189,9 @@ func goingConditionEditBody() string {
 // on the request's context, under the lock it takes for the write, as it decided the body member
 // that carried it before: a condition the item no longer meets is refused, 409 with the route's
 // own code, and nothing is written. These are the conditions TestAnOutsideRequestNamingAnOld
-// ConditionMemberIsNotConditional sends in a body, which its routes take unconditioned.
+// ConditionMemberIsNotConditional sends in a body, which its routes take unconditioned, and the
+// document an undo's write back names beside its token (ExpectArtifact), here one the name does
+// not find.
 func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 	t.Parallel()
 	rig := newGoingWritesRig(t)
@@ -193,7 +203,7 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 	}{
 		{"issue update", "ISSUE_CHANGED", goingCondition{Expect: map[string]json.RawMessage{"title": json.RawMessage(`"Not the title"`)}}},
 		{"ask edit", "ASK_CHANGED", goingCondition{Expect: map[string]json.RawMessage{"question": json.RawMessage(`"Not the question"`)}}},
-		{"issue upload", "DOCUMENT_CHANGED", goingCondition{ExpectSHA256: strings.Repeat("0", 64)}},
+		{"issue upload", "DOCUMENT_CHANGED", goingCondition{ExpectArtifact: "00000000-0000-0000-0000-000000000000"}},
 		{"issue upload", "DOCUMENT_EXISTS", goingCondition{ExpectNew: true}},
 		{"project upload", "DOCUMENT_EXISTS", goingCondition{ExpectNew: true}},
 		{"session upload", "DOCUMENT_EXISTS", goingCondition{ExpectNew: true}},
@@ -268,10 +278,11 @@ func rigCount(t *testing.T, rig goingWritesRig, query string, arguments ...any) 
 
 // TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement: the count of uploads that
 // replaced a document unchecked (noteUnguardedReplacement) leaves out the command bar's own, which
-// say what they replace in a condition the route decides under its lock: an undo's write back,
-// which expects the markdown the document holds (goingCondition.ExpectSHA256), and a plan row's
-// upload over a document with no token, which expects its version (ExpectVersion). Each is taken,
-// and the counter reads none.
+// say what they replace: an undo's write back, which names the document by its id
+// (goingCondition.ExpectArtifact) beside the token of the version it replaces (main's upload
+// precondition), and a plan row's upload over a document with no token, which expects its version
+// (ExpectVersion), a condition the route decides under its lock. Each is taken, and the counter
+// reads none.
 func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *testing.T) {
 	t.Parallel()
 	registry := metrics.New()
@@ -279,11 +290,11 @@ func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *test
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
 	target := "/api/v1/issues/" + issue.Key + "/artifacts"
-	held := readDocumentPrecondition(t, handler, artifactID).Markdown
 	status, answer := goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target,
-		map[string]any{"name": "notes.md", "content": "# Notes\n\nwritten back\n"}), goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(held)})
+		map[string]any{"name": "notes.md", "content": "# Notes\n\nwritten back\n", "precondition": uploadBase(t, handler, artifactID)}),
+		goingCondition{WriteBack: true, ExpectArtifact: artifactID})
 	if status != http.StatusCreated {
-		t.Fatalf("the write back expecting the markdown the document holds answered %d %s, want 201", status, answer)
+		t.Fatalf("the write back naming the token the document carries answered %d %s, want 201", status, answer)
 	}
 	if sample := unguardedReplacementSample(t, registry); sample != "" {
 		t.Fatalf("after the write back the counter reads %q, want no replacement counted: it said what it replaced", sample)
@@ -299,14 +310,14 @@ func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *test
 }
 
 // TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItRead: an undo's write
-// back names the document it read by its id beside the content it expects (ExpectArtifact and
-// ExpectSHA256 of goingCondition), and the upload route decides both under the owner's lock. Where
-// that document was removed and another made under its slug since the read - holding the very
-// content expected, as two documents made by typing the same title do - the write back is refused,
-// 409 DOCUMENT_CHANGED, and the other document keeps its one empty version. Before, the expected
-// content alone was checked, and the write back landed on the other document. Naming the document
-// the name finds, the same write back lands. An expected document with no expected content is
-// refused, 400 ARTIFACT_INPUT, with nothing written.
+// back names the document it read by its id (ExpectArtifact of goingCondition), which the upload
+// route decides under the owner's lock, beside the token its read returned, which the write checks.
+// Where that document was removed and another made under its slug since the read - holding the
+// very content read, as two documents made by typing the same title do - the write back is
+// refused, 409 DOCUMENT_CHANGED, though it names the other document's own token, which alone would
+// let it through, and the other document keeps its one empty version. Naming the document the
+// name finds, the same write back lands. An expected document with no token is refused, 400
+// ARTIFACT_INPUT, with nothing written.
 func TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItRead(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -319,9 +330,13 @@ func TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItR
 		t.Fatalf("the document made after the removal is %s at slug %s, want another document at the removed one's slug %s holding its content", made.ID, made.Slug, read.Slug)
 	}
 	target := "/api/v1/issues/" + issue.Key + "/artifacts"
-	writeBack := func(condition goingCondition) (int, string) {
-		return goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target,
-			map[string]any{"name": read.Slug, "content": "# Notes\n\nWritten back.\n"}), condition)
+	// writeBack sends the write back carrying condition, its body naming token where token is not nil.
+	writeBack := func(condition goingCondition, token map[string]string) (int, string) {
+		body := map[string]any{"name": read.Slug, "content": "# Notes\n\nWritten back.\n"}
+		if token != nil {
+			body["precondition"] = token
+		}
+		return goingConditioned(t, handler, "alice", goingJSONSend(t, http.MethodPost, target, body), condition)
 	}
 	// untouched fails t unless the made document still holds its one empty version.
 	untouched := func(t *testing.T, after string) {
@@ -330,18 +345,18 @@ func TestACommandBarWriteBackNeverWritesOverADocumentMadeUnderTheSlugOfTheOneItR
 			t.Fatalf("after %s the document made under the slug holds %d versions reading %q, want its one version reading %q", after, versions, text, held)
 		}
 	}
-	expected := docs.MarkdownSHA256(held)
-	status, answer := writeBack(goingCondition{WriteBack: true, ExpectSHA256: expected, ExpectArtifact: read.ID})
+	token := uploadBase(t, handler, made.ID)
+	status, answer := writeBack(goingCondition{WriteBack: true, ExpectArtifact: read.ID}, token)
 	if status != http.StatusConflict || goingAnswerCode(t, answer) != "DOCUMENT_CHANGED" {
 		t.Fatalf("the write back naming the removed document answered %d %s, want 409 DOCUMENT_CHANGED", status, answer)
 	}
 	untouched(t, "the write back naming the removed document")
-	status, answer = writeBack(goingCondition{WriteBack: true, ExpectArtifact: made.ID})
+	status, answer = writeBack(goingCondition{WriteBack: true, ExpectArtifact: made.ID}, nil)
 	if status != http.StatusBadRequest || goingAnswerCode(t, answer) != "ARTIFACT_INPUT" {
-		t.Fatalf("the write back naming a document and no content answered %d %s, want 400 ARTIFACT_INPUT", status, answer)
+		t.Fatalf("the write back naming a document and no token answered %d %s, want 400 ARTIFACT_INPUT", status, answer)
 	}
-	untouched(t, "the write back naming a document and no content")
-	status, answer = writeBack(goingCondition{WriteBack: true, ExpectSHA256: expected, ExpectArtifact: made.ID})
+	untouched(t, "the write back naming a document and no token")
+	status, answer = writeBack(goingCondition{WriteBack: true, ExpectArtifact: made.ID}, token)
 	if versions := len(readDocument(t, handler, made.ID).Versions); status != http.StatusCreated || versions != 2 {
 		t.Fatalf("the write back naming the document the name finds answered %d %s and left %d versions, want 201 and its version 2", status, answer, versions)
 	}
@@ -436,9 +451,9 @@ func TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersL
 // (goingCondition.WriteBack), so a write back whose condition a change lost is never made
 // unconditioned: each route that takes a condition refuses one marked as a write back that
 // carries no condition the route decides - none at all, an empty one, one that leaves a field it
-// writes unexpected, or an expected content for a file, which holds no document content its
-// upload compares (review round 5, thread 7) - 500 GOING_CONDITION_MISSING, and writes nothing.
-// The same write carrying no mark is made, as every caller but the undo makes it.
+// writes unexpected, or an upload naming no token of the version it replaces - 500
+// GOING_CONDITION_MISSING, and writes nothing. The same write carrying no mark is made, as every
+// caller but the undo makes it.
 func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing.T) {
 	t.Parallel()
 	rig := newGoingWritesRig(t)
@@ -453,11 +468,9 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 			goingCondition{WriteBack: true, Expect: map[string]json.RawMessage{"status": json.RawMessage(`"triage"`)}}},
 		{"an ask edit with no condition", "ask edit", goingCondition{WriteBack: true}},
 		{"an ask edit with an empty expectation", "ask edit", goingCondition{WriteBack: true, Expect: map[string]json.RawMessage{}}},
-		{"an issue upload with no condition", "issue upload", goingCondition{WriteBack: true}},
-		{"an issue upload with a blank expected content", "issue upload", goingCondition{WriteBack: true, ExpectSHA256: "  "}},
-		{"a project upload with no condition", "project upload", goingCondition{WriteBack: true}},
+		{"an issue upload naming no token, with no condition", "issue upload naming no token", goingCondition{WriteBack: true}},
+		{"a project upload naming no token, with no condition", "project upload naming no token", goingCondition{WriteBack: true}},
 		{"a session upload with no condition", "session upload", goingCondition{WriteBack: true}},
-		{"a session upload of a file expecting a content", "session upload", goingCondition{WriteBack: true, ExpectSHA256: strings.Repeat("0", 64)}},
 		{"a claim with no condition", "claim", goingCondition{WriteBack: true}},
 		{"a release with no condition", "release", goingCondition{WriteBack: true}},
 		{"a release expecting a holder of no kind and no id", "release", goingCondition{WriteBack: true, ExpectHolder: &model.Actor{}}},
@@ -479,8 +492,8 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		})
 	}
 	// Unmarked, each of the same writes is made: the refusal is the mark's.
-	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen", "resolve",
-		"comment edit", "message edit"} {
+	for _, write := range []string{"issue update", "ask edit", "issue upload", "issue upload naming no token", "project upload", "project upload naming no token",
+		"session upload", "claim", "release", "reopen", "resolve", "comment edit", "message edit"} {
 		t.Run("unmarked "+write, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
 			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, rig.mux, f), goingCondition{})
@@ -513,18 +526,17 @@ func goingMultipartUpload(t *testing.T, handler http.Handler, target string, fie
 
 // TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional (deep review round 5, finding C):
 // the compare-and-sets the command bar's undo and uploads make ride on the request's context, so a
-// body off the network that names one under its old member - expect, expect_sha256, expect_new
-// (JSON and multipart), expect_unclaimed, expect_holder, expect_resolved_at - is answered as one
-// that names nothing, the member ignored as main's decodeJSON ignores any member a route does not
-// declare: each condition below is one its route would refuse, and each write goes through. Each
-// JSON upload replaces a document, so it names the token of the version it replaces, as main's
-// upload precondition asks of every caller, and the old member is all that could refuse it.
+// body off the network that names one under its old member - expect, expect_new (JSON and
+// multipart), expect_unclaimed, expect_holder, expect_resolved_at - is answered as one that names
+// nothing, the member ignored as main's decodeJSON ignores any member a route does not declare:
+// each condition below is one its route would refuse, and each write goes through. Each JSON
+// upload replaces a document, so it names the token of the version it replaces, as main's upload
+// precondition asks of every caller, and the old member is all that could refuse it.
 func TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional(t *testing.T) {
 	t.Parallel()
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
 	owner := "/api/v1/issues/" + f.issue
-	never := strings.Repeat("0", 64)
 	for _, tc := range []struct {
 		name, method, target string
 		body                 map[string]any
@@ -541,12 +553,9 @@ func TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional(t *testing.T
 			func(t *testing.T, answer string) bool {
 				return strings.Contains(answer, `"question":"Ship it on Monday?"`)
 			}},
-		{"an issue upload's expect_sha256", http.MethodPost, owner + "/artifacts",
-			map[string]any{"name": "notes.md", "content": "# Notes\n\nThe second line.\n", "expect_sha256": never},
-			func(t *testing.T, answer string) bool { return strings.Contains(answer, `"previous_version":1`) }},
 		{"an issue upload's expect_new", http.MethodPost, owner + "/artifacts",
-			map[string]any{"name": "notes.md", "content": "# Notes\n\nThe third line.\n", "expect_new": true},
-			func(t *testing.T, answer string) bool { return strings.Contains(answer, `"previous_version":2`) }},
+			map[string]any{"name": "notes.md", "content": "# Notes\n\nThe second line.\n", "expect_new": true},
+			func(t *testing.T, answer string) bool { return strings.Contains(answer, `"previous_version":1`) }},
 		{"a project upload's expect_new", http.MethodPost, "/api/v1/projects/DEMO/artifacts",
 			map[string]any{"name": "guide.md", "content": "# Guide\n\nRead this second.\n", "expect_new": true},
 			func(t *testing.T, answer string) bool { return strings.Contains(answer, `"previous_version":1`) }},

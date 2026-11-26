@@ -47,7 +47,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -343,14 +342,16 @@ type goingUndoer struct {
 // goingUndoSend is the one request an undo of a call sends: through route, its placeholders filled
 // from values, with body (nil for none) and condition (nil for none), and the line the undo
 // answers once it lands (landed). changed are the refusals of the route that say another writer
-// changed the item between the undo's read and its request.
+// changed the item between the undo's read and its request. changedMessage is the words of the
+// kept line such a refusal answers, in place of the refusal's own, "" to keep the route's words.
 type goingUndoSend struct {
-	route     string
-	values    map[string]string
-	body      any
-	condition *goingCondition
-	landed    goingUndoLine
-	changed   []string
+	route          string
+	values         map[string]string
+	body           any
+	condition      *goingCondition
+	landed         goingUndoLine
+	changed        []string
+	changedMessage string
 }
 
 // goingUndoPlan is what the undo of one landed call makes of the call's record alone, before it
@@ -570,8 +571,9 @@ func (u goingUndoer) landedItem(write goingLandedWrite) string {
 // undo landed first and rolled this one back. A request answered below 300 where nothing landed
 // changed nothing - its route found the item already as the undo asked, as a follow of a session
 // that follows the ask already answers 204 - and says so; a refusal `changed` names is another
-// writer's change since the undo's read, which is kept. Either is recorded as the call's undo
-// landing in a statement of its own (recordUndo), since the route's transaction recorded none.
+// writer's change since the undo's read, which is kept, in the send's own words where it names
+// them (changedMessage). Either is recorded as the call's undo landing in a statement of its own
+// (recordUndo), since the route's transaction recorded none.
 // Otherwise nothing of it landed: the line is the route's refusal, and every field the undo would
 // have put back is left with it, for a later press to try again.
 func (u goingUndoer) send(ctx context.Context, key goingCallKey, send goingUndoSend) goingUndoLine {
@@ -610,7 +612,11 @@ func (u goingUndoer) send(ctx context.Context, key goingCallKey, send goingUndoS
 	}
 	outcome := goingRefusalOf(response, answer).outcome()
 	if slices.Contains(send.changed, outcome.Code) {
-		return u.s.recordUndo(ctx, landing, goingRefusedLine(line, goingChanged([]string{outcome.Message}, nil)), false)
+		message := outcome.Message
+		if send.changedMessage != "" {
+			message = send.changedMessage
+		}
+		return u.s.recordUndo(ctx, landing, goingRefusedLine(line, goingChanged([]string{message}, nil)), false)
 	}
 	return goingRefusedLine(line, outcome)
 }
@@ -1324,16 +1330,20 @@ func (u goingUndoer) writeBack(
 // document writes the content the document held before the edit back over it, as a further
 // version uploaded to its owner's route under its slug, only while the document is what the edit
 // left: its token now is the one the edit's route answered it left (editArtifactResponse), and the
-// upload expects the content read with that token, of that very document (ExpectSHA256 and
-// ExpectArtifact of goingCondition), decided under the owner's lock, so an edit another writer makes
-// after the read is never written over, nor a document made under the slug since. A document
-// another writer changed since the edit is kept, naming its version and who wrote that version
-// after the edit (documentVersionWriter). What the edit replaced is the content of the read its
-// row was approved over, where the approval holds that read, the read's token is the one the
-// edit's route answered it found, and the read holds the document's content; otherwise what it
-// replaced is unknown, the words saying which of the three it is, and nothing is written back:
-// that, and a record that does not name the tokens, the record settles. prepared is the edit's
-// row that its last request names (goingRecordedCall), which plan found before it came here.
+// upload names that token, the one its read returned, as its precondition, as `dispatch artifact
+// --precondition-json` names one, and that very document by its id (ExpectArtifact of
+// goingCondition). The upload route decides the id under the owner's lock and the document write
+// checks the token under the document's own locks, so an edit another writer makes after the
+// read is never written over (409 PRECONDITION_FAILED), nor a document made under the slug since
+// (409 DOCUMENT_CHANGED), and either is kept, in the undo's own words (goingUndoDocumentChanged).
+// A document another writer changed since the edit is kept, naming its version and who wrote that
+// version after the edit (documentVersionWriter).
+// What the edit replaced is the content of the read its row was approved over, where the approval
+// holds that read, the read's token is the one the edit's route answered it found, and the read
+// holds the document's content; otherwise what it replaced is unknown, the words saying which of
+// the three it is, and nothing is written back: that, and a record that does not name the tokens,
+// the record settles. prepared is the edit's row that its last request names (goingRecordedCall),
+// which plan found before it came here.
 func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, line goingUndoLine) goingUndoPlan {
 	fields := goingChangedFields(write)
 	last := write.requests[len(write.requests)-1]
@@ -1419,11 +1429,19 @@ func (u goingUndoer) document(write goingLandedWrite, prepared goingPrepared, li
 		// reaches the document read above while it stands; the condition names that document by
 		// its id too, so one made under its slug after it was removed is never written over.
 		return goingLineOf(line, fields), &goingUndoSend{route: route, values: values,
-			body:      map[string]any{"name": artifact.Slug, "content": before.Content, "summary": goingUndoReason},
-			condition: &goingCondition{WriteBack: true, ExpectSHA256: docs.MarkdownSHA256(now.Content), ExpectArtifact: artifact.ID},
-			landed:    goingLineOf(line, fields), changed: []string{"DOCUMENT_CHANGED"}}
+			body: map[string]any{"name": artifact.Slug, "content": before.Content, "summary": goingUndoReason,
+				"precondition": map[string]any{"document": token}},
+			condition: &goingCondition{WriteBack: true, ExpectArtifact: artifact.ID},
+			landed:    goingLineOf(line, fields), changed: []string{"DOCUMENT_CHANGED", "PRECONDITION_FAILED"},
+			changedMessage: goingUndoDocumentChanged}
 	}}
 }
+
+// goingUndoDocumentChanged is what the undo of a document edit says where the upload's route
+// refuses its write back as another writer's change since the undo's read (DOCUMENT_CHANGED,
+// PRECONDITION_FAILED). The route's own words tell an uploader to read a fresh token and upload
+// again, which is no step for the person reading the bar.
+const goingUndoDocumentChanged = "another writer changed the document after this undo read it, so it is kept and nothing was written back"
 
 // goingVersionText is a document's version as a person reads it.
 func goingVersionText(version *int) string {
