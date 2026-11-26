@@ -574,6 +574,8 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	})
 }
 
+// A launch whose new pod's workspace-init fails past its restart grace (initRestartGrace) returns at
+// once, without waiting out the launcher's bound, and the supervisor reads the failed init.
 func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -588,7 +590,7 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 	name := SandboxName(workerToken)
 	g.eventually("the new Pending pod", func() bool { return g.pod(name) != nil })
 	g.update(g.pod(name), func(p *corev1.Pod) {
-		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer,
+		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer, RestartCount: initRestartGrace + 1,
 			State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}
