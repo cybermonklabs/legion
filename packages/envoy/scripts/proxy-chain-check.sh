@@ -51,7 +51,7 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
 # The stack helpers this script and judge-check.sh share: await, stack_start, broker_env,
-# start_extra_broker and logged_addr.
+# start_extra_broker, log_records and logged_addr.
 CHECK_NAME=proxy-chain-check
 # shellcheck source-path=SCRIPTDIR source=lib/check-stack.sh
 . "$SCRIPT_DIR/lib/check-stack.sh"
@@ -269,40 +269,41 @@ clock_now() {
 # intermediates prints each "proxy intermediate" line a broker's log holds, one per line:
 # its serial, its start and end in epoch seconds, and its names, comma-separated.
 intermediates() { # <log>
-	jq -Rnr '[inputs | fromjson? | select(.message == "proxy intermediate")] | .[] |
-		"\(.serial) \(.not_before | fromdateiso8601) \(.not_after | fromdateiso8601) \(.names | split(" ") | join(","))"' "$1" 2>/dev/null || true
+	log_records 'proxy intermediate' "$1" | jq -r '.[] |
+		"\(.serial) \(.not_before | fromdateiso8601) \(.not_after | fromdateiso8601) \(.names | split(" ") | join(","))"' 2>/dev/null || true
 }
 
 intermediate_count() { intermediates "$1" | grep -c . || true; }
 
-# await_intermediates waits for a broker's log to hold n intermediate lines, and answers whether
-# it did within the seconds given, in AWAITED (seconds waited).
-await_intermediates() { # <log> <n> <seconds>
-	local i
+# await_count waits until the counter function, run on log, reads n or more, and answers whether
+# that happened within the seconds given. AWAITED is the whole seconds it waited, rounded down, or
+# the seconds given when the count never came.
+await_count() { # <counter> <log> <n> <seconds>
+	local counter="$1" i
 	AWAITED=0
-	for ((i = 0; i < $3 * 2; i++)); do
-		if [ "$(intermediate_count "$1")" -ge "$2" ]; then
+	for ((i = 0; i < $4 * 2; i++)); do
+		if [ "$("$counter" "$2")" -ge "$3" ]; then
 			AWAITED=$((i / 2))
 			return 0
 		fi
 		sleep 0.5
 	done
-	AWAITED="$3"
+	AWAITED="$4"
 	return 1
+}
+
+# await_intermediates waits for a broker's log to hold n intermediate lines.
+await_intermediates() { # <log> <n> <seconds>
+	await_count intermediate_count "$@"
 }
 
 # failed_requests is how many "proxy intermediate request failed" lines a broker's log holds, and
 # last_failure the error of the last one.
-failed_requests() { jq -Rn '[inputs | fromjson? | select(.message == "proxy intermediate request failed")] | length' "$1" 2>/dev/null || echo 0; }
-last_failure() { jq -Rnr '[inputs | fromjson? | select(.message == "proxy intermediate request failed") | .error] | last // ""' "$1" 2>/dev/null || true; }
+failed_requests() { log_records 'proxy intermediate request failed' "$1" | jq 'length'; }
+last_failure() { log_records 'proxy intermediate request failed' "$1" | jq -r '.[-1].error // ""'; }
 
 await_failed_requests() { # <log> <n> <seconds>
-	local i
-	for ((i = 0; i < $3 * 2; i++)); do
-		[ "$(failed_requests "$1")" -ge "$2" ] && return 0
-		sleep 0.5
-	done
-	return 1
+	await_count failed_requests "$@"
 }
 
 # The serials the broker logs are lower-case hex with no leading zero; openssl prints upper case,
@@ -447,7 +448,7 @@ check_k27() {
 	front_backends_stack
 	local control_count margin
 	control_count="$(intermediate_count "$control_log")"
-	margin="$(jq -Rnr '[inputs | fromjson? | select(.message == "proxy certificate authority") | .renew_before] | first // ""' "$control_log")"
+	margin="$(log_records 'proxy certificate authority' "$control_log" | jq -r '.[0].renew_before // ""')"
 	control "a broker started with BROKER_PROXY_TEST_RENEWAL_MARGIN=0s (its log: renew_before=$margin) took its first intermediate, serial $control_serial; with the clock at 5 days and 1 minute after its start, ${wait_for}s later (three times the ${renewal_seconds}s the stack's broker took to renew, 20 at least) it had logged $control_count intermediate line(s); the call through it: $CALL_SUMMARY"
 	assert "$([ "$control_count" = 1 ] && [ "$CALL_STATUS" = 0 ] && [ "$CALL_SIGNER_SERIAL" = "$(serial_norm "${control_serial:-x}")" ] && echo 0 || echo 1)" \
 		"negative control: with the renewal margin at 0, the call at 5 days and 1 minute still uses the first intermediate, and no renewal line is logged" \
@@ -558,7 +559,7 @@ check_k21() {
 		BROKER_AIRLOCK_CA_CERT_FILE="$WORK_DIR/mounted/chain.pem" BROKER_AIRLOCK_CA_KEY_FILE="$WORK_DIR/mounted/key.pem"
 	local mounted_pid="$EXTRA_PID" mounted_log="$EXTRA_LOG" health line
 	await_intermediates "$mounted_log" 1 30 || true
-	line="$(jq -Rnc '[inputs | fromjson? | select(.message == "proxy intermediate")] | first // {}' "$mounted_log")"
+	line="$(log_records 'proxy intermediate' "$mounted_log" | jq -c '.[0] // {}')"
 	health="$(healthz "$EXTRA_API_ADDR")"
 	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 	call mounted s.airlock.test /ok "$(clock_now)" "$PROXY_ROOT_FILE"

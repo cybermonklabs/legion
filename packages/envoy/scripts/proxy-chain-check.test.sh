@@ -9,7 +9,8 @@
 #       many certificates the broker presented, the leaf's start and end, and the serial of the
 #       certificate that signed it - from a transcript shaped like `openssl s_client -showcerts`
 #       output, holding a chain made here, and a call whose client failed reads as failed;
-#   (c) intermediates reads each "proxy intermediate" line of a broker's log, and nothing else;
+#   (c) intermediates reads each "proxy intermediate" line of a broker's log, and await_count
+#       answers a count the log already holds at once, with no wait;
 #   (d) set_clock_at writes the offset that makes clock_now read the moment asked for, through a
 #       file renamed over the clock file, and serial_norm reads openssl's serial as the broker's;
 #   (e) report says UNKNOWN, and fails, when the run evaluated no property, and names how many
@@ -19,6 +20,8 @@
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="$script_dir/proxy-chain-check.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/check-stack.sh
+. "$script_dir/lib/check-stack.sh"
 work="$(mktemp -d "${TMPDIR:-/tmp}/proxy-chain-check-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 failed=0
@@ -47,7 +50,7 @@ check "--help exits 0" usage_exit 0 --help
 check "--help prints the usage" grep -q '^usage: proxy-chain-check.sh' "$work/usage.out"
 check "a usage error leaves no work directory behind" test -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'proxy-chain-check-*' -print -quit)"
 
-for function in serial_norm set_clock_at clock_now intermediates intermediate_count call assert report digest shape; do
+for function in serial_norm set_clock_at clock_now intermediates intermediate_count await_count call assert report digest shape; do
 	# A one-line function is its one line; any other runs to the first line that is a lone "}".
 	definition="$(grep -E "^${function}\(\) \{.*\}$" "$script" || true)"
 	if [ -z "$definition" ]; then
@@ -136,6 +139,11 @@ check "intermediates reads each intermediate line, its serial, dates and names, 
 [ "$got" = "$want" ] || printf 'intermediates read:\n%s\n' "$got"
 check "intermediate_count counts them" test "$(intermediate_count "$work/broker.log")" = 2
 check "intermediate_count of a log with none is 0" test "$(intermediate_count /dev/null)" = 0
+# await_count is the shared polling loop behind the two log counters. A log that already has the
+# count answers at once and records no wait.
+AWAITED="unset"
+check "await_count answers an already-reached count" await_count intermediate_count "$work/broker.log" 2 1
+check "await_count answers an already-reached count without waiting" test "$AWAITED" = 0
 
 # --- (d) the clock file and the serials. ---
 PROXY_CLOCK_OFFSET_FILE="$work/clock-offset"

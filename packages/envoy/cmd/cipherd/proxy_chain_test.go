@@ -68,12 +68,9 @@ func healthz(t *testing.T, addr string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate: a broker whose settings name a pool
-// serves, and answers 503 NO_INTERMEDIATE while the service fails every request, logging each
-// failure; once the service answers it logs its intermediate, with the names of its bound host,
-// and is ready. The stand-in is sent no credential.
-func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
-	stand, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{})
+func caStandService(t *testing.T, options proxyrulestest.CAOptions) (*proxyrulestest.CAStand, *proxyrulestest.Service) {
+	t.Helper()
+	stand, err := proxyrulestest.NewCAStand(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +80,15 @@ func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
 	}
 	t.Cleanup(service.Close)
 	service.AnswerWith(stand.Answer)
+	return stand, service
+}
+
+// TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate: a broker whose settings name a pool
+// serves, and answers 503 NO_INTERMEDIATE while the service fails every request, logging each
+// failure; once the service answers it logs its intermediate, with the names of its bound host,
+// and is ready. The stand-in is sent no credential.
+func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
+	stand, service := caStandService(t, proxyrulestest.CAOptions{})
 	stand.Fail(true)
 	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
 		"BROKER_PROXY_CA_POOL="+testProxyPool,
@@ -117,29 +123,14 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 	clockFile := filepath.Join(t.TempDir(), "clock-offset")
 	setOffset := func(offset time.Duration) {
 		t.Helper()
-		next := clockFile + ".next"
-		if err := os.WriteFile(next, []byte(offset.String()+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(next, clockFile); err != nil {
-			t.Fatal(err)
-		}
+		writeWhole(t, clockFile, offset.String()+"\n")
 	}
 	setOffset(0)
 	clock, err := proxy.NewOffsetFileClock(clockFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stand, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{Now: clock.Now, MaxLifetime: 3 * 24 * time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(service.Close)
-	service.AnswerWith(stand.Answer)
+	stand, service := caStandService(t, proxyrulestest.CAOptions{Now: clock.Now, MaxLifetime: 3 * 24 * time.Hour})
 	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
 		"BROKER_PROXY_CA_POOL="+testProxyPool,
 		"BROKER_PROXY_TEST_CA_URL="+service.URL(),

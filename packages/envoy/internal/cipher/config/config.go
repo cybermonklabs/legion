@@ -1180,20 +1180,9 @@ const (
 // domain, and the Workspace's other domains, which are listed beside that domain.
 var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
-// airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
-// them required when a profile has a proxy block (Config.RequireAirlock), the two of the mounted
-// authority unless BROKER_PROXY_CA_POOL names where each pod gets its intermediate instead. Every
-// message that names them names them in this order.
-var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
-
 // caPoolName is the shape of BROKER_PROXY_CA_POOL: a pool's resource name and nothing else, each
 // part one path segment with no space.
 var caPoolName = regexp.MustCompile(`^projects/[^/\s]+/locations/[^/\s]+/caPools/[^/\s]+$`)
-
-// proxyTestSettings are the proxy chain's settings for the local stack alone, in the order every
-// message naming them uses, which a broker in a cluster refuses (loadProxyChain) and cmd/cipherd
-// refuses on a production start.
-var proxyTestSettings = []string{"BROKER_PROXY_TEST_CA_URL", "BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", "BROKER_PROXY_TEST_RENEWAL_MARGIN"}
 
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
 // calls its model at, the model's id, the audience of the identity token it presents there, the
@@ -2274,22 +2263,26 @@ func (c Config) RequireAirlock(proxied []string) error {
 	if len(proxied) == 0 {
 		return nil
 	}
-	// One value per airlockProxySettings entry, read in that order, so the missing ones are named
-	// in the order the message naming them uses and one list is walked rather than two that could
-	// part. With the pool named, the pair is not read, so it is not missing either.
-	values := []string{c.AirlockProxyURL, c.AirlockCACertFile, c.AirlockCAKeyFile}
-	if c.ProxyCAPool != "" {
-		values = values[:1]
+	// Each name stays beside the value it names, so the missing list names the settings whose
+	// values are empty. With the pool named, the mounted pair is not read, so only the URL is
+	// required.
+	type setting struct{ name, value string }
+	settings := []setting{{"BROKER_AIRLOCK_PROXY_URL", c.AirlockProxyURL}}
+	if c.ProxyCAPool == "" {
+		settings = append(settings,
+			setting{"BROKER_AIRLOCK_CA_CERT_FILE", c.AirlockCACertFile},
+			setting{"BROKER_AIRLOCK_CA_KEY_FILE", c.AirlockCAKeyFile},
+		)
 	}
 	var missing []string
-	for i, value := range values {
-		if value == "" {
-			missing = append(missing, airlockProxySettings[i])
+	for _, setting := range settings {
+		if setting.value == "" {
+			missing = append(missing, setting.name)
 		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("BROKER_PROFILES_FILE gives %s a proxy block, so the broker runs the airlock's proxy for them and needs %s, and BROKER_PROXY_CA_POOL or both of %s; missing %s",
-			strings.Join(proxied, ", "), airlockProxySettings[0], strings.Join(airlockProxySettings[1:], " and "), strings.Join(missing, ", "))
+			strings.Join(proxied, ", "), "BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE", strings.Join(missing, ", "))
 	}
 	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
 }
@@ -2307,9 +2300,15 @@ func loadProxyChain(cfg *Config, margin string) error {
 	if cfg.ProxyCAPool != "" && !caPoolName.MatchString(cfg.ProxyCAPool) {
 		return fmt.Errorf("BROKER_PROXY_CA_POOL must be a pool's resource name, projects/<project>/locations/<location>/caPools/<pool>, got %q", cfg.ProxyCAPool)
 	}
-	for i, value := range []string{cfg.ProxyTestCAURL, cfg.ProxyTestClockOffsetFile, margin} {
-		if value != "" && cfg.kubernetesServiceHost != "" {
-			return fmt.Errorf("%s is for the broker's local stack alone and KUBERNETES_SERVICE_HOST is set, so this broker runs in a cluster; take it out", proxyTestSettings[i])
+	for _, setting := range []struct {
+		name, value string
+	}{
+		{"BROKER_PROXY_TEST_CA_URL", cfg.ProxyTestCAURL},
+		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", cfg.ProxyTestClockOffsetFile},
+		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", margin},
+	} {
+		if setting.value != "" && cfg.kubernetesServiceHost != "" {
+			return fmt.Errorf("%s is for the broker's local stack alone and KUBERNETES_SERVICE_HOST is set, so this broker runs in a cluster; take it out", setting.name)
 		}
 	}
 	if cfg.ProxyTestCAURL != "" {

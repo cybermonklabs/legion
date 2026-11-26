@@ -3,13 +3,13 @@
 #
 # The stack helpers judge-check.sh and proxy-chain-check.sh share: waiting for a process's logged
 # readiness, starting dev-airlock.sh and reading its banner, starting one more broker beside the
-# stack's, and reading an address a broker logged. Each check keeps its own scenario setup, its
-# own state past what these set, its own cleanup and its own front_backends; this file holds only
-# what the two did the same way.
+# stack's, and reading a broker's log records and the address it logged. Each check keeps its own
+# scenario setup, its own state past what these set, its own cleanup and its own front_backends;
+# this file holds only what the two did the same way.
 #
 # Sourced, never run, after lib/exec-env.sh (broker_env_of, with_broker_env). The caller sets
 # CHECK_NAME, the name its messages start with (the script's own file name when unset), SCRIPT_DIR,
-# WORK_DIR, STACK_LOG and EXTRA_BROKER_PIDS=(). Five functions:
+# WORK_DIR, STACK_LOG and EXTRA_BROKER_PIDS=(). Six functions:
 #
 #   await <what> <seconds> <log> <pattern> <pid>
 #       Waits for a line matching pattern in log, and ends the run the moment pid dies or the
@@ -34,10 +34,11 @@
 #       EXTRA_API_ADDR and EXTRA_PROXY_ADDR, and adds the pid to EXTRA_BROKER_PIDS, which the
 #       caller's cleanup stops. EXTRA_BROKER_BIN, when set, is the binary it runs in place of
 #       BROKER_BIN: judge-check.sh's k10g control is a broker built from another source tree.
+#   log_records <message> <log>
+#       Every complete JSON object in log whose message is the named one, as one JSON array. A
+#       line being written or otherwise malformed is omitted.
 #   logged_addr <message> <log>
-#       The addr field of the first line of a broker's log whose message is the one named, or
-#       nothing. The broker logs one JSON object per line, and a line still being written parses
-#       as nothing, so half an address is never read as the whole one.
+#       The addr field of the first matching log record, or nothing.
 
 await() { # <what> <seconds> <log> <pattern> <pid>
 	local i who="${CHECK_NAME:-${0##*/}}"
@@ -88,6 +89,12 @@ start_extra_broker() { # <name> [NAME=value...]
 	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$EXTRA_LOG")"
 }
 
+log_records() { # <message> <log>
+	local records
+	records="$(jq -Rnc --arg message "$1" '[inputs | fromjson? | select(.message == $message)]' "$2" 2>/dev/null)" || true
+	printf '%s\n' "${records:-[]}"
+}
+
 logged_addr() { # <message> <log>
-	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
+	log_records "$1" "$2" | jq -r '.[0].addr // empty'
 }

@@ -316,37 +316,32 @@ func TestUnderThePodsIntermediateNoEmailOrClientCertificateVerifies(t *testing.T
 // intermediate would have signed at the renewal fails for that client, not yet valid.
 func TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal(t *testing.T) {
 	hosts := []string{"s.airlock.test"}
-	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
-	root := testRoot(t, "hold root")
-	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
-	log := &syncBuffer{}
-	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
-	r := &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+	r, root := newBoundedPoolRig(t, hosts, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
 	r.run(t, IntermediateRenewBefore)
-	testwait.Until(t, "the first intermediate", func() (string, bool) { return log.String(), authority.Certificate() != nil })
-	first := authority.Certificate()
+	testwait.Until(t, "the first intermediate", func() (string, bool) { return r.log.String(), r.authority.Certificate() != nil })
+	first := r.authority.Certificate()
 	r.awaitSleeps(t, 1)
 
 	renewedAt := first.NotBefore.Add(5*24*time.Hour + time.Minute)
-	clock.set(renewedAt)
+	r.clock.set(renewedAt)
 	testwait.Until(t, "the renewal", func() (string, bool) {
-		current := authority.Certificate()
-		return log.String(), current != nil && !current.Equal(first)
+		current := r.authority.Certificate()
+		return r.log.String(), current != nil && !current.Equal(first)
 	})
-	second := authority.Certificate()
+	second := r.authority.Certificate()
 	if !second.NotBefore.Equal(renewedAt) {
 		t.Fatalf("the new intermediate starts %v; want the second it was issued, %v, as a pool with no backdate issues it", second.NotBefore, renewedAt)
 	}
 	behind := renewedAt.Add(-30 * time.Second)
-	held := verifyLeaf(t, authority, "s.airlock.test", root.cert, behind)
+	held := verifyLeaf(t, r.authority, "s.airlock.test", root.cert, behind)
 	if err := held.CheckSignatureFrom(first); err != nil {
 		t.Errorf("the leaf right after the renewal is not the previous intermediate's: %v", err)
 	}
 
 	// Control: what the pod would answer without the hold, the new intermediate's own leaf.
-	authority.mu.Lock()
-	newest := authority.signer
-	authority.mu.Unlock()
+	r.authority.mu.Lock()
+	newest := r.authority.signer
+	r.authority.mu.Unlock()
 	unheld, _, err := newest.sign("s.airlock.test", renewedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -362,8 +357,8 @@ func TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal(t *testing.T) {
 		t.Fatalf("control: the new intermediate's leaf for a client 30 s behind = %v; want it not yet valid", err)
 	}
 
-	clock.set(renewedAt.Add(newSignerHold + time.Second))
-	later := verifyLeaf(t, authority, "s.airlock.test", root.cert, clock.Now().Add(-30*time.Second))
+	r.clock.set(renewedAt.Add(newSignerHold + time.Second))
+	later := verifyLeaf(t, r.authority, "s.airlock.test", root.cert, r.clock.Now().Add(-30*time.Second))
 	if err := later.CheckSignatureFrom(second); err != nil {
 		t.Errorf("the leaf a minute and a second after the renewal is not the new intermediate's: %v", err)
 	}
@@ -375,34 +370,29 @@ func TestAClientHalfAMinuteBehindStillVerifiesRightAfterARenewal(t *testing.T) {
 // ended one for a minute.
 func TestAfterAnEndedIntermediateTheNewOneSignsAtOnce(t *testing.T) {
 	hosts := []string{"s.airlock.test"}
-	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
-	root := testRoot(t, "ended root")
-	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
-	log := &syncBuffer{}
-	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
-	r := &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+	r, root := newBoundedPoolRig(t, hosts, boundsAnswer{lifetime: 7 * 24 * time.Hour, names: hosts})
 	// No renewal margin: the pod asks for the next intermediate only once the first has ended.
 	r.run(t, 0)
-	testwait.Until(t, "the first intermediate", func() (string, bool) { return log.String(), authority.Certificate() != nil })
-	first := authority.Certificate()
+	testwait.Until(t, "the first intermediate", func() (string, bool) { return r.log.String(), r.authority.Certificate() != nil })
+	first := r.authority.Certificate()
 	if target := r.awaitSleeps(t, 1); !target.Equal(first.NotAfter) {
 		t.Fatalf("the loop sleeps until %v; want the first intermediate's end %v", target, first.NotAfter)
 	}
 
 	arrived := first.NotAfter.Add(10 * time.Second)
-	clock.set(arrived)
+	r.clock.set(arrived)
 	testwait.Until(t, "the next intermediate", func() (string, bool) {
-		current := authority.Certificate()
-		return log.String(), current != nil && !current.Equal(first)
+		current := r.authority.Certificate()
+		return r.log.String(), current != nil && !current.Equal(first)
 	})
-	second := authority.Certificate()
+	second := r.authority.Certificate()
 	if !second.NotBefore.Equal(arrived) {
 		t.Fatalf("the next intermediate starts %v; want the second it was issued, %v, as a pool with no backdate issues it", second.NotBefore, arrived)
 	}
-	if err := authority.Ready(); err != nil {
+	if err := r.authority.Ready(); err != nil {
 		t.Errorf("Ready the second the next intermediate arrived = %v; want nil, the ended one not held", err)
 	}
-	leaf := verifyLeaf(t, authority, "s.airlock.test", root.cert, arrived)
+	leaf := verifyLeaf(t, r.authority, "s.airlock.test", root.cert, arrived)
 	if err := leaf.CheckSignatureFrom(second); err != nil {
 		t.Errorf("the leaf the second the next intermediate arrived is not that intermediate's: %v", err)
 	}
@@ -504,19 +494,6 @@ func TestThePodRenewsWithTwoDaysLeft(t *testing.T) {
 	}
 }
 
-// shortRig is a pool authority whose stand-in pool answers every request with an intermediate of
-// life, starting the second it is issued, on a clock the row moves.
-func shortRig(t *testing.T, life time.Duration) *poolRig {
-	t.Helper()
-	hosts := []string{"s.airlock.test"}
-	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
-	root := testRoot(t, "short root")
-	server := boundsPool(t, root, clock.Now, boundsAnswer{lifetime: life, names: hosts})
-	log := &syncBuffer{}
-	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
-	return &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
-}
-
 // awaitNewCertificate waits for the authority to sign with another certificate than old (nil for
 // its first), and answers it.
 func (r *poolRig) awaitNewCertificate(t *testing.T, old *x509.Certificate) *x509.Certificate {
@@ -534,7 +511,8 @@ func (r *poolRig) awaitNewCertificate(t *testing.T, old *x509.Certificate) *x509
 // one of 3 days at a day after its start, not halfway through its life. A minute before that it
 // holds the first; at that moment it takes the next.
 func TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft(t *testing.T) {
-	r := shortRig(t, 3*24*time.Hour)
+	hosts := []string{"s.airlock.test"}
+	r, _ := newBoundedPoolRig(t, hosts, boundsAnswer{lifetime: 3 * 24 * time.Hour, names: hosts})
 	r.run(t, IntermediateRenewBefore)
 	first := r.awaitNewCertificate(t, nil)
 	target := r.awaitSleeps(t, 1)
@@ -555,7 +533,8 @@ func TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft(t *testing.T) {
 // intermediates is asked at most twelve times an hour, as a pool that fails is, and never in a
 // loop.
 func TestAOneDayIntermediateIsRenewedNoSoonerThanTheFloor(t *testing.T) {
-	r := shortRig(t, 24*time.Hour)
+	hosts := []string{"s.airlock.test"}
+	r, _ := newBoundedPoolRig(t, hosts, boundsAnswer{lifetime: 24 * time.Hour, names: hosts})
 	r.run(t, IntermediateRenewBefore)
 	first := r.awaitNewCertificate(t, nil)
 	taken := r.clock.Now()

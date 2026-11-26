@@ -94,6 +94,18 @@ func boundsPool(t *testing.T, root testCertificate, now func() time.Time, answer
 	return server
 }
 
+// newBoundedPoolRig is a pool authority for hosts whose stand-in pool answers every request with
+// answer, on a clock the row moves. It returns the root that the leaves verify under.
+func newBoundedPoolRig(t *testing.T, hosts []string, answer boundsAnswer) (*poolRig, testCertificate) {
+	t.Helper()
+	clock := &steppedClock{now: time.Now().Truncate(time.Second)}
+	root := testRoot(t, "bounds root")
+	server := boundsPool(t, root, clock.Now, answer)
+	log := &syncBuffer{}
+	authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
+	return &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}, root
+}
+
 // TestThePodRefusesAnAnswerPastThePoolsBounds: an answer of path length 1, of no path length
 // constraint, of 30 days, with a name the profiles file does not bind, or with no name
 // constraints at all is refused: a WARN line naming why, no intermediate taken or logged, and the
@@ -117,36 +129,30 @@ func TestThePodRefusesAnAnswerPastThePoolsBounds(t *testing.T) {
 		{"no name constraints", boundsAnswer{pathLen: 0, lifetime: week, noConstraint: true}, false, "name"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			now := time.Now().Truncate(time.Second)
-			clock := &steppedClock{now: now}
-			root := testRoot(t, "bounds root")
-			server := boundsPool(t, root, clock.Now, row.answer)
-			log := &syncBuffer{}
-			authority := NewPoolAuthority(AuthorityOptions{Clock: clock, Hosts: hosts, Log: slog.New(slog.NewJSONHandler(log, nil))})
-			r := &poolRig{clock: clock, authority: authority, log: log, pool: Pool{Name: testPoolName, Endpoint: server.URL}}
+			r, root := newBoundedPoolRig(t, hosts, row.answer)
 			r.run(t, IntermediateRenewBefore)
 			testwait.Until(t, "the first answer to be taken or refused", func() (string, bool) {
-				return log.String(), authority.Certificate() != nil || len(log.lines("proxy intermediate request failed")) > 0
+				return r.log.String(), r.authority.Certificate() != nil || len(r.log.lines("proxy intermediate request failed")) > 0
 			})
 			if row.taken {
-				if authority.Certificate() == nil || authority.Ready() != nil {
-					t.Fatalf("the control answer was not taken (Ready: %v); log:\n%s", authority.Ready(), log.String())
+				if r.authority.Certificate() == nil || r.authority.Ready() != nil {
+					t.Fatalf("the control answer was not taken (Ready: %v); log:\n%s", r.authority.Ready(), r.log.String())
 				}
-				verifyLeaf(t, authority, "s.airlock.test", root.cert, clock.Now())
+				verifyLeaf(t, r.authority, "s.airlock.test", root.cert, r.clock.Now())
 				return
 			}
-			if got := authority.Certificate(); got != nil {
+			if got := r.authority.Certificate(); got != nil {
 				t.Fatalf("the pod took the answer (%s): serial %x, %s to %s, max path length %d (zero %v), names %v; want it refused",
 					row.name, got.SerialNumber, got.NotBefore.UTC().Format(time.RFC3339), got.NotAfter.UTC().Format(time.RFC3339),
 					got.MaxPathLen, got.MaxPathLenZero, got.PermittedDNSDomains)
 			}
-			if lines := log.lines("proxy intermediate"); len(lines) > 0 {
+			if lines := r.log.lines("proxy intermediate"); len(lines) > 0 {
 				t.Errorf("an answer past the bounds was logged as an intermediate: %v", lines)
 			}
-			if err := authority.Ready(); err == nil {
+			if err := r.authority.Ready(); err == nil {
 				t.Error("Ready after the refused answer = nil; want not ready")
 			}
-			failure := log.lines("proxy intermediate request failed")[0]
+			failure := r.log.lines("proxy intermediate request failed")[0]
 			if level, why := failure["level"], strings.ToLower(fmt.Sprint(failure["error"])); level != "WARN" || !strings.Contains(why, row.why) {
 				t.Errorf("the refusal is logged %v; want WARN with a reason naming %q", failure, row.why)
 			}

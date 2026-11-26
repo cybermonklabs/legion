@@ -20,9 +20,11 @@
 #   (f) stack_start passes its options to dev-airlock.sh and reads its banner: every export, each
 #       broker's API and proxy address, pid and log, and the broker binary;
 #   (g) judge-check.sh and proxy-chain-check.sh each source lib/check-stack.sh and define none of
-#       its five functions themselves, so a copy that comes back is caught here;
+#       its six functions themselves, so a copy that comes back is caught here;
 #   (h) judge-check.sh's report says UNKNOWN, and fails, when the run evaluated no property, and
-#       counts a run with one property failing as failed.
+#       counts a run with one property failing as failed;
+#   (i) log_records returns the complete JSON lines of its named message alone, omits malformed
+#       lines and answers one empty array for a missing log.
 # The lib is sourced into this shell and its functions run here. Needs bash, jq and Linux's /proc.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +48,27 @@ check() { # <label> <command>...
 CHECK_NAME=judge-check
 # shellcheck source-path=SCRIPTDIR source=lib/check-stack.sh
 . "$script_dir/lib/check-stack.sh"
+
+# --- (i) log_records. ---
+# log_records is the one JSON-lines reader every shared helper and proxy-chain check takes.
+# A malformed line is ignored, and only the named message reaches its caller.
+cat >"$work/log-records.log" <<'EOF'
+{"message":"broker listening","addr":"127.0.0.1:1"}
+not JSON
+{"message":"watch","count":2}
+EOF
+log_records_filters() {
+  local got
+  got="$(log_records watch "$work/log-records.log")" || return 1
+  jq -e 'length == 1 and .[0].count == 2' <<<"$got" >/dev/null
+}
+check "log_records reads the complete JSON lines of its named message alone" log_records_filters
+log_records_missing_is_one_empty_array() {
+  local got
+  got="$(log_records watch "$work/no-such-log")"
+  test "$got" = '[]'
+}
+check "log_records reads a missing log as one empty array" log_records_missing_is_one_empty_array
 
 # --- (a) start_extra_broker, on a stand-in stack broker whose database URL holds a password. ---
 mkdir -p "$work/bin"
@@ -201,8 +224,8 @@ check "stack_start evaluates every export, the airlock's last, so it wins where 
 for script in judge-check.sh proxy-chain-check.sh; do
   # shellcheck disable=SC2016 # the line as each script writes it, $SCRIPT_DIR unexpanded
   check "$script sources lib/check-stack.sh" grep -qxF '. "$SCRIPT_DIR/lib/check-stack.sh"' "$script_dir/$script"
-  copies="$(grep -cE '^(await|stack_start|broker_env|start_extra_broker|logged_addr)\(\) \{' "$script_dir/$script" || true)"
-  check "$script defines none of the lib's five functions itself" test "$copies" = 0
+  copies="$(grep -cE '^(await|stack_start|broker_env|start_extra_broker|log_records|logged_addr)\(\) \{' "$script_dir/$script" || true)"
+  check "$script defines none of the lib's six functions itself" test "$copies" = 0
 done
 
 # --- (h) judge-check.sh's result: a run that asserted nothing proved nothing. Its pass, fail,
