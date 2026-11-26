@@ -132,13 +132,35 @@ write_goldens() {
     { cat "$scratch/goldens.txt"; fail "$1: the goldens were not written"; }
 }
 
+# numbered_text NUMBER LINE... adds numbered entry NUMBER's text to version.go of the branch of the
+# current directory as an author did before the cutover: a `// NUMBER: ` paragraph of the LINEs
+# above the const line, and the const line raised to NUMBER.
+numbered_text() {
+  python3 - "$api/version.go" "$@" <<'PY'
+import re, sys
+
+path, number, *lines = sys.argv[1:]
+with open(path) as f:
+    text = f.read()
+paragraph = "".join(f"// {line}\n" for line in [f"{number}: {lines[0]}"] + lines[1:])
+new, count = re.subn(r"\nconst DaemonAPIVersion = \d+\n",
+                     lambda m: f"\n//\n{paragraph}const DaemonAPIVersion = {number}\n", text, count=1)
+if count != 1:
+    sys.exit(f"{path}: no const line to raise to {number}")
+with open(path, "w") as f:
+    f.write(new)
+PY
+}
+
 # numbered_entry NUMBER WORD [PAUSE_FIELD] adds numbered entry NUMBER to the branch of the current
-# directory as an author did before the cutover: its text, a `// NUMBER: ` paragraph above the
-# const line of version.go, and the const line raised to NUMBER; its constant
+# directory as an author did before the cutover: its text (numbered_text); its constant
 # convert<Word>Contract after the last contract of shaping.go, appended to SupportedContracts;
 # where PAUSE_FIELD is given, that field of the body of `POST /legion/v1/project/pause`; its
 # manifests; and its goldens. The caller commits it.
 numbered_entry() {
+  local change="which changes nothing of the contract."
+  [ -z "${3:-}" ] || change="the field \`$3\` of the body of \`POST /legion/v1/project/pause\`."
+  numbered_text "$1" "dispatch://INFRA-1569 conversion test -- the entry \`$2\` of the conversion test," "$change"
   python3 - "$@" <<'PY'
 import re, sys
 
@@ -163,16 +185,6 @@ def once(pattern, replacement, text):
     if count != 1:
         sys.exit(f"no match of {pattern!r}")
     return new
-
-
-# The entry's text, below the one before it, and the const line raised to it.
-change = f"the field `{field}` of the body of `POST /legion/v1/project/pause`." if field else \
-    "which changes nothing of the contract."
-edit(f"{api}/version.go", lambda t: once(
-    r"\nconst DaemonAPIVersion = \d+\n",
-    lambda m: f"\n//\n// {number}: dispatch://INFRA-1569 conversion test -- the entry `{word}` of the conversion test,\n"
-              f"// {change}\n"
-              f"const DaemonAPIVersion = {number}\n", t))
 
 
 # The constant, after the last contract of shaping.go, and in SupportedContracts.
@@ -254,6 +266,9 @@ echo "this change ${this:0:10}, branched from ${base:0:10}, which declares contr
 step "the branch: numbered entry $k by the rule before the cutover"
 git worktree add -q -b "$branch" "$repo" "$base"
 cd "$repo"
+numbered_text "$k" "dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds:" \
+  "a band that takes nothing off the state, an answer no route writes, and the word" \
+  "\`convert_probe\` of the waiting line's \`kind\`."
 python3 - "$k" <<'PY'
 import re, sys
 
@@ -284,14 +299,6 @@ def once(pattern, replacement, text, flags=0):
         sys.exit(f"no match of {pattern!r}")
     return new
 
-
-# The entry's text, and the const line raised to it.
-edit(f"{api}/version.go", lambda t: once(
-    r"\nconst DaemonAPIVersion = \d+\n",
-    f"\n//\n// {k}: dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds:\n"
-    "// a band that takes nothing off the state, an answer no route writes, and the word\n"
-    "// `convert_probe` of the waiting line's `kind`.\n"
-    f"const DaemonAPIVersion = {k}\n", t))
 
 # The constant, after the last contract of shaping.go, and the band.
 def shaping(text):
@@ -415,21 +422,7 @@ step "an entry with no constant is refused where an entry file of the ref declar
 # another change's entry file declares that name, the second declaration would not compile.
 cd "$repo_stacked"
 git checkout -q -b "$branch_named" "$base"
-python3 - "$k" <<'PY'
-import re, sys
-
-k = sys.argv[1]
-path = "packages/daemon/internal/api/version.go"
-with open(path) as f:
-    text = f.read()
-new, count = re.subn(r"\nconst DaemonAPIVersion = \d+\n",
-                     f"\n//\n// {k}: dispatch://INFRA-1569 conversion test -- an entry with no constant of its own.\n"
-                     f"const DaemonAPIVersion = {k}\n", text, count=1)
-if count != 1:
-    sys.exit(f"{path}: no const line")
-with open(path, "w") as f:
-    f.write(new)
-PY
+numbered_text "$k" "dispatch://INFRA-1569 conversion test -- an entry with no constant of its own."
 git commit -q -am "feat(daemon): the conversion test's entry $k, with no constant"
 named_file=$api/contract_20000101000000_infra-1569.go
 named_blob=$(printf '%s\n' "package api" "" \
