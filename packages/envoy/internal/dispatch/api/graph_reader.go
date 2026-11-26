@@ -104,23 +104,28 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 }
 
 // everyReader is who a read of the graph answers for when what it reads is kept or sent where
-// many readers read it rather than answered to the one person whose request made it: the server's
-// own viewer (model.ServerViewer), which sees every project and every party and proves no author,
-// so a node reserved for its author is never in what everyone reads, whoever's request wrote it.
-// Each read it makes reads content that belongs to one owner, one project or one conversation,
-// and is gated per viewer where it leaves the server. TestEveryServerReadIsNamed holds every use
-// to serverReads, which says why no single caller is its reader:
+// many readers read it rather than answered to the one person whose request made it, or when the
+// server reads for no request at all: the server's own viewer (model.ServerViewer), which sees
+// every project and every party and proves no author, so a node reserved for its author is never
+// in what everyone reads, whoever's request wrote it. TestEveryServerReadIsNamed
+// (server_reads_test.go) holds every use of it, and of model.ServerReader and model.ServerViewer,
+// to serverReads, which says for each why no single caller is its reader:
 //
-//   - an event's payload (commentEventPayload, and messageCorrectionEvent for a message's edit
-//     and delete) is appended once and read by every subscriber of the event's topics and every
-//     reader of the issue's event log;
+//   - an event's payload (commentEventPayload, commentAnchorRefreshEvent, and
+//     messageCorrectionEvent for a message's edit and delete) is appended once and read by every
+//     subscriber of the event's topics and every reader of its owner's event log;
 //   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
 //     read again by every reader of the conversation, not by the person who wrote the message;
 //   - the record of a comment thread a document projects (ProjectMark, through
-//     projectThreadMark from reopenComment, editComment and deleteComment, and from
-//     commentAction and createCommentFor) is written into the document every reader of that
-//     document reads;
+//     projectThreadMark, commentAction and createCommentFor) is written into the document every
+//     reader of that document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
-//     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     and handed to the next reader whose request names the same pair;
+//   - the server's own work for no request: the delivery sweep (resumeOwedDelivery and the two
+//     settles), a mention sender's claim (claimCommentDeliveryAttempt), the boot fix of a parent's
+//     status, CI's result lines (deriveCIResults), and a keyed repeat's check of whether its object
+//     exists at all (heldAnswerHidden);
+//   - and four reads a later slice gives the caller's reader, each named with that slice: the
+//     going run's search (S3c-issues), and the live socket's event relay, its replay and its five
+//     Delivery views (S4).
 var everyReader = model.ServerReader
