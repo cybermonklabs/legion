@@ -1034,6 +1034,7 @@ var goingExcludedRoutes = map[string]string{
 	"GET /api/v1/me/going-plans":                                    goingExcludedBar,
 	"GET /api/v1/agents/known":                                      "the reference renderer checks whether specific unlisted agent addresses exist; the bar reads the agent roster instead",
 	"GET /api/v1/agents/{session_id}/artifacts":                     "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact through dispatch_read",
+	"POST /api/v1/markdown/file-round-trip":                         "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text through dispatch_check_markdown",
 	"PUT /api/v1/issues/{key}/design-gates":                         goingExcludedDaemon,
 	"PUT /api/v1/projects/{key}/gated-steps":                        goingExcludedDaemon,
 	"PUT /api/v1/issues/{key}/role-holders":                         goingExcludedDaemon,

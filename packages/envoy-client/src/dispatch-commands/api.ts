@@ -60,8 +60,8 @@ export interface WriteRoute {
 
 /**
  * Each write route a hand-written `dispatch` command sends, with the commands that send it. A route
- * that writes nothing (`markdown/round-trip`, `related`, `results/dry-run`) names the command that
- * sends it, since the gate refuses it all the same.
+ * that writes nothing (`markdown/round-trip`, `markdown/file-round-trip`, `related`,
+ * `results/dry-run`) names the command that sends it, since the gate refuses it all the same.
  */
 const HAND_WRITTEN_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
@@ -114,6 +114,7 @@ const HAND_WRITTEN_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects/{key}/artifacts", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/markdown/round-trip", commands: ["artifact"] },
+  { method: "POST", pattern: "/api/v1/markdown/file-round-trip", commands: ["artifact"] },
   { method: "POST", pattern: "/api/v1/projects", commands: ["project"] },
   {
     method: "PUT",

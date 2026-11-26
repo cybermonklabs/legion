@@ -6,13 +6,14 @@
 # DATABASE_URL it serves.
 #
 # The pinned image is pgvector on PostgreSQL 18, the version Dispatch's tests and dev databases
-# run; Dispatch's migrations need its `vector` extension. A `dispatch-pg` running any other image
-# (an older version of this script created it from postgres:16, then from pgvector on PostgreSQL
-# 16) is refused, naming both images and the commands that dump every database in it, check the
-# dump finished, and restore them into a new container on the pinned image, which works from any
-# image or major and needs no volume. This script never starts, stops, renames, removes or
-# recreates a stale container itself: the container can hold other work's databases, and moving it
-# is its owner's call.
+# run; Dispatch's migrations need its `vector` extension. They also need `btree_gin`, a contrib
+# extension that PostgreSQL includes, and a migration creates each of the two extensions. A
+# `dispatch-pg` running any other image (an older version of this script created it from
+# postgres:16, then from pgvector on PostgreSQL 16) is refused, naming both images and the commands
+# that dump every database in it, check the dump finished, and restore them into a new container
+# on the pinned image, which works from any image or major and needs no volume. This script never
+# starts, stops, renames, removes or recreates a stale container itself: the container can hold
+# other work's databases, and moving it is its owner's call.
 set -euo pipefail
 
 container="dispatch-pg"
