@@ -24,7 +24,7 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  Playwright to skip that filter, and excludes every file of every project that the placement
  *  gives another leg (`testRun.exclude`, :759-764: an excluded suite's rows are neither run nor
  *  reported). `--shard=N/M` still names the leg and the leg count, which Playwright still
- *  prints ("Running 404 tests using 4 workers, shard 2 of 4") and still writes into the blob
+ *  prints ("Running 404 tests using 4 workers, shard 2 of 6") and still writes into the blob
  *  report's metadata, so nothing downstream of the run reads a different shape.
  *
  *  It is named in `e2e/playwright.config.ts`'s reporter list, so a local `--shard` run splits as
@@ -47,7 +47,7 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  beside its blob report - it writes two lists there, one row a line (`rowId`, e2e/leg-rows.ts):
  *  `shard-N.selection.jsonl`, every row of the selection as `preprocess` reads it before any
  *  exclusion, and `shard-N.ran.jsonl`, the rows `onBegin` is handed, which is what Playwright
- *  schedules on this leg after every filter. The merge job's reading one holds the four legs'
+ *  schedules on this leg after every filter. The merge job's reading one holds every leg's
  *  lists against each other (e2e/tools/leg-rows.ts): a row of the selection that no leg ran, or
  *  that two ran, fails it by name. The second list is read from Playwright and not from this
  *  hook's own choice, so a fault in the choice cannot hide in both. */

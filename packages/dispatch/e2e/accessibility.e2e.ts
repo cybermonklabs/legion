@@ -34,7 +34,7 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  stale entry would hide the regression it once accepted.
  *
  *  The check is a hook and not a final row because no row can see the run. The shard job
- *  (.github/workflows/dispatch-browser.yaml) puts this whole file on one of its four machines -
+ *  (.github/workflows/dispatch-browser.yaml) puts this whole file on one of its machines -
  *  e2e/shard-split.ts places a file's rows together - and that machine's four workers split its
  *  rows again, so a final row would sit in one process and judge entries whose routes another
  *  process ran. `afterAll` runs once in each worker, after the rows that worker ran, which is

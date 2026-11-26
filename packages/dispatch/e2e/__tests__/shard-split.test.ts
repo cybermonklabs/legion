@@ -1,14 +1,20 @@
 /** The split of a sharded run by measured row time (`e2e/shard-split.ts`), as the placement
  *  itself and as `e2e/shard-reporter.ts` applies it to the real config.
  *
- *  The second half is what the shard job rests on. Each of its four legs computes the placement
+ *  The second half is what the shard job rests on. Each of its legs computes the placement
  *  on its own machine, and a leg that placed a file differently from the others would run it
  *  twice or leave it to nobody. So each selection is listed whole and then leg by leg through the
- *  reporter, all four legs, and two things are held: every row of the whole listing is on exactly
+ *  reporter, every leg, and two things are held: every row of the whole listing is on exactly
  *  one leg (`legRowFaults`, e2e/leg-rows.ts, which names each row that is on none or on two), and
  *  each leg holds exactly the rows the placement of the whole listing gives it. The first catches
  *  a reporter that drops or doubles a file whichever leg it is placed on; the second is what tells
  *  this split from Playwright's own, whose count split is a partition too.
+ *
+ *  How many legs it proves is read from the shard job's matrix in
+ *  `.github/workflows/dispatch-browser.yaml`, the one place that count is written
+ *  (.github/ci-notes/dispatch-browser.md#how-many-legs-the-lane-runs-and-where-that-count-is-written),
+ *  so this proof is of the split CI runs and a change to the matrix is proved by the same run
+ *  that makes it.
  *
  *  The listings of a selection run one after the other, and the two selections side by side, so
  *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
@@ -17,6 +23,7 @@
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { type ListedRow, pullRequestLaneProjects, rowsOfListing, tagged } from "../configurations";
 import { legRowFaults } from "../leg-rows";
@@ -123,7 +130,29 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
-const legs = 4;
+/** How many legs the shard job of `.github/workflows/dispatch-browser.yaml` runs, read from its
+ *  matrix: the matrix is the one place the count is written, and `${{ strategy.job-total }}`
+ *  counts it into the `--shard` denominator the browser step passes
+ *  `.github/scripts/dispatch-browser-shard-suite.sh`. A matrix that is not 1 to N in order is
+ *  refused here rather than proved: `--shard=N/M` numbers the legs that way, so a list with a
+ *  hole in it would leave rows to a leg no job runs. */
+function shardLegs(): number {
+  const path = fileURLToPath(
+    new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
+  );
+  const matrix = /^\s+shard: \[([\d, ]+)\]$/m.exec(readFileSync(path, "utf8"));
+  if (!matrix) throw new Error(`no \`shard: [...]\` matrix in ${path}`);
+  const listed = (matrix[1] as string).split(",").map((leg) => Number(leg.trim()));
+  const counted = listed.map((_, index) => index + 1);
+  if (listed.join(" ") !== counted.join(" ")) {
+    throw new Error(
+      `the shard matrix of ${path} is ${listed.join(", ")}, not 1 to ${listed.length}`
+    );
+  }
+  return listed.length;
+}
+
+const legs = shardLegs();
 const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
 
 /** One selection listed whole and then each of its legs through the reporter, one listing after
@@ -155,7 +184,7 @@ const selections = {
 
 for (const [name, listed] of Object.entries(selections)) {
   test(
-    `the four legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
+    `the ${legs} legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
     async () => {
       const { sharded, whole: listedWhole } = await listed;
       const whole = rowsOfListing(listedWhole);
@@ -196,6 +225,6 @@ for (const [name, listed] of Object.entries(selections)) {
         expect(perLeg[leg - 1], `leg ${leg} of ${name} against its placement`).toEqual(expected);
       }
     },
-    rowLimit("listing", "listing", "listing", "listing", "listing")
+    rowLimit("listing", ...Array.from({ length: legs }, () => "listing" as const))
   );
 }
