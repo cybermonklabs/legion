@@ -1,8 +1,9 @@
 // Oh My Pi v18.16.0, packages/utils/src/dirs.ts:43-44,84-96,334-337,997-1000.
 // A subagent's path is below its parent's, so this also reads its root's profile.
-const NAME = "[a-z0-9][a-z0-9._-]{0,63}";
+/** An Oh My Pi profile's name, as a regular expression's source. */
+export const PROFILE_NAME = "[a-z0-9][a-z0-9._-]{0,63}";
 export const DEFAULT_ROOT = "^(?:/|~/)(?:[^/]+/)*?[.]omp/agent/sessions/.+";
-export const NAMED_ROOT = `^(?:/|~/)(?:[^/]+/)*?[.]omp/profiles/(${NAME})/agent/sessions/.+`;
+export const NAMED_ROOT = `^(?:/|~/)(?:[^/]+/)*?[.]omp/profiles/(${PROFILE_NAME})/agent/sessions/.+`;
 const named = new RegExp(NAMED_ROOT);
 const implicit = new RegExp(DEFAULT_ROOT);
 

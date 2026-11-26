@@ -19,6 +19,7 @@
  *       [--build-summary <file>]... (report only)
  *       [--again <case id>]... [--confirm-flagged] (both confirm only)
  *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
+ *       [--route-id <arm>=<uuid>]... (screen, confirm and control only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -61,7 +62,7 @@
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
  *       [--hint-draw <n>] [--omp-config <file>]... [--claude <binary>]
- *       [--context-session <store>:<path hash>]
+ *       [--context-session <store>:<path hash>] [--route-seed <text>]
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
@@ -269,12 +270,29 @@
  *   transcript store holds, by host, which were never case sources; when a skill gets no verdict
  *   for fewer than MIN_INFORMATIVE_CASES informative cases and some are, the reason ends with
  *   their count (attribute.ts's `storeOnlyWords`). Without it, `report` says nothing of the store.
+ *   For each stage kind it prints the deployments that answered each arm's runs, each run counted
+ *   once (`<stage> deployments by arm: old <id> <n>, <id> <n>; new ...`, gateway.ts's
+ *   `deploymentWords`; `not recorded` for results made before runs recorded them), and, for a
+ *   kind with runs an arm's `--route-id` pin sent, `<stage> routing pinned: <arm>=<id>, ...` with
+ *   their cases: such runs are a diagnostic, never a test result.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
- * runs record that id and their place in the order. A replay answers a reply's reads of skill
- * files (the case's skill from the arm, another skill of the profile from the copy its capture
- * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`). Before
+ * runs record that id and their place in the order. Each run of a Messages body also goes with a
+ * routing id, on each of its requests (those of its skill-read and checkout rounds too) in the
+ * header `x-litellm-session-id` (gateway.ts's ROUTING_HEADER), which the gateway pins a call's
+ * deployment by: the runs numbered n of every arm of a case's stage share one, a random UUID drawn
+ * once for n in each stage command, so old's, the compared arm's and none's run n (minus's and
+ * twin's in a control) go to one deployment, every arm alike, and the run numbers fall on the
+ * deployments as their ids hash. A Responses body goes with none. Each run records its routing id
+ * (`routingId`, null for none) and the deployment that answered each of its requests
+ * (`deployments`, gateway.ts's `deploymentOf`: the first 8 hex digits of `x-litellm-model-id`).
+ * `--route-id <arm>=<uuid>` (repeatable) is a diagnostic: every run of that arm, in every round,
+ * goes with that id in place of its round's, and records so (`routePinned`), while the arms it
+ * does not name keep their rounds' ids; a pin of an arm the command does not run, or of an id that
+ * is not a UUID, is refused (exit 2). A replay answers a reply's reads of skill files (the case's
+ * skill from the arm, another skill of the profile from the copy its capture installed,
+ * context.ts's `installedCopies` of the capture's record under `--cache-dir`). Before
  * replay, `restoredCapture` makes each missing copy again from its repository at its commit. Each
  * run records the answered rounds' reads (`skillReads`) and is judged on those rounds' read calls
  * and the reply after them. A written case's runs also answer, from the shared checkout of its
@@ -359,7 +377,8 @@
  *
  * **`load`** is load.ts's load test: per task, the host's first request captured once
  * and sent `--runs` times (LOAD_RUNS by default), the runs of a profile's tasks in one seeded
- * order, each with a session id of its own; each run's first assistant message read for a read of
+ * order, each with a session id of its own and a routing id derived from `--route-seed`, its task
+ * and its run number (load.ts); each run's first assistant message read for a read of
  * the skill, the loads and verdicts printed and saved under `--out`, which a run started again
  * goes on from. The model is LOAD_MODEL and the thinking level LOAD_THINKING unless `--model` and
  * `--thinking` say otherwise. `--context-session <store>:<path hash>` names the session a written
@@ -382,7 +401,7 @@
  * listing rule dropped most of a load test's tasks); 4 stopped by build-cases' stop rule. The
  * commands of the other files return their own status, which `main` returns as it is.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -474,6 +493,7 @@ import {
 } from "./checkout";
 import {
   configFrom,
+  counted,
   fileDigests,
   firstLine,
   json,
@@ -484,6 +504,7 @@ import {
   pastLimit,
   Refused,
   readFrontmatter,
+  readJson,
   required,
   Stopped,
   schemaFaults,
@@ -514,10 +535,13 @@ import {
   BudgetSpent,
   bodyIdentity,
   createGateway,
+  deploymentWords,
   type Gateway,
+  isUuid,
   PRICE_SOURCE,
   PRICES,
   type RequestBody,
+  ROUTING_HEADER,
   type Sent,
   SpentRecord,
   STREAM_FAILED,
@@ -535,7 +559,7 @@ import {
   judgeIdentity,
   newSeed,
 } from "./judge";
-import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
+import { Host, jsonLines, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
@@ -686,16 +710,6 @@ function processIo(): CliIo {
     peakRssBytes: procPeakRssBytes,
     spendRecorder: processSpendRecorder(),
   };
-}
-
-/** The JSON value the file `file` holds. Throws a refusal naming the file. */
-function readJson(file: string, what: string): unknown {
-  const text = readBytes(file, what).toString("utf8");
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
-  }
 }
 
 // The request log.
@@ -2080,6 +2094,14 @@ const Run = z.strictObject({
   /** The session id every request of the run went with (its `metadata.user_id` or
    *  `prompt_cache_key`), its own, or null for a body that names none. */
   userId: z.string().nullable(),
+  /** The routing id every request of the run went with, in gateway.ts's ROUTING_HEADER: the one
+   *  of its round, the runs numbered `run` of every arm of its stage in one stage command (a
+   *  random UUID, drawn once per case, stage command and run number), or its arm's `--route-id`
+   *  pin; null for a Responses body, which goes with none; absent from a run made before this
+   *  field. */
+  routingId: z.string().nullable().optional(),
+  /** True where `routingId` is its arm's `--route-id` pin, a diagnostic run; absent otherwise. */
+  routePinned: z.literal(true).optional(),
   /** Its reply's opaque id in that round's blind order, or null when it was not judged. */
   id: z.string().nullable(),
   /** The rounds of skill reads the replay answered before the step, or null when it failed. */
@@ -2105,6 +2127,11 @@ const Run = z.strictObject({
   /** What the run's replay and its judgement used, each call's usage and dollars. A replay that
    *  failed (`REPLAY_FAILED`) records none, though the rounds it had answered were paid. */
   replaySpent: z.array(SpentRecord),
+  /** The deployment that answered each of the replay's requests, in the order sent (gateway.ts's
+   *  `deploymentOf`: the first 8 hex digits of its `x-litellm-model-id`, "" where the answer
+   *  carried none); empty when the replay failed, as `replaySpent` is; absent from a run made
+   *  before this field. */
+  deployments: z.array(z.string()).optional(),
   judgeSpent: z.array(SpentRecord),
   /** The runner that made the run (`runnerDigest`); absent from a run made before runs recorded
    *  it, which takes its stage's (`stageRunners`). */
@@ -2440,7 +2467,7 @@ interface Behaviour {
  *  a read of another skill from (context.ts's `installedCopies`). `runner` is this runner's code
  *  (`runnerDigest`), which each stage it starts and each run it makes records; `again` the cases
  *  `--again` names, and `confirmFlagged` whether `--confirm-flagged` is given (both confirm
- *  only). */
+ *  only); `routePins` the routing id `--route-id` pins each arm it names to (none without it). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: Texts;
@@ -2464,6 +2491,7 @@ interface Runner extends Behaviour {
   readonly runner: string;
   readonly again: readonly string[];
   readonly confirmFlagged: boolean;
+  readonly routePins: ReadonlyMap<ArmName, string>;
 }
 
 /** The skill names the judge reads as `the-skill` in every judgement of case `c` (blind.ts): in a
@@ -3003,17 +3031,20 @@ const REPLAY_FAILED = "the replay failed";
 
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
- *  a session id of its own and its arm's installed copies of the profile's other skills, from its
- *  capture's record and the cache (context.ts's `installedCopies`), and, for a written case,
- *  `checkout`, the copy of its checkout its read-only calls are answered from, or why it has none
- *  (NO_CHECKOUT); then every reply judged blind under `seed`. A replay that fails is a run with no
- *  verdict, its reason `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal
- *  there), and so is one whose reply after the last answered round still only reads, or makes a
- *  read-only call the checkout answers in no form (replay.ts's ReadsPastLastRound and
- *  UnansweredRead: its reason begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that
- *  run's reads, reply and spend); one the budget refused, or whose judgement the budget refused,
- *  is no run. The runs are numbered, within their arm, in the order they were sent, and each
- *  records this runner (`r.runner`). */
+ *  a session id of its own, the routing id `routingOf` gives its arm and its run number (its
+ *  arm's runs so far, then its place among its arm's runs in the order sent), and its arm's
+ *  installed copies of the profile's other skills, from its capture's record and the cache
+ *  (context.ts's `installedCopies`), and, for a written case, `checkout`, the copy of its checkout
+ *  its read-only calls are answered from, or why it has none (NO_CHECKOUT); then every reply
+ *  judged blind under `seed`. A replay that fails is a run with no verdict, its reason
+ *  `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal there), and so is one
+ *  whose reply after the last answered round still only reads, or makes a read-only call the
+ *  checkout answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason
+ *  begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply, spend
+ *  and deployments); one the budget refused, or whose judgement the budget refused, is no run.
+ *  The runs are numbered, within their arm, in the order they were sent, and each records this
+ *  runner (`r.runner`), its routing id, whether that is its arm's `--route-id` pin, and the
+ *  deployment that answered each of its requests. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -3023,18 +3054,25 @@ async function runRound(
   made: readonly Run[],
   round: number,
   seed: string,
+  routingOf: (arm: ArmName, run: number) => string,
   phases: Phases,
   checkout: CheckoutCopy | Unanswered | undefined
 ): Promise<{ runs: Run[]; budgetSpent: boolean }> {
   const replaysStarted = performance.now();
   const sent = await replayInterleaved(
-    [...arms].map(([name, { arm, capture }]) => ({
-      arm,
-      body: capture.body,
-      headers: capture.record.requestHeaders,
-      copies: installedCopies(capture.record.context, r.cacheDir),
-      runs: toStart[name] ?? 0,
-    })),
+    [...arms].map(([name, { arm, capture }]) => {
+      const runs = toStart[name] ?? 0;
+      // The arm's runs in the order sent take the numbers after its runs so far.
+      const before = made.filter((each) => each.arm === name).length;
+      return {
+        arm,
+        body: capture.body,
+        headers: capture.record.requestHeaders,
+        copies: installedCopies(capture.record.context, r.cacheDir),
+        runs,
+        routingIds: Array.from({ length: runs }, (_, k) => routingOf(name, before + k + 1)),
+      };
+    }),
     r.replays,
     seed,
     checkout === undefined ? {} : { checkout }
@@ -3055,8 +3093,18 @@ async function runRound(
   let budgetSpent = false;
   const runs: Run[] = [];
   const numbered = new Map<ArmName, number>();
-  for (const { arm, run: inArm, place: sendPlace, userId, outcome } of sent) {
-    const base = { caseId: c.id, arm, stage, round, sendPlace, userId, runner: r.runner };
+  for (const { arm, run: inArm, place: sendPlace, userId, routingId, outcome } of sent) {
+    const base = {
+      caseId: c.id,
+      arm,
+      stage,
+      round,
+      sendPlace,
+      userId,
+      routingId,
+      ...(routingId !== null && r.routePins.has(arm) ? { routePinned: true as const } : {}),
+      runner: r.runner,
+    };
     const next = () => {
       const run = (numbered.get(arm) ?? made.filter((each) => each.arm === arm).length) + 1;
       numbered.set(arm, run);
@@ -3084,6 +3132,7 @@ async function runRound(
         skillReads: past?.replayed.reads.map((each) => [...each]) ?? null,
         reply: past?.replayed.step.message.content ?? null,
         replaySpent: past?.replayed.usage ?? [],
+        deployments: past?.replayed.deployments ?? [],
         judgeSpent: [],
       });
       continue;
@@ -3105,6 +3154,7 @@ async function runRound(
       skillReads: step.reads.map((each) => [...each]),
       reply: step.step.message.content,
       replaySpent: step.usage,
+      deployments: step.deployments,
       judgeSpent: [...judgement.spent],
     });
   }
@@ -3408,7 +3458,12 @@ async function caseKnives(r: Runner, c: Case): Promise<KnivesRepository | undefi
  * in each of whose arms that lack their judged runs the provider refused, on a content policy,
  * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
  * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
- * records that (`confirmFlagged`). Throws Stopped, after saving, when the budget refused a call.
+ * records that (`confirmFlagged`). The runs numbered n of every arm go with one routing id, a
+ * random UUID drawn for n the first time this call needs it (so a stage command started again
+ * draws its own), and a pinned arm's runs with its `--route-id` pin (`r.routePins`): so round n
+ * of runs, old's, the compared arm's and none's run n (minus's and twin's in a control), goes to
+ * the one deployment its id pins, every arm alike, and the rounds fall on the deployments as
+ * their ids hash. Throws Stopped, after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -3564,6 +3619,15 @@ async function runStage(
       return { ...current, dropped: `${UNREADABLE_DIRECTORY}: ${error.message}`, droppedAt: stage };
     }
   }
+  // The routing id of each run number, drawn once in this call (see above).
+  const drawn = new Map<number, string>();
+  const routingOf = (arm: ArmName, run: number): string => {
+    const pinned = r.routePins.get(arm);
+    if (pinned !== undefined) return pinned;
+    const id = drawn.get(run) ?? randomUUID();
+    drawn.set(run, id);
+    return id;
+  };
   for (;;) {
     const outcome = stageOutcome(state.runs, c.id, stage, r.compared);
     if (outcome.state !== "running") {
@@ -3585,6 +3649,7 @@ async function runStage(
       state.runs,
       state.seeds.length + 1,
       seed,
+      routingOf,
       phases,
       checkout
     );
@@ -4409,9 +4474,6 @@ function replacedWords(score: SkillScore): string {
   );
   return `, in place of ${named.join(", ")}, which the control rule chose before it`;
 }
-
-/** `count` with `word`, plural unless the count is 1: `1 session`, `2 sessions`. */
-const counted = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** The served models the screened cases of `kind` of `score` ran on (counted, and not dropped at
  *  screen), each case on the served model of its model's id (`servedModel`), with its screened
@@ -5246,12 +5308,9 @@ function requestLogLines(
   const kinds = new Map<string, { calls: number; usd: number }>();
   const replays: { userId: string | null; usd: number }[] = [];
   let unreadable = 0;
-  for (const text of readFileSync(file, "utf8").split("\n")) {
-    if (text.trim() === "") continue;
-    let line: unknown;
-    try {
-      line = JSON.parse(text);
-    } catch {
+  // A line that is no JSON (`parseJson`'s undefined) is counted and left out.
+  for (const { value: line } of jsonLines(file)) {
+    if (line === undefined) {
       unreadable += 1;
       continue;
     }
@@ -5328,6 +5387,53 @@ function requestLogLines(
   ];
 }
 
+/** Every run of stage kind `stage` that `results` hold, each confirm's (the earlier ones too). */
+function kindRuns(results: ReadonlyMap<string, CaseResult>, stage: Stage): Run[] {
+  return [...results.values()].flatMap((result) => {
+    const stages: (StageResult | undefined)[] =
+      stage === "confirm" ? confirmStages(result) : [result.stages[stage]];
+    return stages.flatMap((each) => each?.runs ?? []);
+  });
+}
+
+/** The report's lines of where `stage`'s runs `runs` went, the old text compared with `compared`
+ *  (score.ts's `stageArms`): its arms' runs counted by the deployment that answered them
+ *  (`<stage> deployments by arm: old <id> <n>, ...; new ...`, gateway.ts's `deploymentWords`),
+ *  `not recorded` where no run records its deployments (results made before runs did), with how
+ *  many runs do not where some do; and, where an arm's runs went with its `--route-id` pin, the
+ *  pins and their cases (`<stage> routing pinned: old=<id>, ...`): such runs are a diagnostic,
+ *  never a test result. */
+function routingLines(stage: Stage, runs: readonly Run[], compared: Compared): string[] {
+  const unrecorded = runs.filter((run) => run.deployments === undefined).length;
+  const arms = stageArms(stage, compared);
+  const byArm = arms
+    .map((arm) => {
+      const recorded = runs.flatMap((run) =>
+        run.arm === arm && run.deployments !== undefined ? [run.deployments] : []
+      );
+      return `${arm} ${deploymentWords(recorded)}`;
+    })
+    .join("; ");
+  const words =
+    runs.length === 0
+      ? "no runs"
+      : unrecorded === runs.length
+        ? "not recorded"
+        : `${byArm}${unrecorded === 0 ? "" : ` (and ${counted(unrecorded, "run")} made before runs recorded their deployments)`}`;
+  const lines = [`${stage} deployments by arm: ${words}`];
+  const pinned = runs.filter((run) => run.routePinned === true);
+  if (pinned.length > 0) {
+    const pins = arms.flatMap((arm) => [
+      ...new Set(pinned.flatMap((run) => (run.arm === arm ? [`${arm}=${run.routingId}`] : []))),
+    ]);
+    const cases = [...new Set(pinned.map((run) => run.caseId))];
+    lines.push(
+      `${stage} routing pinned: ${pins.join(", ")} (${counted(cases.length, "case")}: ${cases.join(", ")}): each run of a pinned arm went with that routing id in every round, not its round's, so these runs are a diagnostic, not a test result`
+    );
+  }
+  return lines;
+}
+
 /** `behaviour report`: prints the runners of the results (`runnerLine`, which refuses results of
  *  more than one runner unless told), each case's passes, the skill's verdict and the run's
  *  figures, its spend among them (`spendLines`, and `requestLogLines` for the request log
@@ -5337,7 +5443,8 @@ function requestLogLines(
  *  it, why, and each stage it ran. Its `outside recorded listing` line counts the runs of the
  *  cases whose capture sends their session's recorded system prompt whole that read a skill
  *  outside that listing (`outsideListing`): a count only, which drops no case and changes no
- *  verdict. */
+ *  verdict. Its `deployments by arm` line of each stage kind, and `routing pinned` line of a kind
+ *  with pinned runs (`routingLines`), say where the runs went; they change no verdict either. */
 function reportCommand(
   given: Behaviour,
   old: string,
@@ -5412,14 +5519,10 @@ function reportCommand(
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read: an arm that keeps the agent reading acts differently.
-  const pastByStage = Stage.options.map((stage) => {
-    const runs = [...results.values()].flatMap((result) => {
-      const stages: (StageResult | undefined)[] =
-        stage === "confirm" ? confirmStages(result) : [result.stages[stage]];
-      return stages.flatMap((each) => each?.runs ?? []);
-    });
-    return `${stage} ${armCounts(readsPast(runs, stage, b.compared))}`;
-  });
+  const runsByStage = Stage.options.map((stage) => [stage, kindRuns(results, stage)] as const);
+  const pastByStage = runsByStage.map(
+    ([stage, runs]) => `${stage} ${armCounts(readsPast(runs, stage, b.compared))}`
+  );
   lines.push(
     `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads, or of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
   );
@@ -5447,6 +5550,9 @@ function reportCommand(
   lines.push(
     `runs with no verdict, run again, and saved whole-text reads, by kind of case: ${byKindOfCase.join("; ")}`
   );
+  // Where each stage kind's runs went: the deployment that answered each arm's runs, and any
+  // arm whose runs went with a `--route-id` pin.
+  lines.push(...runsByStage.flatMap(([stage, runs]) => routingLines(stage, runs, b.compared)));
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
       ? [
@@ -5606,9 +5712,51 @@ const BEHAVIOUR_USAGE = [
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
   "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
   "  [--store-only <file>] (report only: the skill's <cut id>/store-only/<skill>.json, written by attribute)",
+  "  [--route-id <arm>=<uuid>]... (screen, confirm, control: a diagnostic: every run of that arm, in every round, goes with that routing id in place of its round's)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default; [--limits <file>] (printed as it is)",
   "  [--build-summary <file>]... (report only: build-cases' summaries; it names their navigation lines no case tests and counts their replacement cases before and after the judge controls)",
 ].join("\n");
+
+/** The routing id each arm `--route-id <arm>=<uuid>` names is pinned to in `behaviour
+ *  <command>`, from each value given: a diagnostic, in which every run of that arm, in every
+ *  round, goes with that id in place of its round's (runStage). Refuses a value that is not
+ *  `<arm>=<id>`, an arm the command does not run (score.ts's `stageArms` of the command's stage
+ *  and the compared arm `compared`), an id that is not a UUID (the gateway's ROUTING_HEADER takes
+ *  a UUID), an arm pinned twice, and any pin given to `report`, which makes no model call. */
+function routePinsOf(
+  given: readonly string[],
+  command: string,
+  compared: Compared
+): Map<ArmName, string> {
+  const pins = new Map<ArmName, string>();
+  if (given.length === 0) return pins;
+  const stage = Stage.safeParse(command);
+  if (!stage.success) {
+    throw new Refused(
+      `--route-id goes with behaviour screen, confirm and control only: ${command} makes no model call. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const arms: readonly ArmName[] = stageArms(stage.data, compared);
+  for (const pin of given) {
+    const at = pin.indexOf("=");
+    if (at < 0) throw new Refused(`--route-id ${pin} is not <arm>=<uuid>. ${BEHAVIOUR_USAGE}`);
+    const arm = arms.find((each) => each === pin.slice(0, at));
+    const id = pin.slice(at + 1);
+    if (arm === undefined) {
+      throw new Refused(
+        `--route-id ${pin}: behaviour ${command} runs no arm ${JSON.stringify(pin.slice(0, at))}; its arms are ${arms.join(", ")}`
+      );
+    }
+    if (!isUuid(id)) {
+      throw new Refused(
+        `--route-id ${pin}: the routing id is not a UUID, and the gateway's ${ROUTING_HEADER} takes a UUID`
+      );
+    }
+    if (pins.has(arm)) throw new Refused(`--route-id pins the ${arm} arm twice`);
+    pins.set(arm, id);
+  }
+  return pins;
+}
 
 /** The compared arm the stages of `results` record (a stage that records none was run with
  *  `--new`); undefined when no stage was run. Throws a refusal naming two files under `out` that
@@ -5666,6 +5814,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "confirm-flagged": { type: "boolean" },
       "allow-runners": { type: "string" },
       "store-only": { type: "string" },
+      "route-id": { type: "string", multiple: true },
     },
     BEHAVIOUR_USAGE
   );
@@ -5716,6 +5865,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   }
   const named: Compared =
     values.new !== undefined ? "new" : values.ours !== undefined ? "ours" : "none";
+  const routePins = routePinsOf(values["route-id"] ?? [], command ?? "", named);
   // A stage command writes the cases' session text under --out; `report` writes nothing.
   const inCheckout = report ? undefined : outRefusal(given.out);
   if (inCheckout !== undefined) throw new Refused(inCheckout);
@@ -5882,7 +6032,15 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     runner: runnerDigest(),
     again: values.again ?? [],
     confirmFlagged: values["confirm-flagged"] === true,
+    routePins,
   };
+  if (routePins.size > 0) {
+    const pins = [...routePins].map(([arm, id]) => `${arm}=${id}`).join(", ");
+    say(
+      runner,
+      `routing pinned: ${pins}: every run of a pinned arm goes with that routing id in every round, in place of its round's, so these runs are a diagnostic, not a test result`
+    );
+  }
   if (command === "screen") await screenCommand(runner);
   else if (command === "confirm" && one !== undefined) await confirmCaseCommand(runner, one);
   else if (command === "confirm") await confirmCommand(runner);
@@ -5908,6 +6066,7 @@ const LOAD_USAGE = [
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
   "  [--context-session <store>:<path hash>] (the session a written task stands for: the one its profile was rebuilt from)",
+  "  [--route-seed <text>] (empty by default: each run's routing id is derived from it, the task and the run number, so two loads of one seed send the same id for run n of a task)",
   "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] [--omp-config <file>]...",
   "  claude: [--claude <binary>]",
 ].join("\n");
@@ -5947,6 +6106,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
       "context-session": { type: "string" },
+      "route-seed": { type: "string" },
     },
     LOAD_USAGE
   );
@@ -6027,6 +6187,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       ? {}
       : { devboxClaudeConfigDir: config.devboxClaudeConfigDir }),
     ...(contextSession === undefined ? {} : { contextSession }),
+    routeSeed: values["route-seed"] ?? "",
   });
   io.out(
     `load: done; the calls of this command cost $${gateway.spend().usd.toFixed(4)} at list price; request log ${log}\n`

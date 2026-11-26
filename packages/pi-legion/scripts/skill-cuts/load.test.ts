@@ -740,55 +740,79 @@ type Request = z.infer<typeof Request>;
 /** How the stand-in answers a run's request: with the blocks of its reply, or a response it
  *  gives as it is (a refusal). */
 let answer: (body: Request) => ReplyBlock[] | Response = () => [{ type: "text", text: "nothing" }];
+
+/** Whether the stand-in names the deployment that answered each request that goes with a routing
+ *  id (`x-litellm-model-id`, `pinnedTo`), as the gateway does; off but in the rows that set it. */
+let pinDeployments = false;
+
+/** One of two made-up deployments, the one the stand-in pins a call that goes with the routing id
+ *  `routing` to, as the gateway pins one: by the SHA-256 of the id, modulo the deployments. */
+function pinnedTo(routing: string): string {
+  return (createHash("sha256").update(routing).digest()[0] ?? 0) % 2 === 0
+    ? "0a1b2c3d"
+    : "4e5f6a7b";
+}
+
+/** The stand-in's answer to `request`: Oh My Pi's hint request gets a hint, any other model
+ *  request what `answer` gives for its body; a request of no model route, none. */
+function standInReply(request: RecordedRequest): Response | undefined {
+  if (
+    request.method !== "POST" ||
+    (request.path !== "/v1/messages" && request.path !== "/v1/responses")
+  ) {
+    return undefined;
+  }
+  const body = Request.parse(JSON.parse(request.body));
+  // Oh My Pi's hint request: no system prompt, no tools, `Skill: <name>` in its message.
+  const hint = /\\nSkill: ([^\\]+)\\nDescription: /.exec(request.body)?.[1];
+  const answered =
+    body.system === undefined && body.tools === undefined && hint !== undefined
+      ? [{ type: "text" as const, text: `Use for the ${hint} work, stand-in hint.` }]
+      : answer(body);
+  if (answered instanceof Response) return answered;
+  const content: ReplyBlock[] = answered;
+  // A Responses body gets the same answer in its API's stream.
+  if (request.path === "/v1/responses") {
+    const output = content.flatMap((block): ResponseItem[] =>
+      block.type === "text"
+        ? [{ type: "message", text: block.text }]
+        : block.type === "tool_use"
+          ? [
+              {
+                type: "function_call",
+                callId: block.id,
+                name: block.name,
+                arguments: block.input,
+              },
+            ]
+          : []
+    );
+    return sseResponse(
+      responseSse({ id: `resp_standin_${request.n}`, model: body.model, output }),
+      `req_standin_${request.n}`
+    );
+  }
+  return sseResponse(
+    messageSse({
+      id: `msg_standin_${request.n}`,
+      model: body.model,
+      content,
+      stopReason: content.some((block) => block.type === "tool_use") ? "tool_use" : "end_turn",
+    }),
+    `req_standin_${request.n}`
+  );
+}
+
 let recorder: Recorder;
 beforeAll(() => {
   recorder = startRecorder({
     route: (request: RecordedRequest) => {
-      if (
-        request.method !== "POST" ||
-        (request.path !== "/v1/messages" && request.path !== "/v1/responses")
-      ) {
-        return undefined;
-      }
-      const body = Request.parse(JSON.parse(request.body));
-      // Oh My Pi's hint request: no system prompt, no tools, `Skill: <name>` in its message.
-      const hint = /\\nSkill: ([^\\]+)\\nDescription: /.exec(request.body)?.[1];
-      const answered =
-        body.system === undefined && body.tools === undefined && hint !== undefined
-          ? [{ type: "text" as const, text: `Use for the ${hint} work, stand-in hint.` }]
-          : answer(body);
-      if (answered instanceof Response) return answered;
-      const content: ReplyBlock[] = answered;
-      // A Responses body gets the same answer in its API's stream.
-      if (request.path === "/v1/responses") {
-        const output = content.flatMap((block): ResponseItem[] =>
-          block.type === "text"
-            ? [{ type: "message", text: block.text }]
-            : block.type === "tool_use"
-              ? [
-                  {
-                    type: "function_call",
-                    callId: block.id,
-                    name: block.name,
-                    arguments: block.input,
-                  },
-                ]
-              : []
-        );
-        return sseResponse(
-          responseSse({ id: `resp_standin_${request.n}`, model: body.model, output }),
-          `req_standin_${request.n}`
-        );
-      }
-      return sseResponse(
-        messageSse({
-          id: `msg_standin_${request.n}`,
-          model: body.model,
-          content,
-          stopReason: content.some((block) => block.type === "tool_use") ? "tool_use" : "end_turn",
-        }),
-        `req_standin_${request.n}`
-      );
+      const reply = standInReply(request);
+      const routing = request.headers["x-litellm-session-id"];
+      if (reply === undefined || !pinDeployments || routing === undefined) return reply;
+      const headers = new Headers(reply.headers);
+      headers.set("x-litellm-model-id", `${pinnedTo(routing)}-stand-in`);
+      return new Response(reply.body, { status: reply.status, headers });
     },
   });
 });
@@ -2994,6 +3018,148 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
     expect(unknown.code).toBe(2);
     expect(unknown.stderr).toContain("the configuration names no store store_z");
   });
+});
+
+// Catches: load runs sent with no routing id, so each task's body went to the one deployment its
+// hash picked; a routing id drawn at random, which the two loads of a name or description test
+// (one command each) cannot share; a run that does not record its routing id and the deployment
+// that answered it; and a summary that does not count the runs by deployment.
+test("run n of a task goes with the routing id derived from --route-seed, the task and n, the same in the loads of two texts; each run records it and the deployment that answered, and the summary and its line count the runs by deployment under the tested name", async () => {
+  const dir = path.join(scratch, "routing");
+  /** The routing id of run `run` of task `task` under `seed`, as the rule derives it: the first
+   *  32 hex digits of the SHA-256 of `<seed>:<task>:<run>`, in a UUID's 8-4-4-4-12 groups. */
+  const routingIdOf = (seed: string, task: string, run: number) => {
+    const hex = createHash("sha256").update(`${seed}:${task}:${run}`).digest("hex");
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20, 32),
+    ].join("-");
+  };
+  const made = setup(dir);
+  const ids = ["t1", "t2"];
+  const texts2 = ["Write the alpha checklist, one.", "Write the beta greeting, two."];
+  const tasks = path.join(dir, "tasks.jsonl");
+  writeFileSync(
+    tasks,
+    ids
+      .map((id, index) =>
+        JSON.stringify({
+          id,
+          text: texts2[index],
+          label: index === 0 ? "need" : "near-miss",
+          source: "written",
+        })
+      )
+      .map((line) => `${line}\n`)
+      .join("")
+  );
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+  /** One load of alpha's text `text` under `dir/<name>`, with `extra` arguments. */
+  const load = async (name: string, text: string, ...extra: string[]) => {
+    const skill = path.join(dir, name, "alpha");
+    writeTree(skill, { "SKILL.md": text, "references/x.md": ALPHA_X });
+    const out = path.join(dir, name, "out");
+    saveCaptures(
+      out,
+      ids.map((id, index) => ({ id, text: texts2[index] ?? "" })),
+      ALPHA_LISTED
+    );
+    const before = recorder.requests.length;
+    const ran = await cli([
+      "load",
+      ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+      ...["--scratch", path.join(dir, name, "scratch"), "--cache-dir", path.join(dir, "cache")],
+      ...extra,
+    ]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const runs = ids.flatMap((id) => savedRuns(out, id));
+    const sent = recorder.requests.slice(before);
+    return { out, ran, runs, sent };
+  };
+  /** Checks that each run of `loaded` went with the routing id of `seed`, its task and its run
+   *  number on its request, and records it and the deployment that id pins. */
+  const routedBy = (
+    loaded: { readonly runs: readonly LoadRun[]; readonly sent: readonly RecordedRequest[] },
+    seed: string
+  ) => {
+    expect(loaded.runs).toHaveLength(6);
+    expect(loaded.sent).toHaveLength(6);
+    for (const run of loaded.runs) {
+      const id = routingIdOf(seed, run.task, run.run);
+      expect(run.routingId).toBe(id);
+      expect(run.routingId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      );
+      const request = loaded.sent.filter(
+        (each) => JSON.parse(each.body).metadata.user_id === run.userId
+      );
+      expect(request.map((each) => each.headers["x-litellm-session-id"])).toEqual([id]);
+      expect(run.deployments).toEqual([pinnedTo(id)]);
+    }
+  };
+  // A load takes no pin: run n of a task goes with its derived id only.
+  const pinned = await cli(["load", "--route-id", "old=5eed0000-0000-4000-8000-000000000002"]);
+  expect({ code: pinned.code, refused: pinned.stderr.includes("--route-id") }).toEqual({
+    code: 2,
+    refused: true,
+  });
+  answer = () => TEXT;
+  pinDeployments = true;
+  try {
+    const first = await load("first", ALPHA_SKILL);
+    routedBy(first, "");
+    const second = await load(
+      "second",
+      ALPHA_SKILL.replace("description: ", "description: A made-up other description. ")
+    );
+    routedBy(second, "");
+    const seeded = await load("seeded", ALPHA_SKILL, "--route-seed", "made-up-seed");
+    routedBy(seeded, "made-up-seed");
+    // The two texts' loads sent run n of each task with one id; another seed, with others.
+    const routes = (runs: readonly LoadRun[]) =>
+      runs.map((run) => [run.task, run.run, run.routingId]);
+    expect(routes(second.runs)).toEqual(routes(first.runs));
+    expect(new Set(first.runs.map((run) => run.routingId)).size).toBe(6);
+    const seededIds = new Set(seeded.runs.map((run) => run.routingId));
+    expect(first.runs.filter((run) => seededIds.has(run.routingId))).toEqual([]);
+
+    const counts = new Map<string, number>();
+    for (const run of first.runs) {
+      const prefix = pinnedTo(run.routingId ?? "");
+      counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+    }
+    const sorted = [...counts].sort(([a], [b]) => (a < b ? -1 : 1));
+    const summary = JSON.parse(readFileSync(path.join(first.out, "summary.json"), "utf8"));
+    expect(summary.routeSeed).toBe("");
+    expect(summary.deployments).toEqual({
+      byName: { alpha: Object.fromEntries(sorted) },
+      unrecorded: 0,
+    });
+    expect(seeded.ran.stdout).toContain("load: deployments by name: alpha ");
+    expect(first.ran.stdout).toContain(
+      `load: deployments by name: alpha ${sorted.map(([prefix, n]) => `${prefix} ${n}`).join(", ")}\n`
+    );
+    // A load's runs made before runs recorded their deployments are said so.
+    for (const id of ids) {
+      const saved = savedRuns(first.out, id).map(
+        ({ routingId: _r, deployments: _d, ...run }) => run
+      );
+      writeFileSync(
+        loadRunFile(first.out, id),
+        saved.map((run) => `${JSON.stringify(run)}\n`).join("")
+      );
+    }
+    const again = await load("first", ALPHA_SKILL);
+    expect(again.sent).toEqual([]);
+    expect(again.ran.stdout).toContain("load: deployments by name: alpha not recorded\n");
+  } finally {
+    pinDeployments = false;
+  }
 });
 
 // Catches: a Claude Code body that still names the capture's working directory, its scratch

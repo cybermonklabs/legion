@@ -567,12 +567,21 @@ function projectReads() {
   ]);
 }
 
-// Catches: vskills-293's porting-released-proofs, 9 cases whose read of the project's own
-// .claude/skills/porting-released-proofs/SKILL.md went to the plugin that holds a skill of that
-// name, by the store's context, so the profile installed that plugin whole (20 of the 21 names
-// it added).
+// Catches: a project's own skill, 9 saved cases whose read of the project's
+// .claude/skills/<name>/SKILL.md went to the plugin that holds a skill of that name, by the
+// store's context, so the profile installed that plugin whole (20 of the 21 names it added).
 test("a read inside a checkout's own .claude/skills is that project's skill: no plugin or other unit's copy of its name takes it, and a home directory's .claude/skills is still a user's", () => {
   const unplaced = attribute(CONFIG, [projectReads()], projectWorld([]));
+  // No copy holds either project read: the plugin's zeta, which has the user-level read alone, as
+  // little as any other.
+  const projectKeys = ["2222222222222222", "3333333333333333"].map((hash) =>
+    sessionKey("store_a", hash)
+  );
+  expect(
+    unplaced.copies
+      .filter((count) => projectKeys.some((key) => count.readSessions.has(key)))
+      .map((count) => `${count.repository} ${count.path}`)
+  ).toEqual([]);
   const why =
     "a project skill (.claude/skills of a checkout, not of a home directory), which only a copy in such a directory places, so no unit's copy of zeta is it";
   expect(outcomesOf(unplaced, copyPrefix(PROJECT_READS.workspace, "zeta"))).toEqual([
@@ -587,11 +596,8 @@ test("a read inside a checkout's own .claude/skills is that project's skill: no 
       sessions: 1,
     },
   ]);
-  // The plugin's zeta has the user-level read alone; the two project reads are nobody's.
+  // The plugin's zeta has the user-level read alone, the two project reads unattributed.
   expect(countOf(unplaced, PLUGS_ZETA)).toMatchObject({ sessions: 1, unattributed: 2 });
-  expect(
-    unplaced.copies.find((count) => count.repository === "acme/proj")?.sessions
-  ).toBeUndefined();
   // Where the copies output lists the project's own copy, both project reads are of it (the home
   // directory's read has no project, and the checkout rule, which names no home, takes it there).
   const listed = attribute(CONFIG, [projectReads()], projectWorld([PROJECT_ZETA]));
@@ -2634,7 +2640,10 @@ test("R1 v3 row 2: the copy resolved by a Claude Code Skill call has a count", (
     status: "read",
   });
   expect(rows.find((row) => row.name === "epsilon")?.status).toBe("no read");
-  expect(report).toContain("no read, Read or Skill calls");
+  // The codex format, which has no read, says the queries found none in it.
+  expect(report).toContain(
+    "- `codex`: 0 added sessions with a skill read. The queries found no read, Read or Skill calls in this format."
+  );
 });
 
 test("R1 v3 row 3: an unconfigured host's path can place a read, but its context cannot", () => {

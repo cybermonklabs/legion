@@ -12,10 +12,12 @@
  *   message, its stack and its fields, whatever echoed it (a refusal that quotes the key it got).
  * - `send(body, {headers})` sends `headers` with a Messages body on every try: the `anthropic-*`
  *   headers Oh My Pi sent beside it (its `anthropic-beta` names the betas that the body's fields
- *   need, and the gateway answers 400 to such a body without it). Only `anthropic-*` names are
+ *   need, and the gateway answers 400 to such a body without it), and the routing header
+ *   `x-litellm-session-id` (ROUTING_HEADER), whose value must be a UUID. Only those names are
  *   taken, and a name that can carry a key (`x-api-key`, `authorization`, any name holding `key`,
  *   `token`, `secret`, `auth`, `cookie`, `credential` or `password`) is refused by name before any
- *   call. A Responses body goes with no header of the caller's: one given is refused by name.
+ *   call. A Responses body goes with no header of the caller's: one given is refused by name, the
+ *   routing header among them.
  * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
  *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
  *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at most 30 s), up to
@@ -34,7 +36,13 @@
  * - `send` changes no byte of a body. `freshIdentity(body)` is how a caller gives a body a fresh
  *   session id (`metadata.user_id`, or a Responses body's `prompt_cache_key`) in that id's own
  *   form: the runner sends each run whose captured body names such an id with one of its own (a
- *   body that names none goes with none), and each judge call with one of its own.
+ *   body that names none goes with none), and each judge call with one of its own. The gateway
+ *   does not pin a Messages call's deployment by that id: it pins it by ROUTING_HEADER's value
+ *   (the SHA-256 of it, placed on the deployments' weighted shares), and a call that names none
+ *   by a hash of the caller, the model, the system prompt and the first messages, so every run of
+ *   one body went to one deployment. The runner sends each run of a stage or a load test with a
+ *   routing id of its round (replay.ts), and `deploymentOf` reads which deployment answered a
+ *   reply, as an opaque prefix.
  * - A body that sets `stream` gets a streamed (SSE) reply, read whole before it counts
  *   (`streamedMessage`; `streamedResponse` for a Responses reply, F9); any other gets one JSON
  *   message. A Responses reply comes back in ReplyMessage's frame (`responseMessage`): its output
@@ -57,7 +65,7 @@
  *   the body (`gatewaySessionId`). A try that got no ok answer records nothing. `spendRecorder`
  *   null records nothing: a gateway whose answers are a test's stand-ins.
  */
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
 import {
@@ -374,6 +382,12 @@ export function isResponsesBody(body: RequestBody): body is ResponsesBody {
 
 /** A UUID, any version, as Oh My Pi and Claude Code write a session id. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `text` is a UUID, of any version. */
+export function isUuid(text: string): boolean {
+  return UUID.test(text);
+}
+
 /** Fewer hex digits than this in an id are too few to draw a fresh id from. */
 const MIN_HEX_DIGITS = 16;
 /** A word of an id that holds hex digits alone: a run of letters and digits between characters
@@ -566,6 +580,41 @@ export interface Reply {
   readonly inFlight: number;
 }
 
+/** A deployment id that begins with 8 hex digits, which a deployment's opaque prefix is. */
+const HEX_PREFIX = /^[0-9a-f]{8}/i;
+
+/** The deployment that answered `reply`, as the runner records it: the first 8 hex digits of its
+ *  `x-litellm-model-id`, in lower case, an opaque prefix that names no deployment's owner (an id
+ *  that does not begin with 8 hex digits gives the first 8 of its SHA-256 instead, so no name is
+ *  printed); or "" for a reply that carried none. */
+export function deploymentOf(reply: Pick<Reply, "gatewayHeaders">): string {
+  const id = reply.gatewayHeaders["x-litellm-model-id"];
+  if (id === undefined || id === "") return "";
+  const prefix = HEX_PREFIX.exec(id)?.[0] ?? createHash("sha256").update(id).digest("hex");
+  return prefix.slice(0, 8).toLowerCase();
+}
+
+/** Runs counted by the deployment that answered them, each run given by its replies' deployments
+ *  in order (`deploymentOf`, as a run records them): a run is counted once, under the deployment
+ *  that answered each of its replies, under those deployments joined by `+` when more than one
+ *  did, under `unnamed` when no reply named one, and under `no reply` when it has none (a replay
+ *  that failed). The counts go in the order of their deployments' text. */
+export function deploymentCounts(runs: readonly (readonly string[])[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const run of runs) {
+    const named = [...new Set(run.filter((each) => each !== ""))];
+    const key = run.length === 0 ? "no reply" : named.length === 0 ? "unnamed" : named.join("+");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return new Map([...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+/** `deploymentCounts` of `runs` in words: `0a1b2c3d 5, 4e5f6a7b 5`, or `no runs`. */
+export function deploymentWords(runs: readonly (readonly string[])[]): string {
+  const counts = [...deploymentCounts(runs)];
+  return counts.length === 0 ? "no runs" : counts.map(([key, n]) => `${key} ${n}`).join(", ");
+}
+
 /** One model's total: the replies counted, their tokens (the reasoning tokens among their output
  *  as the Responses API counts them, 0 for the Messages API) and their dollars at list price. */
 export interface ModelSpend {
@@ -630,8 +679,8 @@ export interface Sent {
 export interface SendOptions {
   /** Headers sent with a Messages body, such as the `anthropic-beta` Oh My Pi sent beside it,
    *  which the body's fields need (adaptive thinking's `block_binding`, `context_management`,
-   *  `output_config.effort`). Only `anthropic-*` names; a name that can carry a key is refused,
-   *  and so is any header beside a Responses body. */
+   *  `output_config.effort`), and ROUTING_HEADER with a UUID. Only `anthropic-*` names and that
+   *  one; a name that can carry a key is refused, and so is any header beside a Responses body. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Told when the call gets its place and is sent, before its reply (or its failure) comes. */
   readonly onSent?: (sent: Sent) => void;
@@ -650,17 +699,39 @@ const KEY_BEARING = /key|token|secret|auth|cookie|credential|password/i;
 /** The header names a caller may send: Anthropic's own. */
 const ANTHROPIC_HEADER = /^anthropic-[a-z0-9-]+$/i;
 
-/** Throws naming the first header of `headers` that is not sent with a call: one whose name can
- *  carry a key, or one that is not an `anthropic-*` header. Never names a value. */
-function checkHeaders(headers: Readonly<Record<string, string>>): void {
-  for (const name of Object.keys(headers)) {
+/** The request header the gateway pins a Messages call's deployment by (see the file's header):
+ *  a UUID, one for each round of a stage's or a load test's runs (replay.ts). The one header
+ *  beside the `anthropic-*` ones that a caller may send, and only beside a Messages body. */
+export const ROUTING_HEADER = "x-litellm-session-id";
+
+/** Throws naming the first header of `headers` that is not sent with a call (beside a Responses
+ *  body when `responses`): one whose name can carry a key; the routing header beside a Responses
+ *  body, or with a value that is not a UUID; or one that is neither the routing header nor an
+ *  `anthropic-*` header. Never names a value. */
+function checkHeaders(headers: Readonly<Record<string, string>>, responses: boolean): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === ROUTING_HEADER) {
+      if (responses) {
+        throw new Error(
+          `the header ${name} goes beside a Messages body only: a Responses API body goes with no header beside it`
+        );
+      }
+      if (!isUuid(value)) {
+        throw new Error(
+          `the header ${name} takes a UUID, and its value is none: the gateway pins a call's deployment by that id`
+        );
+      }
+      continue;
+    }
     if (KEY_BEARING.test(name)) {
       throw new Error(
         `the header ${name} can carry a key, so it is not sent: the gateway signs each call with the key file's key itself`
       );
     }
     if (!ANTHROPIC_HEADER.test(name)) {
-      throw new Error(`only anthropic-* headers are sent beside a body, not ${name}`);
+      throw new Error(
+        `only anthropic-* headers and ${ROUTING_HEADER} are sent beside a body, not ${name}`
+      );
     }
   }
 }
@@ -1016,8 +1087,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     body: RequestBody,
     { headers = {}, onSent }: SendOptions = {}
   ): Promise<Reply> {
-    checkHeaders(headers);
     const responses = isResponsesBody(body);
+    checkHeaders(headers, responses);
     if (responses && Object.keys(headers).length > 0) {
       throw new Error(
         `a Responses API body goes with no header beside it, not ${Object.keys(headers).join(", ")}: the anthropic-* headers are the Messages API's`

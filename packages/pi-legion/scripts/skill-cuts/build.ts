@@ -331,7 +331,11 @@
  *   the evidence gives how many of its skills the listing names and how many it does not, and the
  *   listing measure counts those it does not as added names. The measure marks each name of a
  *   pool installed on a named skill (`fromRecorded`), and no name of a pool installed on a read or
- *   on a listed `<namespace>/<name>` alone. The listing's decision is an inference: dev-box
+ *   on a listed `<namespace>/<name>` alone. A pool every skill of which that skills.ignoredSkills
+ *   does not match is hidden (HIDDEN_RULE) is one no listing can name, whether or not Oh My Pi
+ *   loaded it: it is decided after every other pool, installed, its names marked, where the
+ *   listing or direct proof installs another pool, and else left out. The listing's decision is
+ *   an inference: dev-box
  *   sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and
  *   no file records why. A session with no listing (no recorded prompt, and no subagent the
  *   measure can use) has its pools decided by
@@ -810,6 +814,7 @@ import {
   type GhResult,
   GitBlob,
   graphqlArgs,
+  IMAGE_ROOT,
   type InstallerPin,
   ignoredSkillMatch,
   installerPins,
@@ -860,11 +865,15 @@ import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
 import { mib, procPeakRssBytes, RUN_MEMORY_LIMIT_BYTES, startPeakRssSampling } from "./memory";
 import {
   builtOn,
+  commentAbove,
   type DockerfileStage,
   dockerfileStages,
   type FinalStep,
-  finalStage,
   type ImageConfig,
+  labelsRepository,
+  OCI_REVISION,
+  OCI_SOURCE,
+  OCI_VERSION,
   type PodImage,
   PodNotMeasurable,
   type ReadImageConfig,
@@ -1091,8 +1100,6 @@ const CONTROLLER_TOKEN = /^legion-[a-z0-9]+-controller$/;
 const WORKSPACE_DIR = /\/--legion-workspaces-[A-Za-z0-9._-]*?-([a-z][a-z0-9]*)-(\d+)--\//;
 /** The custom message kinds Oh My Pi 18.18.6 leaves out of the model's messages (plan mode's). */
 const LEFT_OUT_CUSTOM = new Set(["prewalk-plan", "vibe-mode-context"]);
-/** Where a Legion pod's worker image installs its Oh My Pi packages (worker.Dockerfile). */
-const IMAGE_ROOT = "/opt/legion/";
 /** The user memory file beside Claude Code's settings (CLAUDE_SETTINGS, as copies.ts reads them
  *  from its claude-settings manifest), which Oh My Pi reads as its user-level context file
  *  (discovery/claude.ts at the pinned tag). */
@@ -2637,21 +2644,22 @@ interface ProjectRead {
 const HIDDEN_RULE =
   "Oh My Pi 18.18.6 sets a skill's hide from its SKILL.md frontmatter's hide: true or disable-model-invocation: true (extensibility/skills.ts, lines 289, 494, 554 and 649; packages/utils/src/frontmatter.ts, lines 14-44, reads disable-model-invocation as disableModelInvocation), loads it, so skill:// reads it, and lists only the skills whose hide is not true (system-prompt.ts, lines 961-983)";
 
-/** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with a
- *  gh call that failed for a transient reason (`GhFailed`: each read it made was sent again until
- *  no try was left) is dropped once it does, so a later caller reads again; any other rejection
- *  is kept. */
+/** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with an
+ *  error `drop` names (by default a gh call that failed for a transient reason, `GhFailed`: each
+ *  read it made was sent again until no try was left) is dropped once it does, so a later caller
+ *  reads again; any other rejection is kept. */
 function readOnce<T>(
   cache: Map<string, Promise<T>>,
   key: string,
-  make: () => Promise<T>
+  make: () => Promise<T>,
+  drop: (error: unknown) => boolean = transientFailure
 ): Promise<T> {
   const held = cache.get(key);
   if (held !== undefined) return held;
   const made = make();
   cache.set(key, made);
   made.catch((error: unknown) => {
-    if (transientFailure(error) && cache.get(key) === made) cache.delete(key);
+    if (drop(error) && cache.get(key) === made) cache.delete(key);
   });
   return made;
 }
@@ -2818,14 +2826,12 @@ export class GithubReads {
    *  that fails (a request that failed for a transient reason on every try, or a configured
    *  registry's refusal of its token) is not kept, so a later caller reads the registry again. */
   imageConfig(image: string): Promise<ImageConfig | undefined> {
-    const held = this.images.get(image);
-    if (held !== undefined) return held;
-    const made = this.readImageConfig(image);
-    this.images.set(image, made);
-    made.catch(() => {
-      if (this.images.get(image) === made) this.images.delete(image);
-    });
-    return made;
+    return readOnce(
+      this.images,
+      image,
+      () => this.readImageConfig(image),
+      () => true
+    );
   }
 
   /** The registry's tarball of `version` of the package `name`, undefined when it has none. A try
@@ -2854,17 +2860,15 @@ export class GithubReads {
    *  each version, since the registry takes no version twice; a read that fails is not kept, so
    *  a later caller reads the registry again. */
   shippedSkills(name: string, version: string): Promise<ReadonlySet<string> | undefined> {
-    const key = `${name}@${version}`;
-    const held = this.shipped.get(key);
-    if (held !== undefined) return held;
-    const made = this.tarball(name, version).then((bytes) =>
-      bytes === undefined ? undefined : new Set(tarballSkills(tarballFiles(bytes)))
+    return readOnce(
+      this.shipped,
+      `${name}@${version}`,
+      () =>
+        this.tarball(name, version).then((bytes) =>
+          bytes === undefined ? undefined : new Set(tarballSkills(tarballFiles(bytes)))
+        ),
+      () => true
     );
-    this.shipped.set(key, made);
-    made.catch(() => {
-      if (this.shipped.get(key) === made) this.shipped.delete(key);
-    });
-    return made;
   }
 
   /** Whether GitHub lists the tag `tag` of `repo`: one read of its tags that start so. */
@@ -3611,22 +3615,12 @@ type ImageKey = "image" | "daemonImage";
 /** A YAML value less a quote at its start and one at its end. */
 const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
 
-/** The comment lines right above the line `at` of `lines`, none before the line `floor`, each less
- *  its `#`. */
-function commentAbove(lines: readonly string[], at: number, floor: number): string[] {
-  const comment: string[] = [];
-  for (let above = at - 1; above >= floor && /^\s*#/.test(lines[above] ?? ""); above--) {
-    comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
-  }
-  return comment;
-}
-
 /** The `key:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
- *  comment lines right above that line, each less its `#`; undefined when the text holds no such
- *  entry with a `key:` line. The entry's lines are those after its `- key:` line that are
- *  indented past its dash, or are comments; its `key:` is one of its own fields (indented two
- *  past the dash), so neither a nested map's `image:` nor another key such as `daemonImage:` is
- *  its `image:`. */
+ *  comment lines right above that line (pod-image.ts's `commentAbove`); undefined when the text
+ *  holds no such entry with a `key:` line. The entry's lines are those after its `- key:` line
+ *  that are indented past its dash, or are comments; its `key:` is one of its own fields (indented
+ *  two past the dash), so neither a nested map's `image:` nor another key such as `daemonImage:`
+ *  is its `image:`. */
 function projectImage(
   text: string,
   project: string,
@@ -3654,9 +3648,9 @@ function projectImage(
 
 /** The top-level `key:` value of a project file's text `text` (a deployment's
  *  `legion/projects/<n>-<project>.yaml`, where a project's own values moved from the Pulumi
- *  config's `- key: <project>` entry), and the comment lines right above that line, each less its
- *  `#`; undefined when the file has no top-level `key:` line. A nested map's `image:` and another
- *  key such as `daemonImage:` are not its `image:`. */
+ *  config's `- key: <project>` entry), and the comment lines right above that line (pod-image.ts's
+ *  `commentAbove`); undefined when the file has no top-level `key:` line. A nested map's `image:`
+ *  and another key such as `daemonImage:` are not its `image:`. */
 function projectFileImage(
   text: string,
   key: ImageKey
@@ -3666,24 +3660,21 @@ function projectFileImage(
   const at = lines.findIndex((line) => field.test(line));
   if (at < 0) return undefined;
   const value = field.exec(lines[at] ?? "")?.[1] ?? "";
-  return { image: unquoted(value), comment: commentAbove(lines, at, 0) };
+  return { image: unquoted(value), comment: commentAbove(lines, at) };
 }
 
-const OCI_REVISION = "org.opencontainers.image.revision";
-const OCI_VERSION = "org.opencontainers.image.version";
-const OCI_SOURCE = "org.opencontainers.image.source";
+/** The image reference `image` without its digest and its tag: `registry.example/acme/worker`. */
+const imageRepository = (image: string) => image.replace(/@.*$/, "").replace(/:[^/]*$/, "");
+
+/** The digest, 64 hex digits, of the digest-pinned reference `image`; undefined for another. */
+const pinnedDigest = (image: string | undefined) =>
+  /@sha256:([0-9a-f]{64})$/.exec(image ?? "")?.[1];
 
 /** The release tags a version label `version` of the image `image` names, in the order they are
  *  tried: `v<version>`, then `<name>-v<version>` for the first words of the image's name, the
  *  longest first. */
 function releaseTags(image: string, version: string): string[] {
-  const words = (
-    image
-      .replace(/@.*$/, "")
-      .replace(/:[^/]*$/, "")
-      .split("/")
-      .pop() ?? ""
-  ).split("-");
+  const words = (imageRepository(image).split("/").pop() ?? "").split("-");
   return [
     ...new Set([
       `v${version}`,
@@ -3706,6 +3697,26 @@ async function refCommit(
     if (transientFailure(error)) throw error;
     return undefined;
   }
+}
+
+/** The first of the release tags `tags` that `repo` has (`hasTag`) and that names a commit at or
+ *  before `when.at`: its last commit then, and the words that say so; undefined when none does. */
+async function releaseCommit(
+  github: GithubReads,
+  repo: string,
+  tags: readonly string[],
+  when: { readonly at: string; readonly words: string }
+): Promise<{ readonly commit: string; readonly words: string } | undefined> {
+  for (const tag of tags) {
+    if (!(await github.hasTag(repo, tag))) continue;
+    const commit = await refCommit(github, repo, tag, when.at);
+    if (commit === undefined) continue;
+    return {
+      commit,
+      words: `the release ${tag}, a tag of ${repo} (gh api repos/${repo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -3745,13 +3756,11 @@ async function labelCommit(
     }
   }
   if (version !== undefined && version !== "") {
-    for (const tag of releaseTags(image, version)) {
-      if (!(await github.hasTag(imageRepo, tag))) continue;
-      const commit = await refCommit(github, imageRepo, tag, when.at);
-      if (commit === undefined) continue;
+    const release = await releaseCommit(github, imageRepo, releaseTags(image, version), when);
+    if (release !== undefined) {
       return {
-        sha: commit,
-        how: `${found} labels ${OCI_VERSION} ${version}, so the release ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`,
+        sha: release.commit,
+        how: `${found} labels ${OCI_VERSION} ${version}, so ${release.words}`,
       };
     }
   }
@@ -3885,7 +3894,7 @@ async function deploymentCommit(
       how: `${step}, but the OCI config of ${image} has no ${source === undefined ? OCI_SOURCE : OCI_REVISION} label`,
     };
   }
-  if (source.replace(/\/$/, "").toLowerCase() !== deployed.toLowerCase()) {
+  if (!labelsRepository(source, deployment)) {
     return {
       how: `${step}, but the OCI config of ${image} labels ${OCI_SOURCE} ${source}, not the deployment's ${deployed}`,
     };
@@ -3895,13 +3904,8 @@ async function deploymentCommit(
     return { how: `${step}, but ${labels}, which names no commit (40 hex digits)` };
   }
   const asked = commitsRead(deployment, revision, when.at);
-  let commit: string | undefined;
-  try {
-    commit = await github.commitAt(deployment, revision, when.at);
-  } catch (error) {
-    // A commit the deployment does not hold, or one made after the read.
-    if (transientFailure(error)) throw error;
-  }
+  // Undefined for a commit the deployment does not hold, or one made after the read.
+  const commit = await refCommit(github, deployment, revision, when.at);
   if (commit !== revision) {
     return {
       how: `${step}, but ${labels}, which is no commit of ${deployment} at or before ${when.words} ${when.at} (${asked})`,
@@ -3916,7 +3920,14 @@ async function deploymentCommit(
   const final = dockerfile.stages.at(-1);
   const none = sources.every(({ froms, added }) => froms.length === 0 && added.length === 0);
   if (final === undefined || none) {
-    return baseCommit(github, { image, diffIds: config.diffIds, text, recipe, imageRepo, when });
+    return baseCommit(github, {
+      image,
+      diffIds: config.diffIds,
+      base: final?.base,
+      recipe,
+      imageRepo,
+      when,
+    });
   }
   const copied = await copiedCommit(github, {
     image,
@@ -3934,27 +3945,27 @@ async function deploymentCommit(
 
 /**
  * LEGION_IMAGE_RULE's built-on step for the image `image` (its config's `rootfs.diff_ids`
- * `diffIds`), whose Dockerfile `text`, read as `recipe` says, copies none of the worker's
- * packages in its final stage: the Dockerfile builds its final stage on a digest-pinned base
- * (pod-image.ts's `finalStage`); the base's `rootfs.diff_ids` are the first of the image's
- * (`builtOn`: a build can pass the Dockerfile another base than its ARG default); and the commit
- * is the base's, by its build provenance in `imageRepo`, else by its labels (`labelCommit`).
- * `how` names each read, or, with no `sha`, the step that failed and why.
+ * `diffIds`), whose Dockerfile, read as `recipe` says, copies none of the worker's packages in its
+ * final stage, and builds that stage on `base` (pod-image.ts's `dockerfileStages`: the image its
+ * FROM names, the default of the ARG it names resolved): the base is digest-pinned; its
+ * `rootfs.diff_ids` are the first of the image's (`builtOn`: a build can pass the Dockerfile
+ * another base than its ARG default); and the commit is the base's, by its build provenance in
+ * `imageRepo`, else by its labels (`labelCommit`). `how` names each read, or, with no `sha`, the
+ * step that failed and why.
  */
 async function baseCommit(
   github: GithubReads,
   read: {
     readonly image: string;
     readonly diffIds: readonly string[];
-    readonly text: string;
+    readonly base: string | undefined;
     readonly recipe: string;
     readonly imageRepo: string;
     readonly when: { readonly at: string; readonly words: string };
   }
 ): Promise<{ readonly sha?: string; readonly how: string }> {
-  const { image, recipe, imageRepo, when } = read;
-  const base = finalStage(read.text).base;
-  const baseDigest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
+  const { image, base, recipe, imageRepo, when } = read;
+  const baseDigest = pinnedDigest(base);
   if (base === undefined || baseDigest === undefined) {
     return {
       how: `${recipe} ${base === undefined ? "names no base of its final stage" : `builds its final stage on ${base}, which pins no digest`}`,
@@ -4094,7 +4105,7 @@ async function copiedCommit(
       copied
     );
   const base = stage.base;
-  const digest = /@sha256:([0-9a-f]{64})$/.exec(base ?? "")?.[1];
+  const digest = pinnedDigest(base);
   if (base === undefined || digest === undefined) return { how: `${copied}, which pins no digest` };
   const provenance = `gh api repos/${imageRepo}/attestations/sha256:${digest}`;
   const found = await github.attestedCommit(imageRepo, digest);
@@ -4165,14 +4176,12 @@ async function versionNames(
   const tags = [
     ...new Set([`${imageRepo.split("/").pop()}-v${version}`, ...releaseTags(image, version)]),
   ];
-  for (const tag of tags) {
-    if (!(await github.hasTag(imageRepo, tag))) continue;
-    const at = await refCommit(github, imageRepo, tag, when.at);
-    if (at === undefined) continue;
-    const release = `${labels}, so the release ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${at}`;
-    return at === commit
-      ? { names: true, how: release }
-      : { names: false, how: `${release}, not the stage's commit ${commit}` };
+  const release = await releaseCommit(github, imageRepo, tags, when);
+  if (release !== undefined) {
+    const words = `${labels}, so ${release.words}`;
+    return release.commit === commit
+      ? { names: true, how: words }
+      : { names: false, how: `${words}, not the stage's commit ${commit}` };
   }
   return {
     names: false,
@@ -4258,7 +4267,7 @@ async function imageCommit(
   // copies the worker's packages from, once the image's version label confirms it, else, where it
   // copies none, that of the base its Dockerfile names, once the images confirm that base; a step
   // that fails leaves the commit not known.
-  const repository = entry.image.replace(/@.*$/, "").replace(/:[^/]*$/, "");
+  const repository = imageRepository(entry.image);
   const built = read.deploymentImages.find((each) => each.repository === repository);
   if (built !== undefined) {
     const based = await deploymentCommit(github, {
@@ -4299,14 +4308,9 @@ async function imageCommit(
     const ref = tag ?? hex ?? "";
     if (tag === undefined && !(/[a-f]/.test(ref) && /[0-9]/.test(ref))) continue;
     if (tag !== undefined && !(await github.hasTag(imageRepo, tag))) continue;
-    let commit: string;
-    try {
-      commit = await github.commitAt(imageRepo, ref, when.at);
-    } catch (error) {
-      // A word that is no commit of the repository, or a commit made after the read.
-      if (transientFailure(error)) throw error;
-      continue;
-    }
+    // Undefined for a word that is no commit of the repository, or a commit made after the read.
+    const commit = await refCommit(github, imageRepo, ref, when.at);
+    if (commit === undefined) continue;
     if (tag !== undefined) {
       return {
         sha: commit,
@@ -4358,9 +4362,10 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
-  /** The listed names of each pool the profile installed because the recorded listing names a
-   *  skill of it that no installed unit outside the pools ships (POOL_LISTING_RULE): the measure
-   *  cannot see a miss of them. Absent where none is, and in a measure written before the mark. */
+  /** The names of each pool the profile installed because the recorded listing names a skill of
+   *  it that no installed unit outside the pools ships, or, for a pool whose every skill not
+   *  ignored is hidden, because it installed another pool (POOL_LISTING_RULE): the measure cannot
+   *  see a miss of them. Absent where none is, and in a measure written before the mark. */
   fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
@@ -5251,9 +5256,10 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
-  /** The listed names of each pool the profile installs because the recorded listing names a skill
-   *  of it that no installed unit outside the pools ships (POOL_LISTING_RULE), sorted; empty where
-   *  no listing decided a pool. */
+  /** The names of each pool the profile installs because the recorded listing names a skill of it
+   *  that no installed unit outside the pools ships, or, for a pool whose every skill not ignored
+   *  is hidden, because it installs another pool (POOL_LISTING_RULE), sorted; empty where no
+   *  listing decided a pool. */
   readonly fromRecorded: readonly string[];
 }
 
@@ -6244,6 +6250,30 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
   }
 
+  // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
+  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE, copies.ts's `ignoredSkillMatch`).
+  const ignores =
+    home === undefined
+      ? []
+      : factsOf(held.get(home)?.manifests ?? [], "ignores").flatMap(({ manifest, fact }) =>
+          fact.patterns.map((pattern) => ({
+            pattern,
+            file: manifest.path,
+            matches: ignoredSkillMatch(pattern),
+          }))
+        );
+  /** The tree a copy is read from: its own commit's when it names one, else the session
+   *  repository's project read when it holds the copy (a linked project skill is held there
+   *  alone), else its repository's. */
+  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
+    (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
+    (copy.repo === checkout.repo &&
+    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
+      ? projectTree
+      : undefined) ??
+    held.get(copy.repo) ??
+    (copy.repo === checkout.repo ? projectTree : undefined);
+
   // Each pool an extension's resources_discover gives: decided by the recorded listing where the
   // session has one (POOL_LISTING_RULE), else by the Oh My Pi build its dev box pinned at its start
   // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
@@ -6251,7 +6281,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A name an installed unit outside the pools also ships is no evidence for a pool (the session
   // lists it with or without the pool): a pool needs a named skill that no such unit ships, a
   // `[Skill file: …]` read of the session that shows Oh My Pi loaded it, or a listed
-  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives.
+  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives. A pool whose every
+  // skill that skills.ignoredSkills does not match is hidden, which no listing can name, is decided
+  // after every other: installed where another is installed on the listing or on direct proof.
   const fromListing = new Set<string>();
   const pools =
     input.poolsUndecided === true
@@ -6323,6 +6355,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         why: `${by.join(" and ")} ship${by.length === 1 ? "s" : ""} ${name} under that namespace, and no installed unit outside the pools that Oh My Pi admits before ${by.length === 1 ? "it" : "them"} ships another copy of it`,
       };
     };
+    /** Each pool left out below whose every skill that skills.ignoredSkills does not match is
+     *  hidden: its evidence so far, its hidden names, and its `left out` item, which stands only
+     *  where no other pool is installed. */
+    const unlistable: {
+      key: string;
+      via: Via;
+      said: string;
+      hidden: string[];
+      leftOut: Evidence;
+    }[] = [];
     for (const [key, { via, why }] of pools) {
       const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
@@ -6360,16 +6402,61 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           tried.length === 0
             ? ""
             : `; ${listing.from} names ${tried.map((each) => each.listed).join(", ")}, which prove${tried.length === 1 ? "s" : ""} nothing for this pool (${tried.map((each) => `${each.listed}: ${each.why}`).join("; ")})`;
-        units.delete(key);
-        evidence.push({
+        const leftOut = {
           item: `left out: the pool ${key}`,
           source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}${unproved}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
-        });
+        };
+        evidence.push(leftOut);
+        // Its skills that skills.ignoredSkills does not match (IGNORED_RULE), each hidden or not as
+        // the profile's `hidden` reads it below: its copy's tree (`treeOf`) at the commit its offer
+        // names.
+        const kept = shipsAtStart(via).filter(
+          (row) => !ignores.some(({ matches }) => matches(row.skill))
+        );
+        const unlisted = kept.every(
+          (row) =>
+            treeOf({
+              repo: row.copyRepository,
+              path: row.copyPath ?? "",
+              commit:
+                poolAt.get(row.copyRepository) ??
+                (row.copyRepository === image?.repo ? image.sha : undefined),
+            })?.hidden.has(repoPath(row.copyPath ?? "")) === true
+        );
+        if (kept.length > 0 && unlisted) {
+          unlistable.push({
+            key,
+            via,
+            said: `${why}; ${counted} (${split})${sharedNote}${unproved}`,
+            hidden: [...new Set(kept.map((row) => row.skill))],
+            leftOut,
+          });
+        } else {
+          units.delete(key);
+        }
         continue;
       }
       units.set(key, {
         via,
         why: `${why}; ${counted} (${split})${sharedNote}; message ${read.index} reads [Skill file: ${read.header}] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
+      });
+    }
+    // A pool no listing can name, as Oh My Pi lists none of its skills, is installed where the
+    // listing or direct proof installed another pool above, which shows Oh My Pi loaded the dev
+    // box's pools, and marked as the listing decided it; else it stays left out.
+    const admitted = pools
+      .map(([key]) => key)
+      .filter((key) => units.has(key) && !unlistable.some((each) => each.key === key));
+    for (const { key, via, said, hidden, leftOut } of unlistable) {
+      if (admitted.length === 0) {
+        units.delete(key);
+        continue;
+      }
+      evidence.splice(evidence.indexOf(leftOut), 1);
+      fromListing.add(key);
+      units.set(key, {
+        via,
+        why: `${said}; every skill of it that skills.ignoredSkills does not match is hidden (${hidden.join(", ")}), and Oh My Pi lists no hidden skill (HIDDEN_RULE), so the recorded listing cannot name it, installed or not; ${listing.from} or direct proof installs the other resources_discover pool${admitted.length === 1 ? "" : "s"} ${admitted.join(", ")}, so Oh My Pi loaded the dev box's pools, and it is installed; ${inference}: ${POOL_LISTING_RULE}`,
       });
     }
   } else if (home !== undefined && ompPin !== undefined && pools.length > 0) {
@@ -6577,18 +6664,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
   }
   offers.push(...projectOffers);
-  // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
-  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE, copies.ts's `ignoredSkillMatch`).
-  const ignores =
-    home === undefined
-      ? []
-      : factsOf(held.get(home)?.manifests ?? [], "ignores").flatMap(({ manifest, fact }) =>
-          fact.patterns.map((pattern) => ({
-            pattern,
-            file: manifest.path,
-            matches: ignoredSkillMatch(pattern),
-          }))
-        );
   for (let at = offers.length - 1; at >= 0 && ignores.length > 0; at--) {
     const offer = offers[at];
     const by = ignores.find(({ matches }) => matches(offer?.copy.name ?? ""));
@@ -6636,17 +6711,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const skills = new Map<string, Omit<ProfileSkill, "commit"> & { readonly commit?: string }>();
   const again: InstallPath[] = [];
   const fromRecorded = new Set<string>();
-  /** The tree a copy is read from: its own commit's when it names one, else the session
-   *  repository's project read when it holds the copy (a linked project skill is held there
-   *  alone), else its repository's. */
-  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
-    (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
-    (copy.repo === checkout.repo &&
-    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
-      ? projectTree
-      : undefined) ??
-    held.get(copy.repo) ??
-    (copy.repo === checkout.repo ? projectTree : undefined);
   /** The blob of the SKILL.md of `copy` at the session's start, as read. */
   const blobOf = (copy: { repo: string; path: string; commit?: string | undefined }) =>
     treeOf(copy)?.copies.find((each) => each.path === copy.path)?.blob;

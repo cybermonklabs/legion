@@ -152,37 +152,63 @@ let usage = { input: 10, output: 3 };
 /** The stand-in gateway: answers each POST to /v1/messages with what `answer` gives for its body:
  *  a response as it is, or a text as a streamed reply of the body's own model with `usage`. */
 let answer: (body: { model: string; [field: string]: unknown }) => string | Response = () => "{}";
+
+/** Whether the stand-in names the deployment that answered each request that goes with a routing
+ *  id (`x-litellm-model-id`, `pinnedTo`), as the gateway does; off but in the rows that set it. */
+let pinDeployments = false;
+
+/** One of two made-up deployments, the one the stand-in pins a call that goes with the routing id
+ *  `routing` to, as the gateway pins one: by the SHA-256 of the id, modulo the deployments. */
+function pinnedTo(routing: string): string {
+  return (createHash("sha256").update(routing).digest()[0] ?? 0) % 2 === 0
+    ? "0a1b2c3d"
+    : "4e5f6a7b";
+}
+
+/** The stand-in's answer to `request`, as `answer` gives it for its body. */
+function standInReply(request: RecordedRequest): Response {
+  const responses = request.path === "/v1/responses";
+  const body = JSON.parse(request.body) as { model: string };
+  const answered = answer(body);
+  if (answered instanceof Response) return answered;
+  // A Responses body (an openai/<id> case's replay) gets the answer in its API's stream.
+  return sseResponse(
+    responses
+      ? responseSse({
+          id: `resp_standin_${request.n}`,
+          model: body.model,
+          output: [{ type: "message", text: answered }],
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+        })
+      : messageSse({
+          id: `msg_standin_${request.n}`,
+          model: body.model,
+          content: [{ type: "text", text: answered }],
+          stopReason: "end_turn",
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+        }),
+    `req_standin_${request.n}`
+  );
+}
+
 let recorder: Recorder;
 beforeAll(() => {
   recorder = startRecorder({
     route: (request: RecordedRequest) => {
-      const responses = request.path === "/v1/responses";
-      if (request.method !== "POST" || (request.path !== "/v1/messages" && !responses)) {
+      if (
+        request.method !== "POST" ||
+        (request.path !== "/v1/messages" && request.path !== "/v1/responses")
+      ) {
         return undefined;
       }
-      const body = JSON.parse(request.body) as { model: string };
-      const answered = answer(body);
-      if (answered instanceof Response) return answered;
-      // A Responses body (an openai/<id> case's replay) gets the answer in its API's stream.
-      return sseResponse(
-        responses
-          ? responseSse({
-              id: `resp_standin_${request.n}`,
-              model: body.model,
-              output: [{ type: "message", text: answered }],
-              inputTokens: usage.input,
-              outputTokens: usage.output,
-            })
-          : messageSse({
-              id: `msg_standin_${request.n}`,
-              model: body.model,
-              content: [{ type: "text", text: answered }],
-              stopReason: "end_turn",
-              inputTokens: usage.input,
-              outputTokens: usage.output,
-            }),
-        `req_standin_${request.n}`
-      );
+      const reply = standInReply(request);
+      const routing = request.headers["x-litellm-session-id"];
+      if (!pinDeployments || routing === undefined) return reply;
+      const headers = new Headers(reply.headers);
+      headers.set("x-litellm-model-id", `${pinnedTo(routing)}-stand-in`);
+      return new Response(reply.body, { status: reply.status, headers });
     },
   });
 });
@@ -6728,6 +6754,223 @@ describe("behaviour: the report's spend", () => {
     expect({ code: absent.code, stderr: absent.stderr }).toEqual({ code: 0, stderr: "" });
     expect(absent.stdout.split("\n")).toContain(
       `request log: none at ${none}, so the spend is set against none`
+    );
+  }, 120_000);
+});
+
+// The architect's routing rule (2026-11-26): the gateway pins a Messages call's deployment by its
+// `x-litellm-session-id` and by no `metadata.user_id`, so every run of one body went to one
+// deployment and arms of different bodies to different ones. Each run numbered n of every arm of a
+// case's stage goes with one routing id, and each run records the deployment that answered it.
+describe("behaviour: the routing id of each round", () => {
+  /** A UUID, as a routing id is. */
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  /** The session id a replay request's body went with. */
+  const sessionOf = (request: RecordedRequest): unknown => {
+    const body = JSON.parse(request.body);
+    return body.metadata?.user_id ?? body.prompt_cache_key;
+  };
+  /** A made-up routing id to pin an arm to. */
+  const PIN = "5eed0000-0000-4000-8000-000000000002";
+
+  // Catches: runs of one arm sent with no routing id, so each arm's body went to the one
+  // deployment its hash picked; a routing id per run, or per round of sends, in place of one per
+  // run number shared by every arm; one case's ids reused for another; a judge call or a
+  // Responses call sent with one; and a report that does not say where each arm's runs went.
+  test("screen: each request of run n of every arm goes with one routing id of its own, a UUID, and report counts each arm's runs by the deployment that answered them, every arm alike; the judge's calls and a Responses case's go with none", async () => {
+    const s = scenario("routing", LOSS_SKILL(), [
+      { id: "c01" },
+      { id: "c02" },
+      { id: "c-openai", model: "openai/gpt-6.1-sol" },
+    ]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    pinDeployments = true;
+    try {
+      const from = recorder.requests.length;
+      const ran = await cli(behaviour("screen", s));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const requests = requestsSince(from);
+      expect(requests).toHaveLength(3 * 63);
+      const judged = requests.filter((request) => isJudgement(JSON.parse(request.body)));
+      expect(judged).toHaveLength(3 * 33);
+      expect(judged.filter((request) => "x-litellm-session-id" in request.headers)).toEqual([]);
+      const replays = requests.filter((request) => !isJudgement(JSON.parse(request.body)));
+      const responses = replays.filter((request) => request.path === "/v1/responses");
+      expect(responses).toHaveLength(30);
+      expect(responses.filter((request) => "x-litellm-session-id" in request.headers)).toEqual([]);
+      const openai = result(s.out, "c-openai").stages.screen?.runs ?? [];
+      expect(openai.map((run) => [run.routingId, run.deployments])).toEqual(
+        Array(30).fill([null, [""]])
+      );
+
+      const drawn: string[] = [];
+      for (const id of ["c01", "c02"]) {
+        const runs = result(s.out, id).stages.screen?.runs ?? [];
+        expect(runs).toHaveLength(30);
+        const byNumber = Array.from({ length: SCREEN_RUNS }, (_, n) =>
+          runs.filter((run) => run.run === n + 1)
+        );
+        for (const each of byNumber) {
+          expect(each.map((run) => run.arm).sort()).toEqual(["new", "none", "old"]);
+          expect(new Set(each.map((run) => run.routingId)).size).toBe(1);
+          expect(each[0]?.routingId).toMatch(UUID);
+        }
+        const ids = byNumber.map((each) => each[0]?.routingId ?? "");
+        expect(new Set(ids).size).toBe(SCREEN_RUNS);
+        drawn.push(...ids);
+        // Each run keeps a session id of its own; its request went with its routing id, and the
+        // deployment it records is the one that id pins.
+        expect(new Set(runs.map((run) => run.userId)).size).toBe(30);
+        for (const run of runs) {
+          const sent = replays.filter((request) => sessionOf(request) === run.userId);
+          expect(sent.map((request) => request.headers["x-litellm-session-id"])).toEqual([
+            run.routingId ?? "none",
+          ]);
+          expect(run.deployments).toEqual([pinnedTo(run.routingId ?? "")]);
+          expect(run.routePinned).toBeUndefined();
+        }
+      }
+      // Each case's stage draws its own ids.
+      expect(new Set(drawn).size).toBe(2 * SCREEN_RUNS);
+
+      const reported = await cli(report(s));
+      expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+      const on = (prefix: string) => drawn.filter((id) => pinnedTo(id) === prefix).length;
+      // Both deployments answered (20 ids that all pin to one: 2 in a million).
+      expect([on("0a1b2c3d") > 0, on("4e5f6a7b") > 0]).toEqual([true, true]);
+      // c-openai's runs went with no routing id, and no deployment named itself to them.
+      const words = `0a1b2c3d ${on("0a1b2c3d")}, 4e5f6a7b ${on("4e5f6a7b")}, unnamed 10`;
+      const lines = reported.stdout.split("\n");
+      expect(lines).toContain(
+        `screen deployments by arm: old ${words}; new ${words}; none ${words}`
+      );
+      expect(lines).toContain("confirm deployments by arm: no runs");
+      expect(lines).toContain("control deployments by arm: no runs");
+      expect(lines.filter((line) => line.includes("routing pinned"))).toEqual([]);
+    } finally {
+      pinDeployments = false;
+    }
+  }, 300_000);
+
+  // Catches: a pin that some of its arm's runs do not go with, or that moves the other arms off
+  // their rounds' ids; a pinned result the report reads as a test result; and a pin of an arm the
+  // command does not run, of an id that is no UUID, or given to report, taken.
+  test("--route-id pins an arm: each of its runs goes with that id, the other arms keep their rounds', report says the stage is pinned; an arm the command does not run, an id that is not a UUID, an arm pinned twice, and a pin given to report are refused", async () => {
+    const s = scenario("route-pinned", LOSS_SKILL(), [{ id: "c01" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    pinDeployments = true;
+    try {
+      const from = recorder.requests.length;
+      const refusals: [string[], string][] = [
+        [
+          behaviour("screen", s, "--route-id", `minus=${PIN}`),
+          `skill-cuts: --route-id minus=${PIN}: behaviour screen runs no arm "minus"; its arms are old, new, none`,
+        ],
+        [
+          behaviour("confirm", s, "--route-id", `none=${PIN}`),
+          `skill-cuts: --route-id none=${PIN}: behaviour confirm runs no arm "none"; its arms are old, new`,
+        ],
+        [
+          behaviour("screen", s, "--route-id", "old=round-1"),
+          "skill-cuts: --route-id old=round-1: the routing id is not a UUID, and the gateway's x-litellm-session-id takes a UUID",
+        ],
+        [
+          behaviour("screen", s, "--route-id", PIN),
+          `skill-cuts: --route-id ${PIN} is not <arm>=<uuid>. usage:`,
+        ],
+        [
+          behaviour("screen", s, "--route-id", `old=${PIN}`, "--route-id", `old=${PIN}`),
+          "skill-cuts: --route-id pins the old arm twice",
+        ],
+        [
+          [...report(s), "--route-id", `old=${PIN}`],
+          "skill-cuts: --route-id goes with behaviour screen, confirm and control only: report makes no model call.",
+        ],
+      ];
+      for (const [args, why] of refusals) {
+        const refused = await cli(args);
+        expect({ code: refused.code, why: refused.stderr.startsWith(why) }).toEqual({
+          code: 2,
+          why: true,
+        });
+      }
+      expect(requestsSince(from)).toEqual([]);
+
+      const ran = await cli(behaviour("screen", s, "--route-id", `old=${PIN}`));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(ran.stdout).toContain(
+        `behaviour screen: routing pinned: old=${PIN}: every run of a pinned arm goes with that routing id in every round, in place of its round's, so these runs are a diagnostic, not a test result`
+      );
+      const runs = result(s.out, "c01").stages.screen?.runs ?? [];
+      const old = runs.filter((run) => run.arm === "old");
+      expect(old.map((run) => [run.routingId, run.routePinned])).toEqual(
+        Array(SCREEN_RUNS).fill([PIN, true])
+      );
+      const rounds = Array.from({ length: SCREEN_RUNS }, (_, n) =>
+        runs.filter((run) => run.run === n + 1 && run.arm !== "old")
+      );
+      for (const each of rounds) {
+        expect(each.map((run) => run.arm).sort()).toEqual(["new", "none"]);
+        expect(new Set(each.map((run) => run.routingId)).size).toBe(1);
+        expect(each[0]?.routingId).toMatch(UUID);
+        expect(each[0]?.routingId).not.toBe(PIN);
+        expect(each.map((run) => run.routePinned)).toEqual([undefined, undefined]);
+      }
+      const replays = requestsSince(from).filter(
+        (request) => !isJudgement(JSON.parse(request.body))
+      );
+      for (const run of runs) {
+        const sent = replays.filter((request) => sessionOf(request) === run.userId);
+        expect(sent.map((request) => request.headers["x-litellm-session-id"])).toEqual([
+          run.routingId ?? "none",
+        ]);
+      }
+
+      const lines = (await cli(report(s))).stdout.split("\n");
+      expect(lines).toContain(
+        `screen routing pinned: old=${PIN} (1 case: c01): each run of a pinned arm went with that routing id in every round, not its round's, so these runs are a diagnostic, not a test result`
+      );
+      expect(
+        lines.find((line) => line.startsWith("screen deployments by arm: old "))?.split("; ")[0]
+      ).toBe(`screen deployments by arm: old ${pinnedTo(PIN)} ${SCREEN_RUNS}`);
+    } finally {
+      pinDeployments = false;
+    }
+  }, 300_000);
+
+  // Catches: a report that fails, or counts runs under no deployment, for results made before
+  // runs recorded their deployments.
+  test("report of results whose runs record no deployments says so for each stage, with how many where some do, and does not fail", async () => {
+    const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+    const s = scenario(
+      "deployments-unrecorded",
+      LOSS_SKILL(),
+      SIX.map((id) => ({ id }))
+    );
+    plantSix(s, SIX, "c04");
+    const lines = async () => {
+      const reported = await cli(report(s));
+      expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+      return reported.stdout.split("\n");
+    };
+    const before = await lines();
+    expect(before).toContain("screen deployments by arm: not recorded");
+    expect(before).toContain("confirm deployments by arm: no runs");
+    expect(before).toContain("control deployments by arm: not recorded");
+    // One case's screen made after runs recorded them: its runs are counted, the others' said.
+    const screen = plantedStage(s, "c01", "screen", KEPT);
+    const recorded = (screen.runs as Record<string, unknown>[]).map((run) => ({
+      ...run,
+      deployments: ["0a1b2c3d"],
+    }));
+    plantResult(s, "c01", { stages: { screen: { ...screen, runs: recorded } } });
+    const after = await lines();
+    expect(after).toContain(
+      "screen deployments by arm: old 0a1b2c3d 10; new 0a1b2c3d 10; none 0a1b2c3d 10 (and 150 runs made before runs recorded their deployments)"
     );
   }, 120_000);
 });

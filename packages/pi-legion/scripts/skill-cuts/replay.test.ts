@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -1111,6 +1112,102 @@ test("a run's requests carry an id no other run carries, the same in every round
   }
 });
 
+/** The made-up deployment a stand-in gateway of two pins a call to by its routing id, as the
+ *  gateway pins one (SHA-256 of the id, modulo the deployments), or null for a call with none. */
+function pinnedTo(routing: string | null): string | null {
+  if (routing === null) return null;
+  const pick = (createHash("sha256").update(routing).digest()[0] ?? 0) % 2;
+  return pick === 0 ? "0a1b2c3d" : "4e5f6a7b";
+}
+
+/** `reply` with the stand-in's `x-litellm-model-id` of the deployment `prefix`, as the gateway
+ *  names the deployment that answered; `reply` itself for none. */
+function answeredBy(reply: Response, prefix: string | null): Response {
+  if (prefix === null) return reply;
+  const headers = new Headers(reply.headers);
+  headers.set("x-litellm-model-id", `${prefix}-stand-in`);
+  return new Response(reply.body, { status: reply.status, headers });
+}
+
+// Catches: a run that goes with no routing id, or with another than its arm's k-th, a skill-read
+// round that goes without it, a run that does not record the deployment of each of its replies,
+// and a Responses run that carries the header.
+test("a run goes with its arm's routing id on every round, records the deployment of each reply, and a Responses run goes with none", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const fresh = armWith("new", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const keyFile = path.join(scratch, "routing-key");
+  writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
+  // A run's first round reads x.md, and its second, which holds the answer, gives the text.
+  const sent: { routing: string | null; user: string | null }[] = [];
+  const pinning = createGateway({
+    baseUrl: "http://gateway.test",
+    keyFile,
+    concurrency: 3,
+    timeoutMs: 5_000,
+    spendRecorder: null,
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as RequestBody;
+      const routing = new Headers(init.headers).get("x-litellm-session-id");
+      sent.push({ routing, user: bodyIdentity(body) });
+      const first = isResponsesBody(body)
+        ? body.input.length === RESPONSES_BODY.input.length
+        : body.messages.length === BODY.messages.length;
+      const reply = isResponsesBody(body)
+        ? f9(first ? "skill-read" : "text")
+        : f5(first ? "skill-read" : "text");
+      return answeredBy(reply, pinnedTo(routing));
+    },
+    sleep: async () => {},
+  });
+  const routes = [randomUUID(), randomUUID(), randomUUID()];
+  const runs = await replayInterleaved(
+    [
+      { arm, body: BODY, runs: 3, routingIds: routes },
+      { arm: fresh, body: BODY, runs: 3, routingIds: routes },
+    ],
+    pinning,
+    "routing-seed"
+  );
+  // Each arm's runs, in the order sent, went with the ids in turn.
+  for (const name of ["old", "new"]) {
+    expect(runs.filter((run) => run.arm === name).map((run) => run.routingId)).toEqual(routes);
+  }
+  // Every request went with its run's id: each id on four, two runs of two rounds each, and each
+  // run's own session id on its two.
+  const byRouting = new Map<string, number>();
+  for (const { routing } of sent) {
+    byRouting.set(`${routing}`, (byRouting.get(`${routing}`) ?? 0) + 1);
+  }
+  expect(byRouting).toEqual(new Map(routes.map((id) => [id, 4])));
+  for (const run of runs) {
+    const own = sent.filter(({ user }) => user === run.userId);
+    expect(own.map(({ routing }) => routing)).toEqual([run.routingId, run.routingId]);
+    const replayed = run.outcome.status === "fulfilled" ? run.outcome.value : undefined;
+    expect(replayed?.routingId).toBe(run.routingId);
+    const deployment = pinnedTo(run.routingId) ?? "none";
+    expect(replayed?.deployments).toEqual([deployment, deployment]);
+  }
+
+  // replayOnce sends the id it is given on every round; a Responses body goes with none, and
+  // records the deployments all the same.
+  sent.length = 0;
+  const once = await replayOnce(BODY, arm, pinning, { routingId: routes[0] });
+  expect(sent.map(({ routing }) => routing)).toEqual([routes[0], routes[0]]);
+  expect(once.routingId).toBe(routes[0] ?? "");
+  sent.length = 0;
+  const responses = await replayOnce(RESPONSES_BODY, arm, pinning, { routingId: routes[0] });
+  expect(sent.map(({ routing }) => routing)).toEqual([null, null]);
+  expect(responses.routingId).toBeNull();
+  expect(responses.deployments).toEqual(["", ""]);
+  const interleaved = await replayInterleaved(
+    [{ arm, body: RESPONSES_BODY, runs: 1, routingIds: [routes[1] ?? ""] }],
+    pinning,
+    "responses-seed"
+  );
+  expect(interleaved.map((run) => run.routingId)).toEqual([null]);
+  expect(sent.slice(2).map(({ routing }) => routing)).toEqual([null, null]);
+});
+
 // The batch probe of 2026-11-21 as a test: one made-up body, a stand-in gateway that answers by
 // the body's session id, and three variants interleaved in one seeded order. With a fixed id a
 // variant's every run gets the one answer that id gets, so the id is a factor of its batch; the
@@ -1662,6 +1759,43 @@ test("a written case's reply whose calls all read is answered from a copy of its
     })),
   ]);
   expect(replayed.step.message.content).toEqual([...INSPECTION, WRITE_ACT]);
+});
+
+// Catches: a routing id sent on the rounds of skill reads alone, so a written case's rounds of
+// read-only calls answered from its checkout, and the act after them, went to the deployment its
+// body's hash picks rather than its round's; or one that replayInterleaved, which takes its
+// routing ids per arm and its checkout from its options, drops on the way.
+test("a written case's run goes with its routing id on every request: the round of a skill read, the round of checkout answers and the act", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD });
+  const replies = [[readCall("toolu_skill", "skill://alpha")], INSPECTION, [WRITE_ACT]];
+  const id = randomUUID();
+  const once = scripted(replies);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, once.gateway, {
+    checkout: checkoutCopy(),
+    routingId: id,
+  });
+  expect({ rounds: replayed.rounds, checkoutRounds: replayed.checkoutRounds }).toEqual({
+    rounds: 1,
+    checkoutRounds: 1,
+  });
+  expect(once.headers.map((each) => each.get("x-litellm-session-id"))).toEqual([id, id, id]);
+  expect(replayed.routingId).toBe(id);
+  expect(replayed.deployments).toHaveLength(3);
+
+  const interleaved = scripted(replies);
+  const [run] = await replayInterleaved(
+    [{ arm, body: { ...BODY, stream: false }, runs: 1, routingIds: [id] }],
+    interleaved.gateway,
+    "checkout-routing",
+    { checkout: checkoutCopy() }
+  );
+  expect(interleaved.headers.map((each) => each.get("x-litellm-session-id"))).toEqual([id, id, id]);
+  expect(run?.routingId).toBe(id);
+  const done = run?.outcome.status === "fulfilled" ? run.outcome.value : undefined;
+  expect({ rounds: done?.rounds, checkoutRounds: done?.checkoutRounds }).toEqual({
+    rounds: 1,
+    checkoutRounds: 1,
+  });
 });
 
 /** checkoutCopy's copy made a git checkout of one commit with a detached HEAD, as cli.ts's shared

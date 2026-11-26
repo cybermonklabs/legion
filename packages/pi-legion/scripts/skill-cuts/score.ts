@@ -42,7 +42,7 @@
  * skill outside that listing are counted, never scored (outsideListing).
  */
 import { z } from "zod";
-import { parseJson } from "./common";
+import { counted, parseJson } from "./common";
 
 /** Runs of each arm of a case in the screen stage. */
 export const SCREEN_RUNS = 10;
@@ -84,10 +84,9 @@ export const NEAR_MISS_MAX_LOADS = 1;
 /** The most a case's or a load task's rebuilt skill listing may miss of the names its session's
  *  recorded listing holds, and, where its capture builds its listing from the rebuilt profile,
  *  the most names it may add to them, each counted alone, in percent of the recorded names (the
- *  architect, 2026-11-24T23:52Z; the rule of 2026-11-22T03:04Z counted only the missing names;
- *  2026-11-25T00:52:35Z: a case or task whose capture sends the session's recorded system prompt
- *  whole is not counted for added names): one that misses more, or adds more, is dropped
- *  (listingStanding). */
+ *  architect, 2026-11-24T23:52Z; 2026-11-25T00:52:35Z: a case or task whose capture sends the
+ *  session's recorded system prompt whole is not counted for added names): one that misses more,
+ *  or adds more, is dropped (listingStanding). */
 export const MAX_LISTING_CHANGE_PERCENT = 10;
 /** The evidence item of a case or a load task that holds its listing measure as JSON, under which
  *  build.ts writes its ListingMeasure. */
@@ -1091,12 +1090,11 @@ export function outsideListing(
  *  that record their reads read a skill the recorded listing lacks, how many runs record none,
  *  and each such skill with its runs by answer kind. */
 export function outsideListingWords(found: OutsideListing, unit: "case" | "task"): string {
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const skills = Object.entries(found.bySkill).map(
     ([skill, { copy, absent }]) => `${skill} (${copy} copy, ${absent} absent)`
   );
   const unread = found.runs - found.examined;
-  return `outside recorded listing: ${found.outside} of ${found.examined} runs of ${plural(found.groups, `recorded-prompt ${unit}`)} (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks${unread === 0 ? "" : `, not counting ${plural(unread, "run")} with no recorded reads`}; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): ${skills.join(", ") || "none"}`;
+  return `outside recorded listing: ${found.outside} of ${found.examined} runs of ${counted(found.groups, `recorded-prompt ${unit}`)} (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks${unread === 0 ? "" : `, not counting ${counted(unread, "run")} with no recorded reads`}; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): ${skills.join(", ") || "none"}`;
 }
 
 /** A cut's changed skills, loaded skills included, most read first by the counted sessions of the

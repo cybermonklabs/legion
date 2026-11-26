@@ -8,8 +8,22 @@ import { cutOrSet, loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "
 // key is refused by name. Every value here is made up; testdata/F7-skill-cuts.json is the made-up
 // configuration F7's capture used.
 
+/** The optional keys of a configuration. */
+const OPTIONAL: Readonly<Record<string, true>> = {
+  transcriptStore: true,
+  devboxClaudeConfigDir: true,
+  devboxHome: true,
+  sets: true,
+  dotfilesRepo: true,
+  clones: true,
+  sessionPod: true,
+  ompPin: true,
+  registries: true,
+  deploymentImages: true,
+};
+
 /** A configuration with every required key, each a made-up value; it leaves out the optional
- *  keys (OPTIONAL_KEYS). */
+ *  keys (OPTIONAL). */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -44,22 +58,8 @@ test("a configuration with every required key loads", () => {
   expect(config.windowEnd).toBe("2026-11-20T00:00:00Z");
 });
 
-/** The keys a configuration may leave out. */
-const OPTIONAL_KEYS = [
-  "transcriptStore",
-  "devboxClaudeConfigDir",
-  "devboxHome",
-  "sets",
-  "dotfilesRepo",
-  "clones",
-  "sessionPod",
-  "ompPin",
-  "registries",
-  "deploymentImages",
-];
-
 test.each(
-  Object.keys(SkillCutsConfig.shape).filter((key) => !OPTIONAL_KEYS.includes(key))
+  Object.keys(SkillCutsConfig.shape).filter((key) => !Object.hasOwn(OPTIONAL, key))
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
   delete value[key];

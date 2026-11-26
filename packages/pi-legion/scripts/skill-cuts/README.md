@@ -4,7 +4,7 @@ The runner that tests whether a cut of a skill's text keeps what agents do with 
 from `packages/pi-legion` as `bun scripts/skill-cuts/cli.ts <command> ...`.
 
 A replayed request is sent as a real session sent it, and nothing of the run that made it may
-change what the agent does. Two such things did, and the runner now removes both:
+change what the agent does. Three such things did, and the runner now removes each:
 
 - **The request id.** A body whose `metadata.user_id` (or, on the OpenAI route, `prompt_cache_key`)
   stays the same from run to run moves the pass rate with the batch it is sent in. One body, sent
@@ -19,6 +19,13 @@ change what the agent does. Two such things did, and the runner now removes both
   33 of 40 runs; with a path that named no skill, in 0 and 1 of 40. So every string of a captured
   body that comes from the capture and not from the session is replaced by the session's recorded
   value, or by a neutral one where the store holds none ("The harness strings", below).
+- **The deployment.** The gateway serves a Messages call from one of its deployments, picked by
+  the call's `x-litellm-session-id` header and, with none, by a hash of the body's start, never by
+  its `metadata.user_id`: one body sent with 8 fresh ids went to one deployment 8 times, so every
+  run of one arm went to one deployment and arms of different bodies to different ones. So the
+  runs numbered n of every arm of a stage go with one routing id in that header, the ids of the
+  run numbers drawn at random, and each run records the deployment that answered it (below, after
+  the results files; `load` derives its ids instead).
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
 repositories copies map to, the dev box's home and its Claude Code config directory, the clones
@@ -61,9 +68,10 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
   [--again <case id>]... [--confirm-flagged] \
-  [--allow-runners <digest>[,<digest>...]] [--store-only <file>]
+  [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--route-id <arm>=<uuid>]...
                                  (--again, --confirm-flagged: confirm only; --again not with --case;
-                                  --store-only: report only)
+                                  --store-only: report only;
+                                  --route-id: screen, confirm and control only)
 ```
 
 One skill per run: `--old` is that skill's own directory (the old text: the skill at the cut's
@@ -326,6 +334,17 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   says. A skill too few of whose reading sessions are on served models, and with no written case,
   gets no verdict. Without `--reading-models`, it says the reading sessions by model were not
   given, and the verdict names no models.
+  For each stage kind it prints a line `<stage> deployments by arm: old <id> <n>, <id> <n>; new
+  ...; none ...` (the stage's arms for the compared arm: screen's old, the compared arm (`new` or
+  `ours`) and none, confirm's old and the compared arm, control's old, minus and twin): each arm's runs
+  counted once each by the deployment that answered them, as the first 8 hex digits of the
+  gateway's `x-litellm-model-id` (an opaque prefix, never a deployment's name; `unnamed` for a run
+  whose replies named none, `no reply` for a replay that failed, two ids joined by `+` for a run
+  answered by both). Runs saved before runs recorded their deployments print `not recorded` for
+  their stage kind, or are counted apart where some runs of it record them; a kind with no runs
+  prints `no runs`. A stage kind with runs an arm's `--route-id` pinned also prints `<stage>
+  routing pinned: <arm>=<id>, ... (<n> cases: <ids>)`, so those runs are never read as a test
+  result. Neither line changes a verdict.
   With `--store-only` (the skill's `<cut id>/store-only/<skill>.json` that `attribute` writes), it also prints, beside the reading sessions by model and whatever the verdict, one line: `counted sessions: N, of which store-only (held by the transcript store alone, so not case sources): M (<host>: k, …)`, with `M` 0 and no hosts for a skill none of whose counted sessions is store-only.
   Where the skill gets no verdict for fewer than 6 informative cases and `M` is above 0, the reason then ends with `; M of the skill's N counted sessions are store-only, so they were never case sources (<host>: k, …)`.
   A file that is not JSON or not of that shape is refused (exit 2), naming the file.
@@ -353,12 +372,36 @@ of the results whose session id no replay call of the log holds (results made wi
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and
 skips each complete case. Each run in it keeps its arm, its verdict, the session id it went with
-(`userId`) and its place in its round's send order (`sendPlace`), so both controls can be
-recounted from it. A round sends every arm's runs in one order, shuffled by the round's recorded
-seed (`replay.ts`'s `sendOrder`); the first run of each arm in that order goes alone among its
-arm's, so its reply writes the prefix cache the arm's later runs read, and no place of the order
-changes. A results file whose stages were run before this (they record no `sends`) is refused:
-use a new `--out`. `--after-case <command>` runs `<command> <that file>` when a case's stage
+(`userId`), its routing id (`routingId`, below), the deployment that answered each of its requests
+(`deployments`: the first 8 hex digits of each `x-litellm-model-id`, in order, `""` where the
+answer carried none; empty for a replay that failed) and its place in its round's send order
+(`sendPlace`), so both controls can be recounted from it. A round sends every arm's runs in one
+order, shuffled by the round's recorded seed (`replay.ts`'s `sendOrder`); the first run of each
+arm in that order goes alone among its arm's, so its reply writes the prefix cache the arm's
+later runs read, and no place of the order changes. A results file whose stages were run before
+this (they record no `sends`) is refused: use a new `--out`.
+
+The gateway pins a Messages call to one of its deployments by the request header
+`x-litellm-session-id` (the SHA-256 of its value, placed on the deployments' weighted shares),
+and a call that names none by a hash of the caller, the model, the system prompt and the first
+messages; it does not read the body's `metadata.user_id` for this. So, with no such header, every
+run of one arm (one body) went to one deployment, and arms of different bodies to different ones.
+Each run of a Messages body therefore goes with a routing id in that header, on each of its
+requests (skill-read rounds, and a written case's rounds of read-only calls, included; the pinned
+Oh My Pi that answers some of those calls makes no model request, so it goes with none): the runs
+numbered n of every arm of a case's stage (old's, the compared arm's and none's run n; minus's
+and twin's in a control) share one, a random UUID drawn once for n by each stage command, so each
+round n of runs goes to one deployment, every arm alike, and the
+rounds fall on the deployments as their ids hash. `metadata.user_id` stays each run's own, and
+judge calls go with none. A Responses body goes with none (`routingId` null). The gateway's client
+sends that header beside a Messages body only, with a UUID only, and refuses it otherwise, naming
+the header. `--route-id <arm>=<uuid>` (repeatable) is a diagnostic: every run of that arm, in
+every round, goes with that id in place of its round's, and records so (`routePinned: true`),
+while the arms it does not name keep their rounds' ids; the command says the stage is pinned, and
+so does `report`. A pin of an arm the command does not run, of an id that is not a UUID, of one
+arm twice, or given to `report`, is refused (exit 2), naming why.
+
+`--after-case <command>` runs `<command> <that file>` when a case's stage
 ends, and is ended after 10 minutes (`AFTER_CASE_TIMEOUT_MS`). Captures are kept under
 `<out>/captures/`; a capture that is not there yet is made with Oh My Pi and needs `--models`:
 `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
@@ -1276,7 +1319,9 @@ To include the ClickHouse transcript store, add this optional key to the private
 
 `command` is an executable at an absolute path. It receives the SQL on stdin with no arguments,
 prints results on stdout, puts diagnostics on stderr, and exits nonzero on failure. `--run`
-uses it for either transcript query. Without `--run`, `count-sql` prints the SQL as for Postgres.
+uses it for either transcript query, ends it once it runs for 15 minutes, and exits 1 when it
+fails, or, naming the limit, when it is ended. Without `--run`, `count-sql` prints the SQL as for
+Postgres.
 The config's `hosts` lists context mappings, not a filter: the queries include unlisted hosts.
 
 1. For each configured Postgres store, run `--query hashes` with no day through
@@ -1311,7 +1356,8 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] \
   [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>] \
   [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] \
-  [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
+  [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>] \
+  [--route-seed <text, empty by default>]
 ```
 
 The load test (`load.ts`): whether the host's agent loads the skill for each task,
@@ -1353,9 +1399,16 @@ one `--context-session` names (the session its profile was rebuilt from; `<path 
 SHA-256 of that session file's path in hex), or for none, with neutral values, when it is not
 given. The runs of a profile's tasks are sent together, once each of its tasks has its capture,
 in one seeded order, each run with a fresh session id that each of its requests keeps, the first
-run of each task in the order alone among its task's. Each body is its capture's but for that id
-and a cache breakpoint on its last message (`replay.ts`'s `withCacheBreakpoint`), so that a
-task's later runs read the whole body from the cache. An `openai/<id>` model runs on Oh My Pi
+run of each task in the order alone among its task's. A run of a Messages body also goes with a
+routing id in the header `x-litellm-session-id`, on each of its requests, which the gateway pins
+its deployment by (`behaviour`, above): the id is derived, not drawn, from `--route-seed`, the
+task's id and the run's number (the first 32 hex digits of the SHA-256 of `<seed>:<task id>:<run
+number>`, in a UUID's form; `load.ts`'s `loadRoutingId`), so the two loads of a name or
+description test, each its own command, send the same id for run n of a task when given the same
+seed, and that run of each goes to one deployment. A Responses body goes with none. `load` takes
+no `--route-id`. Each body is its capture's but for its session id and a cache breakpoint on its
+last message (`replay.ts`'s `withCacheBreakpoint`), so that a task's later runs read the whole
+body from the cache. An `openai/<id>` model runs on Oh My Pi
 only, on the Responses route, with an Anthropic `--hint-model`. A reply loads the skill when one
 of its tool calls reads it (Oh My Pi: `read` of `skill://<name>` or its `SKILL.md`, a `tool_use`
 block or a Responses `function_call` item; Claude Code: `Skill` naming `<name>` or
@@ -1434,7 +1487,9 @@ its hints, all); each send order's seed; and the skill's verdict (`score.ts`). I
 each reply (its tool calls with their names and targets, the answers made to its reads with where
 each came from, `arm` for the tested skill's directory, `copy` for an installed copy and `absent`
 for none, and what it used; every reply but the last went back with its answers), with its session
-id, its send seed and its place in the order. A run that fails after one or more of its requests
+id, its routing id (`routingId`, null on the Responses route), the deployment that answered each
+of its requests (`deployments`, as `behaviour`'s runs record them), its send seed and its place in
+the order. A run that fails after one or more of its requests
 had their replies (a later request refused, the budget's refusal among them) comes to no outcome
 and is made again by the next command, but what those replies used is kept in
 `<out>/runs/<task>.failed.jsonl` (the error and each reply's usage), and counts in its task's spend,
@@ -1442,7 +1497,11 @@ its task's line and the test's spend from then on. It also writes `<out>/capture
 `<out>/sessions/` and `<out>/summary.json`, whose tasks give `judged`, `loads`, `sentBy`,
 `readsPastLastRound`, `extraRuns`, `noEvidence`, `fault` and `spend` (`runsUsd`, `failedRuns`,
 `failedRunsUsd`, `hintsUsd`, `usd`), and whose `spend` gives the test's `runsUsd`,
-`failedRunsUsd`, `hintsUsd` and `usd`; each run line and each task of the summary names its
+`failedRunsUsd`, `hintsUsd` and `usd`, `routeSeed` the seed, and `deployments` the runs counted by
+the deployment that answered them under the tested name (`byName: {<name>: {<id>: <runs>}}`, and
+`unrecorded`, the runs saved before runs recorded them), which the command prints as
+`deployments by name: <name> <id> <n>, <id> <n>` (`not recorded` where no run records them); each
+run line and each task of the summary names its
 profile file and the SHA-256 of its bytes. A task whose run file holds its judged runs, or has used
 its extra runs, is skipped, so a run started again goes on from what was saved; a task whose
 capture or runs were made under a profile of other bytes is refused, and so is an `--out` whose
@@ -2462,6 +2521,11 @@ If neither the listing nor a read supports installing the pool, the builder leav
 It also names each `<namespace>/<name>` of the pool's names that the listing gives, with the
 reason it proves nothing: no installed unit outside the pools ships the name under that
 namespace, or a unit that Oh My Pi admits earlier ships another copy of it.
+
+No listing can name a pool if Oh My Pi hides every skill of it that `skills.ignoredSkills` does not
+match (`hide: true` or `disable-model-invocation: true`), so the builder installs such a pool, its
+names marked `fromRecorded`, when the listing or direct proof installs another pool, and leaves it
+out otherwise.
 
 Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
 that the dev box pinned at the session's start. The optional `ompPin` configuration gives

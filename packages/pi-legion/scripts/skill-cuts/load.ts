@@ -163,9 +163,16 @@
  * then need go in a seeded order of their own, and so on until none is needed. Each run goes with
  * a session id of its own (gateway.ts's `freshIdentity`), which each of its requests keeps, since
  * a captured body holds the one id of the host run that made it, and a gateway that routes or
- * caches by that id makes it a factor of every run that sends it. Its body is otherwise its
- * capture's, but for a cache breakpoint on its last message (replay.ts's `withCacheBreakpoint`),
- * so that a task's later runs read the whole body from the cache.
+ * caches by that id makes it a factor of every run that sends it. A run of a Messages body also
+ * goes with a routing id, on each of its requests in gateway.ts's ROUTING_HEADER, by which the
+ * gateway pins a call's deployment (with none, every run of one body went to one deployment):
+ * the id is derived, not drawn (`loadRoutingId`: the SHA-256 of `<seed>:<task id>:<run number>`
+ * in a UUID's form, the seed `--route-seed`, empty by default), so the arms of a name or
+ * description test, two load commands over the same tasks, send the same id for run n of a task,
+ * and that run of each arm goes to one deployment, with no id passed between them. A Responses
+ * body goes with none. Its body is otherwise its capture's, but for a cache breakpoint on its
+ * last message (replay.ts's `withCacheBreakpoint`), so that a task's later runs read the whole
+ * body from the cache.
  *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
  * task's profile file with the SHA-256 of its bytes, its counts (TaskOutcome: judged runs, loads,
@@ -174,9 +181,12 @@
  * was not), its spend (TaskSpend), the line its capture lists the tested skill under and where
  * that line came from (`listedUnder`: capture.ts's HintSource, `recorded (session)`, `recorded
  * (subagent <path hash>)` or `drawn (draw <n>)`, or on Claude Code `description (Claude Code)`),
- * how many tasks list it under each, the skill's verdict, the test's spend), `runs/<task id>.jsonl`
- * (one JSON line per run, LoadRun, which names its task's profile file and that SHA-256 too, its
- * session id and its place in its send order), `runs/<task id>.failed.jsonl` (one JSON line per
+ * how many tasks list it under each, the skill's verdict, the test's spend, the route seed, and
+ * the runs counted by the deployment that answered them, under the tested name
+ * (`deployments.byName`; gateway.ts's `deploymentCounts`), which the command also prints),
+ * `runs/<task id>.jsonl` (one JSON line per run, LoadRun, which names its task's profile file and
+ * that SHA-256 too, its session id, its routing id, the deployment that answered each of its
+ * requests and its place in its send order), `runs/<task id>.failed.jsonl` (one JSON line per
  * run that failed after one or more of its requests had their replies, FailedRun: the error and
  * what those replies used), `captures/` (each task's body, the body as the host sent it, and its
  * record) and `sessions/`. A failed run comes to no outcome and is made again by the next command;
@@ -318,6 +328,8 @@ import {
 import {
   BudgetSpent,
   type ContentBlock,
+  deploymentCounts,
+  deploymentWords,
   type Gateway,
   type MessagesBody,
   PRICES,
@@ -543,7 +555,10 @@ const SkillReads = z.enum(["answered", "first message"]);
  *  what the host lists for the skill (Oh My Pi's hint, or Claude Code's listed description), the
  *  profile file of its task's context with the SHA-256 of its bytes, the session id each of its
  *  requests went with (its own: `metadata.user_id`, or a Responses body's `prompt_cache_key`),
- *  and the seed of the send order it went in and its place in that order (from 0). */
+ *  the routing id each went with (`loadRoutingId`; null for a Responses body, which goes with
+ *  none), the deployment that answered each of its requests in order (gateway.ts's
+ *  `deploymentOf`, "" where the answer carried none), and the seed of the send order it went in
+ *  and its place in that order (from 0). A run made before routing ids has neither field. */
 export const LoadRun = z.strictObject({
   task: z.string().min(1),
   run: z.int().positive(),
@@ -562,6 +577,8 @@ export const LoadRun = z.strictObject({
   profile: z.string().min(1),
   profileDigest: Sha256,
   userId: z.string().nullable(),
+  routingId: z.string().nullable().optional(),
+  deployments: z.array(z.string()).optional(),
   sendSeed: z.string().min(1),
   sendPlace: z.int().nonnegative(),
 });
@@ -579,7 +596,16 @@ type RunDone = Pick<
   | "stopReason"
   | "requestId"
   | "userId"
->;
+> &
+  Required<Pick<LoadRun, "routingId" | "deployments">>;
+
+/** The routing id of run `run` of task `task` under the route seed `seed` (`--route-seed`): the
+ *  first 32 hex digits of the SHA-256 of `<seed>:<task>:<run>`, in a UUID's 8-4-4-4-12 groups.
+ *  Derived, so every load command of one seed sends the same id for run `run` of `task`. */
+export function loadRoutingId(seed: string, task: string, run: number): string {
+  const hex = createHash("sha256").update(`${seed}:${task}:${run}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 /** A run of task `task` that failed after one or more of its requests had their replies: why it
  *  failed, and what each of those replies used. Its run file keeps no line of it, since it came to
@@ -1400,8 +1426,11 @@ export function loadFailedRunFile(out: string, taskId: string): string {
 }
 
 /** Each line of the JSON-lines file `file` that is not blank, with its line number (from 1) and
- *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing. */
-function* jsonLines(file: string): Generator<{ readonly at: number; readonly value: unknown }> {
+ *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing.
+ *  cli.ts reads the request log by it too. */
+export function* jsonLines(
+  file: string
+): Generator<{ readonly at: number; readonly value: unknown }> {
   if (!existsSync(file)) return;
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
@@ -1565,6 +1594,9 @@ interface LoadOptions {
   /** The session a written task stands for (`--context-session`): the session whose context
    *  its profile was rebuilt from. */
   readonly contextSession?: { readonly store: string; readonly pathHash: string };
+  /** The seed each run's routing id is derived from (`--route-seed`, `loadRoutingId`); empty
+   *  when not given. */
+  readonly routeSeed?: string;
 }
 
 /** What the test came to: each task or run that failed. */
@@ -2307,14 +2339,15 @@ class LoadTest {
   }
 
   /**
-   * One run of `each`'s capture (see the file's header), sent through replay.ts's `replayOnce`:
-   * it ends at a reply that loads the skill, once the answer to a read of another skill names the
-   * skill, on Claude Code at its first reply, else as the replay ends a run. Gives what it came to
-   * and each of its replies. `firstSettled` is told once its first send has its reply or its
-   * failure. Rejects with RunFailed when a send does (the gateway's `BudgetSpent` among them),
-   * which carries what the run's earlier replies used.
+   * One run of `each`'s capture (see the file's header), sent through replay.ts's `replayOnce`
+   * with the routing id `routingId` (none beside a Responses body): it ends at a reply that loads
+   * the skill, once the answer to a read of another skill names the skill, on Claude Code at its
+   * first reply, else as the replay ends a run. Gives what it came to and each of its replies.
+   * `firstSettled` is told once its first send has its reply or its failure. Rejects with
+   * RunFailed when a send does (the gateway's `BudgetSpent` among them), which carries what the
+   * run's earlier replies used.
    */
-  async loadRun(each: ReadyTask, firstSettled: () => void): Promise<RunDone> {
+  async loadRun(each: ReadyTask, firstSettled: () => void, routingId: string): Promise<RunDone> {
     const { host } = this.o;
     const { tested } = each.profile;
     // What each reply used, in the order the replies came, kept as each one comes so that a run
@@ -2369,7 +2402,13 @@ class LoadTest {
     let replayed: Replayed;
     let past = false;
     try {
-      replayed = await replayOnce(body, arm, gateway, { headers, copies, endsAt }, firstSettled);
+      replayed = await replayOnce(
+        body,
+        arm,
+        gateway,
+        { headers, copies, endsAt, routingId },
+        firstSettled
+      );
     } catch (error) {
       if (!(error instanceof ReadsPastLastRound)) throw new RunFailed(error, spent);
       replayed = error.replayed;
@@ -2389,6 +2428,8 @@ class LoadTest {
       stopReason: replayed.step.message.stop_reason,
       requestId: replayed.step.requestId ?? null,
       userId: replayed.userId,
+      routingId: replayed.routingId,
+      deployments: replayed.deployments,
     };
   }
 
@@ -2414,14 +2455,16 @@ class LoadTest {
   /**
    * `count` runs of each task of `batch` (one profile's tasks), each after the runs it `made`,
    * sent in one order, replay.ts's `sendOrder` under a fresh seed, never one task's batch after
-   * another's; each run is `loadRun`'s. The runs start in that order, all at once but for one
-   * wait: the first run of each task in the order goes alone among its task's, the next run in the
-   * order starting only once its first send has its reply or has failed, so that the prefix it
-   * wrote to the cache serves its task's later runs; the waits change no place of the order.
-   * Gives each task's runs, those it made first and the new ones in the order sent; its failed
-   * runs, those it had (`failed`) first and then each new run that failed after one or more of its
-   * requests had their replies, the budget's refusal among them; each run that failed, whether the
-   * budget refused one, the seed and the time.
+   * another's; each run is `loadRun`'s, with the routing id of the number it takes if no run of
+   * its task before it fails (`loadRoutingId`: the task's runs so far, then its runs in the order
+   * sent). The runs start in that order, all at once but for one wait: the first run of each
+   * task in the order goes alone among its task's, the next run in the order starting only once
+   * its first send has its reply or has failed, so that the prefix it wrote to the cache serves
+   * its task's later runs; the waits change no place of the order. Gives each task's runs, those
+   * it made first and the new ones in the order sent; its failed runs, those it had (`failed`)
+   * first and then each new run that failed after one or more of its requests had their replies,
+   * the budget's refusal among them; each run that failed, whether the budget refused one, the
+   * seed and the time.
    */
   async sendRuns(
     batch: readonly {
@@ -2444,25 +2487,31 @@ class LoadTest {
       batch.map(({ each, count }) => ({ key: each.task.id, runs: count })),
       seed
     );
-    const started = new Set<string>();
+    // How many runs of each task have started, in the send order.
+    const started = new Map<string, number>();
+    const madeOf = new Map(batch.map(({ each, made }) => [each.task.id, made.length]));
     const sends: { id: string; place: number; run: Promise<RunDone> }[] = [];
     const runsStarted = performance.now();
     for (const [place, { key }] of order.entries()) {
       const each = byId.get(key);
       if (each === undefined) throw new Error(`no task ${key}`);
+      const nth = started.get(key) ?? 0;
+      started.set(key, nth + 1);
+      const number = (madeOf.get(key) ?? 0) + nth + 1;
       const first = Promise.withResolvers<void>();
-      const run = this.loadRun(each, first.resolve);
+      const run = this.loadRun(
+        each,
+        first.resolve,
+        loadRoutingId(this.o.routeSeed ?? "", key, number)
+      );
       // Its outcome is read once every run has started; until then a failure is held, not thrown.
       const settledRun = run.then(
         () => undefined,
         () => undefined
       );
       sends.push({ id: key, place, run });
-      if (!started.has(key)) {
-        started.add(key);
-        // A run that fails before its first send has settled too.
-        await Promise.race([first.promise, settledRun]);
-      }
+      // A run that fails before its first send has settled too.
+      if (nth === 0) await Promise.race([first.promise, settledRun]);
     }
     const settled = await Promise.allSettled(sends.map((send) => send.run));
     const runsMs = performance.now() - runsStarted;
@@ -2477,8 +2526,8 @@ class LoadTest {
       if (outcome === undefined || each === undefined || made === undefined) continue;
       if (outcome.status === "fulfilled") {
         // RunDone's fields go where LoadRun has them (`loadRun` gives them in that order), its
-        // session id after the run's listing and profile.
-        const { userId, ...replied } = outcome.value;
+        // session id, routing id and deployments after the run's listing and profile.
+        const { userId, routingId, deployments, ...replied } = outcome.value;
         made.push({
           task: each.task.id,
           run: made.length + 1,
@@ -2491,6 +2540,8 @@ class LoadTest {
           profile: each.profile.file,
           profileDigest: each.profile.digest,
           userId,
+          routingId,
+          deployments,
           sendSeed: seed,
           sendPlace: place,
         });
@@ -2843,14 +2894,17 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     return [{ id: task.id, recorded: new Set(listingOf(sent).keys()) }];
   });
   /** Writes the summary as the runs stand; returns the skill's verdict, the test's dollars so far
-   *  at list price (its runs', its failed runs' and its hints') and the runs of its
-   *  recorded-prompt tasks that read a skill outside the recorded listing (`outsideListing`). The
-   *  verdict leaves out each task the listing rule dropped, and is made with and without the
-   *  tasks whose listing was not measured (`listedOutcome`), both in the summary. */
+   *  at list price (its runs', its failed runs' and its hints'), the runs of its recorded-prompt
+   *  tasks that read a skill outside the recorded listing (`outsideListing`), and its runs counted
+   *  by the deployment that answered them, in words (gateway.ts's `deploymentWords`; `not
+   *  recorded` where no run records its deployments). The verdict leaves out each task the
+   *  listing rule dropped, and is made with and without the tasks whose listing was not measured
+   *  (`listedOutcome`), both in the summary. */
   const writeSummary = (): {
     verdict: LoadVerdict;
     usd: number;
     outside: OutsideListing;
+    deployments: string;
   } => {
     const listed = listedOutcome(
       tasks.flatMap((task) =>
@@ -2882,6 +2936,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       }))
     );
     const runs = [...runsOf.values()].flat();
+    // Where the runs went, under the tested name, a load command's one arm; a run made before
+    // runs recorded their deployments is counted apart.
+    const recorded = runs.flatMap((run) =>
+      run.deployments === undefined ? [] : [run.deployments]
+    );
+    const unrecorded = runs.length - recorded.length;
     const spends = tasks.map(spendOf);
     const total = (field: "runsUsd" | "failedRunsUsd" | "hintsUsd" | "usd") =>
       spends.reduce((sum, spend) => sum + spend[field], 0);
@@ -2930,13 +2990,22 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           withUnmeasured: listed.withUnmeasured,
           withoutUnmeasured: listed.withoutUnmeasured,
         },
+        routeSeed: o.routeSeed ?? "",
+        deployments: {
+          byName: { [name]: Object.fromEntries(deploymentCounts(recorded)) },
+          unrecorded,
+        },
         spend,
         peakRssBytes: peak,
         requestLog: o.requestLog,
         updatedAt: new Date().toISOString(),
       })
     );
-    return { verdict, usd: spend.usd, outside };
+    const deployments =
+      recorded.length === 0 && unrecorded > 0
+        ? "not recorded"
+        : `${deploymentWords(recorded)}${unrecorded === 0 ? "" : ` (and ${unrecorded} runs made before runs recorded their deployments)`}`;
+    return { verdict, usd: spend.usd, outside, deployments };
   };
   writeSummary();
   if (listingDrops.size * 2 > tasks.length) {
@@ -3122,7 +3191,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
   }
   peak = Math.max(peak, o.io.peakRssBytes());
-  const { verdict, usd, outside } = writeSummary();
+  const { verdict, usd, outside, deployments } = writeSummary();
   const under = listedCounts();
   const noCapture =
     under.none === 0 ? "" : `; ${under.none} tasks have no capture whose record says`;
@@ -3132,6 +3201,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       : `the listing line of ${name}: ${under.description} tasks list it under its description, since Claude Code lists no hint${noCapture}`
   );
   test.say(outsideListingWords(outside, "task"));
+  test.say(`deployments by name: ${name} ${deployments}`);
   const small =
     count("need") < MIN_TASKS_PER_LABEL || count("near-miss") < MIN_TASKS_PER_LABEL
       ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`

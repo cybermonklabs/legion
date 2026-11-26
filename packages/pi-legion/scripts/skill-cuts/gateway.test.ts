@@ -11,6 +11,8 @@ import {
   bodyIdentity,
   costUsd,
   createGateway,
+  deploymentOf,
+  deploymentWords,
   freshIdentity,
   GATEWAY_HEADERS,
   GATEWAY_TRIES,
@@ -19,6 +21,7 @@ import {
   type MessagesBody,
   PRICES,
   type ResponsesBody,
+  ROUTING_HEADER,
   responsesCostUsd,
   responsesTokensOf,
   type Sent as SentAt,
@@ -223,8 +226,87 @@ test("refuses a header that can carry a key, or that is not anthropic-*, by name
   const other = await gateway
     .send(BODY, { headers: { "x-app": "cli" } })
     .catch((caught: unknown) => caught);
-  expect(String(other)).toBe("Error: only anthropic-* headers are sent beside a body, not x-app");
+  expect(String(other)).toBe(
+    "Error: only anthropic-* headers and x-litellm-session-id are sent beside a body, not x-app"
+  );
   expect(sent).toHaveLength(0);
+});
+
+/** A made-up routing id, as the runner sends one: a UUID. */
+const ROUTING_ID = "5eed0000-0000-4000-8000-000000000001";
+
+// Catches: a routing id refused beside a Messages body, or sent on the first try only, or only
+// under its name in lower case: the gateway pins a call's deployment by that header alone.
+test("sends x-litellm-session-id with a UUID beside a Messages body, its name in any case, on every try", async () => {
+  const { gateway, sent } = world((n) =>
+    n === 1 ? refusal(503, "overloaded_error", "busy") : f5("text")
+  );
+  await gateway.send(BODY, {
+    headers: { ...CAPTURED_HEADERS, [ROUTING_HEADER]: ROUTING_ID },
+  });
+  const mixed = world(() => f5("text"));
+  await mixed.gateway.send(BODY, { headers: { "X-LiteLLM-Session-Id": ROUTING_ID } });
+  expect([...sent, ...mixed.sent].map((one) => one.headers.get("x-litellm-session-id"))).toEqual([
+    ROUTING_ID,
+    ROUTING_ID,
+    ROUTING_ID,
+  ]);
+  expect(sent[1]?.headers.get("anthropic-beta")).toBe(CAPTURED_HEADERS["anthropic-beta"] ?? "");
+  expect(sent[1]?.body).toEqual(BODY);
+});
+
+// Catches: a routing header sent to the Responses route, which the runner leaves as it was.
+test("refuses x-litellm-session-id beside a Responses body, by name, before any call", async () => {
+  const { gateway, sent } = world(() => f9("text"));
+  for (const name of [ROUTING_HEADER, "X-LiteLLM-Session-Id"]) {
+    const error = await gateway
+      .send(RESPONSES_BODY, { headers: { [name]: ROUTING_ID } })
+      .catch((caught: unknown) => caught);
+    expect(String(error)).toBe(
+      `Error: the header ${name} goes beside a Messages body only: a Responses API body goes with no header beside it`
+    );
+  }
+  expect(sent).toHaveLength(0);
+});
+
+// Catches: a routing header sent with any text, which would pin calls by whatever a caller put
+// there, or a refusal that prints the value.
+test("refuses x-litellm-session-id whose value is not a UUID, by name, never the value, before any call", async () => {
+  const { gateway, sent } = world(() => f5("text"));
+  for (const value of ["", "round-1", `${ROUTING_ID}x`, ROUTING_ID.replaceAll("-", "")]) {
+    const error = await gateway
+      .send(BODY, { headers: { [ROUTING_HEADER]: value } })
+      .catch((caught: unknown) => caught);
+    expect(String(error)).toBe(
+      "Error: the header x-litellm-session-id takes a UUID, and its value is none: the gateway pins a call's deployment by that id"
+    );
+  }
+  expect(sent).toHaveLength(0);
+});
+
+// Catches: a deployment recorded under a name of its owner, or an id that does not begin with
+// hex digits printed as it is; and runs counted by request rather than once each.
+test("deploymentOf gives the first 8 hex digits of x-litellm-model-id, the first 8 of its SHA-256 for an id that begins otherwise, and '' for none; deploymentWords counts each run once", () => {
+  const of = (id?: string) =>
+    deploymentOf({ gatewayHeaders: id === undefined ? {} : { "x-litellm-model-id": id } });
+  expect(of("0A1B2C3D-stand-in")).toBe("0a1b2c3d");
+  expect(of("4e5f6a7b")).toBe("4e5f6a7b");
+  expect(of("deployment-a")).toBe(
+    createHash("sha256").update("deployment-a").digest("hex").slice(0, 8)
+  );
+  expect(of()).toBe("");
+  expect(of("")).toBe("");
+  expect(
+    deploymentWords([
+      ["4e5f6a7b"],
+      ["0a1b2c3d", "0a1b2c3d"],
+      ["0a1b2c3d"],
+      [""],
+      [],
+      ["0a1b2c3d", "", "4e5f6a7b"],
+    ])
+  ).toBe("0a1b2c3d 2, 0a1b2c3d+4e5f6a7b 1, 4e5f6a7b 1, no reply 1, unnamed 1");
+  expect(deploymentWords([])).toBe("no runs");
 });
 
 test("postMessages lets a header given replace the API version, never the key or the content type", async () => {
