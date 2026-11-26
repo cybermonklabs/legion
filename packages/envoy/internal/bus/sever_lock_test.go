@@ -61,7 +61,7 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 				// the lock stays taken across three polls, which no caller that holds it only briefly
 				// does, so Sever runs once the read holds it.
 				taken := 0
-				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the read holding the client's lock", func() bool {
+				testwait.UntilPolling(t, 5*time.Millisecond, "the read holding the client's lock (the last read is across how many polls in a row it was taken)", func() (int, bool) {
 					select {
 					case <-read:
 						t.Fatal("control: the read under the client's lock answered while a write held nats.go's lock")
@@ -70,10 +70,10 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 					if client.mu.TryLock() {
 						client.mu.Unlock()
 						taken = 0
-						return false
+						return taken, false
 					}
 					taken++
-					return taken >= 3
+					return taken, taken >= 3
 				})
 			}
 			severed := make(chan struct{})
@@ -85,8 +85,9 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			// the test's end does (HoldStalledWrite's cleanup), so the wait names it.
 			testwait.Receive(t, "Sever to return while the write holds nats.go's lock", severed)
 			thaw()
-			testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
-				return client.Connected() && client.Connection() != conn
+			testwait.Until(t, "the client's connection of its own after the sever", func() (bool, bool) {
+				own := client.Connected() && client.Connection() != conn
+				return own, own
 			})
 			replacement := client.Connection()
 			if err := replacement.Publish(subject, []byte("after")); err != nil {
@@ -140,7 +141,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 		peers = append(peers, conn)
 	}
 	ended := make([]bool, dropped)
-	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every dropped socket closed by the garbage collector", func() bool {
+	testwait.UntilPolling(t, 50*time.Millisecond, "every dropped socket closed by the garbage collector (the last read is which peers had read the end)", func() ([]bool, bool) {
 		runtime.GC()
 		all := true
 		for i, peer := range peers {
@@ -158,7 +159,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 				t.Fatalf("read the peer of a dropped socket: %v", err)
 			}
 		}
-		return all
+		return ended, all
 	})
 	// The connection keeps its dialer for its whole life (nats.Options.CustomDialer), so the row
 	// keeps it too: a dialer the collector frees takes everything it holds with it.

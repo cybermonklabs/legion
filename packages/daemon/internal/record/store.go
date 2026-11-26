@@ -3230,9 +3230,13 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // (IssueRelease). And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
-// it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
-// ends through the claim's own record of the newest start run against it (claims.last_start_row),
-// so ordering them here would buy nothing that survives a retry the runtime delayed.
+// it is where the cap is applied. The store repeats this last rule (its slotWaitingStart, which
+// TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot holds to this one), so the idle release
+// keeps no pod for such a start; what the start means for a backstop is the store's
+// PodRecords.WaitsForItsSlot's to say. Supervise rows need no other such rule: a stop names the
+// run it ends through the claim's own record of the newest start run against it
+// (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
+// runtime delayed.
 //
 // The teardown rule is what makes a wake taken after a release recorded its role's claim as
 // `released` start that role once, in the pod that comes back (store.IssueRelease passes over that

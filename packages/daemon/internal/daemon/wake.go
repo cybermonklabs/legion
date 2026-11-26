@@ -503,7 +503,9 @@ func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail st
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// backstop has nothing left to bring back. A backstop of an issue that waits for its admission
+// slot is armed all the same and wakes no one when it fires (the workflow's podBackstopDue): the
+// issue can give its slot back after the release, so the fire is where that is read.
 //
 // A role with an open resume gets none either: a wake of it was taken while this release still
 // ran, after the release recorded its claim (store's releaseOvertaken), and that wake's start is
