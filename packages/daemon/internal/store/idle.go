@@ -64,9 +64,9 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 // A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) to a role that has
 // no claim on the issue, or whose claim failed, was retired or was suspended for any cause but an
 // idle release (heldMessageForNoClaimThisPodAnswers). Such a role comes back only by a start or a
-// person's resume, and either brings a pod of its own, so a release under the row loses it
-// nothing: the row waits on and ends undelivered once its hour has passed, a hook prompt with a
-// message on the issue and a phase-ended message with a log line (the daemon's
+// resume, the operator's or the controller's, and either brings a pod of its own, so a release
+// under the row loses it nothing: the row waits on and ends undelivered once its hour has passed,
+// a hook prompt with a message on the issue and a phase-ended message with a log line (the daemon's
 // keptRoleMessageEnded). A claim that runs or is starting holds the pod, since its session is in
 // this pod or coming to it, and so does a claim an idle release suspended, since the row's own
 // first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either way,

@@ -686,10 +686,10 @@ func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) 
 // release at its boundary, only while its role has a claim this pod answers: one that runs or is
 // starting, or one an idle release suspended, which the row's own first attempt wakes. A role with
 // no claim, or one whose claim failed, was retired or was suspended for another cause, comes back
-// only by a start or a person's resume, and either brings a pod of its own, so such a row holds no
-// pod and cancels no release (idleWaitingRow). The rows are each other's control: a term that let
-// every such row go would fail the rows that hold, and the predicate before the term, which held
-// the pod for every such row, fails the rest.
+// only by a start or a resume, the operator's or the controller's, and either brings a pod of its
+// own, so such a row holds no pod and cancels no release (idleWaitingRow). The rows are each
+// other's control: a term that let every such row go would fail the rows that hold, and the
+// predicate before the term, which held the pod for every such row, fails the rest.
 func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
 	for _, message := range keptRoleMessageRows {
 		for _, tc := range []struct {

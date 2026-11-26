@@ -2392,13 +2392,13 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
 // waits behind no architect notice of its issue.
 //
-// It wakes nothing, where phaseEnded, hookPrompt, mergeQueueRemoval, mergeHoldsChanged and
-// mergeForwardMessage call wakeForDelivery first. The round does not ask a claim the daemon
-// suspended (its own rule, a root's exit, an idle release, or an unknown source), and does not
-// wait for it (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped
-// is the one exception while the pause still keeps it (the sweep's podHolds.owes,
-// roundClock.passesOver): the pause suspends it as released, and the round waits for it and the
-// sweep asks it once its agent is ready.
+// It wakes nothing, where mergeQueueRemoval, mergeHoldsChanged and mergeForwardMessage call
+// wakeForDelivery first, and phaseEnded and hookPrompt its body, deliveryWake, through
+// publishKeptToRole. The round does not ask a claim the daemon suspended (its own rule, a root's
+// exit, an idle release, or an unknown source), and does not wait for it (dispatch://INFRA-4109
+// R1, the sweep's roundAsks). A claim a project's pause stopped is the one exception while the
+// pause still keeps it (the sweep's podHolds.owes, roundClock.passesOver): the pause suspends it
+// as released, and the round waits for it and the sweep asks it once its agent is ready.
 // A row the sweep queued before any such suspension still runs, so the machine refuses the ask of
 // every claim the daemon suspended, a claim the pause stopped included, before any publish
 // (supervise.Machine.PublishUpdateAsk answers UpdateAskSuspended), and the row finishes with one

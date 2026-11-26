@@ -253,7 +253,9 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // is released (mergeForwardMessage). Every other delivery is an outbox `start` or a task, for
 // which the supervise machine already resumes a suspended agent (deliverResuming); these six
 // publish to a live session instead, so the row's own retry is what waits for the pod, and this
-// is what makes the pod come back for it to find.
+// is what makes the pod come back for it to find. The phase-ended message and the hook prompt
+// reach its body, deliveryWake, through publishKeptToRole, on the claim's one read of their
+// attempt (claimWakeOf).
 //
 // It answers whether the row must wait for a launch of the claim, and when that launch runs where
 // the wake pacing holds it. The row waits for a released claim, which it resumes here, and for a

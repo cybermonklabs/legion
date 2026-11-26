@@ -162,8 +162,8 @@ type IdleView struct {
 	// neither is a worker start that waits for an admission slot its issue does not hold: each
 	// wakes the claim a release suspends when it runs. Nor is a hook prompt or a phase-ended
 	// message to a role with no claim this pod answers: such a role comes back only by a start or
-	// a person's resume, which brings a pod of its own (store's idleWaitingRow). The rule reads
-	// only whether there is one, so the store reads only that.
+	// a resume, the operator's or the controller's, which brings a pod of its own (store's
+	// idleWaitingRow). The rule reads only whether there is one, so the store reads only that.
 	Waiting bool
 	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in
 	// the outbox: a close's suspend, issue_close or tree_close, or an idle release's role stop.
