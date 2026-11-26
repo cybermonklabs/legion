@@ -452,7 +452,18 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 			t.Fatalf("the tester's start names %q, want %q: started before fix 1, bound to its branch beside fix 1 until it ends", got, want)
 		}
 
-		r.move(TriggerTesterPassed, "", record.PhaseRow{})
+		// The tester's end and the fix rule at its tail, in one transaction, as applyAndFix runs a
+		// fact's handler and then the rule.
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			pr, err := r.engine.store.PullRequest(ctx, tx, issue.Key)
+			if err != nil {
+				return err
+			}
+			if err := r.engine.transition(ctx, tx, issue, TriggerTesterPassed, "", record.PhaseRow{}, pr, moveWhy{}); err != nil {
+				return err
+			}
+			return r.engine.fixRule(ctx, tx, issue.Key)
+		})
 
 		r.assertWayTaken(wayOn)
 		assertStrings(t, "the fixes after the tester's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
