@@ -965,13 +965,49 @@ const ENVOY_ENTRY = {
   name: "pi-envoy",
 };
 
+/** A saved capture's context record, as far as these tests write it: the skills it installed
+ *  (`profileContext`), and any other field of a ContextRecord a row reads. */
+type SavedContext = { readonly skills: readonly unknown[] } & Readonly<Record<string, unknown>>;
+
+/** The SKILL.md of each made-up repository skill a profile here installs, by its name. */
+const COPY_TEXTS: Readonly<Record<string, string>> = { beta: BETA_SKILL, gamma: GAMMA_SKILL };
+
+/** The context record of a capture in the context of `profile`: each of the profile's skills
+ *  installed from its repository, in the profile's order, under the cache key context.ts gives it
+ *  (`cacheKey` of its repository, commit and path), then `tested` from the arm. A saved capture
+ *  whose record names other copies than its task's profile gives is refused (capture.ts's
+ *  `restoredCapture`). Writes each copy under `cache` at that key, its SKILL.md the text `texts`
+ *  gives its name, so the capture read back makes none of them again and reads no repository. */
+function profileContext(
+  profile: {
+    readonly skills: readonly {
+      readonly repo: string;
+      readonly commit: string;
+      readonly path: string;
+      readonly name: string;
+    }[];
+  },
+  cache: string,
+  { texts = COPY_TEXTS, tested = "alpha" }: { texts?: Record<string, string>; tested?: string } = {}
+): SavedContext {
+  const copies = profile.skills.map(({ repo, commit, path: at, name }) => {
+    const key = cacheKey(repo, commit, at);
+    const text = texts[name];
+    if (text === undefined) throw new Error(`no SKILL.md of the profile's skill ${name} is given`);
+    writeTree(path.join(cache, "skills", key), { "SKILL.md": text });
+    return { name, from: { repo, commit, path: at, key } };
+  });
+  return { skills: [...copies, { name: tested, from: "arm" }] };
+}
+
 /** Saves under `out` each task's Oh My Pi capture, where the command reads it back: F2's body
  *  with the task's text as its one message, and the fields of its record that the load test
- *  reads, `record`'s over them. Its context installed no copy of a skill, unless `record` says
- *  otherwise. */
+ *  reads, `record`'s over them. Its context is `context`, which names the copies the task's
+ *  profile gives (`profileContext`), or the capture is refused when it is read back. */
 function saveCaptures(
   out: string,
   lines: readonly { id: string; text: string }[],
+  context: SavedContext,
   record: Record<string, unknown> = {}
 ): void {
   for (const { id, text } of lines) {
@@ -992,7 +1028,7 @@ function saveCaptures(
         hintCalls: [],
         // A saved capture holds the harness-string rule's record, or it is refused.
         harness: { head: null, replaced: [] },
-        context: NO_COPIES,
+        context,
         ...record,
       }),
     });
@@ -1006,8 +1042,9 @@ const ALPHA_LISTED = {
   requestHeaders: { "anthropic-version": "2023-06-01" },
 };
 
-/** A capture's context record that installed no copy of a skill (context.ts's `installedCopies`
- *  reads its `skills`). */
+/** A Claude Code capture's context record that installed no copy of a skill: a load reads no
+ *  copy of a Claude Code capture, whose runs answer no read (context.ts's `installedCopies`
+ *  reads an Oh My Pi capture's `skills`). */
 const NO_COPIES = { skills: [] };
 
 /** One item of a profile's evidence, as a build-tasks summary keeps it. */
@@ -1119,7 +1156,10 @@ describe("skill-cuts load with saved captures", () => {
     writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(10));
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     writeFileSync(profileA, JSON.stringify(GAMMA_PROFILE));
-    saveCaptures(out, lines);
+    // Each capture names the copies its own task's profile gives: need-1's gamma, near-1's beta.
+    const cache = path.join(dir, "cache");
+    saveCaptures(out, lines.slice(0, 1), profileContext(GAMMA_PROFILE, cache));
+    saveCaptures(out, lines.slice(1), profileContext(BETA_PROFILE, cache));
     answer = (body) => {
       const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
       const n = (answered.get(text) ?? 0) + 1;
@@ -1147,7 +1187,7 @@ describe("skill-cuts load with saved captures", () => {
       "--scratch",
       path.join(dir, "scratch"),
       "--cache-dir",
-      path.join(dir, "cache"),
+      cache,
     ];
   });
 
@@ -1351,11 +1391,12 @@ test("the summary names, for each task, the line its capture lists the tested sk
   writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(BETA_CLAUDE_PROFILE));
+  const cache = path.join(dir, "cache");
   const args = (host: Host, out: string) => [
     "load",
     ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill, "--tasks", tasks],
     ...["--host", host, "--profile", profile, "--out", out, "--runs", "1"],
-    ...["--scratch", path.join(dir, "scratch"), "--cache-dir", path.join(dir, "cache")],
+    ...["--scratch", path.join(dir, "scratch"), "--cache-dir", cache],
   ];
   const ALPHA_HINT = "Use for the alpha checklist.";
   /** A capture record's line of alpha and of beta, each from `source`. */
@@ -1375,8 +1416,9 @@ test("the summary names, for each task, the line its capture lists the tested sk
   answer = () => TEXT;
 
   const ompOut = path.join(dir, "omp");
-  saveCaptures(ompOut, lines.slice(0, 1), hints("recorded (session)"));
-  saveCaptures(ompOut, lines.slice(1), hints("drawn (draw 1)"));
+  const copies = profileContext(BETA_CLAUDE_PROFILE, cache);
+  saveCaptures(ompOut, lines.slice(0, 1), copies, hints("recorded (session)"));
+  saveCaptures(ompOut, lines.slice(1), copies, hints("drawn (draw 1)"));
   const omp = await cli(args("omp", ompOut));
   expect({ code: omp.code, stderr: omp.stderr }).toEqual({ code: 0, stderr: "" });
   expect(omp.stdout).toContain(
@@ -1436,7 +1478,6 @@ test("the summary names, for each task, the line its capture lists the tested sk
 describe("skill-cuts load answers skill reads as the behaviour replay does", () => {
   const dir = path.join(scratch, "skill-reads");
   const skill = path.join(dir, "alpha");
-  const cache = path.join(dir, "cache");
   let made = { config: "", keyFile: "" };
 
   beforeAll(() => {
@@ -1446,34 +1487,25 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
 
   /** A load test of alpha under `<dir>/<id>` on `host`: the one need task `id`, written, in the
    *  context of `profile` (BETA_PROFILE unless given), with its capture saved, whose context
-   *  installed beta from the cache entry `key` (`id` unless given), which holds `beta` as beta's
-   *  SKILL.md; its listing measured; and the arguments that run it. */
+   *  installed the profile's beta from its entry in the test's cache (`cache`), which holds
+   *  `beta` as beta's SKILL.md; its listing measured; and the arguments that run it. */
   function readsTest(
     id: string,
     beta: string,
     host: Host = "omp",
-    profile: Record<string, unknown> = BETA_PROFILE,
-    key = id
-  ): { out: string; args: string[] } {
+    profile: typeof BETA_PROFILE = BETA_PROFILE
+  ): { out: string; cache: string; args: string[] } {
     const root = path.join(dir, id);
     const out = path.join(root, "out");
+    const cache = path.join(root, "cache");
     const tasks = path.join(root, "tasks.jsonl");
-    writeTree(path.join(cache, "skills", key), { "SKILL.md": beta });
     writeTree(root, {
       "tasks.jsonl": `${JSON.stringify({ id, text: NEED, label: "need", source: "written" })}\n`,
       "profile.json": JSON.stringify(profile),
     });
     writeTasksSummary(tasks, {}, measureItem(10));
-    const context = {
-      skills: [
-        {
-          name: "beta",
-          from: { repo: "acme/skills", commit: COMMIT, path: "skills/beta", key },
-        },
-        { name: "alpha", from: "arm" },
-      ],
-    };
-    if (host === "omp") saveCaptures(out, [{ id, text: NEED }], { context });
+    const context = profileContext(profile, cache, { texts: { beta } });
+    if (host === "omp") saveCaptures(out, [{ id, text: NEED }], context);
     else {
       const files = loadCapturePaths(out, "claude", id);
       writeTree(path.dirname(files.body), {
@@ -1495,7 +1527,7 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
       ...["--tasks", tasks, "--host", host, "--profile", path.join(root, "profile.json")],
       ...["--out", out, "--scratch", path.join(root, "scratch"), "--cache-dir", cache],
     ];
-    return { out, args };
+    return { out, cache, args };
   }
 
   /** An Oh My Pi `read` of `target`, as the stand-in answers with it. */
@@ -1564,16 +1596,16 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
   // cache is not kept with --out), so each run that reads beta fails.
   test("a saved capture whose cache lacks beta's installed copy has it made again from beta's repository, and a first message that reads beta is answered from it", async () => {
     const key = cacheKey("acme/skills", COMMIT, "skills/beta");
-    const s = readsTest("restored", BETA_SKILL, "omp", BETA_PROFILE, key);
+    const s = readsTest("restored", BETA_SKILL);
     // The cache of a new machine holds no copy of beta; beta's repository holds it.
-    rmSync(path.join(cache, "skills", key), { recursive: true });
+    rmSync(path.join(s.cache, "skills", key), { recursive: true });
     const repos = path.join(dir, "restored", "repos");
     writeTree(path.join(repos, "acme/skills", COMMIT), { "skills/beta/SKILL.md": BETA_SKILL });
     answer = (body) => (answeredRounds(body) === 0 ? [readOf("skill://beta")] : READ_ALPHA);
     const before = recorder.requests.length;
     const ran = await cli([...s.args, "--repos", repos]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(readFileSync(path.join(cache, "skills", key, "SKILL.md"), "utf8")).toBe(BETA_SKILL);
+    expect(readFileSync(path.join(s.cache, "skills", key, "SKILL.md"), "utf8")).toBe(BETA_SKILL);
     const shown = `[Skill file: /skills/beta/SKILL.md]\n${BETA_SKILL.replace(/\n$/, "")}`;
     const answered = recorder.requests
       .slice(before)
@@ -1883,7 +1915,8 @@ describe("skill-cuts load applies the listing rule", () => {
     const profile = path.join(dir, "profile.json");
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     const out = path.join(dir, "out");
-    saveCaptures(out, lines);
+    const cache = path.join(dir, "cache");
+    saveCaptures(out, lines, profileContext(BETA_PROFILE, cache));
     const answered = new Map<string, number>();
     answer = (body) => {
       const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
@@ -1895,7 +1928,7 @@ describe("skill-cuts load applies the listing rule", () => {
       ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
       ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
       ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
-      ...["--cache-dir", path.join(dir, "cache")],
+      ...["--cache-dir", cache],
     ];
     return { tasks, out, args };
   };
@@ -2029,22 +2062,20 @@ describe("skill-cuts load applies the listing rule", () => {
     const skill = path.join(dir, "alpha");
     writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
     const cache = path.join(dir, "cache");
-    writeTree(path.join(cache, "skills", "gamma-copy"), {
-      "SKILL.md": "---\nname: gamma\ndescription: Gamma skill.\n---\n# Gamma\nNo mention here.\n",
-    });
     // need-1's session recorded its system prompt (which lists alpha and beta); its profile adds
     // gamma and two more names to them. need-2 and near-1 hold no recorded prompt.
+    const subagent = {
+      ...BETA_PROFILE,
+      skills: [
+        ...BETA_PROFILE.skills,
+        { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" },
+      ],
+      context: "subagent:task",
+      systemPrompt: SUBAGENT.systemPrompt,
+      tools: SUBAGENT.tools,
+    };
     writeTree(dir, {
-      "subagent.json": JSON.stringify({
-        ...BETA_PROFILE,
-        skills: [
-          ...BETA_PROFILE.skills,
-          { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" },
-        ],
-        context: "subagent:task",
-        systemPrompt: SUBAGENT.systemPrompt,
-        tools: SUBAGENT.tools,
-      }),
+      "subagent.json": JSON.stringify(subagent),
       "plain.json": JSON.stringify(BETA_PROFILE),
     });
     const lines = [
@@ -2079,18 +2110,17 @@ describe("skill-cuts load applies the listing rule", () => {
       measureItem(10)
     );
     const out = path.join(dir, "out");
-    saveCaptures(out, [lines[0] as { id: string; text: string }], {
-      context: {
-        skills: [
-          {
-            name: "gamma",
-            from: { repo: "acme/skills", commit: COMMIT, path: "skills/gamma", key: "gamma-copy" },
-          },
-          { name: "alpha", from: "arm" },
-        ],
-      },
-    });
-    saveCaptures(out, lines.slice(1) as { id: string; text: string }[]);
+    const gamma = "---\nname: gamma\ndescription: Gamma skill.\n---\n# Gamma\nNo mention here.\n";
+    saveCaptures(
+      out,
+      [lines[0] as { id: string; text: string }],
+      profileContext(subagent, cache, { texts: { ...COPY_TEXTS, gamma } })
+    );
+    saveCaptures(
+      out,
+      lines.slice(1) as { id: string; text: string }[],
+      profileContext(BETA_PROFILE, cache)
+    );
     // need-1's first run reads gamma (installed), its second delta (not installed), its third
     // loads alpha at once; each run that read another skill then loads alpha. need-2 loads alpha;
     // near-1 does not.
@@ -2287,7 +2317,8 @@ describe("skill-cuts load applies the listing rule", () => {
       JSON.stringify({ ...withEnvoy, context: "legion:acme:worker" })
     );
     const out = path.join(dir, "out");
-    saveCaptures(out, lines, {
+    const cache = path.join(dir, "cache");
+    saveCaptures(out, lines, profileContext(withEnvoy, cache, { tested: "dispatch-first" }), {
       listing: [{ name: "dispatch-first", hint: "Use to search the made-up tracker first." }],
       injections: [{ by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 }],
     });
@@ -2296,7 +2327,7 @@ describe("skill-cuts load applies the listing rule", () => {
       ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
       ...["--tasks", tasks, "--host", "omp", "--out", out],
       ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
-      ...["--cache-dir", path.join(dir, "cache")],
+      ...["--cache-dir", cache],
     ]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(ran.stdout).toContain(
@@ -2324,20 +2355,20 @@ test("a saved capture whose role prompt was composed at another commit than the 
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(LEGION_BETA_PROFILE));
   writeTasksSummary(tasks, {}, measureItem(null), [DAEMON_ITEM]);
+  const cache = path.join(dir, "cache");
+  const copies = profileContext(LEGION_BETA_PROFILE, cache);
   /** A capture record's context whose role prompt Compose ran at `commit` of acme/legion. */
   const recordAt = (commit: string, commitOf?: "daemon image" | "plugin") => ({
-    context: {
-      ...NO_COPIES,
-      rolePrompt: {
-        repo: "acme/legion",
-        commit,
-        ...(commitOf === undefined ? {} : { commitOf }),
-        role: "implementer",
-        isRoot: false,
-        promptsBlob: "made-up",
-        key: "made-up",
-        parts: ["packages/daemon/internal/prompts/roles/worker.md"],
-      },
+    ...copies,
+    rolePrompt: {
+      repo: "acme/legion",
+      commit,
+      ...(commitOf === undefined ? {} : { commitOf }),
+      role: "implementer",
+      isRoot: false,
+      promptsBlob: "made-up",
+      key: "made-up",
+      parts: ["packages/daemon/internal/prompts/roles/worker.md"],
     },
   });
   const out = path.join(dir, "out");
@@ -2347,7 +2378,7 @@ test("a saved capture whose role prompt was composed at another commit than the 
     ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
     ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out, "--runs", "1"],
     ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
-    ...["--cache-dir", path.join(dir, "cache")],
+    ...["--cache-dir", cache],
   ];
   const from = recorder.requests.length;
   // Composed at the plugin's commit: so recorded, and as a record made before `commitOf` was.
@@ -2635,7 +2666,13 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     const profile = path.join(dir, "profile.json");
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     const out = path.join(dir, "out");
-    saveCaptures(out, [{ id: "need-1", text: NEED }], ALPHA_LISTED);
+    const cache = path.join(dir, "cache");
+    saveCaptures(
+      out,
+      [{ id: "need-1", text: NEED }],
+      profileContext(BETA_PROFILE, cache),
+      ALPHA_LISTED
+    );
     answer = () => TEXT;
     const stopped = await runLoad({
       io: { out: () => {}, err: () => {}, peakRssBytes: () => 3 * 2 ** 20 },
@@ -2660,7 +2697,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
       },
       source: localSource(dir),
       scratch: path.join(dir, "scratch"),
-      cacheDir: path.join(dir, "cache"),
+      cacheDir: cache,
       hintDraw: 1,
       configFiles: [],
       claude: "claude",
@@ -2693,9 +2730,11 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(BETA_PROFILE));
   const out = path.join(dir, "out");
+  const cache = path.join(dir, "cache");
   saveCaptures(
     out,
     ids.map((id) => ({ id, text: NEED })),
+    profileContext(BETA_PROFILE, cache),
     ALPHA_LISTED
   );
   // t2's saved body is a pipe whose writer, once t2's capture opens it, waits 1.5 s before it
@@ -2731,7 +2770,7 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
     },
     source: localSource(dir),
     scratch: path.join(dir, "scratch"),
-    cacheDir: path.join(dir, "cache"),
+    cacheDir: cache,
     hintDraw: 1,
     configFiles: [],
     claude: "claude",
@@ -2901,16 +2940,18 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
     );
     const profile = path.join(dir, "profile.json");
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    const cache = path.join(dir, "cache");
     saveCaptures(
       out,
       ids.map((id, index) => ({ id, text: texts3[index] })),
+      profileContext(BETA_PROFILE, cache),
       ALPHA_LISTED
     );
     args = [
       "load",
       ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
       ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
-      ...["--scratch", path.join(dir, "scratch"), "--cache-dir", path.join(dir, "cache")],
+      ...["--scratch", path.join(dir, "scratch"), "--cache-dir", cache],
     ];
   });
 
@@ -3046,6 +3087,7 @@ test("run n of a task goes with the routing id derived from --route-seed, the ta
   );
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+  const cache = path.join(dir, "cache");
   /** One load of alpha's text `text` under `dir/<name>`, with `extra` arguments. */
   const load = async (name: string, text: string, ...extra: string[]) => {
     const skill = path.join(dir, name, "alpha");
@@ -3054,6 +3096,7 @@ test("run n of a task goes with the routing id derived from --route-seed, the ta
     saveCaptures(
       out,
       ids.map((id, index) => ({ id, text: texts2[index] ?? "" })),
+      profileContext(BETA_PROFILE, cache),
       ALPHA_LISTED
     );
     const before = recorder.requests.length;
@@ -3061,7 +3104,7 @@ test("run n of a task goes with the routing id derived from --route-seed, the ta
       "load",
       ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
       ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
-      ...["--scratch", path.join(dir, name, "scratch"), "--cache-dir", path.join(dir, "cache")],
+      ...["--scratch", path.join(dir, name, "scratch"), "--cache-dir", cache],
       ...extra,
     ]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });

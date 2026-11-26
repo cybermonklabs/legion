@@ -214,10 +214,11 @@
  * run of that arm, in every round, goes with that id in place of its round's, and records so
  * (`routePinned`), while the arms it does not name keep their rounds' ids; a pin of an arm the
  * command does not run, or of an id that is not a UUID, is refused (exit 2). A replay answers a
- * reply's reads of skill
- * files (the case's skill from the arm, another skill of the profile from the copy its capture
- * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`, made again
- * before the replays where the cache lacks it, capture.ts's `restoreCopies`), and each
+ * reply's reads of skill files (the case's skill from the arm, another skill of the profile from
+ * the copy its capture installed, context.ts's `installedCopies` of the capture's record under
+ * `--cache-dir`, made again before the replays where the cache lacks it, capture.ts's
+ * `restoreCopies`, which first refuses a capture whose record names other copies than the case's
+ * profile now gives, cached or not), and each
  * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
  * and the reply after them. A run whose reply after the last answered round still only reads skill
  * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
