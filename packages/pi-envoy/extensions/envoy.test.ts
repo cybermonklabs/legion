@@ -1796,6 +1796,31 @@ const realSetImmediate = globalThis.setImmediate;
 const realTurn = () => new Promise<void>((resolve) => realSetImmediate(() => resolve()));
 
 /**
+ * Waits with the test's clock held until `done()` holds, running `turn` between reads, and ends
+ * at the row's deadline, read in real time (`realTimeDeadline`), since the shared wait refuses to
+ * start on the test's clock: one whose `done()` does not hold by then fails here, naming `what`
+ * and that deadline, before the command's guard would end the row. `turn` is handed the moment
+ * that deadline is reached, for a wait that parks on a promise rather than running turns.
+ * `caller` names the wait to `realTimeDeadline`. The caller checks its own row (`stillOn`).
+ */
+async function heldUntil(
+  caller: string,
+  what: string,
+  done: () => boolean,
+  turn: (deadlineReached: Promise<void>) => Promise<unknown>
+): Promise<void> {
+  const deadline = realTimeDeadline(`${caller} for ${what}`);
+  while (!done()) {
+    if (deadline.passed()) {
+      throw new Error(
+        `${what} did not come by the row's deadline, ${deadline.source}, with the test's clock held`
+      );
+    }
+    await turn(deadline.reached);
+  }
+}
+
+/**
  * Runs `body` with fake timers on (`jest.useFakeTimers`), and answers what it answered. Real
  * timers come back however `body` ends while its row runs (`rowCheck`). Once the row has ended,
  * at its guard included, the file's `beforeEach` has put real timers back, and the row after it
@@ -1856,16 +1881,16 @@ function onTestClock<T>(
     watched.catch(() => undefined);
     if (waiting !== undefined) {
       const what = "the work to wait on the test's clock";
-      const deadline = realTimeDeadline(`onTestClock's wait for ${what}`);
-      while (!settled && !waiting()) {
-        stillOn(ownRow, `waiting for ${what}`);
-        if (deadline.passed()) {
-          throw new Error(
-            `${what} did not come by the row's deadline, ${deadline.source}, with the test's clock held`
-          );
-        }
-        await realTurn();
-      }
+      await heldUntil(
+        "onTestClock's wait",
+        what,
+        () => {
+          if (settled || waiting()) return true;
+          stillOn(ownRow, `waiting for ${what}`);
+          return false;
+        },
+        realTurn
+      );
     }
     for (let step = 0; step < steps && !settled; step++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
@@ -2010,33 +2035,29 @@ async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T
     wait: async (what, done) => {
       const at = `waiting for ${what}`;
       stillOn(ownRow, at);
-      const deadline = realTimeDeadline(`onPassClock's wait for ${what}`);
-      while (!done()) {
-        if (deadline.passed()) {
-          throw new Error(
-            `${what} did not come by the row's deadline, ${deadline.source}, with the test's clock held`
-          );
-        }
-        await settleFor(at);
-      }
+      await heldUntil("onPassClock's wait", what, done, () => settleFor(at));
     },
     waitOn: async (what, pending) => {
       const at = `waiting for ${what}`;
       const watched = Promise.resolve(pending);
+      let settled = false;
       // Handled before the row's check, so a `pending` that rejects after that check threw, or
       // after the deadline below has passed, is not left unhandled.
-      const settled = watched.then(
-        () => true,
-        () => true
+      const settling = watched.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
       );
       stillOn(ownRow, at);
-      const deadline = realTimeDeadline(`onPassClock's waitOn for ${what}`);
-      const inTime = await Promise.race([settled, deadline.reached.then(() => false)]);
-      if (!inTime) {
-        throw new Error(
-          `${what} did not settle by the row's deadline, ${deadline.source}, with the test's clock held`
-        );
-      }
+      await heldUntil(
+        "onPassClock's waitOn",
+        what,
+        () => settled,
+        (deadlineReached) => Promise.race([settling, deadlineReached])
+      );
       await settleFor(at);
       return await watched;
     },
@@ -3936,7 +3957,7 @@ describe("envoy OMP extension", () => {
 
     await session.userTurn();
     const stopped = session.stop();
-    await started.promise;
+    await settled("the self-check to start", started.promise);
     // The user types again while the hidden call is open, and Dispatch is slow, so the arming
     // query their turn makes has not answered when the verdict does.
     const arming = Promise.withResolvers<void>();
@@ -4172,7 +4193,7 @@ describe("envoy OMP extension", () => {
 
       await session.userTurn();
       const stopped = session.stop();
-      await started.promise;
+      await settled("the self-check to start", started.promise);
       // The user typing supersedes the check: an ordinary event, not a failure to report.
       await session.userTurn("actually, do this instead");
       await stopped;
@@ -5952,7 +5973,7 @@ describe("envoy OMP extension", () => {
 
     beat();
 
-    await reregistered.promise;
+    await settled("the heartbeat's second registration", reregistered.promise);
     expect(registered).toEqual(["ses_title", "ses_title"]);
   });
 
@@ -14449,7 +14470,7 @@ console.log(JSON.stringify(args));
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
     intervals[0]?.();
-    await refused.promise;
+    await settled("the notice that the role is held by a newer session", refused.promise);
     const settle = async () => {
       for (let step = 0; step < 20; step += 1) await new Promise<void>((r) => setImmediate(r));
     };
@@ -20123,7 +20144,7 @@ console.log(JSON.stringify(args));
         const warn = spyOn(console, "warn").mockImplementation(() => undefined);
         try {
           agent.push(directDispatchEnvelope("steer", `${slug}-1`, { body }));
-          await refused.promise;
+          await settled("the host's refusal of the first send", refused.promise);
           // The model never saw it, so Dispatch's retry must carry it again.
           expect(shownPictures("ses_delivery").has(address)).toBe(false);
 
@@ -20173,7 +20194,7 @@ console.log(JSON.stringify(args));
         });
 
         agent.push(directDispatchEnvelope("steer", slug, { body }));
-        await acceptRequested.promise;
+        await settled("the accept's request", acceptRequested.promise);
         await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_accept"));
         answer.resolve({ code: "UNAUTHORIZED", status: 401 });
         /** The card of the person's message, which the switch's own notice is not. */
@@ -20269,7 +20290,7 @@ console.log(JSON.stringify(args));
           agent.push(
             held ? directDispatchEnvelope("steer", slug, { body }) : commentNotification(slug, body)
           );
-          await requested.promise;
+          await settled("the picture's request", requested.promise);
           await fixture.handlers.get("session_switch")?.({ reason }, sessionContext(moved));
           picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
           const carded = () =>
@@ -20343,7 +20364,7 @@ console.log(JSON.stringify(args));
       });
 
       agent.push(commentNotification(slug, body));
-      await requested.promise;
+      await settled("the picture's request", requested.promise);
       // The host is on another conversation from here on, with no handler fired for the move.
       live = moved;
       picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
@@ -20494,7 +20515,7 @@ console.log(JSON.stringify(args));
         });
 
         agent.push(directDispatchEnvelope("steer", slug, { body }));
-        await requested.promise;
+        await settled("the picture's request", requested.promise);
         // The host is on another conversation from here on, with no handler fired for the move.
         live = moved;
         picture.resolve(new Response(png, { headers: { "Content-Type": "image/png" } }));
@@ -25509,9 +25530,15 @@ console.log(JSON.stringify(args));
   test("envoy_unsubscribe deregisters a topic while its pump waits to retry", async () => {
     const ownRow = rowCheck();
     const unregistrations: (readonly string[])[] = [];
+    // The pump's retry is the one timer of the resubscribe delay (`ENVOY_RESUBSCRIBE_DELAY_MS`,
+    // an hour here), which the stand-in below holds for good, so the unsubscribe lands while the
+    // pump waits to retry. Every other timer runs, the row's own wait's included.
+    const retryDelayMs = 3_600_000;
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = String(retryDelayMs);
     const retryScheduled = Promise.withResolvers<void>();
     const originalSetTimeout = globalThis.setTimeout;
-    globalThis.setTimeout = ((_: () => void) => {
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args) => {
+      if (ms !== retryDelayMs) return originalSetTimeout(callback, ms, ...args);
       retryScheduled.resolve();
       return undefined as never;
     }) as typeof setTimeout;
@@ -25554,7 +25581,7 @@ console.log(JSON.stringify(args));
       const controls = natsState.controls.get(topic);
       if (controls === undefined) throw new Error("subscription was not created");
       controls.end();
-      await retryScheduled.promise;
+      await settled("the pump's retry to be scheduled", retryScheduled.promise);
 
       const result = await unsubscribeTool.execute("", { topics: [topic] });
       expect(result.details.removed).toEqual([topic]);
@@ -25653,7 +25680,7 @@ console.log(JSON.stringify(args));
         "retry-after-failure"
       );
       controls?.push(envelope, "_INBOX.failed");
-      await failedInjection.promise;
+      await settled("the failed injection", failedInjection.promise);
       controls?.push(envelope, "_INBOX.retried");
       controls?.push(
         forwardedRoleEnvelope(
@@ -25663,7 +25690,7 @@ console.log(JSON.stringify(args));
         ),
         "_INBOX.after"
       );
-      await followingDelivery.promise;
+      await settled("the delivery after the redelivery", followingDelivery.promise);
 
       expect(delivered).toHaveLength(2);
       expect(delivered[0]).toContain("the redelivery repairs the failed injection");
@@ -25880,7 +25907,7 @@ console.log(JSON.stringify(args));
     // OMP via postmortem exitAfterFatal) and no warning ever appears.
     registryDown = true;
     for (const tick of intervals) tick();
-    await warned.promise;
+    await settled("the heartbeat's warning", warned.promise);
     for (const tick of intervals) tick();
     await Promise.resolve();
 
@@ -25888,8 +25915,7 @@ console.log(JSON.stringify(args));
       message.includes("registry heartbeat failed")
     );
     expect(warnings).toHaveLength(1);
-    // What can hang is the wait for the heartbeat's warning (`warned`), which the command's guard
-    // ends.
+    // What can hang is the wait for the heartbeat's warning, which ends at the row's deadline.
   });
 
   test("a registration that times out is retried once inside forty seconds, and a success returns the cadence to the heartbeat", async () => {
@@ -26161,7 +26187,7 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const shutdown = stop();
 
-    await deleteStarted.promise;
+    await settled("the listener deregistration to start", deleteStarted.promise);
     await Promise.resolve();
     expect(natsState.drainStarted).toBe(true);
 

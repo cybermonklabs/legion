@@ -64,10 +64,11 @@ jobs:
     # CPU (`bun test --parallel`, package.json), so it lasts as long as its slowest worker, which
     # runs legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and
     # 296.4 s of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and
-    # 137361573250 (2026-11-22), 300 of the 320 above being the slowest rounded up. Its second
-    # command runs score.test.ts alone: at most 20 s in main's merge-group runs 45723571545,
-    # 45721434343 and 45721301880, which gives the other 20. Three
-    # runs are no worst case. Run one after another, the files took a median 774 s that day.
+    # 137361573250 (2026-11-22), 300 of the 320 above being the slowest rounded up. Three runs
+    # are no worst case. Run one after another, the files took a median 774 s that day. The
+    # step's second command runs score.test.ts alone, which gives the other 20: in main's
+    # merge-group runs 45723571545, 45721434343 and 45721301880 the file took at most 20 s
+    # inside the single `--parallel` run of main's test step, which had no second command.
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
     # concluded `success`, when the files still ran one after another under a 10-minute limit.

@@ -49,7 +49,8 @@ afterEach(() => {
 /**
  * The SDK owns the child; its close callback reports when the transport is gone. `untilServed` is
  * `until` for a wait on this server: a failure of it also says what the server wrote to stderr.
- * The close's own reason already says so.
+ * The close's own reason already says so. `untilStarted` waits for the channel session to start:
+ * the server answers tool calls only once it has.
  */
 function observeServer(client: Client, transport: StdioClientTransport) {
   let stderr = ""
@@ -71,7 +72,21 @@ function observeServer(client: Client, transport: StdioClientTransport) {
         throw new Error(`${String(error)}; its stderr: ${stderr}`, { cause: error })
       },
     )
-  return { stderr: () => stderr, closed: closed.signal, untilServed }
+  const untilStarted = (): Promise<void> =>
+    untilServed("the channel session to start", () =>
+      client
+        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
+        .then(
+          () => true,
+          (error: unknown) => {
+            // A call the close rejected fails with the close's own reason.
+            closed.signal.throwIfAborted()
+            if (String(error).includes("still starting")) return false
+            throw error
+          },
+        ),
+    )
+  return { stderr: () => stderr, closed: closed.signal, untilServed, untilStarted }
 }
 
 // The rows below start each session in a home of its own and reach it at its mod socket; a home
@@ -169,23 +184,11 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     },
     stderr: "pipe",
   })
-  const { stderr, closed, untilServed } = observeServer(client, transport)
+  const { stderr, closed, untilServed, untilStarted } = observeServer(client, transport)
 
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
-    // The server answers tool calls only once its channel session has started.
-    await untilServed("the channel session to start", () =>
-      client
-        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
-        .then(
-          () => true,
-          (error: unknown) => {
-            closed.throwIfAborted()
-            if (String(error).includes("still starting")) return false
-            throw error
-          },
-        ),
-    )
+    await untilStarted()
 
     const { tools } = await client.listTools(undefined, { timeout: timeLeft() })
     expect(tools.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
@@ -279,22 +282,11 @@ test("the session advertises its delivery modes for a mod that polls and never s
     },
     stderr: "pipe",
   })
-  const { stderr, closed, untilServed } = observeServer(client, transport)
+  const { stderr, closed, untilServed, untilStarted } = observeServer(client, transport)
 
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
-    await untilServed("the channel session to start", () =>
-      client
-        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
-        .then(
-          () => true,
-          (error: unknown) => {
-            closed.throwIfAborted()
-            if (String(error).includes("still starting")) return false
-            throw error
-          },
-        ),
-    )
+    await untilStarted()
     expect(advertised.at(-1)).toEqual([])
 
     const socketPath = modSocketPath("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })

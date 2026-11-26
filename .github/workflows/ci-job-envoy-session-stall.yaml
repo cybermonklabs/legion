@@ -83,17 +83,19 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
-      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
-      # `timeout-minutes: 20` (1 200 s), less 83 s from the job's start to this step's (the
-      # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
-      # file's beforeAll at its worst, 249 s, less its two other rows at the slowest row's worst
-      # each, 104 s, less 2 s for the steps that run after a failed step (the ci-ok report and the
-      # post steps), less the 30 s kept for the afterAll's stop: 732 s, of which the guard takes
-      # 730 s. Readings, at the calibrated load (the 96 rung; Jobs of the cluster's `builds`
-      # namespace, two CPUs, 8 GiB): the stack's start, the file's beforeAll, 249 197.32 ms over 20
-      # runs (Job infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the
-      # file's three rows, 20 of 20, the slowest row of a run 51 811 ms (infra-1580-r31nsa-229pk,
-      # -r31nsb-kc799, 106 and 209 busy loops, row A 34.2 s and 36.3 s, at aa63d194).
+      # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
+      # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
+      # `timeout-minutes: 20` (1 200 s), less 88 s from the job's start to this step's (the slowest
+      # of the 356 green jobs of this step's job in CI runs 45738744348 to 45800390301, job
+      # 139716461050 of run 45762493654), less the file's beforeAll at its worst, 249 s, less its
+      # two other rows at the slowest row's worst each, 104 s, less 2 s for the steps that run after
+      # a failed step (the ci-ok report and the post steps), less the 30 s kept for the afterAll's
+      # stop: 727 s, of which the guard takes 720 s. Readings, at the calibrated load (the 96 rung;
+      # Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB): the stack's start, the file's
+      # beforeAll, 249 197.32 ms over 20 runs (Job infra-1580-krows-kfh-tgvmp, 218 busy loops, row A
+      # 33.5 s, 2026-11-22); the file's three rows, 20 of 20, the slowest row of a run 51 811 ms
+      # (infra-1580-r31nsa-229pk, -r31nsb-kc799, 106 and 209 busy loops, row A 34.2 s and 36.3 s, at
+      # aa63d194), and 42 944 ms at 9f640966 (-r33nsa, -r33nsb).
       - name: Stall test of envoy-client's NATS connection options
         run: bun run test:stall:nats
         working-directory: packages/envoy-client
@@ -105,50 +107,55 @@ jobs:
       - name: Broker credential tests on a hub behind the auth service
         run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
-      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
-      # `timeout-minutes: 20` (1 200 s), less 242 s from the job's start to this step's (the
-      # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
-      # file's beforeAll at its worst, 249 s, less its two other rows at the slowest row's worst
-      # each, 127 s, less 2 s for the steps that run after a failed step (the ci-ok report and the
-      # post steps), less the 30 s kept for the afterAll: 550 s, all of which the guard takes.
-      # Readings, at the calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace,
-      # two CPUs, 8 GiB): the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
+      # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
+      # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
+      # `timeout-minutes: 20` (1 200 s), less 255 s from the job's start to this step's (the slowest
+      # of the same 356 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
+      # at its worst, 249 s, less its two other rows at the slowest row's worst each, 127 s, less
+      # 2 s for the steps that run after a failed step (the ci-ok report and the post steps), less
+      # the 30 s kept for the afterAll: 537 s, of which the guard takes 530 s. Readings, at the
+      # calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
       # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's three
       # rows, 20 of 20, the slowest row of a run 63 435 ms, most of it the 60 s gone horizon the
       # killed session's row waits out (infra-1580-r31ssa-5kddl, -r31ssb-766d8, 140 busy loops
-      # each, row A 35.8 s and 38.0 s, at aa63d194).
+      # each, row A 35.8 s and 38.0 s, at aa63d194), and 62 913 ms at 9f640966 (-r33ssa, -r33ssb).
       - name: Session state rig of a stalled session
         run: bun run test:stall:session
         working-directory: packages/envoy-client
       # Through the package's own test script, so the file's hooks get the command
       # packages/pi-envoy/package.json sets, its preload included, as the pi-envoy job's run gives
       # them. The `--timeout` appended to it is this step's own guard: bun takes the last
-      # `--timeout` of its command line. That guard is sized to the room one hang has: the job's
-      # `timeout-minutes: 20` (1 200 s), less 325 s from the job's start to this step's (the
-      # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
-      # describe's beforeAll at its worst, 249 s (the `-t` runs the freeze row alone, so no other
-      # row's time is spent), less 2 s for the steps that run after a failed step (the ci-ok
-      # report and the post steps), less the 30 s kept for the afterAll's stop and the teardown:
-      # 594 s, of which the guard takes 590 s. Readings, at the calibrated load (the 96 rung; Jobs
-      # of the cluster's `builds` namespace, two CPUs, 8 GiB): the stack's start, the describe's
-      # beforeAll, 249 197.32 ms over 20 runs (Job infra-1580-krows-kfh-tgvmp, 218 busy loops,
-      # row A 33.5 s, 2026-11-22); the freeze row, 20 of 20, 37 195 ms at its slowest
-      # (infra-1580-r31fza-gtvqp, -r31fzb-g2kvs, 140 busy loops each, row A 31.8 s and 35.2 s, at
-      # 0cda68aa).
+      # `--timeout` of its command line. Six times the beforeAll's worst reading (249 s) is 1 495 s,
+      # past the job's whole limit, so the room one hang has sizes that guard: the job's
+      # `timeout-minutes: 20` (1 200 s), less 339 s from the job's start to this step's (the slowest
+      # of the same 356 green jobs, job 139700617228 of run 45757721731), less the describe's
+      # beforeAll at its worst, 249 s (the `-t` runs the freeze row alone, so no other row's time is
+      # spent), less 2 s for the steps that run after a failed step (the ci-ok report and the post
+      # steps), less the 30 s kept for the afterAll's stop and the teardown: 580 s, all of which the
+      # guard takes. Readings, at the calibrated load (the 96 rung; Jobs of the cluster's `builds`
+      # namespace, two CPUs, 8 GiB): the stack's start, the describe's beforeAll, 249 197.32 ms over
+      # 20 runs (Job infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the
+      # freeze row, 20 of 20, 37 195 ms at its slowest (infra-1580-r31fza-gtvqp, -r31fzb-g2kvs, 140
+      # busy loops each, row A 31.8 s and 35.2 s, at 0cda68aa), and 42 726 ms at ad82f821
+      # (-r33fza, -r33fzb).
       - name: Stall test of pi-envoy
-        run: bun run test extensions/envoy.test.ts -t "NATS path freezes" --timeout 590000
+        run: bun run test extensions/envoy.test.ts -t "NATS path freezes" --timeout 580000
         working-directory: packages/pi-envoy
-      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
-      # `timeout-minutes: 20` (1 200 s), less 357 s from the job's start to this step's (the
-      # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
-      # file's beforeAll at its worst, 249 s, less its other row at its worst, 117 s, less 2 s for
-      # the steps that run after a failed step (the ci-ok report and the post steps), less the 30 s
-      # kept for the afterAll's stop and the teardown: 445 s, of which the guard takes 440 s.
-      # Readings, at the calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace,
-      # two CPUs, 8 GiB): the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
-      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's two
-      # rows, 20 of 20, 116 955 ms and 113 076 ms at their slowest (infra-1580-r31cea-6sxq2,
-      # -r31ceb-jsbc8, 70 and 65 busy loops, row A 35.9 s and 39.9 s, at 68bbae35).
+      # The script's --timeout is this step's one guard. Six times the beforeAll's worst reading
+      # (249 s) is 1 495 s, past the job's whole limit, so the room one hang has sizes it: the job's
+      # `timeout-minutes: 20` (1 200 s), less 371 s from the job's start to this step's (the slowest
+      # of the same 356 green jobs, job 139700617228 of run 45757721731), less the file's beforeAll
+      # at its worst, 249 s, less its other row at the worst on record, 131 s, less 2 s for the steps
+      # that run after a failed step (the ci-ok report and the post steps), less the 30 s kept for
+      # the afterAll's stop and the teardown: 417 s, of which the guard takes 410 s. Readings, at
+      # the calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
+      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's two rows,
+      # 20 of 20 in each set: the SIGTERM row's 131 200 ms (the tester's
+      # infra-1580-r31t-ceb-dqgvt, 181 busy loops, row A 32.1 s, at 698ce621), 116 955 ms and
+      # 113 076 ms (infra-1580-r31cea-6sxq2, -r31ceb-jsbc8, at 68bbae35) and 92 892 ms
+      # (-r33cea, -r33ceb, at 9f640966).
       - name: Stall test of claude-envoy
         run: bun run test:stall
         working-directory: packages/claude-envoy

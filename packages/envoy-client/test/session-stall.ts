@@ -411,10 +411,9 @@ function untilRow<T>(
   what: string,
   stack: EnvoyStack,
   ended: AbortSignal,
-  read: () => T | Promise<T>,
-  doing = `waiting for ${what}`
+  read: () => T | Promise<T>
 ) {
-  return until(what, () => rowRead(stack, ended, doing, read));
+  return until(what, () => rowRead(stack, ended, `waiting for ${what}`, read));
 }
 
 /** Returns the session's sighting once its state matches `want`. */
@@ -425,16 +424,10 @@ function waitForState(
   want: SessionState,
   what = `${sessionID} to read ${want}`
 ): Promise<Sighting> {
-  return untilRow(
-    what,
-    stack,
-    ended,
-    async () => {
-      const seen = await sighting(stack.envoyUrl, sessionID, ended);
-      return seen.state === want ? seen : undefined;
-    },
-    `waiting for ${sessionID} to read ${want}`
-  );
+  return untilRow(what, stack, ended, async () => {
+    const seen = await sighting(stack.envoyUrl, sessionID, ended);
+    return seen.state === want ? seen : undefined;
+  });
 }
 
 type RoleAnswer =
