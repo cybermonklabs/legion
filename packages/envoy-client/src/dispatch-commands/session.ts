@@ -78,6 +78,9 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A broker-issued token's project scope; every other credential carries none, and a Dispatch
+  // older than the field leaves it out.
+  const projectScope = identity.kind === "agent" ? (identity.project_scope ?? null) : null;
   // A Dispatch that predates read-only tokens names no `read` and no cut, and has no read-only
   // credential to name.
   const readOnly = identity.scopes?.includes("read") === true;
@@ -88,19 +91,21 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
   // Whether Dispatch refuses every write this credential makes until a person signs in on its
   // machine (SIGN_IN_REQUIRED). Dispatch answers it as sign_in_required, from the same decision
-  // its write check makes, so an exchange entry's token that names its account and no person,
-  // whose writes Dispatch records under that account, is not told it may not write. whoami is
-  // where a person asks what their credential may do, so for a caller that is refused it says so
-  // rather than describing the issue creation the server would refuse, and names the command that
-  // gets them a write. A Dispatch that predates the field omits it, and then the rule that
-  // Dispatch kept is read from the shape: a broker token is the one credential that proves a
-  // session of its own, so a caller that names a service and proves a session is the machine
-  // nobody signed in on, which that Dispatch refuses every write. A verified service-account
-  // token names a service and proves no session; it writes as before, and keeps the sentence it
-  // had. A read-only credential is told that it reads only before this is read: Dispatch answers
-  // it false, and no sign-in would let it write.
+  // its write check makes, so a job's token and an exchange entry's token that names its account
+  // and no person, whose writes Dispatch records under their service, are not told they may not
+  // write. whoami is where a person asks what their credential may do, so for a caller that is
+  // refused it says so rather than describing the issue creation the server would refuse, and
+  // names the command that gets them a write. A Dispatch that predates the field omits it, and
+  // then the rule that Dispatch kept is read from the shape: a broker token is the one credential
+  // that proves a session of its own, so a caller that names a service and proves a session is
+  // the machine nobody signed in on, which that Dispatch refuses every write. A verified
+  // service-account token names a service and proves no session; it writes as before, and keeps
+  // the sentence it had. A read-only credential is told that it reads only before this is read:
+  // Dispatch answers it false, and no sign-in would let it write.
+  const brokerService = owner === null && service !== null && proved !== null;
   const answered = identity.kind === "agent" ? identity.sign_in_required : undefined;
-  const signInNeeded = answered ?? (owner === null && service !== null && proved !== null);
+  const signInNeeded = answered ?? brokerService;
+  const writesAsService = brokerService && !signInNeeded;
   // Who the session is, as each sentence names it: the person it acts for, else the service it
   // runs as. The text names the identity the way every other surface does; details keeps the
   // subject whole, because that is the persisted value.
@@ -128,16 +133,26 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     acting = `Session ${session} ${who}: issues you create without an assignee are assigned to ${owner}.`;
   } else if (signInNeeded) {
     acting = `Session ${session} ${who} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else if (writesAsService) {
+    acting = `Session ${session} ${who} and no person, and writes as that service with ${unowned}`;
   } else if (service !== null) {
     acting = `Session ${session} ${who}: ${unowned}`;
   } else {
     acting = `Session ${session} runs under the shared token: ${unowned}`;
   }
-  const writable =
-    project !== null && !readOnly ? ` It may write project ${project} and no other.` : "";
+  // A job's public token and an exchange entry's token naming its account name no one project,
+  // and Dispatch holds them to none: a job entry's list of private projects limits none of its
+  // writes at this release. A read-only credential writes no project at all.
+  const writable = readOnly
+    ? ""
+    : project !== null
+      ? ` It may write project ${project} and no other.`
+      : writesAsService
+        ? " It names no one project, so it may write wherever a token that names no project may."
+        : "";
   return {
     text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    details: { session, owner, service, project, project_scope: projectScope },
   };
 }
 
@@ -443,14 +458,33 @@ async function inboxReadOfTheReleaseBefore(
 ): Promise<OpenAskRow[] | MyReplyRow[]> {
   if (!isNoRoute(error)) throw error;
   if (state === "inbox") {
-    return (await client.readRoute(
+    return (await readOfTheReleaseBefore(
+      client,
       `/api/v1/inbox?${new URLSearchParams({ assignee: "me" })}`
     )) as OpenAskRow[];
   }
-  const replies = (await client.readRoute(
+  const replies = (await readOfTheReleaseBefore(
+    client,
     `/api/v1/me/replies?${new URLSearchParams({ kind: "reply,agent" })}`
   )) as MyRepliesResponse;
   return replies.rows ?? [];
+}
+
+/**
+ * Dispatch's JSON in the answer of one read of the release before (`DispatchClient.readRoute`),
+ * read out of that answer as `dispatch api` reads it (`sendApiCall`). Both routes answer
+ * Dispatch's JSON, so a 2xx whose body came back as the bytes that came (`RouteAnswer`'s `body`)
+ * is not Dispatch's answer, and it is thrown, naming the route and what came.
+ * kept for one release: dispatch-inbox-fallback
+ */
+async function readOfTheReleaseBefore(client: DispatchClient, path: string): Promise<unknown> {
+  const answer = await client.readRoute(path);
+  if ("body" in answer) {
+    throw new Error(
+      `GET ${path} answered a body that is not Dispatch's JSON: ${answer.body.byteLength} bytes (${answer.type ?? "no Content-Type"})`
+    );
+  }
+  return answer.payload;
 }
 
 /**

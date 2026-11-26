@@ -75,6 +75,12 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 // at all after its boot pass, over a window longer than the five-second period of the timer it
 // replaced: no sweep on a timer and no lease attempt. Its pass asks to run again at the hour-off
 // notice's due time, the one timer it keeps.
+//
+// The boot pass is over once it has given its lease's connection back, the last thing a leased
+// pass does (duty.Exclusive), and the window starts there. A wait for the statements to stop for a
+// second took a pause of the whole process inside the pass for its end - in the race job, 1.7 s
+// in which no test wrote a line, ended by a GC's GODEBUG=checkfinalizers=1 report - and counted
+// the pass's last three statements, after its lease, as the idle sweep's.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -94,10 +100,12 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	leases := excerptLeases(t, counted)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
-	if counter.Count() == 0 {
-		t.Fatal("the sweep made no statement at all, so it never ran its boot pass")
-	}
+	// The first statement the pass makes is its lease's, on a connection the lease pool hands it
+	// first, so a count above zero with no connection of that pool out is a pass that has run and
+	// given its lease back.
+	waitFor(t, 10*time.Second, "the sweep's boot pass to take its lease and give it back", func() bool {
+		return counter.Count() > 0 && leases.Stat().AcquiredConns() == 0
+	})
 	storetest.RequireNoStatements(t, counter, editNoticeSweepSchedule.minGap+2*time.Second, "the edit notice sweep with nothing due")
 	next := sweeper.editNoticePass(ctx)
 	if until := time.Until(next); until < 59*time.Minute || until > time.Hour {
@@ -185,7 +193,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(context.Background(), nil, leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

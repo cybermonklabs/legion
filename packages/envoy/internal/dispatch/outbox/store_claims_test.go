@@ -30,6 +30,7 @@ import (
 // claim, appends nothing, and the role keeps the holder the later event resolved. A session's
 // part_of the role it claimed is a claim of the same shape and is held to the same rule.
 func TestAClaimStatedAgainUnderItsEventLeavesTheRoleHeld(t *testing.T) {
+	t.Parallel()
 	const (
 		role    = "claim-retry-role"
 		before  = "claim-retry-before"
@@ -95,6 +96,7 @@ func TestAClaimStatedAgainUnderItsEventLeavesTheRoleHeld(t *testing.T) {
 // reads that holder back (claimedARole), so a reverted one would change how the next mention is
 // recorded too.
 func TestARetriedEventLeavesTheHolderANewerEventStated(t *testing.T) {
+	t.Parallel()
 	const (
 		role    = "claim-older-role"
 		first   = "019a1c0a-5555-7000-8000-000000000001"
@@ -150,6 +152,7 @@ func TestARetriedEventLeavesTheHolderANewerEventStated(t *testing.T) {
 // retraction of s1 is dated after the retry's resolution. The retry appends nothing, and the role
 // stays unheld, as the newer resolution left it.
 func TestARetriedEventLeavesARoleANewerEventUnclaimedUnheld(t *testing.T) {
+	t.Parallel()
 	const (
 		role    = "claim-unclaimed-role"
 		first   = "019a1c0a-6666-7000-8000-000000000001"
@@ -194,6 +197,7 @@ func TestARetriedEventLeavesARoleANewerEventUnclaimedUnheld(t *testing.T) {
 // the assertion of s2, both under event 10, although event 11's row names a later event
 // (graphstore's claimArms).
 func TestALaterResolutionRecordedUnderAnOlderEventMovesTheRole(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "claim-later-resolution-role"
 		first  = "019a1c0a-7777-7000-8000-000000000001"
@@ -303,6 +307,7 @@ func claimTuplesUnder(t *testing.T, database *store.Store, role string, event in
 // after it. Both are held, each in a transaction of its own, and the record must queue behind the
 // node before the tuple (lockstep.RequireTheStoreLockOrder).
 func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
+	t.Parallel()
 	const (
 		comment = "0f9c2d2b-6a16-4b2f-9b2a-7c5a1a6d4f30"
 		reached = "019a1c0a-4444-7000-8000-000000000001"

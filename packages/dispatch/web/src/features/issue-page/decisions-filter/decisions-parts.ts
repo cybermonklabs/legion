@@ -13,6 +13,7 @@ import type { TextSource } from "../../refs/text-references";
 import { type ChangeComment, inReviewList } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
+import { deciderOf } from "../tree-drafts";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
@@ -29,14 +30,14 @@ import { type DecisionState, isReader } from "../page-words";
  *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
  *    one the reader sent a Change on, which waits on its agent.
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
- *    and each agent decision a statement rests on that the reader kept or asked to change, by
- *    the time they did. An answered ask is the person's decision itself, and a declined one
- *    reads as a question the person declined,
- *    never as an answer.
+ *    each `decision` block the reader decided, by the time it was made, and each agent decision
+ *    a statement rests on that the reader kept or asked to change, by the time they did. An
+ *    answered ask is the person's decision itself, and a declined one reads as a question the
+ *    person declined, never as an answer.
  * 4. **What others decided**, newest first: the same entries where the person who answered,
- *    declined, kept or changed is not the reader, and a question its asker took back. R2 names
- *    the third part "his own decisions", and Dispatch has several readers: another person's
- *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
+ *    declined, decided, kept or changed is not the reader, and a question its asker took back.
+ *    R2 names the third part "his own decisions", and Dispatch has several readers: another
+ *    person's answer is no decision of the reader's, and it is still an ask the filter draws (R2:
  *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
  * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
  *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
@@ -46,12 +47,16 @@ import { type DecisionState, isReader } from "../page-words";
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
  * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
  *
- * An agent's decision is a `decision` block of the spec or of another of the issue's documents,
- * drawn as that block's node; a person's decision is the answered ask itself
- * (its entry's `kind`), which the decisions read names by the ask's own address and which draws
- * no decision node of its own (`tree-drafts.ts`'s `addDecisions`). So the ask's entry is the
- * person's decision, and it carries the statements that decision's `shaped` ties name: the
- * person's decision reaches every statement it shaped.
+ * A `decision` block of the spec or of another of the issue's documents is drawn as that block's
+ * node, and it is an agent's decision unless its entry's `decided_by` names a person
+ * (`deciderOf`): then it is that person's decision, which waits for no review and stands in the
+ * part of the person who made it, tied or not and replaced or not, as an answered ask stands in
+ * its answerer's. Its entry's `kind` is the node's shape, `agent` for every block, and never says
+ * who decided. A person's answer is the answered ask itself (its entry's kind `person`), which the
+ * decisions read names by the ask's own address and which draws no decision node of its own
+ * (`tree-drafts.ts`'s `addDecisions`). So the ask's entry is the person's decision, and it
+ * carries the statements that decision's `shaped` ties name: the person's decision reaches every
+ * statement it shaped.
  *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
  * restatement of a person's answer appears anywhere in the view"): a `reading` block, which
@@ -271,7 +276,10 @@ export function decisionsParts({
   const personal = new Map<string, ReadEntry[]>();
   for (const row of decided) {
     const ask = personDecisionAsk(row);
-    if (ask !== undefined) personal.set(ask, [...(personal.get(ask) ?? []), row]);
+    if (ask === undefined) continue;
+    const held = personal.get(ask);
+    if (held === undefined) personal.set(ask, [row]);
+    else held.push(row);
   }
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
@@ -367,7 +375,13 @@ export function decisionsParts({
       shapes,
       ...(standing === undefined ? {} : { standing }),
     };
-    if (row.replaced) {
+    const decider = deciderOf(row.decided_by);
+    if (decider?.kind === "user") {
+      // A block a person decided is that person's decision, placed as an answered ask is by its
+      // answerer: in the decider's part, tied to a statement or not and replaced or not, by the
+      // time it was made. It waits for no review, and the foot holds the agents' decisions alone.
+      decidedBy(decider).push(entry);
+    } else if (row.replaced) {
       agents.push(entry);
     } else if (asked !== undefined) {
       // The reader asked for a change: the decision waits on its agent, and stands with the

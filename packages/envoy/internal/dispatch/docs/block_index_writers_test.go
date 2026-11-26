@@ -656,8 +656,11 @@ var indexPasses = map[string]string{
 	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
 	// A settlement states each copy among a document's ask blocks as a claim on its source, once
 	// its version is indexed: the copies its own reconciliation read off the document, and the
-	// rows of the version it indexed, which name each copy's block node.
-	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read and the blocks its version indexed",
+	// rows of the version it indexed, which name each copy's block node. It retracts the
+	// copied_from of each block that holds one and is no longer an ask block, and reads the
+	// copied_from each block node of the document holds only to find those blocks, a relation no
+	// table projects, never a side of a projection to mend the other.
+	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read, the blocks its version indexed, and the copied_from each block node of the document holds",
 	// Beside those claims, in the same name and under the same event, a settlement states on each
 	// ask node the readability of its block that the reconciliation read (G1): the reason a block
 	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
@@ -815,7 +818,13 @@ var indexPasses = map[string]string{
 	"refs/blocks.go#Queue":                  "the version's render, each decision's stored decided_by, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#queueBlockParents": "the version's render",
 	"refs/block_nodes.go#queueBlockRefs":    "the version's render, and each decision's stored decided_by",
-	"refs/block_nodes.go#queueRehomed":      "the version's render, which says the node each surviving row's pair hangs on now",
+	// The move of each surviving block_refs row whose pair the version's render hangs on another
+	// node now - a block retyped between an ask and a decision keeps its id and its tie, which
+	// hangs on the ask's node or on the block's own - to that node, beside its tuple's move
+	// (BlockIndexing.rehome). The node the render hangs the pair on decides where the row goes; the
+	// node the row names now is read only to tell a row that moved from one that did not, as the
+	// reconcile reads the rows it drops, never a side mended.
+	"refs/block_nodes.go#queueRehomed": "the version's render, and the node each of the document's surviving block_refs rows names",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above
 	// the deferral bound their part_of and the rows of their own ties, and the shaped ties of the

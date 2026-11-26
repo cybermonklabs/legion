@@ -59,6 +59,15 @@
 #       ask_e_removed, the version of spec E the person's removal wrote (spec_e_removal_version),
 #       decisions_e, section_removed and section_replaced_removed.
 #
+#   seed_standing_approvals
+#       seed_decisions calls it once its reviews are written, and so does a driver that reviews a
+#       document of the corpus again through seed_review after seed_decisions returned
+#       (answer-attribute-removal.sh), with the base server still up. It fails unless each approval
+#       seed_review left standing still names its document's newest version, and prints and keeps
+#       corpus_standing_approvals_over_those_documents again: of the documents holding an ask
+#       block, those whose newest review seed_review wrote is a person's approval. A driver's call
+#       replaces the count seed_decisions printed with the count of the corpus as it now stands.
+#
 # The corpus, in project SEED, whose gated steps hold `decisions` and `spec`:
 #
 #   Issue A (issue_a), the main seeded issue. Its spec (spec_a) holds four requirement blocks
@@ -66,7 +75,9 @@
 #   answered with an option and words of the person's own, whose block stays; ask_open (#q-open),
 #   still open; ask_declined (#q-declined), declined with a note; and two answered asks whose
 #   blocks an agent then removed, so that each row stays `answered` naming the spec, the main
-#   shape of the restore: ask_left_store (#q-left-store) and ask_left_format (#q-left-format).
+#   shape of the restore: ask_left_store (#q-left-store) and ask_left_format (#q-left-format). The
+#   person answers ask_left_format before ask_left_store, the reverse of the order their blocks
+#   stand in, so the restored asks' answer-time order is not the order of their blocks.
 #   A callout of the spec now holds the id q-left-store, the collision of the main shape, and a
 #   second callout holds q-doc-collide, the block id of the decisions document's second ask, the
 #   collision of the second shape. The spec's `## Decisions` part holds one pointer line, to
@@ -377,6 +388,22 @@ seed_decision_block() {
     "$seed_dir/body")" || fail seed "$1" "no text_sha256 for \"$3\""
 }
 
+# seed_standing_approvals: the head comment above is its contract.
+seed_standing_approvals() {
+  local document version standing=0
+  for document in "${!seed_approved_version[@]}"; do
+    seed_request agent GET "/api/v1/artifacts/$document/text"
+    seed_want 200 "read $document's newest version"
+    seed_field "read $document's newest version" .version
+    version="$seed_value"
+    [[ "$version" == "${seed_approved_version[$document]}" ]] ||
+      fail seed "the approval of $document stands" \
+        "it names version ${seed_approved_version[$document]}, and the newest is $version"
+    [[ -z "${seed_ask_documents[$document]:-}" ]] || standing=$((standing + 1))
+  done
+  seed_record corpus_standing_approvals_over_those_documents "$standing"
+}
+
 # seed_decisions: the head comment above is its contract.
 seed_decisions() {
   [[ -n "$baseline_url" && -n "$baseline_token" && -n "$baseline_database_url" ]] ||
@@ -520,13 +547,14 @@ MD
   seed_ask ask_d_approved "${seed_ids[issue_d]}" "$spec_d" q-d-approved
 
   # The person settles the asks: three answers on spec A, one on spec B, one on spec D, and a
-  # decline.
+  # decline. q-left-format is answered before q-left-store, whose block stands above it: the
+  # restore writes the returned asks in answer-time order, which then differs from their blocks'.
   seed_answer ask_kept "$spec_a" q-kept \
     "Postgres, since it is the store we already back up every night." Postgres
-  seed_answer ask_left_store "$spec_a" q-left-store \
-    "Read the seeded test database; no pod of this tree can reach production."
   seed_answer ask_left_format "$spec_a" q-left-format \
     "One line for each measurement, with the time it was taken."
+  seed_answer ask_left_store "$spec_a" q-left-store \
+    "Read the seeded test database; no pod of this tree can reach production."
   seed_answer ask_b_left "$spec_b" q-b-left "The base release writes it, through its own API."
   seed_answer ask_d_approved "$spec_d" q-d-approved "The version the person read when they approved."
   seed_request person POST "/api/v1/asks/${seed_ids[ask_declined]}/decline" \
@@ -709,25 +737,12 @@ MD
   seed_review review_notes_a "${seed_ids[notes_a]}" approved
   seed_wait_settled "nothing is left to settle after the reviews"
 
-  # Each approval still stands: no version landed after the one it names.
-  local document version
-  for document in "${!seed_approved_version[@]}"; do
-    seed_request agent GET "/api/v1/artifacts/$document/text"
-    seed_want 200 "read $document's newest version"
-    seed_field "read $document's newest version" .version
-    version="$seed_value"
-    [[ "$version" == "${seed_approved_version[$document]}" ]] ||
-      fail seed "the approval of $document stands" \
-        "it names version ${seed_approved_version[$document]}, and the newest is $version"
-  done
+  # Each approval still stands, and the count of them over the documents holding an ask block.
+  seed_standing_approvals
 
-  # The corpus's own counts.
-  local standing=0 index=0 collision
-  for document in "${!seed_approved_version[@]}"; do
-    [[ -z "${seed_ask_documents[$document]:-}" ]] || standing=$((standing + 1))
-  done
+  # The corpus's other counts.
+  local index=0 collision
   seed_record corpus_documents_holding_an_ask "${#seed_ask_documents[@]}"
-  seed_record corpus_standing_approvals_over_those_documents "$standing"
   seed_record corpus_colliding_block_ids "${#seed_collisions[@]}"
   for collision in "${seed_collisions[@]}"; do
     index=$((index + 1))

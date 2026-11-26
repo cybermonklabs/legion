@@ -266,6 +266,35 @@ test("Keep records the decision and moves it from Waiting for your review to You
   }
 });
 
+// A `decision` block a person decided is that person's decision: its entry's `decided_by` names
+// them, while its `kind` is the node's shape, `agent` for every block. It waits for no review,
+// so the tab draws it under Your decisions, with no Keep, and not under Waiting for your review.
+test("a decision block a person decided is drawn under Your decisions", async () => {
+  const words = "Cap each table at a million rows";
+  const view: IssueDecisions = {
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        block: "cap",
+        decided_by: { id: "alice", kind: "person" },
+        text: `## ${words}\n\nAlice chose the cap.`,
+      }),
+    ],
+    open_questions: [],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    expect(within(mine).getByText(words)).toBeDefined();
+    expect(within(mine).queryByRole("button", { name: "Keep" })).not.toBeInTheDocument();
+    expect(within(list("Waiting for your review")).queryByText(words)).not.toBeInTheDocument();
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // A read of the decisions asked before a Keep answers the view from before it. Landing after the
 // Keep's answer, it would put the kept decision back under Waiting for your review, Keep and all.
 test("a read of the decisions asked before a Keep does not put the kept decision back as waiting", async () => {
@@ -717,7 +746,11 @@ test("a shaped block's link names the block by its id and draws no text of the b
 // as a spec's block: each link opens the node its own address names, never the spec at the
 // other document's block id. A target whose address opens no page draws no link.
 test("a shaped node outside the spec links its own document at its block", async () => {
-  const target = (ref: string | undefined, blockId: string, kind = "block"): DecisionLink => ({
+  const target = (
+    ref: string | undefined,
+    blockId: string,
+    kind: DecisionLink["to"]["kind"] = "block"
+  ): DecisionLink => ({
     changed_since_tie: false,
     created_at: "2026-11-01T00:00:00Z",
     created_version: 1,

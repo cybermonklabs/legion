@@ -155,7 +155,7 @@ by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
 (.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
 downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
 job 129055096326 of run 42585736615, where this build still sat inside the alone job's
-3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
+3-minute browser step. go-envoy-test is filled by `go test -count=1 -run '^$' ./...` over
 the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
 restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
 here saves either one.
@@ -227,7 +227,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-e07980de): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-398fb2e8): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -920,8 +920,8 @@ harness starts its servers with crash safety off, so no commit waits for the run
 With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
 answering for about 5 s, the read mark a closed page left in flight could neither commit nor
 be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
-service can be given those three settings too, with `alter system` and a reload, as
-docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+service can be given those three settings too, on its `command:` line, as docs-site.yaml's is
+(.github/scripts/postgres-service-settings.sh); this job takes the harness's server rather than a second copy of its
 settings, and that server loads the stall library below as it starts, which a service,
 started before any step has built the library, could do only after a restart. The suite's
 row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the

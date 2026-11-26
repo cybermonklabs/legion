@@ -1050,11 +1050,11 @@ function addTurns(
  * decision's own content as the read answers it (`decisionContent`), whose references resolve
  * against the document the block stands in (`decisionDocumentId`).
  *
- * Who decided an agent's decision is its entry's `decided_by`: the draft's author is that
+ * Who decided a `decision` block, a person or an agent, is its entry's `decided_by`: the draft's author is that
  * decider (`deciderOf`), and a decision no entry names a decider for has none, so its row says
  * nobody was recorded (R9).
  *
- * A person's decision is the answered ask itself (`DecisionEntry.kind`): the read names it by the
+ * An ask a person answered is a decision of its own shape (`DecisionEntry.kind` `person`): the read names it by the
  * ask's own address, and `addAsks` drew the ask with the person's answer on it. It is no
  * decision node of its own, so it neither restates the question under itself nor stands in the
  * ask's place; the ask's node carries the chips of what it shaped.
@@ -1163,7 +1163,7 @@ function decisionNodeId(
  * is still named by it (`AgentName.tsx`'s `drawnSessionName`); one that stamped none carries no
  * origin. Undefined where the entry names nobody, or a node of another kind.
  */
-function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
+export function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
   if (node === null) return undefined;
   if (node.kind === "session") {
     return node.title === undefined
