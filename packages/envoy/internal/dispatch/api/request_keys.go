@@ -1275,7 +1275,10 @@ func (s *server) answerDrainedRepeat(
 // The stored row is placed as its first request was placed:
 //
 //   - by the object the route's address names (projectResolverFor), read as the server sees it and
-//     as the caller does: hidden when the server finds it and the caller does not;
+//     as the caller does: hidden when the server finds it and the caller does not, missing when
+//     the server does not find it. Both reads run whatever the first finds, so a hidden object and
+//     a missing one cost the same statements, as a read's cost never tells what a caller does not
+//     see (references_seen.go);
 //   - by the project its body names, for a write whose address names none (keyedBodyProjects): the
 //     project the write's own handler reads from that body (bodyProject), the one its write check
 //     reads (refuseOutsideCallerProjects) or the key of the project a create makes. The body is
@@ -1293,15 +1296,17 @@ func (s *server) answerDrainedRepeat(
 //
 // A hidden repeat is never run again, and is answered by what its first request did. One that
 // committed a write - a commit mark, a recovery point, or a 2xx answer - is refused 409
-// KEY_COMMITTED (keyedRepeatRefused). One that was refused wrote nothing, and is answered that
-// refusal's status and code again, marked replayed, with a message that names nothing of its
-// object (keyedRefusalReplayed); so is a refused repeat whose object does not exist at all, so that
-// the answer tells no caller whether an object it does not see exists. At this slice that is the
-// one rule: the issue's loaders bind no reader yet (loadIssue, loadIssueWithProgress), so a request
-// run again for a caller that does not see its issue would find it and write it a second time, and
-// no create holds its caller to the project its body names. Slice S3c-issues, whose loaders bind
-// the reader, runs a hidden repeat again under no key, which answers its object as missing and
-// writes nothing.
+// KEY_COMMITTED (keyCommittedRefusal), in the words a write that landed and lost its answer gets. One
+// that was refused wrote nothing, and is answered that refusal's status and code again, marked
+// replayed, with a message that names nothing of its object (keyedRefusalReplayed). A repeat
+// whose object is missing - deleted since, or never held - is answered as a hidden one is, by the
+// same rule: a caller that does not see every object cannot be told which objects it saw, so a
+// replay of a deleted object's first answer would tell it "deleted" where a hidden one tells it
+// nothing. Never running a hidden repeat again is this slice's rule: the issue's loaders bind no
+// reader yet (loadIssue, loadIssueWithProgress), so a request run again for a caller that does not
+// see its issue would find it and write it a second time, and no create holds its caller to the
+// project its body names. Slice S3c-issues, whose loaders bind the reader, runs a hidden repeat
+// again under no key, which answers its object as missing and writes nothing.
 //
 // A repeat answered from the key gets the first answer whole, judged by the object its address or
 // body names and the issues its point names, and by nothing else it holds: an issue create's
@@ -1328,15 +1333,11 @@ func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldReq
 		if err != nil {
 			return err
 		}
-		if found == "" {
-			missing = true
-		} else {
-			seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
-			if err != nil {
-				return err
-			}
-			hidden = seen == ""
+		seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+		if err != nil {
+			return err
 		}
+		hidden, missing = found != "" && seen == "", found == ""
 	} else if read, named := keyedBodyProjects[name]; named {
 		if body == nil {
 			key, _, _ := requestKeyHeader(r)
@@ -1378,8 +1379,9 @@ func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldReq
 	switch {
 	case (hidden || missing) && held.refused():
 		return keyedRefusalReplayed(r, held)
-	case hidden:
-		return keyedRepeatRefused(r, held)
+	case hidden || missing:
+		key, _, _ := requestKeyHeader(r)
+		return keyCommittedRefusal(key, held)
 	}
 	return nil
 }
@@ -1390,15 +1392,15 @@ func (held heldRequestKey) refused() bool {
 	return held.status != nil && (*held.status < 200 || *held.status >= 300) && !held.committed && held.recovery == nil
 }
 
-// keyedRepeatRefused is a hidden repeat whose first request committed a write, which
-// heldAnswerRefusal does not run and does not answer from its key: 409 KEY_COMMITTED, the refusal
-// a write that landed and is not answered again is given, so the client reads what it wrote
-// through the routes that read it, each of which holds it to what it sees. The method and path it
-// names are the caller's own, since the digest matched.
-func keyedRepeatRefused(r *http.Request, held heldRequestKey) error {
-	key, _, _ := requestKeyHeader(r)
+// keyCommittedRefusal is the refusal of a repeat whose first request committed a write and whose answer
+// the key does not replay to this caller: 409 KEY_COMMITTED, so the client reads what it wrote
+// through the routes that read it, each of which holds it to what it sees. A write that lost its
+// answer (writeKeyCommitted) and one whose answer the caller may not read (heldAnswerRefusal) get
+// the one text, so the answer tells no caller which of the two it is. The method and path it names
+// are the caller's own, since the digest matched.
+func keyCommittedRefusal(key string, held heldRequestKey) error {
 	return errorf(http.StatusConflict, contracts.IdempotencyKeyCommitted,
-		"the request under %s %q (%s %s) was made, and Dispatch cannot hold its answer to what this caller sees, so it is not run again and its answer is not replayed to this caller: read what it wrote",
+		"the write under %s %q (%s %s) landed, and Dispatch replays no answer to it and does not run it again: read what it wrote",
 		contracts.IdempotencyKeyHeader, key, held.method, held.path)
 }
 
@@ -1540,9 +1542,9 @@ func heldRoute(method, path string) (pattern string, values map[string]string, m
 // (pointSeen), and nil to any other, as to a key that holds none. A route that answers its
 // refusals as every route does (keyedRoute.refuse nil) is handed no point, and is answered nil.
 // Its reads - the caller's reader and the point's issues - run on a context the client's going
-// away does not end, bounded by keyedBookkeeping, as every read of the layer's answers does: the
-// drained repeat's answer to a body that stopped arriving comes after net/http has cancelled the
-// request's own (writeUnjudgedKeyInFlight).
+// away does not end, bounded by keyedBookkeeping: the drained repeat's answer to a body that
+// stopped arriving comes after net/http has cancelled the request's own
+// (writeUnjudgedKeyInFlight).
 func (s *server) recoveryPointFor(r *http.Request, route keyedRoute, recovery json.RawMessage) (json.RawMessage, error) {
 	if recovery == nil || route.refuse == nil {
 		return nil, nil
@@ -1648,11 +1650,9 @@ func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request
 // writeKeyCommitted answers a repeat whose first request committed its write and lost its answer:
 // Dispatch does not run the request again, and has nothing to replay (Google AIP-155's lost
 // answer; a route that commits a recovery point answers the resource instead). It names no point:
-// nothing ran under this request.
+// nothing ran under this request. Its words are keyCommittedRefusal's, which a hidden repeat gets too.
 func (s *server) writeKeyCommitted(w http.ResponseWriter, route keyedRoute, key string, held heldRequestKey) {
-	s.refuseKeyed(w, route, errorf(http.StatusConflict, contracts.IdempotencyKeyCommitted,
-		"the write under %s %q (%s %s) landed, but Dispatch lost its answer, so it is not run again and has no answer to replay: read what it wrote",
-		contracts.IdempotencyKeyHeader, key, held.method, held.path), nil)
+	s.refuseKeyed(w, route, keyCommittedRefusal(key, held), nil)
 }
 
 // replayAnswer answers a repeat whose key holds its first request's answer (keyAnswered). A kept
