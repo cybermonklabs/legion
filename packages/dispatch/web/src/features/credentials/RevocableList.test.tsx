@@ -26,6 +26,8 @@ beforeAll(async () => {
  *  call replaced by `revoke`; `clearList` makes the list answer no rows from then on, and `empty`
  *  is what the section shows then. */
 interface Section {
+  /** Whether a revoke asks first, in the page's confirm dialog. */
+  asks: boolean;
   empty: string;
   heading: string;
   /** The listed row as the section's sentences of its revoke name it. */
@@ -42,6 +44,7 @@ interface Section {
 
 const sections: Section[] = [
   {
+    asks: false,
     empty: "No live grants.",
     heading: "Live grants",
     name: "the grant of WORKER_TOKEN to session · box-1 · ada@example.com",
@@ -81,6 +84,7 @@ const sections: Section[] = [
     },
   },
   {
+    asks: true,
     empty: "No live machine logins.",
     heading: "Machine logins",
     name: "the machine login for devbox.example.com",
@@ -115,6 +119,7 @@ const sections: Section[] = [
     },
   },
   {
+    asks: true,
     empty: "No sign-ins.",
     heading: "Sign-ins",
     name: "your sign-in on devbox.example.com",
@@ -153,15 +158,27 @@ async function renderSection(section: Section): Promise<HTMLElement> {
   return region.findByRole("button", { name: "Revoke" });
 }
 
+/** Presses `button`, the row's Revoke, and for a section whose revoke asks first, the Revoke of the
+ *  dialog that asks. */
+async function pressRevoke(
+  section: Section,
+  user: { click: (element: Element) => Promise<void> },
+  button: HTMLElement
+): Promise<void> {
+  await user.click(button);
+  if (!section.asks) return;
+  const dialog = await screen.findByRole("dialog", { name: `Revoke ${section.name}?` });
+  await user.click(within(dialog).getByRole("button", { name: "Revoke" }));
+}
+
 for (const section of sections) {
   test(`${section.heading}: Revoke is disabled while a revoke is out, and enabled once it settles`, async () => {
     const user = userEvent.setup();
     const out = Promise.withResolvers<void>();
     const stubs = section.stub(() => out.promise);
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
       const button = await renderSection(section);
-      await user.click(button);
+      await pressRevoke(section, user, button);
       await waitFor(() => expect(stubs.revokeCalls()).toEqual([[section.rowId, keyedAttempt]]));
       await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
 
@@ -174,7 +191,6 @@ for (const section of sections) {
       );
     } finally {
       cleanup();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
@@ -183,16 +199,27 @@ for (const section of sections) {
     jest.useFakeTimers();
     const out = Promise.withResolvers<void>();
     const stubs = section.stub(() => out.promise);
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
       const button = await renderSection(section);
+      // A section that asks first opens its dialog at the press; the double press is then the
+      // dialog's Revoke, which sends the revoke.
+      let target: HTMLElement = button;
+      if (section.asks) {
+        act(() => {
+          fireEvent.click(button);
+        });
+        target = within(screen.getByRole("dialog", { name: `Revoke ${section.name}?` })).getByRole(
+          "button",
+          { name: "Revoke" }
+        );
+      }
       // Both presses land inside one act, so React re-renders only after both: the second reaches
       // the handler before the pending revoke disables the button, which only the guard stops.
       act(() => {
         // Two presses in one task: user-event waits between its events, so it cannot make them.
-        fireEvent.click(button);
+        fireEvent.click(target);
         // The second press before React re-renders and disables the button.
-        fireEvent.click(button);
+        fireEvent.click(target);
       });
       // A mutation calls its function a few microtasks after the click; a timer runs after
       // them all.
@@ -202,7 +229,6 @@ for (const section of sections) {
     } finally {
       realClock();
       cleanup();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
@@ -212,15 +238,13 @@ for (const section of sections) {
     const stubs = section.stub(async () => {
       throw new ApiError(403, { code: "NOT_APPROVER", error: section.refusal });
     });
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
-      await user.click(await renderSection(section));
+      await pressRevoke(section, user, await renderSection(section));
       expect(
         await screen.findByText(`Couldn't revoke ${section.name} — ${section.refusal}`)
       ).toBeDefined();
     } finally {
       cleanup();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
@@ -233,12 +257,11 @@ for (const section of sections) {
     const stubs = section.stub(async () => {
       throw new ApiError(403, { code: "NOT_APPROVER", error: section.refusal });
     });
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     try {
       render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
       const region = within(await screen.findByRole("region", { name: section.heading }));
-      await user.click(await region.findByRole("button", { name: "Revoke" }));
+      await pressRevoke(section, user, await region.findByRole("button", { name: "Revoke" }));
       const refusal = `Couldn't revoke ${section.name} — ${section.refusal}`;
       expect(await region.findByText(refusal)).toBeDefined();
 
@@ -249,7 +272,6 @@ for (const section of sections) {
     } finally {
       cleanup();
       queryClient.clear();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
@@ -258,16 +280,14 @@ for (const section of sections) {
     const user = userEvent.setup();
     // The revoke answers as the broker would: once it succeeds, the list no longer holds the row.
     const stubs = section.stub(async () => stubs.clearList());
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
-      await user.click(await renderSection(section));
+      await pressRevoke(section, user, await renderSection(section));
       const region = within(screen.getByRole("region", { name: section.heading }));
       expect(await region.findByText(section.empty)).toBeDefined();
       expect(region.queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
       expect(stubs.revokeCalls()).toEqual([[section.rowId, keyedAttempt]]);
     } finally {
       cleanup();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
@@ -280,12 +300,11 @@ for (const section of sections) {
     const stubs = section.stub(async () => {
       throw new NetworkError("/api/v1/revoke", new TypeError("Failed to fetch"));
     });
-    const confirm = spyOn(window, "confirm").mockReturnValue(true);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     try {
       render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
       const region = within(await screen.findByRole("region", { name: section.heading }));
-      await user.click(await region.findByRole("button", { name: "Revoke" }));
+      await pressRevoke(section, user, await region.findByRole("button", { name: "Revoke" }));
       await stopTheLateWrite(queryClient);
       expect(
         region.getByText(
@@ -298,8 +317,30 @@ for (const section of sections) {
       realClock();
       cleanup();
       queryClient.clear();
-      confirm.mockRestore();
       stubs.restore();
     }
   });
 }
+
+test("a revoke that asks first asks in the page's own dialog, never the browser's, and Cancel sends nothing", async () => {
+  const user = userEvent.setup();
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    for (const section of sections.filter((candidate) => candidate.asks)) {
+      const stubs = section.stub(async () => {});
+      try {
+        await user.click(await renderSection(section));
+        const dialog = await screen.findByRole("dialog", { name: `Revoke ${section.name}?` });
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(stubs.revokeCalls()).toEqual([]);
+      } finally {
+        cleanup();
+        stubs.restore();
+      }
+    }
+    expect(confirm).not.toHaveBeenCalled();
+  } finally {
+    confirm.mockRestore();
+  }
+});

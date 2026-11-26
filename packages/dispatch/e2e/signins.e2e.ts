@@ -58,8 +58,13 @@ test("the sign-ins section lists a person's own machines and Revoke ends one on 
     // The box key is what tells two of one person's machines apart, so the row shows it.
     await expect(laptopRow.getByText(`key ${aliceLaptop.thumbprint.slice(0, 12)}…`)).toBeVisible();
 
-    page.once("dialog", (dialog) => void dialog.accept());
     await buildBoxRow.getByRole("button", { name: "Revoke" }).click();
+    // The page asks in its own dialog, which names the command as code.
+    const asked = page.getByRole("dialog", {
+      name: `Revoke your sign-in on ${aliceBuildBox.machine}?`,
+    });
+    await expect(asked.locator("code")).toHaveText("agent-secrets login");
+    await asked.getByRole("button", { name: "Revoke" }).click();
     await expect(buildBoxRow).toHaveCount(0);
     await expect(laptopRow).toHaveCount(1);
 

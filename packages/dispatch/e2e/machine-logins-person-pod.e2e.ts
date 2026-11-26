@@ -40,16 +40,16 @@ const daemon: FakeLauncherCredential = {
   subject: "system:serviceaccount:legion-system:legion-daemon",
 };
 
-/** The question a row's Revoke asks, which the page asks with `window.confirm`. The dialog is
- *  dismissed, so nothing is revoked and the row stays. */
+/** The question a row's Revoke asks, in the page's own confirm dialog: its heading and what it
+ *  says, read as one sentence. The dialog is cancelled, so nothing is revoked and the row stays. */
 async function revokeQuestion(page: Page, row: Locator): Promise<string> {
-  const asked = Promise.withResolvers<string>();
-  page.once("dialog", (dialog) => {
-    asked.resolve(dialog.message());
-    void dialog.dismiss();
-  });
   await row.getByRole("button", { name: "Revoke" }).click();
-  return asked.promise;
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const question = `${await dialog.getByRole("heading").textContent()} ${await dialog.locator("p").textContent()}`;
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  return question;
 }
 
 // R5 of dispatch://INFRA-4511, check b8: "Dispatch's page of machine logins shows a person's pod

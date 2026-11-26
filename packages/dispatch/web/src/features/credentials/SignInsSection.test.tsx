@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { api } from "../../api/client";
 import { SignInsSection } from "./SignInsSection";
 
-test("Sign-ins names the agent-secrets login command as code in its description, and in quotes in its revoke question, never in backticks", async () => {
+test("Sign-ins names the agent-secrets login command as code in its description and in its revoke dialog, never in backticks", async () => {
   const user = userEvent.setup();
   const list = spyOn(api, "getSignIns").mockResolvedValue({
     signins: [
@@ -19,8 +19,6 @@ test("Sign-ins names the agent-secrets login command as code in its description,
       },
     ],
   });
-  // The reader answers no, so the question is read and no revoke is sent.
-  const confirm = spyOn(window, "confirm").mockReturnValue(false);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     render(
@@ -34,13 +32,14 @@ test("Sign-ins names the agent-secrets login command as code in its description,
     expect(within(description).getByText("agent-secrets login").tagName).toBe("CODE");
 
     await user.click(await region.findByRole("button", { name: "Revoke" }));
-    const question = String(confirm.mock.calls[0]?.[0]);
-    expect(question).not.toContain("`");
-    expect(question).toContain("“agent-secrets login”");
+    const dialog = await screen.findByRole("dialog", {
+      name: "Revoke your sign-in on devbox.example.com?",
+    });
+    expect(dialog.textContent).not.toContain("`");
+    expect(within(dialog).getByText("agent-secrets login").tagName).toBe("CODE");
   } finally {
     cleanup();
     queryClient.clear();
-    confirm.mockRestore();
     list.mockRestore();
   }
 });

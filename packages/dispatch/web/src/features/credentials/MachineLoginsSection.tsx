@@ -92,9 +92,7 @@ export function MachineLoginsSection(): ReactNode {
       className="pt-4"
       columns={columns}
       // A login's subject is the Kubernetes identity its token names, not a writer's text.
-      confirm={(login) =>
-        `Revoke the machine login for ${machineName(login)}? ${revokeOutcome(login)}`
-      }
+      confirm={revokeOutcome}
       description="Every machine and every pod logged in as you, and every service's login. A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you. The list shows a login while it is unexpired or a session it started still runs: a session outlives its login's expiry. Only you may revoke the logins of your machines and your pods. Anyone signed in may revoke a service's login. Revoking a login ends it now: it starts no more sessions, and every session it started loses its secrets."
       empty="No live machine logins."
       heading="Machine logins"

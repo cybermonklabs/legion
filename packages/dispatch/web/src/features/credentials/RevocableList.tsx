@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import type { WriteBounds } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
@@ -18,6 +18,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { ConfirmDialog } from "../project/ConfirmDialog";
 import { settingsTableWrapper } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
@@ -36,9 +37,11 @@ export interface RevocableColumn<Row> {
  * so no refusal is silent. One line under the table speaks for every row, so it names the row the
  * revoke was of (`rowName`), and it goes once that row leaves the list - revoked elsewhere, or
  * expired - rather than stand under rows it was never about. Each section hands over its own
- * query, columns and revoke call, and `confirm` when a revoke asks first; the list owns the one
- * revoke in flight: every Revoke button is disabled while it is pending, and the submit guard
- * drops a second press that lands before that re-render (a same-tick double click). `onRevoked`
+ * query, columns and revoke call, and `confirm` when a revoke asks first: what the revoke does,
+ * which the page's own dialog (`ConfirmDialog`) shows under "Revoke <row>?" with Cancel and Revoke,
+ * never the browser's `window.confirm`. The list owns the one revoke in flight: every Revoke button
+ * is disabled while it is pending, and the submit guard drops a second press that lands before that
+ * re-render (a same-tick double click). `onRevoked`
  * runs once a revoke succeeds, for the section to refresh what it changed. A section may also list
  * rows the broker lets nobody revoke: `unrevocable` names why for such a row, which is then
  * read-only, with that line where its button would be, so the page offers no button that can only
@@ -62,7 +65,9 @@ export function RevocableList<Row>({
 }: {
   className: string;
   columns: readonly RevocableColumn<Row>[];
-  confirm?: (row: Row) => string;
+  /** What revoking `row` does, which the confirm dialog shows under "Revoke <rowName>?"; a section
+   *  without it revokes on the press. */
+  confirm?: (row: Row) => ReactNode;
   description: ReactNode;
   empty: string;
   heading: string;
@@ -96,10 +101,12 @@ export function RevocableList<Row>({
   )
     ? mutation.variables
     : undefined;
+  // The row whose revoke the dialog is asking about, while it asks.
+  const [asking, setAsking] = useState<{ row: Row }>();
+  const send = (row: Row) => submitGuard.guard(() => mutation.mutate(row));
   const press = (row: Row) => {
-    if (confirm === undefined || window.confirm(confirm(row))) {
-      submitGuard.guard(() => mutation.mutate(row));
-    }
+    if (confirm === undefined) send(row);
+    else setAsking({ row });
   };
 
   return (
@@ -189,6 +196,18 @@ export function RevocableList<Row>({
               })
             : refusedNote(`revoke ${rowName(refused)}`, mutation.error)}
         </p>
+      )}
+      {asking === undefined || confirm === undefined ? null : (
+        <ConfirmDialog
+          body={confirm(asking.row)}
+          confirmLabel="Revoke"
+          onCancel={() => setAsking(undefined)}
+          onConfirm={() => {
+            setAsking(undefined);
+            send(asking.row);
+          }}
+          title={`Revoke ${rowName(asking.row)}?`}
+        />
       )}
     </section>
   );
