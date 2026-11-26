@@ -292,7 +292,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	wantClaims := sweepRouteOtherClaims + sweepRouteClaimsHeld*len(cases)
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false
@@ -442,7 +442,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotARea
 
 	wantClaims := sweepRouteDegradedOtherClaims + sweepRouteClaimsHeld
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false
