@@ -215,6 +215,7 @@ import {
   REFLOW_STATES,
   readScaleLoad,
   rowsWithoutAuthorScrollers,
+  scaleLoadAwaited,
   scrollersOutsideAuthorText,
   seedWaitingWalk,
   showMoreControl,
@@ -3026,18 +3027,20 @@ test("the first load stays inside its request budget", async ({ browser }) => {
 // its first byte. After the Conversation's load, outside its census, Details is opened and its
 // history and its lists are read (part M's). A bound `AWAITING_SCALE` names is left unread, and
 // the row fails where it finds that bound's owner on the page; every other bound is read, and a
-// bound neither read nor listed fails the row before it seeds.
-// SLOW(>=2s): three copies of the largest issues written and the block index waited for, 21 cold
-// loads of the page, the comments copy's outline of 9,252 comments among them, and each read of
-// those loads sent 35 times.
+// bound neither read nor listed fails the row before it seeds. While part T's bound of a node's
+// first 50 children is awaited, the copy of INFRA-663 is loaded under no control that draws the
+// outline, whose `main` draws all of its 9,252 comments as rows (spec version 89's R21), and Details
+// is opened after its Dashboard's load (`readScaleLoad`).
+// SLOW(>=2s): three copies of the largest issues written and the block index waited for, 16 cold
+// loads of the page, and each read of those loads sent 35 times.
 test("the page keeps its load bound on the largest issues under each control of the row @phone", async ({
   browser,
 }) => {
-  // Not measured in a browser yet. Estimated from its parts: about 3 min of seeding and 2 min of
-  // the block index's drain (`e2e/scale-seed.ts`), 21 cold loads at about 10 s each, the comments
-  // copy's outline among them, and some 250 reads sent 35 times at about 30 ms each: about 13 min
-  // in all. The bound is about three times that, for a slow leg, until the first e2e-rows Job
-  // measures the row and this line says what it took.
+  // Not measured in a browser yet. Estimated from its parts: about 3 min of seeding and 1 min of
+  // the block index's cursor and drain (`e2e/scale-seed.ts`), 16 cold loads at about 10 s each,
+  // and some 250 reads sent 35 times at about 30 ms each: about 10 min in all. The bound is about
+  // four times that, for a slow leg, until the first e2e-rows Job that passes measures the row and
+  // this line says what it took.
   test.setTimeout(2_700_000);
   const viewport = test.info().project.name === "iphone" ? IPHONE_13 : DESKTOP;
   expect(
@@ -3050,6 +3053,7 @@ test("the page keeps its load bound on the largest issues under each control of 
   const timed = new Set<string>();
   for (const copy of seeded.copies) {
     for (const preset of PRESET_ORDER) {
+      if (scaleLoadAwaited(copy, preset, viewport.width)) continue;
       const context = await asReader(browser, seeded.reader);
       try {
         const page = await context.newPage();

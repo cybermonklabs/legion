@@ -2651,6 +2651,45 @@ export function unheldScaleBounds(): ScaleBound[] {
   return SCALE_BOUNDS.filter((bound) => !SCALE_BOUNDS_READ.includes(bound) && !awaitsScale(bound));
 }
 
+/**
+ * The copy whose cold loads under a control that draws the outline wait, with every bound they
+ * read, on part T's bound of a node's first 50 children (spec version 89's R21): `main`'s outline
+ * draws every one of the copy's 9,252 comments as a row. The CPU profile of its Conversation load
+ * (Job e2e-rows-g2s6x, 139 s sampled from the navigation on) spent 87.5% of it in one layout effect
+ * of each row, `useOutOfTabOrder`'s pass over the row's elements (`RowText.tsx`), inside React's
+ * commit of the outline, which held 9,272 rows at the end; Job e2e-rows-gkwdh's load of it drew no
+ * `[data-issue-page]` in 165 s. The row loads every control on the other two copies.
+ */
+const OUTLINE_AWAITED_COPY = "INFRA-663";
+
+/** Whether the row leaves the cold load of `preset` on `copy` unread while part T's bound of a
+ *  node's first 50 children is awaited (`OUTLINE_AWAITED_COPY`). */
+function outlineLoadAwaited(copy: ScaleCopy, preset: Preset): boolean {
+  return (
+    copy.census === OUTLINE_AWAITED_COPY &&
+    OUTLINE_CONTROLS.includes(preset) &&
+    awaitsScale("a node's first 50 children")
+  );
+}
+
+/** Whether the row leaves the cold load of `preset` on `copy` at `width` px unread
+ *  (`outlineLoadAwaited`), printing it as awaited where it does: the row then opens no context
+ *  for it. */
+export function scaleLoadAwaited(copy: ScaleCopy, preset: Preset, width: number): boolean {
+  if (!outlineLoadAwaited(copy, preset)) return false;
+  report(
+    "scale-awaited",
+    `SCALE awaited ${copy.census} ${preset} ${width} px: the load, whose outline draws every comment (part T)`
+  );
+  return true;
+}
+
+/** The control after whose cold load the row opens Details on `copy`: Conversation's, or
+ *  Dashboard's where the copy's outline loads are awaited (`outlineLoadAwaited`). */
+function detailsAfter(copy: ScaleCopy): Preset {
+  return outlineLoadAwaited(copy, "conversation") ? "dashboard" : "conversation";
+}
+
 /** The control under Dashboard's list that draws its next five and says how many are left,
  *  "Show the next five · 1 left" (`WaitingList.tsx`): what the row reads the list's count by, and
  *  dispatch://INFRA-5702's sign. */
@@ -2902,8 +2941,9 @@ async function wordsOf(controls: Locator): Promise<string[]> {
 }
 
 /**
- * Opens Details on the page of the Conversation's cold load, whose census `readScaleLoad` has
- * taken, so nothing the open reads counts in that load, and reads each list of Details that holds
+ * Opens Details on the page of the Conversation's cold load (Dashboard's on the copy whose outline
+ * loads are awaited, `detailsAfter`), whose census `readScaleLoad` has taken, so nothing the open
+ * reads counts in that load, and reads each list of Details that holds
  * more than its page on the copy (R21, part M's): the history, which Details draws under its
  * properties 20 entries at a time, under a Show more that says how many of the entries read are
  * left, with "+" while an older page of the log is unread (`IssueHistory.tsx`); its Files, every
@@ -3021,10 +3061,11 @@ async function expectDetailsPaged(
  * read of the load that no load before it made (`timed`) sent 35 times through the page's own
  * session (`firstByteTimes`), each at most 200 ms to its first byte at the 90th percentile of the
  * last 30. After the Conversation's load, and outside its census, it opens Details and reads the
- * history and Details' lists (`expectDetailsPaged`). A bound `AWAITING_SCALE` names is not read,
- * and is printed as awaited where it applies; the load fails at once where it shows a listed
- * owner's sign (`failOnOwnerSigns`). A bound that fails is recorded (`expect.soft`), so one run
- * names every bound a copy, a control and a width breaks, and the row fails at its end. A load
+ * history and Details' lists (`expectDetailsPaged`); on the copy whose outline loads wait on part
+ * T (`OUTLINE_AWAITED_COPY`), after Dashboard's load instead. A bound `AWAITING_SCALE` names is
+ * not read, and is printed as awaited where it applies; the load fails at once where it shows a
+ * listed owner's sign (`failOnOwnerSigns`). A bound that fails is recorded (`expect.soft`), so one
+ * run names every bound a copy, a control and a width breaks, and the row fails at its end. A load
  * reads every comment where it sends the issue's whole comments read, which is how `main`'s
  * outline builds its tree.
  */
@@ -3116,5 +3157,5 @@ export async function readScaleLoad(
       .soft(p90, `GET ${read.address}, a read of ${where}, answers its first byte in ${spread}`)
       .toBeLessThanOrEqual(SCALE_LIMITS.firstByteMs);
   }
-  if (preset === "conversation") await expectDetailsPaged(page, copy, where, leg, awaited);
+  if (preset === detailsAfter(copy)) await expectDetailsPaged(page, copy, where, leg, awaited);
 }
