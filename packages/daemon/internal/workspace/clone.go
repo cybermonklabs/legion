@@ -47,15 +47,13 @@ const provisioningHelper = `#!/bin/sh
 printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")"
 `
 
-// remote is how a clone or fetch reaches the repository: the environment it runs with, the
-// directory of the one-shot credential that environment names, if any, removed once it is done,
-// and the branches an ordinary tmux provision fetches.
+// remote is how a clone or fetch reaches the repository: its environment, one-shot credential
+// directory and token, ordinary tmux branches, and optional Kubernetes issue-pod fill state.
 type remote struct {
 	env      []string
 	dir      string
 	token    string
 	branches []string
-	feed     string
 	issue    *issuePod
 }
 
@@ -160,25 +158,6 @@ type Source interface {
 	// open is the remote the clone and the fetch of repository use, with bookmark the issue's own
 	// and defaultBranch the repository's; the caller removes it.
 	open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error)
-}
-
-// FromFeed is retained while the tmux-facing workspace tests migrate to the issue-pod source.
-// Kubernetes issue pods use ForIssuePod.
-func FromFeed(dir string) Source { return feedSource(dir) }
-
-type feedSource string
-
-func (dir feedSource) check(repository ghrepo.Repository) error {
-	_, err := CacheRepository(string(dir), repository)
-	return err
-}
-
-func (dir feedSource) open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error) {
-	feed, err := CacheRepository(string(dir), repository)
-	if err != nil {
-		return remote{}, err
-	}
-	return feedRemote(feed, repository, bookmark, defaultBranch), nil
 }
 
 // issuePod is the state ForIssuePod carries for one Kubernetes issue pod. fetched records that the
@@ -342,30 +321,9 @@ func CacheEntry(name string, dir bool) bool {
 // SHA-256 id.
 var packFile = regexp.MustCompile(`^pack-([0-9a-f]{40}|[0-9a-f]{64})\.(pack|idx)$`)
 
-// GitHubURL is the repository's GitHub remote: the URL the shared clone is cloned from and Fetch
-// clones into the feed, and so the URL feedRemote rewrites to the feed.
+// GitHubURL is the repository's GitHub remote.
 func GitHubURL(repository ghrepo.Repository) string {
 	return "https://github.com/" + repository.String()
-}
-
-// feedRemote reaches GitHubURL, the remote the clone's origin names, at the feed repository instead,
-// over git's file transport alone: no credential, and no network. The feed is GitHub as it stood
-// when the pod's workspace-fetch ran, and a tree agent may have pushed since, so a fetch from it
-// brings the repository's default branch and the issue's own bookmark alone, each by its exact
-// name: every other bookmark keeps its target and its tracking. The clone reads the feed's objects
-// through its alternates (feedClone), and Fetch never replaces a feed it finds present, so no
-// object its refs need goes from under it.
-func feedRemote(feed string, repo ghrepo.Repository, bookmark, defaultBranch string) remote {
-	return remote{
-		env: []string{
-			"GIT_ALLOW_PROTOCOL=file",
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=url." + feed + ".insteadOf",
-			"GIT_CONFIG_VALUE_0=" + GitHubURL(repo),
-		},
-		branches: []string{defaultBranch, bookmark},
-		feed:     feed,
-	}
 }
 
 // ensureRepoClone makes a clone in a temporary sibling, verifies its Jujutsu repository, then
@@ -658,65 +616,6 @@ func refCount(n int) string {
 		return "1 ref"
 	}
 	return fmt.Sprintf("%d refs", n)
-}
-
-// feedClone makes the colocated clone at temporary from a pod's feed. It is a shared local clone
-// (`git clone --shared`): the clone's objects/info/alternates names the feed's objects on the feed's
-// own path, which every container of an issue pod that runs git or jj in the clone mounts
-// read-only, so the clone reads the feed's objects in place and holds only what it writes itself,
-// and the pod's disk holds the repository once. A plain local clone copied every feed object, since
-// a hard link cannot cross the pod's two mounts of the disk, and a 19 GiB feed and its copy filled a
-// 50 GiB disk. The feed's automatic maintenance stays off (feedConfiguration), Fetch never removes
-// or replaces a feed it finds present (ownFeedRepository), and the clone's own `git gc` and
-// `jj util gc` repack only its local objects, so no object the clone borrows goes. Origin is then
-// set to remote, GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it
-// jj's; and the default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later
-// fetch moves it.
-// The clone takes no working tree (`git clone --no-checkout`), so the pod writes the repository's
-// working copy once, in the issue's own jj workspace: nothing reads the shared clone's working
-// copy, so it is never written. The two jj steps that follow keep jj's
-// first snapshot from recording that absent tree as deleted — `jj sparse set --clear` leaves the
-// clone's working copy with no file in it, and `jj abandon @` drops the snapshot `jj git init`
-// already took. The order is load-bearing, and was measured both ways: clearing the patterns
-// afterwards does not undo that first snapshot, and abandoning before the clear makes jj
-// materialize the whole tree again, which only moves the write. Neither is built by onClone, since
-// --ignore-working-copy is what onClone adds and both of these must act on the working copy. Both
-// name a working directory of their own, temporary, where the other steps run in the clone's
-// parent: a jj command that opens a repository is safe because its working directory is its -R
-// target (runCheckedOnClone states that invariant, and docs/testing.md states it too, under "A
-// test that starts jj or git names a working directory": jj 0.45.1 loads the repository its
-// working directory sits in before it applies -R), while the parent is the right directory for the
-// two commands that open no repository, `jj git clone` and `jj git init --colocate`. A
-// default branch the feed lacks is left untracked, for the base's own refusal to name (baseCommit).
-func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, remote, defaultBranch string, source remote) error {
-	if err := steps.run(ctx, run, []string{"git", "clone", "--quiet", "--no-checkout", "--shared", source.feed, temporary}, source.env); err != nil {
-		return err
-	}
-	gitDir := filepath.Join(temporary, ".git")
-	// The clone above made temporary, so this git and the rev-parse below run in the repository
-	// their --git-dir names.
-	if _, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "remote", "set-url", "origin", remote}, nil, temporary); err != nil {
-		return err
-	}
-	if err := steps.run(ctx, run, []string{"jj", "git", "init", "--colocate", temporary}, nil); err != nil {
-		return err
-	}
-	if err := steps.runIn(ctx, run, temporary, []string{"jj", "sparse", "set", "--clear", "--color=never", "-R", temporary}, nil); err != nil {
-		return err
-	}
-	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
-		return err
-	}
-	revParse := []string{"git", "--git-dir=" + gitDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + defaultBranch}
-	present, err := runCommand(ctx, run, revParse, nil, temporary)
-	if err := answered(revParse, present, err); err != nil {
-		return err
-	}
-	if present.ExitCode != 0 {
-		return nil
-	}
-	_, err = runCheckedOnClone(ctx, run, temporary, "bookmark", "track", originRow(defaultBranch))
-	return err
 }
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at

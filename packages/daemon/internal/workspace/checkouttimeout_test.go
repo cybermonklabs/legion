@@ -59,7 +59,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 // together, so both paths through Provision are covered.
 func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 	run := newLocalRunner(t)
-	req := feedRequest(t, run, provisionRequest(t))
+	req := provisionRequest(t)
 	checkouts, stale := 0, 0
 	for _, round := range []string{"a fresh workspace", "a workspace that already exists"} {
 		before := len(run.Calls())

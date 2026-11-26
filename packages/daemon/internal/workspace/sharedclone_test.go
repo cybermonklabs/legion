@@ -329,7 +329,7 @@ func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
 	})
 	t.Run("over a marker the clone holds", func(t *testing.T) {
 		run := newLocalRunner(t)
-		request := feedRequest(t, run, provisionRequest(t))
+		request := provisionRequest(t)
 		working, err := Provision(context.Background(), run, request)
 		if err != nil {
 			t.Fatalf("first provision: %v", err)

@@ -324,7 +324,6 @@ func (v *issueVolume) workspace(issue string) string {
 	return filepath.Join(v.root, "workspaces", "acme", "widgets", strings.ToLower(issue))
 }
 
-
 func (v *issueVolume) args(issue string) []string {
 	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--default-branch", v.defaultBranch}
 }
@@ -342,9 +341,9 @@ func (v *issueVolume) setenv(t *testing.T) {
 	}
 }
 
-// fetch prepares the one init container's environment for legacy fixture rows that previously
-// split feed filling from provisioning.
-func (v *issueVolume) fetch(t *testing.T) {
+// provisionEnv is the one init container's environment: the volume's (setenv) and the mounted
+// provisioning token.
+func (v *issueVolume) provisionEnv(t *testing.T) {
 	t.Helper()
 	v.setenv(t)
 	t.Setenv(provisionTokenFileEnv, v.token)
@@ -583,8 +582,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newIssueVolume(t)
-			v.setenv(t)
-			t.Setenv(provisionTokenFileEnv, v.token)
+			v.provisionEnv(t)
 			if tc.env != nil {
 				tc.env(t, v)
 			}
@@ -623,9 +621,9 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 // container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
 // container's launch path would.
 func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
@@ -672,9 +670,9 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 // init log names it, the workspace's parent is the remote's head of it, and the issue's bookmark
 // is the fresh working copy's.
 func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "release/v7.1")
-	v.fetch(t)
+	v.provisionEnv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
@@ -705,12 +703,12 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
 // a loaded machine makes slow is stopped by it.
 func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it sets the package variable newProvisionRunner; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it sets the package variable newProvisionRunner; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
 	// a file for it to write there.
 	v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/main", "tree.txt", "tree\n")
-	v.fetch(t)
+	v.provisionEnv(t)
 	budget := testwait.Bounded(t, 1<<60, 30*time.Second)
 	if budget == workspace.CheckoutTimeout {
 		// A budget equal to the checkout's bound could not tell the two apart.
@@ -814,9 +812,9 @@ func (v *issueVolume) provisioned(t *testing.T, issue string) string {
 // volume no other pod mounts, so nothing can hold a lock there: it removes the workspace's stale
 // index.lock, logging its path and age, and the update-stale that failed on it succeeds.
 func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv(t)
 	v.provisioned(t, "LEGION-42")
 	// The working copy is rebased from outside the workspace onto a commit carrying a file, so the
 	// next provisioning's update-stale checks out a new tree, which rewrites the worktree's index.
@@ -844,9 +842,9 @@ func TestWorkspaceInitRemovesTheWorkspacesStaleIndexLock(t *testing.T) {
 // the clone — an issue's that shared it, or a worktree an agent added — keeps its lock as it was,
 // however old.
 func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv(t)
 	v.provisioned(t, "LEGION-42")
 	v.provisioned(t, "LEGION-43")
 	other := filepath.Join(v.clone(), ".git", "worktrees", "legion-43", "index.lock")
@@ -871,9 +869,9 @@ func TestWorkspaceInitLeavesAnotherWorkspacesLockAlone(t *testing.T) {
 // workspace: one per issue volume, which no other pod mounts. provision removes each stale one,
 // logging it, and provisions.
 func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv(t)
 	v.provisioned(t, "LEGION-42")
 	git := filepath.Join(v.clone(), ".git")
 	locks := []string{
@@ -899,12 +897,12 @@ func TestWorkspaceInitRemovesTheClonesStaleLocks(t *testing.T) {
 // A stale lock provision cannot remove fails it, naming the file, before any git or jj runs on
 // the clone: it would fail the provisioning anyway, on a message that names the lock alone.
 func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	if os.Geteuid() == 0 {
 		t.Skip("root removes a file from a directory it cannot write")
 	}
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.fetch(t)
+	v.provisionEnv(t)
 	v.provisioned(t, "LEGION-42")
 	entry := filepath.Join(v.clone(), ".git", "worktrees", "legion-42")
 	lock := filepath.Join(entry, "index.lock")
@@ -930,11 +928,11 @@ func TestWorkspaceInitFailsOnALockItCannotRemove(t *testing.T) {
 // whose gitdir names the issue's workspace counts as the workspace's own. provision refuses it,
 // naming the symlink, before it removes anything or runs jj.
 func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (issueVolume.fetch); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
+	// Not parallel: it sets environment variables of the whole process (issueVolume.provisionEnv); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, linked := range []string{".git", filepath.Join(".git", "worktrees")} {
 		t.Run(linked, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
-			v.fetch(t)
+			v.provisionEnv(t)
 			v.provisioned(t, "LEGION-42")
 			path := filepath.Join(v.clone(), linked)
 			elsewhere := filepath.Join(t.TempDir(), "elsewhere")
@@ -1078,7 +1076,7 @@ func (p *initProcess) wait(t *testing.T) (code int, rest []string) {
 // or as the kernel closes it, when the test binary dies first.
 func (v *issueVolume) holder(t *testing.T) *initProcess {
 	t.Helper()
-	v.fetch(t)
+	v.provisionEnv(t)
 	hold := t.TempDir()
 	for _, fifo := range []string{"held", "release"} {
 		if err := syscall.Mkfifo(filepath.Join(hold, fifo), 0o600); err != nil {
@@ -1144,7 +1142,6 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	}
 	return ""
 }
-
 
 // holdsNoToken fails when any file under dir contains the provisioning token.
 func holdsNoToken(t *testing.T, dir, when string) {
@@ -1229,20 +1226,14 @@ func killProcessesRunning(t *testing.T, path string) []string {
 	return found
 }
 
-
 // The issue pod's only init container provisions its clone directly: it receives the provisioning
 // token, makes the one-shot credential under its TMPDIR, and removes it once GitHub has answered.
 // Keeping the earlier two-container path makes this fail because provision refuses that token.
 func TestWorkspaceInitProvisionUsesTheProvisioningToken(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.setenv(t)
-	t.Setenv(provisionTokenFileEnv, v.token)
+	v.provisionEnv(t)
 
-	args := []string{
-		"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", v.root,
-		"--credential-helper", winitHelper, "--default-branch", v.defaultBranch,
-	}
-	code, _, stderr := runWorkspaceInitHere(args)
+	code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -1261,13 +1252,9 @@ func TestWorkspaceInitProvisionUsesTheProvisioningToken(t *testing.T) {
 // after provisioning cannot begin maintenance when the one-shot provisioning environment is gone.
 func TestWorkspaceInitWritesCloneMaintenanceConfiguration(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.setenv(t)
-	t.Setenv(provisionTokenFileEnv, v.token)
+	v.provisionEnv(t)
 
-	code, _, stderr := runWorkspaceInitHere([]string{
-		"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", v.root,
-		"--credential-helper", winitHelper, "--default-branch", v.defaultBranch,
-	})
+	code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -1294,13 +1281,9 @@ func TestWorkspaceInitProvisionKeepsOnlyTheIssueRefs(t *testing.T) {
 	v.git(t, "--git-dir="+remote, "tag", "-a", "v1", "-m", "version", "refs/heads/cold/x")
 	cold := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/cold/x")
 	tag := v.git(t, "--git-dir="+remote, "rev-parse", "v1^{tag}")
-	v.setenv(t)
-	t.Setenv(provisionTokenFileEnv, v.token)
+	v.provisionEnv(t)
 
-	code, _, stderr := runWorkspaceInitHere([]string{
-		"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", v.root,
-		"--credential-helper", winitHelper, "--default-branch", v.defaultBranch,
-	})
+	code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -1355,7 +1338,6 @@ func TestWorkspaceInitProvisionKeepsOnlyTheIssueRefs(t *testing.T) {
 	}
 }
 
-
 // The configured wildcard refspecs match an absent issue branch and a branch GitHub deleted after
 // provisioning, so a role's plain fetch never turns either normal lifecycle state into a failure.
 func TestWorkspaceInitPlainFetchesTolerateAbsentIssueBranches(t *testing.T) {
@@ -1372,12 +1354,8 @@ func TestWorkspaceInitPlainFetchesTolerateAbsentIssueBranches(t *testing.T) {
 			if tc.branch {
 				v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/legion/LEGION-42", "issue.txt", "issue\n")
 			}
-			v.setenv(t)
-			t.Setenv(provisionTokenFileEnv, v.token)
-			code, _, stderr := runWorkspaceInitHere([]string{
-				"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", v.root,
-				"--credential-helper", winitHelper, "--default-branch", v.defaultBranch,
-			})
+			v.provisionEnv(t)
+			code, _, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 			if code != 0 {
 				t.Fatalf("provision exit %d, stderr %q", code, stderr)
 			}
@@ -1420,15 +1398,11 @@ func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 	v.git(t, "--git-dir="+remote, "tag", "-a", "v1", "-m", "version", "refs/heads/cold/x")
 	cold := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/cold/x")
 	tag := v.git(t, "--git-dir="+remote, "rev-parse", "v1^{tag}")
-	v.setenv(t)
-	t.Setenv(provisionTokenFileEnv, v.token)
+	v.provisionEnv(t)
 	t.Setenv(cacheURLEnv, cache)
 	t.Setenv(repocache.CacheTokenFileEnv, writeCacheToken(t, cmdCacheToken))
 
-	code, stdout, stderr := runWorkspaceInitHere([]string{
-		"provision", "--issue", "LEGION-42", "--repo", winitRepo, "--root", v.root,
-		"--credential-helper", winitHelper, "--default-branch", v.defaultBranch,
-	})
+	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
