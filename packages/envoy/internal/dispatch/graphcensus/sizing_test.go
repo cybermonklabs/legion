@@ -667,10 +667,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 			}
 		}
 	}
-	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T) {
+	passes := func(pass func(context.Context, *store.Store, *pacer) ([]KindBackfill, error)) func(*testing.T) {
 		return func(t *testing.T) {
 			t.Helper()
-			if _, err := pass(ctx, database); err != nil {
+			if _, err := pass(ctx, database, unpaced()); err != nil {
 				t.Fatalf("run a backfill pass: %v", err)
 			}
 		}
