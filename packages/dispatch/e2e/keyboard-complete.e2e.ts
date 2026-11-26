@@ -62,8 +62,17 @@ import { expectTimeout } from "./expect-timeout";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, displayChoice, listOf } from "./filters";
 import { nextFrames, settledScrollTop } from "./frames";
-import { drawer } from "./inbox-drawer";
-import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
+import { drawer, peekTrigger } from "./inbox-drawer";
+import {
+  backToList,
+  inboxList,
+  inboxPane,
+  inboxRow,
+  paneScroller,
+  readingView,
+  selectedRow,
+  selectRow,
+} from "./inbox-pane";
 import {
   DOCUMENT_FOOT,
   headingOffset,
@@ -135,6 +144,7 @@ import {
 } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { sessionIds } from "./session-ids";
+import { settledState } from "./settled";
 import { openIssuesTab } from "./table-controls";
 import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
@@ -143,23 +153,47 @@ import { asUser } from "./users";
 // Where the Inbox draws a question and its controls.
 // ---------------------------------------------------------------------------
 
-/** The three places the Inbox draws a question with its Snooze and its priority: beside the
- *  reading column, as a card in its row below the column's width, and in the drawer over
- *  another page. */
-type InboxPlace = "the reading pane" | "card mode" | "the drawer";
+/** The four places the Inbox draws a question with its Snooze and its priority. Beside the
+ *  reading column. Below the column's width, where the page lists short rows and reads the row the
+ *  reader opens in a reading view in the list's place (cybermonklabs/legion#5223): from the
+ *  short-row list, whose keys open the focused row's reading view and act there, and inside that
+ *  view. And in the drawer over another page, whose rows are cards at every width. */
+type InboxPlace = "the reading pane" | "the short-row list" | "the reading view" | "the drawer";
 
 /** A width the Inbox draws its reading column at (it does from 1280 px). */
 const WIDE = { height: 900, width: 1440 };
 
-/** A width the Inbox draws every question as a card in its own row. */
-const NARROW = { height: 900, width: 1024 };
+/** A width below the reading column's, where the Inbox lists short rows and reads the row the
+ *  reader opens in its reading view: 1024x768, a laptop's window, where the Verification reads
+ *  it. */
+const NARROW = { height: 768, width: 1024 };
+
+/** Whether `place` is one of the two below the reading column's width. */
+function belowColumn(place: InboxPlace): boolean {
+  return place === "the short-row list" || place === "the reading view";
+}
+
+/** `place` as a row's title says where it runs. */
+function placeWords(place: InboxPlace): string {
+  switch (place) {
+    case "the reading pane":
+      return "beside the reading pane";
+    case "the short-row list":
+      return "in the short-row list at 1024x768";
+    case "the reading view":
+      return "in the reading view at 1024x768";
+    case "the drawer":
+      return "in the drawer";
+  }
+}
 
 /** The Inbox as `openInboxAt` opened it, and what the rows reach for in it. */
 interface InboxAt {
   readonly place: InboxPlace;
   /** What the Inbox is drawn in: the page, or the drawer over it. */
   readonly scope: Locator;
-  /** A place to press that does nothing of its own: the Inbox's heading. */
+  /** A place to press that does nothing of its own: the Inbox's heading, which the page draws
+   *  over the list and over a reading view alike. */
   readonly outside: Locator;
   /** The questions' ids, in the order the list draws them as it opens. */
   readonly order: readonly string[];
@@ -179,7 +213,7 @@ async function openDrawer(page: Page, step?: string): Promise<Locator> {
 /** Opens the Inbox where `place` draws it, holding `rows` questions. The keymap binds only once
  *  sign-in resolves, so the page is read drawn before a key is pressed on it. */
 async function openInboxAt(page: Page, place: InboxPlace, rows: number): Promise<InboxAt> {
-  await page.setViewportSize(place === "card mode" ? NARROW : WIDE);
+  await page.setViewportSize(belowColumn(place) ? NARROW : WIDE);
   let scope: Locator;
   let outside: Locator;
   if (place === "the drawer") {
@@ -203,18 +237,85 @@ function rowOf(inbox: InboxAt, id: string): Locator {
   return inbox.scope.locator(`[data-inbox-row="${id}"]`);
 }
 
-/** Puts the reader on the question `id`: beside the reading column a click on the row's age
- *  selects it, which the column follows, and every place then has the focus on the row, where
- *  the Inbox's keys act on the question in hand. */
+/** Below the column's width, brings the short-row list back where a row's reading view stands
+ *  in its place (`backToList`); nothing where the list shows, and nothing in any other place. */
+async function showList(inbox: InboxAt): Promise<void> {
+  if (!belowColumn(inbox.place)) return;
+  const page = inbox.scope.page();
+  const state = await settledState("the Inbox below the column's width", [
+    ["open", readingView(page)],
+    ["list", inboxList(page)],
+  ]);
+  if (state === "open") await backToList(page);
+}
+
+/** Puts the reader on the question `id`, where the Inbox's keys act on the question in hand.
+ *  Beside the reading column a click on the row's age selects it, which the column follows, and
+ *  the focus is then on the row; in the short-row list and the drawer the focus is on the row,
+ *  the list brought back first where a reading view stands in its place. Inside the reading view
+ *  the row's view is opened as a click opens it (`selectRow`), and the focus is on the view's
+ *  scroller, the stop the click and `l` put it on. */
 async function goTo(inbox: InboxAt, id: string): Promise<void> {
-  if (inbox.place === "the reading pane") await selectRow(inbox.scope.page(), id);
+  const page = inbox.scope.page();
+  if (inbox.place === "the reading view") {
+    await selectRow(page, id);
+    await paneScroller(page).focus();
+    return;
+  }
+  await showList(inbox);
+  if (inbox.place === "the reading pane") await selectRow(page, id);
   await rowOf(inbox, id).focus();
 }
 
-/** The box holding the controls of the question `id`, which the reader is on: the reading
- *  column's head, or the question's own row. */
+/** The box holding the controls of the question `id`, which the reader is on: the head of the
+ *  reading column, and below the column's width the head of the row's reading view, since a short
+ *  row draws none of its own; in the drawer the question's own card. */
 function controlsOf(page: Page, inbox: InboxAt, id: string): Locator {
-  return inbox.place === "the reading pane" ? paneHead(page) : rowOf(inbox, id);
+  return inbox.place === "the drawer" ? rowOf(inbox, id) : paneHead(page);
+}
+
+/** Holds the reader on the question `id` once a menu a key opened on it has closed, for the step
+ *  `step`: the focus is back where the key was pressed. Beside the reading column and in the drawer
+ *  that is the question's row, the row still the one the column shows beside it; inside the
+ *  reading view it is the view's scroller, the view still on `id`. From the short-row list the key
+ *  opened the row's reading view and pressed its head's `trigger` there (`useReadingViewLanding`),
+ *  so the close gives the focus back to that trigger, and Escape on it is one level out: the list
+ *  again, with the focus on the row, where the row's next key is pressed. */
+async function expectStillOn(
+  inbox: InboxAt,
+  id: string,
+  trigger: Locator,
+  step: string
+): Promise<void> {
+  const row = rowOf(inbox, id);
+  if (!belowColumn(inbox.place)) {
+    await expect(row, `${step}: the focus is back on the ask's row`).toBeFocused();
+    if (inbox.place === "the reading pane") {
+      await expect(row, `${step}: the reading pane still shows the ask`).toHaveAttribute(
+        "data-inbox-selected",
+        "true"
+      );
+    }
+    return;
+  }
+  const page = inbox.scope.page();
+  await expect(readingView(page), `${step}: the reading view still shows the ask`).toHaveAttribute(
+    "data-inbox-reading-row",
+    id
+  );
+  if (inbox.place === "the reading view") {
+    await expect(
+      paneScroller(page),
+      `${step}: the focus is back on the view's scroller, where the key was pressed`
+    ).toBeFocused();
+    return;
+  }
+  await expect(
+    trigger,
+    `${step}: the focus is back on the control of the view's head the key pressed`
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(row, `${step}: Escape there puts the focus back on the ask's row`).toBeFocused();
 }
 
 /** The toggle of the Inbox's Later band while it holds `count` questions. */
@@ -354,6 +455,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const requests = () => requestsSent(watched);
   const step = (text: string) => `k-snooze-menu: ${place}: ${text}`;
   const menu = openList(page);
+  const headSnooze = paneHead(page).getByRole("button", { name: /^Snooze / });
   const leftOpen = async (what: string) => {
     if (place === "the drawer") {
       await expect(inbox.scope, step(`${what} leaves the drawer open`)).toBeVisible();
@@ -385,7 +487,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     "data-inbox-section",
     band
   );
-  await expect(rowOf(inbox, first), step("Escape puts the focus back on its row")).toBeFocused();
+  await expectStillOn(inbox, first, headSnooze, step("Escape"));
   await leftOpen("Escape");
 
   // h opens the same menu, and Enter writes the highlighted Later today.
@@ -407,6 +509,9 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   expect(laterToday, step("Enter writes Later today: three hours on at most")).toBeLessThanOrEqual(
     Date.now() + 3 * 60 * 60 * 1000
   );
+  // Below the column's width the snooze opens the next ask in the reading view, which hides the
+  // list with its bands, so the band is read on the list.
+  await showList(inbox);
   await expect(laterBand(inbox, 1), step("Enter puts the ask into Later")).toBeVisible();
 
   // b on the second ask, a narrowing to Next week, then 2: one request, for Tomorrow, which the
@@ -435,6 +540,9 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   // back to that control, and a click outside closes it and gives the focus back there only where
   // the click lands on nothing that takes the focus; one on an element that does leaves it there.
   await goTo(inbox, third);
+  // A short row draws no Snooze: below the column's width the click is on the head of the row's
+  // reading view, which a click on the row opens.
+  if (belowColumn(place)) await selectRow(page, third);
   const snooze = controlsOf(page, inbox, third).getByRole("button", { name: /^Snooze / });
   await snooze.click();
   await expect(menu, step("a click on the Snooze control opens its menu")).toBeVisible();
@@ -480,6 +588,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
 
   // The second ask, out in Later, and the third, selected with x: the bar's Snooze opens the
   // same menu, and b then 3 snoozes both until Next week.
+  await showList(inbox);
   await laterBand(inbox, 2).click();
   await expect(rowOf(inbox, second), step("the Later band opens on the second ask")).toBeVisible();
   for (const id of [second, third]) {
@@ -500,7 +609,9 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(menu, step("Escape closes the bar's menu")).toHaveCount(0);
   expect(requests(), step("Escape on the bar's menu sends no request")).toBe(beforeBarEscape);
   await expect(barSnooze, step("Escape gives the focus back to the bar's Snooze")).toBeFocused();
-  await rowOf(inbox, third).focus();
+  // The third ask in hand: its row, and inside the reading view, which still shows the third ask
+  // x marked, the view's scroller.
+  await (place === "the reading view" ? paneScroller(page) : rowOf(inbox, third)).focus();
   await page.keyboard.press("b");
   await expect(
     openTrigger(page),
@@ -546,10 +657,17 @@ test("k-snooze-menu: b and h open the Snooze menu beside the reading pane, where
 });
 
 // SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
-test("k-snooze-menu: b and h open the Snooze menu on the Inbox's cards, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
+test("k-snooze-menu: b and h open the Snooze menu from the short-row list at 1024x768, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
   page,
 }) => {
-  await snoozeMenuSteps(page, "card mode");
+  await snoozeMenuSteps(page, "the short-row list");
+});
+
+// SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
+test("k-snooze-menu: b and h open the Snooze menu in the reading view at 1024x768, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
+  page,
+}) => {
+  await snoozeMenuSteps(page, "the reading view");
 });
 
 // SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
@@ -600,26 +718,17 @@ async function seedPriorityInbox(): Promise<{
   };
 }
 
-/** The priority mark of the question `id`'s row, about the issue `issueKey`: the short row's own
- *  tag beside the reading column, else the face of the card's priority control. */
+/** The priority mark of the question `id`, about the issue `issueKey`: its short row's own tag
+ *  beside the reading column and in the short-row list, the face of the priority control of the
+ *  reading view's head, which the reader sees in the list's place, and in the drawer the face of
+ *  the card's priority control. */
 function priorityMarkOf(inbox: InboxAt, id: string, issueKey: string): Locator {
   const row = rowOf(inbox, id);
-  return inbox.place === "the reading pane"
-    ? row.locator("[data-inbox-priority]")
-    : priorityTrigger(row, issueKey);
-}
-
-/** Holds the reader on the question `id` after a pick, for the step `step`: the focus back on its
- *  row, and beside the reading column the row still the one the column shows. */
-async function expectStillOn(inbox: InboxAt, id: string, step: string): Promise<void> {
-  const row = rowOf(inbox, id);
-  await expect(row, `${step}: the focus is back on the ask's row`).toBeFocused();
-  if (inbox.place === "the reading pane") {
-    await expect(row, `${step}: the reading pane still shows the ask`).toHaveAttribute(
-      "data-inbox-selected",
-      "true"
-    );
+  if (inbox.place === "the drawer") return priorityTrigger(row, issueKey);
+  if (inbox.place === "the reading view") {
+    return priorityTrigger(paneHead(inbox.scope.page()), issueKey);
   }
+  return row.locator("[data-inbox-priority]");
 }
 
 /** Every Inbox step of k-priority-menu where `place` draws it. */
@@ -652,17 +761,19 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the menu")).toHaveCount(0);
   expect(requests(), step("Escape sends no request")).toBe(beforeEscape);
+  // The focus is read first: from the short-row list it takes the reader back to the list, where
+  // the row's mark is drawn.
+  await expectStillOn(inbox, seed.askId, control, step("after Escape"));
   await expect(mark, step("after Escape the row's mark still reads P2")).toHaveText("P2");
-  await expectStillOn(inbox, seed.askId, step("after Escape"));
 
-  // p, then Tab: nothing is written, and the focus goes back to the row p was pressed on.
+  // p, then Tab: nothing is written, and the focus goes back to where p was pressed.
   await page.keyboard.press("p");
   await expect(menu, step("p opens the menu again")).toBeVisible();
   const beforeTab = requests();
   await page.keyboard.press("Tab");
   await expect(menu, step("Tab closes the menu")).toHaveCount(0);
   expect(requests(), step("Tab sends no request")).toBe(beforeTab);
-  await expectStillOn(inbox, seed.askId, step("after Tab"));
+  await expectStillOn(inbox, seed.askId, control, step("after Tab"));
 
   // p then 0 writes P0; p, ArrowDown, Enter writes the highlighted P1.
   await page.keyboard.press("p");
@@ -672,8 +783,8 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     .poll(() => writesSent(writes), { message: step("p then 0 sends one write") })
     .toBe(1);
   expect(firstAttempts(writes)[0]?.input, step("p then 0 writes P0")).toEqual({ priority: 0 });
+  await expectStillOn(inbox, seed.askId, control, step("after p then 0"));
   await expect(mark, step("after p then 0 the row's mark reads P0")).toHaveText("P0");
-  await expectStillOn(inbox, seed.askId, step("after p then 0"));
   await page.keyboard.press("p");
   await expectHighlight(menu, "P0", step("p opens on the current P0"));
   await page.keyboard.press("ArrowDown");
@@ -685,12 +796,15 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   expect(firstAttempts(writes)[1]?.input, step("Enter writes the highlighted P1")).toEqual({
     priority: 1,
   });
+  await expectStillOn(inbox, seed.askId, control, step("after p, ArrowDown, Enter"));
   await expect(mark, step("after Enter the row's mark reads P1")).toHaveText("P1");
-  await expectStillOn(inbox, seed.askId, step("after p, ArrowDown, Enter"));
 
   // A click on the priority control opens the same menu. From here on nothing writes the
   // priority: not the click, nor its Escape, nor p and ? on the document's ask and the thread.
   const beforeRest = requests();
+  // A short row draws no priority control: below the column's width the click is on the head of
+  // the row's reading view, which a click on the row opens.
+  if (belowColumn(place)) await selectRow(page, seed.askId);
   await control.click();
   await expect(menu, step("a click on the priority control opens the same menu")).toBeVisible();
   await expectPriorityChoices(
@@ -730,10 +844,17 @@ test("k-priority-menu: p opens the priority menu beside the reading pane, and on
 });
 
 // SLOW(>=2s): three kinds of item seeded, two writes read back, and the help opened twice.
-test("k-priority-menu: p opens the priority menu on the Inbox's cards, and on no item without an issue", async ({
+test("k-priority-menu: p opens the priority menu from the short-row list at 1024x768, and on no item without an issue", async ({
   page,
 }) => {
-  await priorityMenuSteps(page, "card mode");
+  await priorityMenuSteps(page, "the short-row list");
+});
+
+// SLOW(>=2s): three kinds of item seeded, two writes read back, and the help opened twice.
+test("k-priority-menu: p opens the priority menu in the reading view at 1024x768, and on no item without an issue", async ({
+  page,
+}) => {
+  await priorityMenuSteps(page, "the reading view");
 });
 
 // SLOW(>=2s): the issue page, the Board and the List, each loaded and its menu opened.
@@ -1163,18 +1284,20 @@ test("k-choice-writes-on-enter: on the issue page the repository's keys only cha
   });
 });
 
-// SLOW(>=2s): the Inbox loaded in card mode and a question's hand-on driven through four passes.
+// SLOW(>=2s): a question's reading view opened at 1024x768 and its hand-on driven through four
+// passes.
 // @webkit @firefox: the keys each engine sends to a focused control and to its list's text box,
 // and the Tab that leaves that box.
-test("k-choice-writes-on-enter: on a question's card the hand-on's keys only change the choice shown, and only Enter writes @firefox @webkit", async ({
+test("k-choice-writes-on-enter: on a question's card in the reading view at 1024x768 the hand-on's keys only change the choice shown, and only Enter writes @firefox @webkit", async ({
   page,
 }) => {
   const { askId } = await seedChoices();
   const writes = handOnWrites(page, askId);
-  const inbox = await openInboxAt(page, "card mode", 1);
+  const inbox = await openInboxAt(page, "the reading view", 1);
+  await goTo(inbox, askId);
   await choiceWritesOnEnter(page, {
     body: (choice) => ({ asked_of: choice }),
-    control: handOnControl(rowOf(inbox, askId), askId),
+    control: handOnControl(inboxPane(page), askId),
     letter: "b",
     what: "the hand-on control",
     writes,
@@ -1453,11 +1576,14 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
       "acme/widgets"
     );
   }
-  const inbox = await openInboxAt(page, "card mode", 1);
+  // The hand-on control of the question's card, which the question's reading view draws at
+  // 1024x768 (a short row draws no card).
+  const inbox = await openInboxAt(page, "the reading view", 1);
+  await goTo(inbox, askId);
   for (const colorScheme of THEMES) {
     await page.emulateMedia({ colorScheme });
     await readChoiceContrast(
-      handOnControl(rowOf(inbox, askId), askId),
+      handOnControl(inboxPane(page), askId),
       `the ${colorScheme} theme, the hand-on control`,
       "bob"
     );
@@ -1538,15 +1664,26 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   const watched = [...snoozes, priorityWrites, ...otherWrites];
   const sent = () => countOf(watched);
 
-  const snooze = inboxRow(page, first).getByRole("button", { name: /^Snooze / });
+  // A tap on the first row's age, the part of a short row that is neither its owner link nor a
+  // control (`selectRow`), opens its reading view, whose head draws the Snooze a short row does
+  // not.
+  await inboxRow(page, first).locator("time").first().tap();
+  await expect(
+    readingView(page),
+    "k-phone: a tap on the first row opens its reading view"
+  ).toHaveAttribute("data-inbox-reading-row", first);
+  const snooze = paneHead(page).getByRole("button", { name: /^Snooze / });
   const snoozeMenu = listOf(snooze);
   // Waited for here, within `expectTimeout`, where the tap would wait out the action's timeout
-  // for a card that draws no such button, so the base fails the row's first step by name.
-  await expect(snooze, "k-phone: the first card draws its Snooze menu's trigger").toBeVisible();
+  // for a head that draws no such button, so the base fails the row's first step by name.
+  await expect(
+    snooze,
+    "k-phone: the first row's reading view draws its Snooze menu's trigger in its head"
+  ).toBeVisible();
   await snooze.tap();
   await expect(
     snoozeMenu,
-    "k-phone: a tap on the first card's Snooze opens the snooze menu"
+    "k-phone: a tap on the reading view head's Snooze opens the snooze menu"
   ).toBeVisible();
   await expectPhoneList(page, snoozeMenu, "the snooze menu");
   const beforeTapOutside = requestsSent(watched);
@@ -1572,12 +1709,15 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
     .toBe(1);
   expect(sent(), "k-phone: a tap on Tomorrow sends nothing else").toBe(1);
 
-  const priority = priorityTrigger(inboxRow(page, second), secondKey);
+  // The snooze opens the next ask in the reading view; `selectRow` opens the second ask's view
+  // where it shows another.
+  await selectRow(page, second);
+  const priority = priorityTrigger(paneHead(page), secondKey);
   const priorityMenu = listOf(priority);
   await priority.tap();
   await expect(
     priorityMenu,
-    "k-phone: a tap on the second card's priority opens its menu"
+    "k-phone: with the second ask open in the reading view, a tap on its head's priority opens its menu"
   ).toBeVisible();
   await expectPhoneList(page, priorityMenu, "the priority menu");
   await priorityMenu.getByRole("option", { exact: true, name: "P1" }).tap();
@@ -3167,8 +3307,8 @@ async function clickOther(scope: Locator, step: string): Promise<void> {
   await expect(scope.locator("[data-ask-answer]"), `k-other-key: ${step}`).toBeFocused();
 }
 
-// SLOW(>=2s): two answers in the reading pane, then card mode, the Spec tab with its decision
-// block and margin, the Conversation tab and the Answers page, each opened.
+// SLOW(>=2s): two answers in the reading pane, then the reading view at 1024x768, the Spec tab
+// with its decision block and margin, the Conversation tab and the Answers page, each opened.
 test("k-other-key: the digit after a question's last option picks Other and puts the caret in its answer box, and a click on Other does on every surface", async ({
   page,
 }) => {
@@ -3221,12 +3361,14 @@ test("k-other-key: the digit after a question's last option picks Other and puts
     "k-other-key: after 0 the caret is in the answer box"
   ).toBeFocused();
 
-  // A click on Other, on every surface that draws a question.
+  // A click on Other, on every surface that draws a question: at 1024x768 the question's card is
+  // in the reading view its short row opens.
   await page.setViewportSize(NARROW);
   await page.goto("/");
+  await selectRow(page, seed.nineId);
   await clickOther(
-    page.getByTestId(`ask-${seed.nineId}`),
-    "in card mode, a click on Other puts the caret in the answer box"
+    inboxPane(page).getByTestId(`ask-${seed.nineId}`),
+    "in the reading view at 1024x768, a click on Other puts the caret in the answer box"
   );
 
   await page.setViewportSize(WIDE);
@@ -3282,7 +3424,8 @@ async function seedDecisionThread(): Promise<string> {
   return askId;
 }
 
-// SLOW(>=2s): four starts in the reading pane, card mode, then two threads opened in the pane.
+// SLOW(>=2s): four starts in the reading pane, a short row and its reading view at 1024x768,
+// then two threads opened in the pane.
 test("k-answer-box: Enter puts the caret in the answer box from the row, the body, the column and an option, and r puts it in a thread's reply box", async ({
   page,
 }) => {
@@ -3391,15 +3534,26 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
     "k-answer-box: Enter from the second question's row puts the caret in its answer box"
   ).toBeFocused();
 
-  // In card mode, after a click on an option of the third card.
+  // At 1024x768, Enter on the third question's focused short row opens its reading view with the
+  // caret in its answer box; after a click on an option there, Enter puts it back in the box.
   await page.setViewportSize(NARROW);
   await page.goto("/");
-  const third = page.getByTestId(`ask-${thirdAsk}`);
+  await inboxRow(page, thirdAsk).focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    readingView(page),
+    "k-answer-box: at 1024x768, Enter on the third question's focused short row opens its reading view"
+  ).toHaveAttribute("data-inbox-reading-row", thirdAsk);
+  const third = inboxPane(page).getByTestId(`ask-${thirdAsk}`);
+  await expect(
+    third.locator("[data-ask-answer]"),
+    "k-answer-box: at 1024x768, Enter on the third question's focused short row puts the caret in its answer box"
+  ).toBeFocused();
   await third.getByRole("radio", { name: "Ship" }).click();
   await page.keyboard.press("Enter");
   await expect(
     third.locator("[data-ask-answer]"),
-    "k-answer-box: in card mode, Enter after a click on an option of the third card puts the caret in its answer box"
+    "k-answer-box: in the reading view at 1024x768, Enter after a click on an option of the third question puts the caret in its answer box"
   ).toBeFocused();
 
   // `r` on the reply thread's row puts the caret in the thread's reply box.
@@ -3440,8 +3594,8 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
 
 // ---------------------------------------------------------------------------
 // k-new-tab (R20), the Inbox's part: Shift+O opens what `o` opens - the item's owner link, which
-// `o` follows - in a new page of the browser, beside the reading pane, in card mode and in the
-// drawer, and the first page keeps its address.
+// `o` follows - in a new page of the browser, beside the reading pane, in the short-row list at
+// 1024x768 and in the drawer, and the first page keeps its address.
 // ---------------------------------------------------------------------------
 
 /** Presses Shift+O on `page` and reads that one new page of `context` opened at `address`, and
@@ -3480,7 +3634,7 @@ function ownerAddress(scope: Locator): Promise<string> {
 }
 
 // SLOW(>=2s): the Inbox opened three times, each with a page opened from it.
-test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, beside the reading pane, in card mode and in the drawer", async ({
+test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, beside the reading pane, in the short-row list at 1024x768 and in the drawer", async ({
   context,
   page,
 }) => {
@@ -3510,13 +3664,21 @@ test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, besi
   await expect(inboxPane(page).getByTestId(`ask-${order[1]}`)).toBeVisible();
   await shiftOOpens(context, page, await ownerAddress(paneHead(page)), "beside the reading pane");
 
-  // In card mode, `j` focuses the first row.
-  await openInboxAt(page, "card mode", 2);
+  // In the short-row list at 1024x768, `j` focuses the first row, whose owner link `o` follows.
+  await openInboxAt(page, "the short-row list", 2);
   await page.locator("body").focus();
   await page.keyboard.press("j");
   const focused = page.locator("[data-inbox-row]:focus");
-  await expect(focused, "k-new-tab: in card mode, j focuses a row").toHaveCount(1);
-  await shiftOOpens(context, page, await ownerAddress(focused), "in card mode");
+  await expect(
+    focused,
+    "k-new-tab: in the short-row list at 1024x768, j focuses a row"
+  ).toHaveCount(1);
+  await shiftOOpens(
+    context,
+    page,
+    await ownerAddress(focused),
+    "in the short-row list at 1024x768"
+  );
 
   // In the drawer over a project page.
   await page.setViewportSize(WIDE);
@@ -4702,7 +4864,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
 /** The steps of k-approval-keys where `place` draws the approval request as a card, with
  *  Approve and Request changes as its options: Shift+R picks Request changes, Escape in its
  *  reason lets go of it, and `a` approves with one press, through the ask's answer. */
-async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"): Promise<void> {
+async function approvalCardSteps(page: Page, place: "the drawer"): Promise<void> {
   await createProject({ key: "CORE", name: "Core" });
   const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
   const reviews = watchReviews(page, [approval]);
@@ -4744,10 +4906,81 @@ async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"):
   expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
 }
 
-test("k-approval-keys: in card mode a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
+/** The steps of k-approval-keys below the reading column's width, where the request is read in
+ *  its reading view, whose head draws Approve and Request changes as the reading pane's does
+ *  (`ReadingPaneHead`): from the short-row list, whose `a` and Shift+R open the request's view and
+ *  press its head's control there once the document's read has enabled it
+ *  (`useReadingViewLanding`), and inside the view. Shift+R opens Request changes with the focus in
+ *  its reason, Escape closes it sending nothing and gives the focus back to the view's scroller,
+ *  and `a` sends one review, approved, of the version the request shows. */
+async function approvalViewSteps(
+  page: Page,
+  place: "the short-row list" | "the reading view"
+): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
+  const reviews = watchReviews(page, [approval]);
+  const step = (text: string) => `k-approval-keys: ${place}: ${text}`;
+  const dialog = page.getByRole("dialog", { name: "Request changes" });
+  const inbox = await openInboxAt(page, place, 1);
+  await goTo(inbox, approval.askId);
+  // Inside the view the keys press the head's own controls, which take a press once the
+  // document's read returns; from the short-row list the key's landing waits for that read.
+  if (place === "the reading view") {
+    await expect(
+      paneHead(page).getByRole("button", { disabled: false, exact: true, name: "Approve" }),
+      step("the request's head draws Approve, and it takes a press")
+    ).toBeVisible();
+  }
+
+  const beforeShiftR = requestsSent(reviewLists(reviews));
+  await page.keyboard.press("Shift+R");
+  await expect(readingView(page), step("Shift+R reads the request in its view")).toHaveAttribute(
+    "data-inbox-reading-row",
+    approval.askId
+  );
+  await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
+  await expect(
+    dialog.getByLabel("Reason"),
+    step("Shift+R puts the focus in the reason field")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog, step("Escape closes Request changes")).toHaveCount(0);
+  // Inside the view Shift+R was pressed on the scroller, which the box gives the focus back to;
+  // from the short-row list the row it was pressed on went with the list, and the landing presses
+  // the head's Request changes from the view's scroller, so the box gives the focus back there.
+  await expect(
+    paneScroller(page),
+    step("Escape puts the focus back on the view's scroller, and not on the page's body")
+  ).toBeFocused();
+  expect(requestsSent(reviewLists(reviews)), step("Shift+R and Escape send nothing")).toBe(
+    beforeShiftR
+  );
+
+  // `a`, from the request's short row again in the list, and inside the view from its scroller.
+  await goTo(inbox, approval.askId);
+  await page.keyboard.press("a");
+  await expect
+    .poll(() => writesSent(reviews[0]?.versioned ?? []), {
+      message: step("a sends one review of version 2"),
+    })
+    .toBe(1);
+  expect(firstAttempts(reviews[0]?.versioned ?? [])[0]?.input, step("the review approves")).toEqual(
+    { state: "approved" }
+  );
+  expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
+}
+
+test("k-approval-keys: from the short-row list at 1024x768 a approves the request with one press in the reading view it opens, and Shift+R opens Request changes there, which Escape closes", async ({
   page,
 }) => {
-  await approvalCardSteps(page, "card mode");
+  await approvalViewSteps(page, "the short-row list");
+});
+
+test("k-approval-keys: in the reading view at 1024x768 a approves the request in hand with one press, and Shift+R opens Request changes, which Escape closes", async ({
+  page,
+}) => {
+  await approvalViewSteps(page, "the reading view");
 });
 
 test("k-approval-keys: in the drawer a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
@@ -4889,8 +5122,8 @@ test("k-approval-keys: on today's issue page a and Shift+R send nothing while on
 // k-next-item (R8): after the reader snoozes, dismisses, moves back to the Inbox, approves,
 // requests changes on or answers the item in hand, the item after it in the list is selected and
 // its row has the keyboard focus - the item before it where none came after, and the list's empty
-// message where none is left - with the Later band folded and open, beside the reading pane, in
-// card mode and in the drawer.
+// message where none is left - with the Later band folded and open, beside the reading pane, at
+// 1024x768 in the short-row list and in the reading view, and in the drawer.
 // ---------------------------------------------------------------------------
 
 /** The word a search narrows k-next-item's list by: the title of the second thread's issue
@@ -4986,12 +5219,30 @@ async function putOn(inbox: InboxAt, id: string): Promise<void> {
   await inbox.outside.hover();
 }
 
-/** Reads that the item `id` is in hand, for the step `step`: beside the reading column its row
- *  is the one `aria-current` row, in card mode and in the drawer no row is, and in every place
- *  its row holds the keyboard focus (`document.activeElement`). */
-async function expectInHand(inbox: InboxAt, id: string, step: string): Promise<void> {
+/** Where an act at 1024x768 from the short-row list leaves the reader: `e` and the bar's acts
+ *  after `x` stay in the list, and a key that acts on one item - `b`, `a`, Shift+R, an answer's -
+ *  opens that item's reading view and acts there (`openFocused`), so the item after it opens in
+ *  the view (Verification v26). */
+type Landing = "the list" | "the view";
+
+/** Reads that the item `id` is in hand, for the step `step`. Beside the reading column its row is
+ *  the one `aria-current` row and holds the keyboard focus (`document.activeElement`). Where the
+ *  act ran in a reading view - inside it, or from the short-row list by a key that opened it
+ *  (`landing`) - the view reads the item, its row is the one `aria-current` row, and the view's
+ *  scroller holds the focus. In the short-row list and in the drawer no row is selected, and the
+ *  item's row holds the focus. */
+async function expectInHand(
+  inbox: InboxAt,
+  id: string,
+  step: string,
+  landing: Landing = "the list"
+): Promise<void> {
+  const page = inbox.scope.page();
   const current = inbox.scope.locator('[data-inbox-row][aria-current="true"]');
-  if (inbox.place === "the reading pane") {
+  const viewed =
+    inbox.place === "the reading view" ||
+    (inbox.place === "the short-row list" && landing === "the view");
+  if (inbox.place === "the reading pane" || viewed) {
     await expect(rowOf(inbox, id), `${step}: the item is selected`).toHaveAttribute(
       "aria-current",
       "true"
@@ -4999,6 +5250,17 @@ async function expectInHand(inbox: InboxAt, id: string, step: string): Promise<v
     await expect(current, `${step}: no other item is selected`).toHaveCount(1);
   } else {
     await expect(current, `${step}: no row is selected here`).toHaveCount(0);
+  }
+  if (viewed) {
+    await expect(readingView(page), `${step}: the reading view reads the item`).toHaveAttribute(
+      "data-inbox-reading-row",
+      id
+    );
+    await expect(
+      paneScroller(page),
+      `${step}: the focus is on the scroller of the item's reading view`
+    ).toBeFocused();
+    return;
   }
   await expect(rowOf(inbox, id), `${step}: the item's row has the focus`).toBeFocused();
 }
@@ -5037,18 +5299,29 @@ async function nextItemSnoozeSteps(page: Page, place: InboxPlace): Promise<void>
   await page.keyboard.press("b");
   await expect(menu, step("b opens B's Snooze menu")).toBeVisible();
   await page.keyboard.press("1");
-  await expectInHand(inbox, c, step("with the Later band folded, a snooze of B hands on to C"));
+  await expectInHand(
+    inbox,
+    c,
+    step("with the Later band folded, a snooze of B hands on to C"),
+    "the view"
+  );
   await expect(rowOf(inbox, b), step("B folds into Later")).toHaveCount(0);
 
   // With the Later band open: C, snoozed, hands the reader on to D, and C, drawn in the band, is
   // not the item in hand.
+  await showList(inbox);
   await laterBand(inbox, 1).click();
   await expect(rowOf(inbox, b), step("the Later band opens on B")).toBeVisible();
   await putOn(inbox, c);
   await page.keyboard.press("b");
   await expect(menu, step("b opens C's Snooze menu")).toBeVisible();
   await page.keyboard.press("1");
-  await expectInHand(inbox, d, step("with the Later band open, a snooze of C hands on to D"));
+  await expectInHand(
+    inbox,
+    d,
+    step("with the Later band open, a snooze of C hands on to D"),
+    "the view"
+  );
   await expect(rowOf(inbox, c), step("the snoozed C is drawn in Later")).toHaveAttribute(
     "data-inbox-section",
     "later"
@@ -5136,33 +5409,46 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   const step = (text: string) => `k-next-item: ${place}: ${text}`;
   const reviews = watchReviews(page, seed.approvals);
   const answers = answerWrites(page, seed.question);
-  const pane = place === "the reading pane";
+  // Every place but the drawer reads the requests in a pane whose head draws Approve and Request
+  // changes: the reading column, and below its width the reading view.
+  const pane = place !== "the drawer";
   const head = paneHead(page);
+  // From the short-row list each case starts on the item's short row, which draws neither, and
+  // its key opens the item's reading view and acts there once the document's read has enabled
+  // the head's control (`useReadingViewLanding`).
+  const fromRow = place === "the short-row list";
 
   // `a` approves the first request once its document is read beside the column, where the head
   // holds its Approve until then; a card draws its Approve at once.
   await putOn(inbox, firstApproval.askId);
-  await expect(
-    pane
-      ? head.getByRole("button", { disabled: false, exact: true, name: "Approve" })
-      : rowOf(inbox, firstApproval.askId).getByRole("radio", { name: /^Approve/ }),
-    step("the first request draws its Approve")
-  ).toBeVisible();
+  if (!fromRow) {
+    await expect(
+      pane
+        ? head.getByRole("button", { disabled: false, exact: true, name: "Approve" })
+        : rowOf(inbox, firstApproval.askId).getByRole("radio", { name: /^Approve/ }),
+      step("the first request draws its Approve")
+    ).toBeVisible();
+  }
   await page.keyboard.press("a");
   await expectInHand(
     inbox,
     secondApproval.askId,
-    step("a on the first request hands on to the second")
+    step("a on the first request hands on to the second"),
+    "the view"
   );
   expect(reviewCount(reviews), step("a sends one review")).toBe(1);
 
   // Shift+R on the second, a reason, and Ctrl+Enter.
-  await expect(
-    pane
-      ? head.getByRole("button", { disabled: false, exact: true, name: "Request changes" })
-      : rowOf(inbox, secondApproval.askId).getByRole("radio", { name: /^Request changes/ }),
-    step("the second request draws its Request changes")
-  ).toBeVisible();
+  if (fromRow) {
+    await putOn(inbox, secondApproval.askId);
+  } else {
+    await expect(
+      pane
+        ? head.getByRole("button", { disabled: false, exact: true, name: "Request changes" })
+        : rowOf(inbox, secondApproval.askId).getByRole("radio", { name: /^Request changes/ }),
+      step("the second request draws its Request changes")
+    ).toBeVisible();
+  }
   await page.keyboard.press("Shift+R");
   await expect(
     pane
@@ -5175,18 +5461,24 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   await expectInHand(
     inbox,
     seed.question,
-    step("a request for changes on the second request hands on to the question")
+    step("a request for changes on the second request hands on to the question"),
+    "the view"
   );
   expect(reviewCount(reviews), step("Ctrl+Enter sends one review more")).toBe(2);
 
-  // The question, answered with 1, Enter and Ctrl+Enter.
+  // The question, answered with 1, Enter and Ctrl+Enter. From the short-row list `1` on its row
+  // opens its reading view, whose card it picks Ship on.
   const card = (pane ? inboxPane(page) : rowOf(inbox, seed.question)).getByTestId(
     `ask-${seed.question}`
   );
-  await expect(
-    card.locator("[data-ask-answer]"),
-    step("the question's card is drawn")
-  ).toBeVisible();
+  if (fromRow) {
+    await putOn(inbox, seed.question);
+  } else {
+    await expect(
+      card.locator("[data-ask-answer]"),
+      step("the question's card is drawn")
+    ).toBeVisible();
+  }
   await page.keyboard.press("1");
   await expect(card.getByRole("radio", { name: "Ship" }), step("1 picks Ship")).toBeChecked();
   await page.keyboard.press("Enter");
@@ -5195,11 +5487,14 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
     step("Enter puts the caret in the answer box")
   ).toBeFocused();
   await page.keyboard.press("Control+Enter");
-  await expectInHand(inbox, a, step("an answer to the question hands on to A"));
+  await expectInHand(inbox, a, step("an answer to the question hands on to A"), "the view");
   expect(writesSent(answers), step("Ctrl+Enter sends one answer")).toBe(1);
 
   // A search that leaves one item, the second thread, which e dismisses: the list's empty message
-  // has the focus, and the Inbox's keys work from it.
+  // has the focus, and the Inbox's keys work from it. Below the column's width the search box is
+  // the list's, which a reading view hides with it, so the search is typed on the list; inside
+  // the reading view the thread's view is then opened, and its `e` closes it on the message.
+  await showList(inbox);
   await page.keyboard.press("f");
   await page.keyboard.type(NARROWING_WORD);
   await expect(
@@ -5208,6 +5503,7 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   ).toHaveCount(1);
   await page.keyboard.press("Escape");
   await expect(rowOf(inbox, secondThread), step("Escape puts the focus on its row")).toBeFocused();
+  if (place === "the reading view") await goTo(inbox, secondThread);
   await page.keyboard.press("e");
   const empty = inbox.scope.getByRole("region", { name: "Inbox empty state" });
   await expect(empty, step("e on the only item leaves the empty message")).toHaveText(
@@ -5288,11 +5584,19 @@ test("k-next-item: beside the reading pane a snooze, with the Later band folded 
   await nextItemSnoozeSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): ten items seeded, three snoozes written and read back on the cards.
-test("k-next-item: in card mode a snooze, with the Later band folded and open, and of two selected asks, focuses the row of the item after", async ({
+// The architect's rulings Q1(b) and Q2(a): a short row's item keys act in its reading view.
+// SLOW(>=2s): ten items seeded, three snoozes written and read back from the short rows.
+test("k-next-item: in the short-row list at 1024x768 a snooze, with the Later band folded and open, and of two selected asks, hands on to the item after, in its reading view or on its row", async ({
   page,
 }) => {
-  await nextItemSnoozeSteps(page, "card mode");
+  await nextItemSnoozeSteps(page, "the short-row list");
+});
+
+// SLOW(>=2s): ten items seeded, three snoozes written and read back in the reading view.
+test("k-next-item: in the reading view at 1024x768 a snooze, with the Later band folded and open, and of two selected asks, opens the item after with the focus on its scroller", async ({
+  page,
+}) => {
+  await nextItemSnoozeSteps(page, "the reading view");
 });
 
 // SLOW(>=2s): ten items seeded, three snoozes written and read back in the drawer.
@@ -5309,11 +5613,19 @@ test("k-next-item: beside the reading pane a dismiss selects and focuses the ite
   await nextItemDismissSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed on the cards.
-test("k-next-item: in card mode a dismiss focuses the item after, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
+// The architect's rulings Q1(b) and Q2(a): `e` and the bar's acts stay in the short-row list.
+// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed from the short rows.
+test("k-next-item: in the short-row list at 1024x768 a dismiss focuses the row of the item after, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
   page,
 }) => {
-  await nextItemDismissSteps(page, "card mode");
+  await nextItemDismissSteps(page, "the short-row list");
+});
+
+// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed in the reading view.
+test("k-next-item: in the reading view at 1024x768 a dismiss opens the item after with the focus on its scroller, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
+  page,
+}) => {
+  await nextItemDismissSteps(page, "the reading view");
 });
 
 // SLOW(>=2s): ten items seeded, a thread moved back and two dismissed in the drawer.
@@ -5495,11 +5807,21 @@ test("k-next-item: beside the reading pane an approval, a request for changes an
   await nextItemReviewSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search on the cards.
-test("k-next-item: in card mode an approval, a request for changes and an answer focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
+// The architect's rulings Q1(b) and Q2(a): a short row's item keys act in its reading view.
+// SLOW(>=2s): ten items seeded, two reviews and an answer written from the short rows, and a
+// search.
+test("k-next-item: in the short-row list at 1024x768 an approval, a request for changes and an answer open the item after in its reading view, and the only item a search leaves hands the focus to the empty message", async ({
   page,
 }) => {
-  await nextItemReviewSteps(page, "card mode");
+  await nextItemReviewSteps(page, "the short-row list");
+});
+
+// SLOW(>=2s): ten items seeded, two reviews and an answer written in the reading view, and a
+// search.
+test("k-next-item: in the reading view at 1024x768 an approval, a request for changes and an answer open the item after with the focus on its scroller, and the only item a search leaves hands the focus to the empty message", async ({
+  page,
+}) => {
+  await nextItemReviewSteps(page, "the reading view");
 });
 
 // SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search in the drawer.
@@ -5581,6 +5903,9 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   ],
   [/^Select all$/, { label: "Select all" }],
   [/^Clear selection$/, { key: "Esc", label: "Clear the selection" }],
+  // The reading view's Inbox control below 1280 px (`ReadingView`, cybermonklabs/legion#5223):
+  // the way back to the list, which Escape is there (`inbox.leave-reading`).
+  [/^Back to the Inbox list$/, { key: "Esc", label: "Back to the list" }],
   // A thread's reply box, which `r` puts the caret in: its Send is Ctrl+Enter there, and its own
   // controls are reached by Tab from it. An answered question's reply box under its record
   // (`AskReplyComposer`) is that box too: its submit is Reply, and Replying… while it is out.
@@ -5760,8 +6085,15 @@ async function seedEveryAction(): Promise<EveryActionSeed> {
   };
 }
 
-/** The two places k-every-action reads the Inbox in. */
-type EveryActionPlace = "the reading pane" | "card mode";
+/** The two widths k-every-action reads the Inbox at: beside the reading pane, and at 1024x768,
+ *  where it lists short rows and reads the row the reader opens in its reading view in the list's
+ *  place (cybermonklabs/legion#5223). */
+type EveryActionPlace = "the reading pane" | "at 1024x768";
+
+/** Where `itemControlNames` reads an item's controls: beside the reading column its row and the
+ *  column; at 1024x768 its short row in the list, or the reading view the row opens, whose own
+ *  line over the pane holds the view's Inbox control (`ReadingView`). */
+type ControlPlace = "the reading pane" | "the short row" | "the reading view";
 
 /** Opens the Inbox where `place` draws it over k-every-action's items. The first question's issue
  *  holds nobody, but every project names a default assignee, and a question on an issue nobody
@@ -5782,49 +6114,56 @@ async function openEveryActionInbox(
       response,
     });
   });
-  await page.setViewportSize(place === "card mode" ? NARROW : WIDE);
+  await page.setViewportSize(place === "at 1024x768" ? NARROW : WIDE);
   await page.goto("/?assignee=everyone");
 }
 
-/** The names of the controls the Inbox draws for the item `id`, which the reader is on: its row,
- *  and beside the reading pane the pane's head, the item's card and its thread's body, read once
- *  the item's reads are in. While a read is out, the part it draws shows a busy skeleton
- *  (`LoadingSkeleton`'s `aria-busy`), and an `approval` request's state and its Approve wait on
- *  its document's read, which the pane starts only once the selection has rested
- *  (`PaneDocument`): so the row waits for no busy skeleton in the row or the pane, and on an
- *  approval request for Approve to take a press. */
+/** The names of the controls the Inbox draws for the item `id`, which the reader is on, where
+ *  `where` reads them: its row, and the pane's head, the item's card and its thread's body, read
+ *  once the item's reads are in - beside the reading column both, at 1024x768 the short row in
+ *  the list, or the pane the row's reading view draws with the view's own line over it. While a
+ *  read is out, the part it draws shows a busy skeleton (`LoadingSkeleton`'s `aria-busy`), and an
+ *  `approval` request's state and its Approve wait on its document's read, which the pane starts
+ *  only once the selection has rested (`PaneDocument`): so the row waits for no busy skeleton in
+ *  the row or the pane, and on an approval request for Approve to take a press. */
 async function itemControlNames(
   page: Page,
-  place: EveryActionPlace,
+  where: ControlPlace,
   id: string,
   step: string,
   approval = false
 ): Promise<string[]> {
-  const row = inboxRow(page, id);
-  await expect(row.locator('[aria-busy="true"]'), `${step}: its row's reads are in`).toHaveCount(0);
-  const names = await controlNames(row);
-  if (place === "the reading pane") {
-    const pane = inboxPane(page);
-    const head = paneHead(page);
-    await expect(head, `${step}: its head is drawn`).toBeVisible();
-    if (approval) {
-      await expect(
-        head.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
-        `${step}: its document's read is in, and Approve takes a press`
-      ).toBeVisible();
-    }
-    await expect(
-      pane.locator('[aria-busy="true"]'),
-      `${step}: the pane's reads are in`
-    ).toHaveCount(0);
-    names.push(...(await controlNames(head)));
-    const card = pane.getByTestId(`ask-${id}`);
-    // The pane's reads are in, as waited for above, so the card is drawn now where it is one.
-    if ((await card.count()) > 0) names.push(...(await controlNames(card)));
-    const thread = pane.locator("[data-inbox-thread-body]");
-    // The same reads drew any thread body of the item, so this count is the drawn one.
-    if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
+  const names: string[] = [];
+  if (where !== "the reading view") {
+    const row = inboxRow(page, id);
+    await expect(row.locator('[aria-busy="true"]'), `${step}: its row's reads are in`).toHaveCount(
+      0
+    );
+    names.push(...(await controlNames(row)));
   }
+  if (where === "the short row") return names;
+  const pane = inboxPane(page);
+  const head = paneHead(page);
+  await expect(head, `${step}: its head is drawn`).toBeVisible();
+  if (approval) {
+    await expect(
+      head.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
+      `${step}: its document's read is in, and Approve takes a press`
+    ).toBeVisible();
+  }
+  await expect(pane.locator('[aria-busy="true"]'), `${step}: the pane's reads are in`).toHaveCount(
+    0
+  );
+  if (where === "the reading view") {
+    names.push(...(await controlNames(readingView(page).locator(":scope > div").first())));
+  }
+  names.push(...(await controlNames(head)));
+  const card = pane.getByTestId(`ask-${id}`);
+  // The pane's reads are in, as waited for above, so the card is drawn now where it is one.
+  if ((await card.count()) > 0) names.push(...(await controlNames(card)));
+  const thread = pane.locator("[data-inbox-thread-body]");
+  // The same reads drew any thread body of the item, so this count is the drawn one.
+  if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
   return names;
 }
 
@@ -5848,17 +6187,49 @@ async function everyActionSteps(page: Page, place: EveryActionPlace): Promise<vo
   ] as const;
   for (const [id, what] of items) {
     await expect(row(id), step(`${what} is listed`)).toBeVisible();
-    if (place === "the reading pane") {
-      await selectRow(page, id);
+    if (place === "at 1024x768") {
+      // The short row's own controls, with the focus on the row, in the list.
+      await row(id).focus();
+      await expectEveryAction(
+        page,
+        await itemControlNames(page, "the short row", id, step(`${what}'s short row`)),
+        (text) => step(`${what}'s short row: ${text}`)
+      );
     }
+    await selectRow(page, id);
     if (id === seed.askBack) {
       // Ask back takes a press once a question is typed in the answer box.
-      const card = place === "the reading pane" ? pane.getByTestId(`ask-${id}`) : row(id);
-      await card.locator("[data-ask-answer]").fill("Which format does it ship in?");
+      await pane
+        .getByTestId(`ask-${id}`)
+        .locator("[data-ask-answer]")
+        .fill("Which format does it ship in?");
     }
+    if (place === "the reading pane") {
+      await row(id).focus();
+      const names = await itemControlNames(page, place, id, step(what), id === seed.approval);
+      await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
+      continue;
+    }
+    // The row's reading view, its own line and its pane, with the focus on its scroller; then
+    // the view's Inbox control takes the reader back to the list for the next item.
+    await paneScroller(page).focus();
+    const names = await itemControlNames(
+      page,
+      "the reading view",
+      id,
+      step(`${what}'s reading view`),
+      id === seed.approval
+    );
+    await expectEveryAction(page, names, (text) => step(`${what}'s reading view: ${text}`));
+    await backToList(page);
+  }
+
+  // With two items marked, the bar of selected rows: beside the reading pane each selected and
+  // marked from its row, and at 1024x768 each marked from its short row in the list.
+  for (const id of [seed.reply, seed.askBack]) {
+    if (place === "the reading pane") await selectRow(page, id);
     await row(id).focus();
-    const names = await itemControlNames(page, place, id, step(what), id === seed.approval);
-    await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
+    await page.keyboard.press("x");
   }
 
   // With two items marked, the bar of selected rows.
@@ -5920,30 +6291,47 @@ async function runFromCommandBar(page: Page, label: string, step: string): Promi
 const READ_MARK_PATH = /^\/api\/v1\/me\/(threads\/[^/]+\/read|agents\/[^/]+\/state)$/;
 
 /** Every step of k-every-action that runs an action from ⌘K where `place` draws the Inbox -
- *  Decline, Ask back instead, Assign to me and Un-snooze in both places, Mark read in card mode,
- *  and Skip to the answer beside the reading pane, the places that draw each - and reads its
- *  effect; and the controls of each state those runs reach, and of an answered question's record
- *  and of the bar of selected rows in the Dismissed view, read through the table. */
+ *  Decline, Ask back instead, Assign to me, Un-snooze and Skip to the answer, which the reading
+ *  column and the reading view draw alike - and reads its effect; at 1024x768 Mark read too, which
+ *  only the drawer's thread card draws; and the controls of each state those runs reach, and of an
+ *  answered question's record and of the bar of selected rows in the Dismissed view, read through
+ *  the table. */
 async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise<void> {
   const seed = await seedEveryAction();
   const answered = await seedAnsweredThread();
-  const deep = place === "the reading pane" ? await seedQuestionColumn("heading") : undefined;
+  const deep = await seedQuestionColumn("heading");
   const step = (text: string) => `k-every-action: ${place}: ${text}`;
   await openEveryActionInbox(page, place, seed);
   const pane = inboxPane(page);
   const row = (id: string) => inboxRow(page, id);
-  const cardOf = (id: string) =>
-    place === "the reading pane" ? pane.getByTestId(`ask-${id}`) : row(id);
-  /** Puts the reader on the item `id`: beside the pane a click selects it, and every place then
-   *  has the focus on its row, where the command bar takes the item in hand from. */
+  const cardOf = (id: string) => pane.getByTestId(`ask-${id}`);
+  /** Puts the reader on the item `id`, where the command bar takes the item in hand from: beside
+   *  the pane a click selects it and the focus is on its row; at 1024x768 the row's reading view
+   *  is opened as a click opens it, with the focus on the view's scroller. */
   const take = async (id: string) => {
-    await expect(row(id), step(`the item ${id} is listed`)).toBeVisible();
-    if (place === "the reading pane") await selectRow(page, id);
-    await row(id).focus();
+    if (place === "the reading pane") {
+      await expect(row(id), step(`the item ${id} is listed`)).toBeVisible();
+      await selectRow(page, id);
+      await row(id).focus();
+      return;
+    }
+    await selectRow(page, id);
+    await expect(
+      readingView(page),
+      step(`the item ${id} is listed, and its reading view opens`)
+    ).toHaveAttribute("data-inbox-reading-row", id);
+    await paneScroller(page).focus();
   };
   const readThrough = async (id: string, what: string) =>
-    expectEveryAction(page, await itemControlNames(page, place, id, step(what)), (text) =>
-      step(`${what}: ${text}`)
+    expectEveryAction(
+      page,
+      await itemControlNames(
+        page,
+        place === "the reading pane" ? place : "the reading view",
+        id,
+        step(what)
+      ),
+      (text) => step(`${what}: ${text}`)
     );
 
   // Decline opens the decline note, with the caret in it; Escape closes it and writes nothing.
@@ -5981,7 +6369,8 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
     })
     .toBe("alice");
 
-  // Un-snooze takes the snoozed question out of Later.
+  // Un-snooze takes the snoozed question out of Later, whose band the list draws.
+  if (place === "at 1024x768") await backToList(page);
   await page.getByRole("button", { name: /^Later \(1\)/ }).click();
   const unsnoozes = unsnoozeWrites(page, seed.snoozed);
   await take(seed.snoozed);
@@ -5994,27 +6383,47 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
     "later"
   );
 
-  // In card mode, Mark read marks the reply thread read: no message of its card reads unread.
-  // Beside the reading pane the column reads a thread as it opens it, so it draws no Mark read.
-  // The card's thread also marks itself read, with the same write, once its newest message has
-  // been on screen for a second (`useMarkThreadRead`), which a slow command bar outlasts: every
-  // read mark is held while the step reads Mark read's own, which its button names while it is
-  // out, so the dwell's mark can neither stand in for it nor count against it.
-  if (place === "card mode") {
+  // Mark read is drawn by the drawer's thread card alone (`ThreadRowCard`): the reading view at
+  // 1024x768, as the column at 1440x900, reads a thread as it opens it and draws no Mark read
+  // (cybermonklabs/legion#5223), and ⌘K opens over no dialog, the drawer's among them (keymap.ts's
+  // `consulted`). So at 1024x768 the drawer's card's Mark read is pressed from the keyboard, Tab
+  // to it and Enter, over a project page at 1440x900, the drawer rows' width; then the reading
+  // view of the thread in hand draws no Mark read, and ⌘K lists none. The card's thread also
+  // marks itself read, with the same write, once its newest message has been on screen for a
+  // second (`useMarkThreadRead`), which the walk to Mark read can outlast: every read mark is
+  // held while the step reads Mark read's own, which its button names while it is out, so the
+  // dwell's mark can neither stand in for it nor count against it.
+  if (place === "at 1024x768") {
     const marks = await holdWrites(page, "PUT", READ_MARK_PATH);
-    const unread = row(seed.reply).locator("[data-inbox-thread-unread]");
-    await take(seed.reply);
+    await page.setViewportSize(WIDE);
+    const peek = await openDrawer(page, step("i opens the drawer"));
+    const card = peek.locator(`[data-inbox-row="${seed.reply}"]`);
+    const unread = card.locator("[data-inbox-thread-unread]");
+    const markRead = card.locator('[data-inbox-action="mark-read"]');
     await expect(
       unread.first(),
-      step("the reply thread's card shows its reply unread")
+      step("the reply thread's card in the drawer shows its reply unread")
     ).toBeVisible();
-    await runFromCommandBar(page, "Mark read", step("Mark read"));
-    await expect(
-      row(seed.reply).locator('[data-inbox-action="mark-read"]'),
-      step("Mark read sends its read mark")
-    ).toHaveText("Marking read…");
+    await card.focus();
+    await tabTo(page, markRead, step("in the drawer, Tab reaches the card's Mark read"));
+    await page.keyboard.press("Enter");
+    await expect(markRead, step("Enter on Mark read sends its read mark")).toHaveText(
+      "Marking read…"
+    );
     marks.release();
     await expect(unread, step("Mark read: the thread reads as read")).toHaveCount(0);
+
+    await page.setViewportSize(NARROW);
+    await page.goto("/?assignee=everyone");
+    await take(seed.reply);
+    await expect(
+      pane.locator('[data-inbox-action="mark-read"]'),
+      step("the reply thread's reading view draws no Mark read")
+    ).toHaveCount(0);
+    expect(
+      (await commandBarRows(page)).filter((text) => text.startsWith("Markread")),
+      step("⌘K lists no Mark read for the thread in hand")
+    ).toEqual([]);
   }
 
   // An answer shaped as a question asks which it is, and Ask back instead sends it back.
@@ -6060,25 +6469,28 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
     step("Cancel ends the change")
   ).toHaveCount(0);
 
-  // Beside the reading pane, Skip to the answer puts the column back at the question's block.
-  if (deep !== undefined) {
-    await take(deep.item);
-    const skip = pane.getByRole("button", { name: "Skip to the answer" });
-    await expect(
-      skip,
-      step("the question far down a document offers Skip to the answer")
-    ).toBeVisible();
-    await waitOutPlacement(page);
-    const block = paneScroller(page).locator(`[data-dispatch-ask-block="${deep.blockId}"]`);
-    await page.keyboard.press("g");
-    await page.keyboard.press("g");
-    await expect(
-      block,
-      step("g g puts the column at its top, above the answer")
-    ).not.toBeInViewport();
-    await runFromCommandBar(page, "Skip to the answer", step("Skip to the answer"));
-    await expect(block, step("Skip to the answer moves the column to the answer")).toBeInViewport();
+  // Skip to the answer puts the column back at the question's block. In the reading view the
+  // document's own `g g` acts from the page's body (`scrollsFromList`), the browser's own keys
+  // being the scroller's, so the focus is let go there first.
+  await take(deep.item);
+  if (place === "at 1024x768") {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   }
+  const skip = pane.getByRole("button", { name: "Skip to the answer" });
+  await expect(
+    skip,
+    step("the question far down a document offers Skip to the answer")
+  ).toBeVisible();
+  await waitOutPlacement(page);
+  const block = paneScroller(page).locator(`[data-dispatch-ask-block="${deep.blockId}"]`);
+  await page.keyboard.press("g");
+  await page.keyboard.press("g");
+  await expect(
+    block,
+    step("g g puts the column at its top, above the answer")
+  ).not.toBeInViewport();
+  await runFromCommandBar(page, "Skip to the answer", step("Skip to the answer"));
+  await expect(block, step("Skip to the answer moves the column to the answer")).toBeInViewport();
 
   // The bar of selected rows in the Dismissed view, where it moves them back to the Inbox.
   await dismissThread(seed.reply);
@@ -6102,11 +6514,12 @@ test("k-every-action: beside the reading pane every control of an item is a key 
   await everyActionSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): six items of four kinds seeded, each read with ? and ⌘K, then two marked.
-test("k-every-action: in card mode every control of an item is a key or a command bar action of the item in hand", async ({
+// SLOW(>=2s): six items of four kinds seeded, each read on its short row and in its reading view
+// with ? and ⌘K, then two marked.
+test("k-every-action: at 1024x768 every control of an item, on its short row and in its reading view, is a key or a command bar action of the item in hand", async ({
   page,
 }) => {
-  await everyActionSteps(page, "card mode");
+  await everyActionSteps(page, "at 1024x768");
 });
 
 // SLOW(>=2s): eight items seeded, seven actions run from ⌘K with their effects read back, and the
@@ -6117,12 +6530,12 @@ test("k-every-action: beside the reading pane Decline, Ask back instead, Assign 
   await everyActionRunSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): seven items seeded, seven actions run from ⌘K with their effects read back, and the
-// Dismissed view loaded.
-test("k-every-action: in card mode Decline, Ask back instead, Assign to me, Un-snooze and Mark read run from the command bar on the item in hand", async ({
+// SLOW(>=2s): eight items seeded, seven actions run from ⌘K in the reading view with their
+// effects read back, the drawer's Mark read pressed, and the Dismissed view loaded.
+test("k-every-action: at 1024x768 Decline, Ask back instead, Assign to me, Un-snooze and Skip to the answer run from the command bar in the reading view on the item in hand, and Mark read from the keyboard in the drawer", async ({
   page,
 }) => {
-  await everyActionRunSteps(page, "card mode");
+  await everyActionRunSteps(page, "at 1024x768");
 });
 
 // SLOW(>=2s): the command bar opened six times over a project page, each row followed.
@@ -7606,11 +8019,14 @@ test("k-threads: each comment, reply and message on the Conversation tab and in 
   await expectTabReaches(page, card, names.comment, "on the margin's open card");
 });
 
-/** The Inbox's steps of k-threads where `place` draws it: beside the reading pane each thread is
- *  selected, its fold opened and its column walked by Tab after `l`; in the cards below the
- *  pane's width, and in the drawer over a project page, each thread's card has its fold opened
- *  and is walked by Tab from its row. One row per place, as each walks the three threads. */
-async function inboxThreadCopySteps(page: Page, place: InboxPlace): Promise<void> {
+/** The Inbox's steps of k-threads where `place` draws it: beside the reading pane, and in the
+ *  reading view at 1024x768, each thread is opened, its fold opened and its column walked by Tab
+ *  after `l`; in the drawer over a project page, each thread's card has its fold opened and is
+ *  walked by Tab from its row. One row per place, as each walks the three threads. */
+async function inboxThreadCopySteps(
+  page: Page,
+  place: "the reading pane" | "the reading view" | "the drawer"
+): Promise<void> {
   const seed = await seedThreads();
   const names = threadCopyNames(seed);
   // Each thread's row, the fold its older replies are drawn behind, and its Copy reference names.
@@ -7623,30 +8039,40 @@ async function inboxThreadCopySteps(page: Page, place: InboxPlace): Promise<void
     [seed.ask, "Show 2 earlier replies", names.ask, "the question's thread"],
   ] as const;
 
-  if (place === "the reading pane") {
-    await page.setViewportSize(WIDE);
+  if (place !== "the drawer") {
+    const narrow = place === "the reading view";
+    await page.setViewportSize(narrow ? NARROW : WIDE);
     await page.goto("/");
     for (const [id, fold, expected, what] of threads) {
-      await expect(inboxRow(page, id), `k-threads: the Inbox lists ${what}`).toBeVisible();
-      await selectRow(page, id);
+      if (narrow) {
+        await selectRow(page, id);
+        await expect(
+          readingView(page),
+          `k-threads: the Inbox lists ${what}, and a click opens its reading view`
+        ).toHaveAttribute("data-inbox-reading-row", id);
+      } else {
+        await expect(inboxRow(page, id), `k-threads: the Inbox lists ${what}`).toBeVisible();
+        await selectRow(page, id);
+      }
       if (fold !== undefined) await paneScroller(page).getByRole("button", { name: fold }).click();
-      await inboxRow(page, id).locator("time").first().click();
+      // Beside the pane `l` is pressed from the row, the click on its age putting the focus back
+      // there; the reading view hides the list, and `l` is pressed from the fold the click left
+      // the focus on.
+      if (!narrow) await inboxRow(page, id).locator("time").first().click();
       await page.keyboard.press("l");
       await expect(paneScroller(page), `k-threads: l puts the focus in ${what}`).toBeFocused();
-      await expectTabReaches(page, paneScroller(page), expected, `in the reading pane, in ${what}`);
+      await expectTabReaches(
+        page,
+        paneScroller(page),
+        expected,
+        `${narrow ? "in the reading view at 1024x768" : "in the reading pane"}, in ${what}`
+      );
     }
     return;
   }
 
-  let scope: Locator;
-  if (place === "card mode") {
-    await page.setViewportSize(NARROW);
-    await page.goto("/");
-    scope = page.getByTestId("inbox-list");
-  } else {
-    await page.setViewportSize(WIDE);
-    scope = await openDrawer(page, "k-threads: i opens the drawer");
-  }
+  await page.setViewportSize(WIDE);
+  const scope = await openDrawer(page, "k-threads: i opens the drawer");
   for (const [id, fold, expected, what] of threads) {
     const row = scope.locator(`[data-inbox-row="${id}"]`);
     await expect(row, `k-threads: in ${place}, the Inbox lists ${what}`).toBeVisible();
@@ -7665,12 +8091,12 @@ test("k-threads: beside the Inbox's reading pane, each comment, reply and messag
   await inboxThreadCopySteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): an issue with four conversations seeded, and each of its three thread cards walked
-// by Tab below the reading pane's width.
-test("k-threads: in the Inbox's cards, each comment, reply and message of an issue has a Copy reference that Tab reaches", async ({
+// SLOW(>=2s): an issue with four conversations seeded, and the reading view walked by Tab over
+// each of its three threads at 1024x768.
+test("k-threads: in the Inbox's reading view at 1024x768, each comment, reply and message of an issue has a Copy reference that Tab reaches", async ({
   page,
 }) => {
-  await inboxThreadCopySteps(page, "card mode");
+  await inboxThreadCopySteps(page, "the reading view");
 });
 
 // SLOW(>=2s): an issue with four conversations seeded, and each of its three thread cards walked
@@ -8509,12 +8935,14 @@ async function expectFocusShowsWhatHoverShows(
 
 /** k-keyboard-reach on the Inbox where `place` draws it, over k-every-action's items: a question,
  *  a question with options, an approval request, a reply thread and an agent thread, and a
- *  snoozed question folded in Later. */
-async function reachInboxSteps(page: Page, place: InboxPlace): Promise<void> {
+ *  snoozed question folded in Later. At 1024x768 the short-row list is walked, and then the
+ *  reading view the first row opens in the list's place. */
+async function reachInboxSteps(
+  page: Page,
+  place: "the reading pane" | "the short-row list" | "the drawer"
+): Promise<void> {
   await seedEveryAction();
   const inbox = await openInboxAt(page, place, 5);
-  // Card mode is read at 1024x768, a laptop's window below the reading pane's width.
-  if (place === "card mode") await page.setViewportSize({ height: 768, width: 1024 });
   await withoutEases(page);
   if (place === "the reading pane") {
     await expect(paneHead(page)).toBeVisible();
@@ -8522,9 +8950,10 @@ async function reachInboxSteps(page: Page, place: InboxPlace): Promise<void> {
   if (place === "the drawer") {
     await expect(inbox.scope.getByRole("button", { exact: true, name: "Close" })).toBeFocused();
   }
-  const step = (text: string) => `k-keyboard-reach: the Inbox in ${place}: ${text}`;
+  const where = place === "the short-row list" ? "the short-row list at 1024x768" : place;
+  const step = (text: string) => `k-keyboard-reach: the Inbox in ${where}: ${text}`;
   await expectKeyboardReach(page, {
-    name: `the Inbox in ${place}`,
+    name: `the Inbox in ${where}`,
     rows: { key: "j", selector: "[data-inbox-row]" },
     scope: place === "the drawer" ? inbox.scope : undefined,
   });
@@ -8535,6 +8964,10 @@ async function reachInboxSteps(page: Page, place: InboxPlace): Promise<void> {
     inbox.outside,
     step
   );
+  if (place !== "the short-row list") return;
+  await selectRow(page, itemAt(inbox.order, 0));
+  await expect(paneHead(page), step("the first row opens its reading view")).toBeVisible();
+  await expectKeyboardReach(page, { name: "the Inbox's reading view at 1024x768" });
 }
 
 // SLOW(>=2s): five items seeded, the page walked by Tab and j, and each row hovered and focused.
@@ -8544,11 +8977,12 @@ test("k-keyboard-reach: on the Inbox beside the reading pane, Tab reaches every 
   await reachInboxSteps(page, "the reading pane");
 });
 
-// SLOW(>=2s): five items seeded, the cards walked by Tab and j, and each card hovered and focused.
-test("k-keyboard-reach: on the Inbox in card mode at 1024x768, Tab reaches every control, and a card's focus shows each control a pointer over the card shows", async ({
+// SLOW(>=2s): five items seeded, the short rows walked by Tab and j and each hovered and focused,
+// then a row's reading view walked by Tab.
+test("k-keyboard-reach: on the Inbox at 1024x768, Tab reaches every control of the short-row list and of a row's reading view, and a row's focus shows each control a pointer over the row shows", async ({
   page,
 }) => {
-  await reachInboxSteps(page, "card mode");
+  await reachInboxSteps(page, "the short-row list");
 });
 
 // SLOW(>=2s): five items seeded, the drawer opened over a project page, walked by Tab and j, and
@@ -9103,9 +9537,9 @@ function itemAt(order: readonly string[], index: number): string {
 const KEY_ON_ITS_CONTROL = [
   { check: "k-snooze-menu", control: "Snooze", key: "b", where: "the reading pane" },
   { check: "k-snooze-menu", control: "Snooze", key: "h", where: "the reading pane" },
-  { check: "k-snooze-menu", control: "Snooze", key: "b", where: "card mode" },
+  { check: "k-snooze-menu", control: "Snooze", key: "b", where: "the reading view" },
   { check: "k-priority-menu", control: "priority", key: "p", where: "the reading pane" },
-  { check: "k-priority-menu", control: "priority", key: "p", where: "card mode" },
+  { check: "k-priority-menu", control: "priority", key: "p", where: "the reading view" },
   { check: "k-priority-menu", control: "priority", key: "p", where: "the issue page" },
   { check: "k-priority-menu", control: "priority", key: "p", where: "the Board" },
   { check: "k-status-menu", control: "Status", key: "s", where: "the issue page" },
@@ -9128,7 +9562,7 @@ for (const { check, control, key, where } of KEY_ON_ITS_CONTROL) {
     const writes = issueWrites(page, issueKey);
     const menu = openList(page);
     let trigger: Locator;
-    if (where === "the reading pane" || where === "card mode") {
+    if (where === "the reading pane" || where === "the reading view") {
       const inbox = await openInboxAt(page, where, 1);
       await goTo(inbox, askId);
       const controls = controlsOf(page, inbox, askId);
@@ -9287,8 +9721,8 @@ test("k-status-menu: on the new issue page s opens the status list while the foc
   expect(requestsSent([writes]), step("nothing is written")).toBe(0);
 });
 
-// SLOW(>=2s): a card drawn, and two lists opened by a click and by a key.
-test("k-priority-menu: on the Inbox's cards p opens the priority menu while the focus is on the card's Snooze, and b the Snooze menu while it is on the card's priority", async ({
+// SLOW(>=2s): a reading view drawn, and two lists opened by a click and by a key.
+test("k-priority-menu: in the reading view at 1024x768 p opens the priority menu while the focus is on its head's Snooze, and b the Snooze menu while it is on its head's priority", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -9296,58 +9730,63 @@ test("k-priority-menu: on the Inbox's cards p opens the priority menu while the 
   await patchIssue(issue.key, { priority: 2 });
   const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
   const watched = [snoozeWrites(page, ask.id), issueWrites(page, issue.key)];
-  const inbox = await openInboxAt(page, "card mode", 1);
-  const row = rowOf(inbox, ask.id);
-  const snooze = row.getByRole("button", { name: /^Snooze / });
-  const priority = priorityTrigger(row, issue.key);
+  const inbox = await openInboxAt(page, "the reading view", 1);
+  await goTo(inbox, ask.id);
+  const head = controlsOf(page, inbox, ask.id);
+  const snooze = head.getByRole("button", { name: /^Snooze / });
+  const priority = priorityTrigger(head, issue.key);
   const step = (text: string) =>
-    `k-priority-menu: card mode, from the other control's trigger, ${text}`;
+    `k-priority-menu: the reading view, from the other control's trigger, ${text}`;
   await keyFromOtherTrigger(page, snooze, "p", priority, step);
   await keyFromOtherTrigger(page, priority, "b", snooze, step);
   expect(requestsSent(watched), step("nothing is written")).toBe(0);
 });
 
-// The tester's red rows of round 16 (R5, plan D5): in card mode, a press on a control far down
-// the page while the Snooze menu is open closes the menu, writes nothing, and acts in that one
-// press, as the same press does with no menu open. At 9d3e0777 the focus the menu gives back to
-// the first card scrolls the cards between the press's mousedown and its mouseup, so the press
-// lands on another element and the control does nothing.
-for (const target of ["the Later band's toggle", "the last card's Snooze"] as const) {
-  // SLOW(>=2s): five asks in card mode, a control pressed with no menu open and with one open.
+// The tester's red rows of round 16 (R5, plan D5): a press on a control far down the page while
+// the Snooze menu is open closes the menu, writes nothing, and acts in that one press, as the same
+// press does with no menu open. At 9d3e0777 the focus the menu gives back to the first card
+// scrolls the cards between the press's mousedown and its mouseup, so the press lands on another
+// element and the control does nothing. At 1024x768 the Inbox lists short rows (#5223), and the
+// list's one Snooze menu is the bar's, which `b` opens over the rows `x` marked and which gives
+// the focus back to the row it was pressed on: the first row, far up a list of sixteen that
+// scrolls; the far control is the Later band's toggle, or the last row's own checkbox.
+for (const target of ["the Later band's toggle", "the last row's checkbox"] as const) {
+  // SLOW(>=2s): seventeen asks seeded, a control pressed with no menu open and with one open.
   // @firefox: where the engine scrolls a list when a focus is given back between a press's
   // mousedown and its mouseup (playwright.config.ts names the clause).
-  test(`k-snooze-menu: in card mode, with the Snooze menu b opened on the first card, a press on ${target}, far down the page, closes the menu, writes nothing and acts in that one press @firefox`, async ({
+  test(`k-snooze-menu: in the short-row list at 1024x768, with the Snooze menu b opened on the first row, which x marked, a press on ${target}, far down the page, closes the menu, writes nothing and acts in that one press @firefox`, async ({
     page,
   }) => {
-    const step = (text: string) => `k-snooze-menu: card mode, a press on ${target}: ${text}`;
-    const seed = await seedAsksAtP2(5);
-    const later = itemAt(seed.asks, 4);
+    const step = (text: string) =>
+      `k-snooze-menu: the short-row list, a press on ${target}: ${text}`;
+    await createProject({ key: "CORE", name: "Core" });
+    const asks: string[] = [];
+    for (let n = 1; n <= 17; n += 1) {
+      const issue = await createIssue({ force: true, project: "CORE", title: `Rollout ${n}` });
+      asks.push((await createAsk(issue.key, { question: `Ship rollout ${n}?` }, asker)).id);
+    }
+    const later = itemAt(asks, 16);
     await snoozeAsk(later, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
-    const inbox = await openInboxAt(page, "card mode", 4);
+    const inbox = await openInboxAt(page, "the short-row list", 16);
     const first = itemAt(inbox.order, 0);
-    const last = itemAt(inbox.order, 3);
-    const snoozes = seed.asks.flatMap((id) => [snoozeWrites(page, id), unsnoozeWrites(page, id)]);
+    const last = itemAt(inbox.order, 15);
+    const snoozes = asks.flatMap((id) => [snoozeWrites(page, id), unsnoozeWrites(page, id)]);
     const menu = openList(page);
     const band = target === "the Later band's toggle";
-    const control = band
-      ? laterBand(inbox, 1)
-      : rowOf(inbox, last).getByRole("button", { name: /^Snooze / });
+    const control = band ? laterBand(inbox, 1) : rowOf(inbox, last).getByRole("checkbox");
     const acted = band
       ? rowOf(inbox, later)
-      : rowOf(inbox, last).locator('[aria-haspopup="listbox"][aria-expanded="true"]');
+      : rowOf(inbox, last).locator('input[type="checkbox"]:checked');
     await control.click();
     await expect(acted, step("with no menu open, one press acts")).toHaveCount(1);
-    if (band) await control.click();
-    else await page.keyboard.press("Escape");
+    await control.click();
     await expect(acted, step("the control is put back")).toHaveCount(0);
     await goTo(inbox, first);
+    await page.keyboard.press("x");
     await page.keyboard.press("b");
-    await expect(menu, step("b opens the first card's menu")).toBeVisible();
+    await expect(menu, step("b opens the Snooze menu over the first row")).toBeVisible();
     await control.click();
-    await expect(
-      rowOf(inbox, first).locator('[aria-haspopup="listbox"][aria-expanded="true"]'),
-      step("the press closes the first card's menu")
-    ).toHaveCount(0);
+    await expect(openTrigger(page), step("the press closes the Snooze menu")).toHaveCount(0);
     await expect(acted, step("the one press acts")).toHaveCount(1);
     // A write the press sent reaches the page's request events within this second and a half.
     await page.waitForTimeout(1_500);
@@ -9487,9 +9926,14 @@ async function nextItemOnlyShownSteps(page: Page, place: InboxPlace): Promise<vo
     .toBe(true);
 }
 
-for (const place of ["the reading pane", "card mode", "the drawer"] as const) {
+for (const place of [
+  "the reading pane",
+  "the short-row list",
+  "the reading view",
+  "the drawer",
+] as const) {
   // SLOW(>=2s): an ask snoozed into the folded Later band, and the focus read after it.
-  test(`k-next-item: ${place === "the reading pane" ? "beside the reading pane" : place === "card mode" ? "in card mode" : "in the drawer"} a snooze of the only item shown, with the Later band folded, leaves the focus in the Inbox and not on the page's body`, async ({
+  test(`k-next-item: ${placeWords(place)} a snooze of the only item shown, with the Later band folded, leaves the focus in the Inbox and not on the page's body`, async ({
     page,
   }) => {
     await nextItemOnlyShownSteps(page, place);
@@ -9497,8 +9941,9 @@ for (const place of ["the reading pane", "card mode", "the drawer"] as const) {
 }
 
 // The tester's red rows of round 16 (R8, and 9feff4e4's no scroll while the rows still stand): in
-// card mode and in the drawer a snooze of two selected rows scrolls the list nowhere. At 9d3e0777
-// the list jumps by about 200 to 500 px and the next row ends at the top edge.
+// the short-row list at 1024x768 (in card mode before #5223) and in the drawer a snooze of two
+// selected rows scrolls the list nowhere. At 9d3e0777 the list jumps by about 200 to 500 px and
+// the next row ends at the top edge.
 /** Where `row` stands in the box that scrolls the list it is in - the list column, the drawer, or
  *  the document where no element around it scrolls: its top against the box's visible top, and
  *  the box's scrollTop. */
@@ -9590,11 +10035,12 @@ async function nextItemBulkNoScrollSteps(page: Page, place: InboxPlace): Promise
   ).toBeLessThanOrEqual(4);
 }
 
+// The architect's rulings Q1(b) and Q2(a): the bar's acts after `x` stay in the short-row list.
 // SLOW(>=2s): eighteen asks seeded, two selected and snoozed, and the list read as it settles.
-test("k-next-item: in card mode a snooze of two selected rows in a list that scrolls hands on to the row after them with no scroll", async ({
+test("k-next-item: in the short-row list at 1024x768 a snooze of two selected rows in a list that scrolls hands on to the row after them with no scroll", async ({
   page,
 }) => {
-  await nextItemBulkNoScrollSteps(page, "card mode");
+  await nextItemBulkNoScrollSteps(page, "the short-row list");
 });
 
 // SLOW(>=2s): eighteen asks seeded, two selected and snoozed, and the list read as it settles.
@@ -9639,14 +10085,104 @@ test("k-phone: a tap opens the status menu of today's issue page, and a tap at t
   }
 });
 
+/** On a phone, opens the Inbox drawer over CORE's project page with a tap on the compact top bar's
+ *  Peek (`peekTrigger`), and answers it once it draws its `count` cards. */
+async function tapOpenDrawer(page: Page, count: number): Promise<Locator> {
+  await page.goto("/projects/CORE");
+  await peekTrigger(page).tap();
+  const peek = drawer(page);
+  await expect(peek.locator("[data-inbox-row]"), "k-phone: the drawer draws its cards").toHaveCount(
+    count
+  );
+  return peek;
+}
+
 // The tester's red row of round 16 (R15): on a phone, right after a tap on P1 moves a card, a tap
 // on another card's Snooze opens its menu. At 9d3e0777 that tap scrolls the page and opens nothing.
-/** k-phone after a pick that moves a card: six asks at P2 on a phone, a tap on P1 in a low card's
- *  priority menu, which moves that card up into the P1 band, then a tap on another card's Snooze
- *  (R15: "a tap on a control of R4 opens its menu"): its menu opens, and the tapped Snooze stays
- *  where the finger tapped it. */
+// Since cybermonklabs/legion#5223 the Inbox page lists short rows at a phone's width, and the
+// Peek drawer is where cards with their own priority and Snooze stand: its list is banded by
+// priority, as the page's was, and scrolls in the drawer, the box the list's viewport anchor holds
+// (`InboxDrawer`'s `scroller`).
+/** k-phone after a pick that moves a card: six asks at P2 on a phone, in the drawer, a tap on P1
+ *  in a low card's priority menu, which moves that card up into the P1 band, then a tap on another
+ *  card's Snooze (R15: "a tap on a control of R4 opens its menu"): its menu opens, and the tapped
+ *  Snooze stays where the finger tapped it. */
 // SLOW(>=2s): six asks on a phone, a priority picked by taps, and a second card's Snooze tapped.
 test("k-phone: right after a tap on P1 moves a card, a tap on another card's Snooze opens its menu and stays where the finger tapped it @phone @phone-only", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issueOf = new Map<string, string>();
+  for (const title of ["Ledger", "Mirror", "Lease", "Replay", "Quota", "Clock"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `${title} rollout` });
+    await patchIssue(issue.key, { priority: 2 });
+    const ask = await createAsk(
+      issue.key,
+      { question: `Ship the ${title.toLowerCase()} rollout?` },
+      asker
+    );
+    issueOf.set(ask.id, issue.key);
+  }
+  const peek = await tapOpenDrawer(page, 6);
+  const card = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
+  const order = await peek
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const [moved, other] = order.slice(3, 5);
+  const movedKey = issueOf.get(moved ?? "");
+  if (moved === undefined || other === undefined || movedKey === undefined) {
+    throw new Error("the Inbox lists other asks than the six seeded");
+  }
+  /** Scrolls the drawer so `control`'s top stands at `at` of the viewport's height: the drawer
+   *  takes the whole of a phone's screen, from its top. */
+  const scrollTo = async (control: Locator, at: number) => {
+    await control.evaluate((node, fraction) => {
+      const box = node.closest('[data-testid="inbox-drawer"]');
+      if (box !== null) box.scrollTop += node.getBoundingClientRect().top - innerHeight * fraction;
+    }, at);
+    await settledScrollTop(peek, 5);
+  };
+  const writes = issueWrites(page, movedKey);
+  const priority = priorityTrigger(card(moved), movedKey);
+  await scrollTo(priority, 0.8);
+  await priority.tap();
+  await expect(
+    listOf(priority),
+    "k-phone: a tap on the low card's priority opens its menu"
+  ).toBeVisible();
+  await listOf(priority).getByRole("option", { exact: true, name: "P1" }).tap();
+  await expect
+    .poll(() => writesSent(writes), { message: "k-phone: a tap on P1 sends one write" })
+    .toBe(1);
+  // The server answers the pick's write and the card moves into the P1 band within this second
+  // and a half.
+  await page.waitForTimeout(1500);
+
+  const snooze = card(other).getByRole("button", { name: /^Snooze / });
+  await scrollTo(snooze, 0.85);
+  // The scroll above read this Snooze's own box to place it, so it is drawn and has a box.
+  const box = await snooze.boundingBox();
+  if (box === null) throw new Error("k-phone: the other card's Snooze has no box");
+  const before = box.y;
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(
+    listOf(snooze),
+    "k-phone: right after the pick, a tap on another card's Snooze opens its menu"
+  ).toBeVisible();
+  const after = (await snooze.boundingBox())?.y;
+  expect(
+    Math.abs((after ?? Number.NaN) - before),
+    `k-phone: the tapped Snooze stays where the finger tapped it (y ${before} before, ${after} after)`
+  ).toBeLessThanOrEqual(4);
+});
+
+/** The same taps in the Inbox page's reading view on a phone (cybermonklabs/legion#5223): a tap on
+ *  P1 in the head's priority menu moves the row into the P1 band of the list the view hides, and
+ *  right after it a tap on the head's Snooze opens its menu, and the Snooze stays where the finger
+ *  tapped it. */
+// SLOW(>=2s): six asks on a phone, a row's reading view opened, a priority picked by taps, and its
+// Snooze tapped.
+test("k-phone: in the Inbox's reading view, right after a tap on P1 in its head's priority menu, a tap on the head's Snooze opens its menu and stays where the finger tapped it @phone @phone-only", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -9667,44 +10203,41 @@ test("k-phone: right after a tap on P1 moves a card, a tap on another card's Sno
   const order = await rows.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
   );
-  const [moved, other] = order.slice(3, 5);
+  const moved = order[3];
   const movedKey = issueOf.get(moved ?? "");
-  if (moved === undefined || other === undefined || movedKey === undefined) {
+  if (moved === undefined || movedKey === undefined) {
     throw new Error("the Inbox lists other asks than the six seeded");
   }
-  /** Scrolls the page so `control`'s top stands at `at` of the viewport's height. */
-  const scrollTo = async (control: Locator, at: number) => {
-    await control.evaluate((node, fraction) => {
-      window.scrollBy(0, node.getBoundingClientRect().top - innerHeight * fraction);
-    }, at);
-    await settledScrollTop(page, 5);
-  };
+  await inboxRow(page, moved).locator("time").first().tap();
+  await expect(
+    readingView(page),
+    "k-phone: a tap on the fourth row opens its reading view"
+  ).toHaveAttribute("data-inbox-reading-row", moved);
   const writes = issueWrites(page, movedKey);
-  const priority = priorityTrigger(inboxRow(page, moved), movedKey);
-  await scrollTo(priority, 0.8);
+  const priority = priorityTrigger(paneHead(page), movedKey);
   await priority.tap();
   await expect(
     listOf(priority),
-    "k-phone: a tap on the low card's priority opens its menu"
+    "k-phone: a tap on the head's priority opens its menu"
   ).toBeVisible();
   await listOf(priority).getByRole("option", { exact: true, name: "P1" }).tap();
   await expect
     .poll(() => writesSent(writes), { message: "k-phone: a tap on P1 sends one write" })
     .toBe(1);
-  // The server answers the pick's write and the card moves into the P1 band within this second
+  // The server answers the pick's write and the row moves into the P1 band within this second
   // and a half.
   await page.waitForTimeout(1500);
 
-  const snooze = inboxRow(page, other).getByRole("button", { name: /^Snooze / });
-  await scrollTo(snooze, 0.85);
-  // The scroll above read this Snooze's own box to place it, so it is drawn and has a box.
+  const snooze = paneHead(page).getByRole("button", { name: /^Snooze / });
+  await expect(snooze, "k-phone: the reading view's head draws its Snooze").toBeVisible();
+  // The wait above found the Snooze drawn, so it has a box.
   const box = await snooze.boundingBox();
-  if (box === null) throw new Error("k-phone: the other card's Snooze has no box");
+  if (box === null) throw new Error("k-phone: the head's Snooze has no box");
   const before = box.y;
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
   await expect(
     listOf(snooze),
-    "k-phone: right after the pick, a tap on another card's Snooze opens its menu"
+    "k-phone: right after the pick, a tap on the head's Snooze opens its menu"
   ).toBeVisible();
   const after = (await snooze.boundingBox())?.y;
   expect(
@@ -9964,26 +10497,30 @@ test("k-answer-box: beside the reading pane an r held down on a reply thread's r
   await expect(reply, step("the repeats type nothing in the reply box")).toHaveValue("");
 });
 
-// SLOW(>=2s): an approval request on a card, and Shift+R held for a third of a second.
+// SLOW(>=2s): an approval request's reading view at 1024x768, and Shift+R held for a third of a
+// second.
 // @firefox: the repeats the engine sends for a held key, and where they land once the press has
 // moved the focus (playwright.config.ts names the clause).
-test("k-approval-keys: in card mode a Shift+R held down picks Request changes with the caret in its reason, and its repeats type nothing there @firefox", async ({
+test("k-approval-keys: in the reading view at 1024x768 a Shift+R held down opens Request changes with the caret in its reason, and its repeats type nothing there @firefox", async ({
   page,
 }) => {
   const step = (text: string) => `k-approval-keys: a held Shift+R: ${text}`;
   await createProject({ key: "CORE", name: "Core" });
   const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
-  const inbox = await openInboxAt(page, "card mode", 1);
-  const row = rowOf(inbox, approval.askId);
-  await row.focus();
+  const inbox = await openInboxAt(page, "the reading view", 1);
+  await goTo(inbox, approval.askId);
+  // The head's Request changes takes a press once the document's read returns, so the press
+  // moves the focus into the reason and the repeats come after it.
+  await expect(
+    paneHead(page).getByRole("button", { disabled: false, exact: true, name: "Request changes" }),
+    step("the request's head draws Request changes, and it takes a press")
+  ).toBeVisible();
   await page.keyboard.down("Shift");
   await holdKey(page, "R", 10);
   await page.keyboard.up("Shift");
-  await expect(
-    row.getByRole("radio", { name: /^Request changes/ }),
-    step("Shift+R picks Request changes")
-  ).toBeChecked();
-  const reason = row.locator("[data-ask-answer]");
+  const dialog = page.getByRole("dialog", { name: "Request changes" });
+  await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
+  const reason = dialog.getByLabel("Reason");
   await expect(reason, step("the caret is in the reason")).toBeFocused();
   await expect(reason, step("the repeats type nothing in the reason")).toHaveValue("");
 });

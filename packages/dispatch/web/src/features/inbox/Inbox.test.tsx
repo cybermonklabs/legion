@@ -11671,6 +11671,37 @@ test("below 1280 px Shift+R on a focused approval request's short row opens its 
   }
 });
 
+test("below 1280 px Escape in the Request changes box Shift+R opened from a short row gives the focus to the reading view's scroller", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const reads = approvalViewReads(rows);
+  const { unmount } = renderInbox("/", { runtime: reads.runtime });
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-approval", "ask-b"]));
+    act(() => shortRow("ask-approval").focus());
+    await user.keyboard("{Shift>}R{/Shift}");
+    const view = await screen.findByTestId("inbox-reading-view");
+    const dialog = await screen.findByRole("dialog", { name: "Request changes" });
+    await waitFor(() => expect(within(dialog).getByLabelText("Reason")).toHaveFocus());
+
+    // The short row the key was pressed on went with the list, so the box gives the focus back
+    // to the view's own stop, as it does to the scroller a press inside the view was made from.
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(within(view).getByTestId("inbox-pane-scroller")).toHaveFocus());
+    expect(reads.review).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    reads.restore();
+  }
+});
+
 test("on a card a picks Approve and sends it, and Shift+R picks Request changes, whose reason Escape lets go of back to the row", async () => {
   const user = userEvent.setup();
   const rows = [

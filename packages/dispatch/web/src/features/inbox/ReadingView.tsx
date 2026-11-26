@@ -41,9 +41,10 @@ export type ReadingViewTarget =
 /** The target a pick that names none lands on. */
 export const READING_VIEW_SCROLLER: ReadingViewTarget = { kind: "scroller" };
 
-/** What a target comes to once the view has drawn it: an element to focus; a control to press;
- *  a menu's trigger, focused and pressed, so the menu gives the focus back to it as it closes;
- *  or a "Write a reply" to open with the caret in its box (`openReplyBox`). */
+/** What a target comes to once the view has drawn it: an element to focus; a control to press,
+ *  from the view's scroller, so what the press opens gives the focus back there; a menu's trigger,
+ *  focused and pressed, so the menu gives the focus back to it as it closes; or a "Write a reply"
+ *  to open with the caret in its box (`openReplyBox`). */
 type Landing =
   | { readonly focus: HTMLElement }
   | { readonly press: HTMLElement }
@@ -156,8 +157,15 @@ export function useReadingViewLanding({
       const landing = landingIn(view, want.id, want.target);
       if (landing === null) return false;
       pending.current = null;
-      if ("press" in landing) landing.press.click();
-      else if ("menu" in landing) {
+      if ("press" in landing) {
+        // The press is made from the view's own focus stop, its scroller: the row the key was
+        // pressed on went with the list, and by the time a read lets the press land a browser has
+        // moved that hidden row's focus to the page's body. So what the press opens - Request
+        // changes' box (`useDialog`) - gives the focus back to the scroller as it closes, as it
+        // does to the scroller a key pressed inside the view was pressed on.
+        view.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR)?.focus({ preventScroll: true });
+        landing.press.click();
+      } else if ("menu" in landing) {
         landing.menu.focus({ preventScroll: true });
         landing.menu.click();
       } else if ("reply" in landing) openReplyBox(landing.reply);
