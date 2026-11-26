@@ -14,9 +14,9 @@
 --
 -- The rows are keyed by project first, since every read and every delete names one project
 -- (store.KeptProjectStanding, store.KeepProjectStanding). An answer that Dispatch holds no such
--- project is kept for any key a caller names, so the broker keeps at most
--- store.MaxKeptMissingProjects of them, and project_standing_missing orders them by asked_at for
--- the write that ends the oldest past it.
+-- project is kept for any key a caller names, so a write of one ends the oldest asked past
+-- store.MaxKeptMissingProjects of them, except one that still hides a person's earlier answer of
+-- its project, and project_standing_missing orders them by asked_at for that write.
 create table project_standing (
   person text not null check (person = btrim(person) and person !~ '[A-Z]'),
   project text not null check (project <> ''),

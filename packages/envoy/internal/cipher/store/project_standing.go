@@ -22,12 +22,14 @@ import (
 // (MaxKeptMissingProjects); every other row is an answer about a project Dispatch holds, and goes
 // when Dispatch answers that it holds the project no more.
 
-// MaxKeptMissingProjects is how many answers that Dispatch holds no such project the broker keeps.
-// A write past it ends the oldest asked (KeepProjectStanding), so a read while Dispatch cannot be
-// asked refuses that key as one never asked, which fails closed. Nothing ends a kept answer by
-// its age: only a write ends one, and a write follows an answer of Dispatch, so none ends during
-// an outage. A key keeps its answer while fewer than MaxKeptMissingProjects other keys were
-// answered no project after it was last asked.
+// MaxKeptMissingProjects is how many answers that Dispatch holds no such project a write of such an
+// answer leaves. Past it the write ends the oldest asked (KeepProjectStanding), so a read while
+// Dispatch cannot be asked refuses that key as one never asked, which fails closed. It leaves one
+// past it only while that one hides a person's earlier answer of its project, which a slower
+// process's late write alone makes. Nothing ends a kept answer by its age: only a write ends one,
+// and a write follows an answer of Dispatch, so none ends during an outage. A key keeps its answer
+// while fewer than MaxKeptMissingProjects other keys were answered no project after it was last
+// asked.
 const MaxKeptMissingProjects = 10_000
 
 // keepProjectStandingSQL writes an answer unless the row holds one asked later.
