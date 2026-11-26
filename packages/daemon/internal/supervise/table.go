@@ -343,13 +343,13 @@ type PodUpdateOpen struct {
 // origin holds, or that fails, ends the round with no replacement and keeps the pod (R7 of
 // #5285, internal/daemon's roundKeeps), so the text says that a round can end with
 // no replacement and the pod then stays, and says that the pod goes whatever runs in it only of a
-// replacement the daemon makes. That keep has two exceptions, and the text names each where it
-// holds (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a pod whose disk is a kept volume
-// that the issue's next pod mounts is replaced whatever the read finds, and the volume keeps the
-// work; and a round over a drift that breaks the pod (runtime.Breaks: its recorded reasons open
-// on runtime.BreakingDrift, today a drift of the pod's service account or of its exchange
-// identity) replaces the pod whatever the read finds and tells the issue's architect what it took,
-// so its ask promises no keep.
+// replacement the daemon makes. That keep has one exception, and the text names it where it holds
+// (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a round over a drift that breaks the
+// pod (runtime.Breaks: its recorded reasons open on runtime.BreakingDrift, today a drift of the
+// pod's service account or of its exchange identity) replaces the pod whatever the read finds and
+// tells the issue's architect what it took, so its ask promises no keep. A pod whose disk is a
+// kept volume that the issue's next pod mounts is no exception: R7 keeps it as it keeps any other
+// pod, so the text says that the keep holds there too.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
@@ -373,8 +373,8 @@ func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string
 	read := "When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. " +
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: " +
 		"the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. " +
-		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, " +
-		"and the work on the disk stays on that volume, unless the replacement finds that the volume failed: then it marks the volume for a reset, and the next launch of this issue deletes the volume. Otherwise the daemon deletes the pod and the disk."
+		"This is also true when the pod's disk is a volume that the next pod of this issue mounts. " +
+		"If the read finds no such work, the daemon replaces the pod. It deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts."
 	held := "The daemon holds your next task until your process runs again, or until the round ends with no replacement."
 	if runtime.Breaks(reasons) {
 		read = "This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds. " +

@@ -14,10 +14,10 @@ body: |-
   (`dispatch_token_broker` set, no `dispatch_token_transition_file`, and a pod that carries no
   exchange identity); its reason opens on `[breaks the pod] `, so its round replaces the pod after
   the read whatever it finds, and no keep holds that round back. Any other drift of the exchange
-  identity, a token of another lifetime among them, is one the roles keep working under. A round
-  over a kept volume the next pod mounts replaces the pod too. Such a
-  replacement, and a launch's own replacement of an issue pod, tells the architect once what it
-  took (`workspace-taken`): each commit and the working-copy change by name, or that no read could
+  identity, a token of another lifetime among them, is one the roles keep working under. A kept
+  volume that the next pod mounts is no exception: a round keeps such a pod as it keeps any other.
+  A round's replacement over a drift that breaks the pod, and a launch's own replacement of an
+  issue pod, tells the architect once what it took (`workspace-taken`): each commit and the working-copy change by name, or that no read could
   be made. A launch reads through any launcher of the pod that can, and a launch that deletes a
   kept volume of a Sandbox that runs no pod says so, and is told only once that Sandbox is gone.
   Each round's replacement, and each launch's own replacement whose read found work or could not

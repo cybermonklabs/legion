@@ -1130,9 +1130,9 @@ type podReplacement struct {
 // while a turn may run, since a turn's change in the working copy is work. The read decides the
 // replacement (roundKeeps): a read that finds nothing lets it go on, and a read that finds work
 // that no branch or tag on origin holds, or that cannot be made, keeps the pod over a drift its
-// roles can keep working under, and the round ends with no replacement (keepPodForRound). A round
-// over a drift that breaks the pod (runtime.Breaks), and a pod whose disk is a kept volume that
-// the issue's next pod mounts (roundKeptVolume), are replaced whatever the read found. The read is
+// roles can keep working under, and the round ends with no replacement (keepPodForRound), whatever
+// the disk: a kept volume that the issue's next pod mounts is no exception. A round over a drift
+// that breaks the pod (runtime.Breaks) is replaced whatever the read found. The read is
 // bounded to one sweep interval, and a read its bound ends is a read that failed. The last word
 // under the pod's launch turn refuses the replacement where a claim of the issue started a turn
 // after the read began (replacementDue). What each replacement reads and names of a claim whose
@@ -1324,7 +1324,7 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 	rc roundCall) {
 	issue, round, pod, reasons := replace.issue, replace.round, replace.pod, replace.reasons
 	read := s.readPodWorkspace(ctx, issue, round, rc.process, replace.by, at)
-	if s.roundKeeps(issue, told, round, reasons, read) {
+	if roundKeeps(reasons, read) {
 		s.keepPodForRound(ctx, issue, round, pod, reasons, read, told)
 		return
 	}
@@ -2228,7 +2228,7 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	}
 	reasons := roundReasons(group, round)
 	read := s.readPodWorkspace(ctx, issue, round, runtime.Known{}, viaLaunch, at)
-	if s.roundKeeps(issue, group, round, reasons, read) {
+	if roundKeeps(reasons, read) {
 		s.keepPodForRound(ctx, issue, round, podUID, reasons, read, group)
 		return s.keepAtLaunch(issue, round, token, "the read of the pod's workspace found work that no branch or tag on origin holds, or could not be made")
 	}

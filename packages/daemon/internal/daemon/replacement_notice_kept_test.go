@@ -132,9 +132,9 @@ func (r *podUpdateRig) wantRoundEnded() {
 	}
 }
 
-// The Legion reviewer's point D on fa9deb04: a round over a drift its roles can keep working under
-// replaces a pod whose disk is a kept volume that the issue's next pod mounts, over a read that found
-// an unpushed commit. The store refuses the notice. The round stays open, and once the store takes
+// The Legion reviewer's point D on fa9deb04: a round over a drift that breaks the pod replaces a pod
+// whose disk is a kept volume that the issue's next pod mounts, over a read that found an unpushed
+// commit. The store refuses the notice. The round stays open, and once the store takes
 // the notice, the notice is the one the replacement built: the work is on the kept volume, which is
 // still there, not on one the replacement marked for a reset.
 func TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound(t *testing.T) {
@@ -143,8 +143,8 @@ func TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound(t *testin
 	rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
 	lift := rig.refuseWorkspaceTaken()
-	rig.answerRound(podUpdateDrift, claim.RoleImplementer, claim.RoleTester)
-	rig.awaitReplacement(1, "of a pod whose disk is a kept volume")
+	rig.answerRound(roundBreakingDrift, claim.RoleImplementer, claim.RoleTester)
+	rig.awaitReplacement(1, "of a pod whose disk is a kept volume, over a drift that breaks the pod")
 	rig.wantRoundOpenWhileRefused()
 	lift()
 	rig.wantToldOnce("once the store takes the row")

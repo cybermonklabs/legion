@@ -809,8 +809,9 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // the role's own push keeps its work, and that work not pushed before the pod goes is lost; it
 // names no rescue branch. It says that the daemon reads the workspace before it replaces the pod,
 // and that a read that finds work origin does not hold, or that fails, ends the round with no
-// replacement and keeps the pod (R7 of #5285), so it no longer says that the pod
-// and its disk go when the round ends whatever runs. A role whose tool has no ready_for_update is
+// replacement and keeps the pod (R7 of #5285), also where the pod's disk is a volume
+// that the issue's next pod mounts, so it no longer says that the pod and its disk go when the
+// round ends whatever runs, and names no exception for such a volume. A role whose tool has no ready_for_update is
 // told to do the first three steps, because the round ends at that moment whatever it does: the
 // end of its turn is no answer. It does not say that the round ends early once no role is in a
 // turn, or that only the background jobs of the turn in progress go with the pod.
@@ -831,7 +832,8 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"A subagent or a background job that runs does not delay it either: when the daemon replaces the pod, the pod goes, whatever runs in it.",
 		"When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod.",
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings.",
-		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, and the work on the disk stays on that volume, unless the replacement finds that the volume failed: then it marks the volume for a reset, and the next launch of this issue deletes the volume.",
+		"This is also true when the pod's disk is a volume that the next pod of this issue mounts.",
+		"If the read finds no such work, the daemon replaces the pod. It deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts.",
 		"These things go with the pod when the daemon replaces it:",
 		"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with round: \"" + testRound + "\" before you end that turn.",
 		"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
@@ -876,6 +878,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"Each file that .gitignore ignores.", "push check", "rescue",
 		"- The background jobs of that turn.", "The round then ends when no role is in a turn.",
 		"When the round ends, the daemon deletes the pod and the disk.", "when the round ends, the pod goes, whatever runs in it",
+		"There is one exception.",
 	} {
 		if strings.Contains(text, gone) {
 			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)

@@ -38,7 +38,7 @@ func TestARoundsCallThatYieldsGivesATieToTheNewestRecord(t *testing.T) {
 			read := workspaceRead{round: podUpdateRound, by: viaIssue, at: rig.clock.Now(), work: roundUnpushed}
 			var round string
 			recordRound := func() {
-				recorded, ok := rig.s.recordRoundReplacement(rig.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, podUpdateDrift, read)
+				recorded, ok := rig.s.recordRoundReplacement(rig.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, read)
 				if !ok {
 					t.Fatal("record the round's replacement by issue")
 				}

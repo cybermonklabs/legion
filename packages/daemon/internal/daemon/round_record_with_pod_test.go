@@ -55,15 +55,16 @@ import (
 const launchWithPodSentence = "The Sandbox ran pod " + podUpdatePod + ", and the pod went with it."
 
 // podlessKeptVolumeRound is a rig whose implementer the daemon suspended with the round over a
-// drift the pod's roles can keep working under recorded, unasked, with no process in the pod, over
-// a workspace that holds passedOverCommit, on a kept volume the issue's next pod mounts: the round
-// is over, nothing holds its pod, and the round replaces it by issue whatever its read found, since
-// the work stays on the volume (roundKeeps).
+// drift that breaks the pod recorded, unasked, with no process in the pod, over a workspace that
+// holds passedOverCommit, on a kept volume the issue's next pod mounts: the round is over, nothing
+// holds its pod, and the round replaces it by issue whatever its read found, since no role can keep
+// working in that pod (roundKeeps); the work stays on the volume. A kept volume alone replaces
+// nothing over a drift the roles can keep working under (R7 of #5285 makes no exception for it).
 func podlessKeptVolumeRound(t *testing.T) *podUpdateRig {
 	t.Helper()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
-	rig.drifts(podUpdateDrift)
+		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: roundBreakingDrift, unasked: true})
+	rig.drifts(roundBreakingDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
 	rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
@@ -84,7 +85,7 @@ func withPodTaken(r *podUpdateRig, operation string) runtime.TakenPod {
 func (r *podUpdateRig) recordRoundOverAFailedRead() {
 	r.t.Helper()
 	read := workspaceRead{round: podUpdateRound, by: viaIssue, at: r.clock.Now(), err: errRoundRead}
-	if _, ok := r.s.recordRoundReplacement(r.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, podUpdateDrift, read); !ok {
+	if _, ok := r.s.recordRoundReplacement(r.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, read); !ok {
 		r.t.Fatal("record the round's replacement by issue")
 	}
 }

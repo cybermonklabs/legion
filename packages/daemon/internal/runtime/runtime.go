@@ -518,9 +518,9 @@ type IssueVolumeReader interface {
 // WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
 // issue shares holds work that no branch or tag on origin holds. A pod update round makes it before
 // each replacement it makes through a role, and replaces the pod only over a read that found
-// nothing, unless the round is over a drift that breaks the pod or the disk is a kept volume (R7 of
-// #5285); the read that may end an earlier round's keep of the pod is made through
-// a live role in the pod too, where one runs (internal/daemon's readKeptPod). The idle release and
+// nothing, unless the round is over a drift that breaks the pod (R7 of #5285; a kept volume is no
+// exception); the read that may end an earlier round's keep of the pod is made through a live
+// role in the pod too, where one runs (internal/daemon's readKeptPod). The idle release and
 // the close of a left pod with a live claim make it before they take the pod, and take it only
 // when the read finds no work: nothing keeps a copy of work a taken pod's workspace held. The role
 // named must be one whose process runs in the issue's pod:

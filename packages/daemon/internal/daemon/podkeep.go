@@ -22,21 +22,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// roundKeeps is whether read, the read of the workspace before one of round's replacements, keeps
-// the pod: it found work that no branch or tag on origin holds, or it could not be made, the round
-// is over a drift the pod's roles can keep working under (its recorded reasons, which reasons is,
-// do not open on runtime.BreakingDrift: runtime.Breaks), and the pod's disk is no kept volume
-// that the issue's next pod mounts (roundKeptVolume), which no replacement deletes. A round over a
-// drift that breaks the pod (today a drift of the pod's service account, or one of its exchange
-// identity where a launch into the pod is refused until its round replaces it, which the Sandbox
-// runtime's PodDrift marks where it decides it, spec v23 and v26) is replaced whatever the read
-// found, since no role can keep working in that pod, and the issue's architect is told what the
-// replacement took (roundReplaced). A round is read by the reasons it
-// recorded at its open: a drift that breaks the pod and comes while a round is open is the next
-// round's, which the keep of this round's read holds back no more than any other
-// (podKeptForWork).
-func (s *supervision) roundKeeps(issue string, group []supervise.Claim, round, reasons string, read workspaceRead) bool {
-	return !read.clean() && !runtime.Breaks(reasons) && !s.roundKeptVolume(issue, group, round)
+// roundKeeps is whether read, the read of the workspace before one of a round's replacements,
+// keeps the pod: it found work that no branch or tag on origin holds, or it could not be made, and
+// the round is over a drift the pod's roles can keep working under (its recorded reasons, which
+// reasons is, do not open on runtime.BreakingDrift: runtime.Breaks). A kept volume that the issue's
+// next pod mounts is no exception: R7 keeps such a pod as it keeps any other, since a replacement
+// would stop the turn that runs at the bound and its subagents although the volume keeps the files.
+// A round over a drift that breaks the pod (today a drift of the pod's service account, or one of
+// its exchange identity where a launch into the pod is refused until its round replaces it, which
+// the Sandbox runtime's PodDrift marks where it decides it, spec v23 and v26) is replaced whatever
+// the read found, since no role can keep working in that pod, and the issue's architect is told
+// what the replacement took (roundReplaced). A round is read by the reasons it recorded at its
+// open: a drift that breaks the pod and comes while a round is open is the next round's, which the
+// keep of this round's read holds back no more than any other (podKeptForWork).
+func roundKeeps(reasons string, read workspaceRead) bool {
+	return !read.clean() && !runtime.Breaks(reasons)
 }
 
 // keepPodForRound ends round with no replacement, because the read before its replacement found
@@ -368,26 +368,22 @@ func keptEnded(stays, reasons string, again bool) string {
 // made of pod although the read of its workspace before it found work that no branch or tag on
 // origin holds (work, failed nil), or failed (failed): why the round replaced the pod, the roles of
 // named with their states, what the read found, and whether the work is gone or on a kept volume
-// (kept, read once the replacement is made). A round over a drift its roles can keep working
-// under replaced the pod only because its disk was a kept volume when the round read it
-// (roundKeeps); where the replacement then found the volume failed and marked it for a reset, kept
-// is false, and the notice says the next launch deletes the volume (the Legion reviewer's point
-// 9). The architect reads it in its session and people read it in its history, so it follows
+// (kept, read once the replacement is made; a kept volume the replacement found failed and marked
+// for a reset is not kept, the Legion reviewer's point 9). A round over a drift its roles can keep
+// working under replaces the pod only over its own clean read (roundKeeps), whatever the disk, so
+// where such a round's notice tells of work or of a failed read, that read is another act's on the
+// same pod, which the round's finish took with its own (tellingRecord), and the notice says so.
+// The architect reads it in its session and people read it in its history, so it follows
 // ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {
-	breaks := runtime.Breaks(reasons)
 	why := "The round was over a drift that breaks the pod, so no role could keep working in the pod."
+	if !runtime.Breaks(reasons) {
+		why = "The round was over a drift that the roles can keep working under. The read that the round made found nothing that is not on a branch at origin, so the round replaced the pod. The read that this notice tells of was made for another act on the same pod."
+	}
 	gone, lost := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."
-	switch {
-	case kept:
-		if !breaks {
-			why = "The pod's disk is a kept volume that the issue's next pod mounts, so the replacement did not delete the disk."
-		}
+	if kept {
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 		lost = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."
-	case !breaks:
-		why = "The pod's disk was a kept volume when the round read it, so the round replaced the pod. The replacement found that the volume failed, and marked it for a reset."
-		gone = "The pod is gone. The next launch of this issue deletes its volume and makes a new one."
 	}
 	parts := []string{fmt.Sprintf("The daemon replaced the pod of %s (pod %s) for the update round %s. %s %s %s", issue, pod, round, roundOpenedFor(reasons), why, gone)}
 	if len(named) > 0 {
