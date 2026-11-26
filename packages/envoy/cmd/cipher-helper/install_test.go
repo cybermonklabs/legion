@@ -82,6 +82,7 @@ func newInstallRig(t *testing.T) *installRig {
 	// and the fields of its own /proc/<pid>/stat line after the command's name, which hold when
 	// the kernel started the process, then the call's arguments.
 	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; echo \"$up ${stat##*[)]} -- $*\" >> " + r.calls + ".starts\n" +
+		"trap 'read -r end _ < /proc/uptime; echo \"$up $end ${stat##*[)]} -- $*\" >> " + r.calls + ".lives' EXIT\n" +
 		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
@@ -705,9 +706,59 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	}
 	ops := r.fakeHelper(t, nil)
 	released := r.releaseRestartAtGiveUp(t)
+	bootBefore := testexec.SinceBoot(t)
 	started := time.Now()
 	err := r.run("--url", "https://secrets.example")
 	took := time.Since(started)
+	bootAfter := testexec.SinceBoot(t)
+	defer func() {
+		// DIAGNOSTIC ONLY: each call's start, first line and exit, all on the rig's clocks.
+		text, readErr := os.ReadFile(r.calls + ".lives")
+		if readErr != nil {
+			t.Logf("DIAG no lives: %v", readErr)
+			return
+		}
+		type life struct {
+			exec, mark, end time.Duration
+		}
+		var lives []life
+		for line := range strings.Lines(string(text)) {
+			clock, _, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " -- ")
+			f := strings.Fields(clock)
+			if len(f) < 22 {
+				t.Logf("DIAG short line %q", line)
+				continue
+			}
+			mark, _ := time.ParseDuration(f[0] + "s")
+			end, _ := time.ParseDuration(f[1] + "s")
+			ticks, _ := strconv.ParseInt(f[21], 10, 64)
+			lives = append(lives, life{time.Duration(ticks) * clockTick, mark, end})
+		}
+		var allHeld, allLife time.Duration
+		hist := map[time.Duration]int{}
+		inversions, markAfterEnd, execBeforeCall := 0, 0, 0
+		var maxInversion time.Duration
+		for i, l := range lives {
+			allHeld += l.mark - l.exec
+			allLife += l.end - l.exec
+			hist[l.mark-l.exec]++
+			if l.mark > l.end {
+				markAfterEnd++
+			}
+			if l.exec < bootBefore-clockTick {
+				execBeforeCall++
+			}
+			if i+1 < len(lives) && lives[i+1].exec < l.end {
+				inversions++
+				maxInversion = max(maxInversion, l.end-lives[i+1].exec)
+			}
+		}
+		var lastEnd time.Duration
+		if len(lives) > 0 {
+			lastEnd = lives[len(lives)-1].end
+		}
+		t.Logf("DIAG calls %d took %s bootspan %s heldAll %s lifeAll %s inversions %d max %s markAfterEnd %d execBeforeCall %d afterMinusLastEnd %s hist %v", len(lives), took, bootAfter-bootBefore, allHeld, allLife, inversions, maxInversion, markAfterEnd, execBeforeCall, bootAfter-lastEnd, hist)
+	}()
 	if released() {
 		t.Fatalf("install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", err)
 	}
