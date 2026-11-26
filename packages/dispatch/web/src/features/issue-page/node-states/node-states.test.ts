@@ -765,8 +765,7 @@ function coverageOf(root: TreeNode): IssueCoverage {
  *  is typed, on the page's `address`, which carries the words as the page's own does (`?q=`);
  *  with `addressed`, the nodes the address names and what the body tells the slot of them, as the
  *  slot hands them on where it may tell (`slots/view-verification.tsx`); under the names store
- *  with what the page publishes for the tree's chips (`publishedTree`), no names line, and no
- *  document a row is edited in, so no row asks the page for an editor. */
+ *  with what the page publishes for the tree's chips (`publishedTree`), and no names line. */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
@@ -801,6 +800,7 @@ function drawVerification(
               coverage: coverageOf(root),
               isClosed: false,
               namesLine: NO_FAILED_READS,
+              // No document a row is edited in, so no row asks the page for an editor.
               onEditing: () => {},
               published,
               reads: { state: "answered" },

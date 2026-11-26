@@ -659,8 +659,9 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return author === "person" ? "person" : "agent";
     // A criterion is what a person wants to be able to do, in their own words (`page-words`): it
     // is one of the spec's statements, beside the requirements under it, and the work is held to
-    // it as it is to them, so it takes the statements' colour wherever it stands (R1), though it
-    // carries no `statement` mark, which only the spec's own requirement does (`isStatement`).
+    // it as it is to them, so it takes the statements' colour.
+    // It takes that colour wherever it stands (R1), though it carries no `statement` mark, which
+    // only the spec's own requirement does (`isStatement`).
     case "criterion":
       return "statement";
     case "decision":
