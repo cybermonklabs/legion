@@ -77,7 +77,7 @@ func orderSeeds() []seed {
 	add("wrong-token-before-H3-completion", "open row!1.2 :H3 :pending wrongToken :H3 :pending repair :H4")
 	add("same-id-alias-negative-fanout", wire+"lost "+next+"open row detach late late1 reconnect replay :H2 replay :H4 :unread")
 	add("separate-forwards-not-aliases", ack+"wait "+next+"ack1 open row no :H2 ok1 :served :H4")
-	add("RS3/surviving-refusal-copy", waiting+"detach late late reconnect replay!1.1 boot reconnect replay :unread :H4 :owed")
+	add("RS3/surviving-refusal-copy", waiting+"detach late late reconnect replay!1.1 boot reconnect row replay :unread :H4 :owed")
 	add("non-wire-turn-cannot-wait-forever", "foreign release :H1 bound :H4")
 	add("ended-pause-does-not-amend-second-stop", waiting+"bound unpause resume open row late :owed :H4")
 	cs = append(cs,

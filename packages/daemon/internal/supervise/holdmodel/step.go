@@ -55,7 +55,8 @@ func run(s State, e Event) (State, Effects) {
 }
 func execute(d decision) (State, Effects) {
 	before := d.State
-	d.dispatch(plain(d.input))
+	input := plain(d.input)
+	d.dispatch(input)
 	if d.crash {
 		d.Cut = true
 		d.input = Event{}
@@ -67,6 +68,9 @@ func execute(d decision) (State, Effects) {
 	// before it has passed an earlier deadline (O1, D2).
 	if a := before.armed(); a != 0 && d.Now > before.Now && d.Now > a {
 		d.H.Bad |= Late
+	}
+	if recoveryMutation(before, d.State, d.Effects) && !recoveryAuthorized(before, input, d.State, d.Effects) {
+		d.H.Bad |= RecoveryFence
 	}
 	return d.State, d.Effects
 }
@@ -88,10 +92,15 @@ func (d *decision) evict() {
 // receiveFatal records fatal evidence when the daemon receives it, before it
 // retries any pending write: its source redelivers it until the failure
 // commits (M6), across a failed write's repair and across a restart alike.
+// The receipt's exact match is retained as a normal result so a later repair
+// cannot disqualify the evidence by invalidating its attempt.
 func (d *decision) receiveFatal(e Event) {
 	r := d.M
-	if d.W.Fatal.K != 0 || !r.live() {
+	if r.Phase == PhEnded || r.Phase == PhFailed {
 		return
+	}
+	if e.K == KCrashFrame {
+		e.K = KResult
 	}
 	switch {
 	case e.K == KReport && e.A == RpFatal && (e.B == 0 || r.ReportSeq == 0):
@@ -99,7 +108,13 @@ func (d *decision) receiveFatal(e Event) {
 	default:
 		return
 	}
-	d.W.Fatal = e
+	d.H.FatalPending = true
+	if d.skipFatalApply {
+		d.W.FatalStuck = true
+	}
+	if !d.dropFatal {
+		d.W.Fatal = e
+	}
 }
 
 // deferInput keeps the one input a failed repair left unconsumed (M8). Retries
@@ -115,6 +130,7 @@ func (d *decision) deferInput(e Event) {
 	}
 }
 func (d *decision) dispatch(e Event) {
+	d.Booted = false
 	w := &d.W
 	switch e.K {
 	case KWrongToken:
@@ -154,6 +170,7 @@ func (d *decision) dispatch(e Event) {
 		d.prepare()
 		return
 	case KCrashFrame:
+		d.receiveFatal(e)
 		q := &w.Requests[e.R]
 		q.Answered, q.Answer = true, e.A
 		d.H.Lost[e.R] = OldSocket
@@ -245,7 +262,7 @@ func (d *decision) dispatch(e Event) {
 	}
 	// A runtime stop is irreversible. At this point the old delivery and
 	// its captured obligation own the next write; new rows cannot replace them.
-	if d.StopOwed && d.P.Kind == 0 && e.K != KTimerStopWrite {
+	if d.StopOwed && d.W.Fatal.K == 0 && d.P.Kind == 0 && e.K != KTimerStopWrite {
 		if e.K == KStartedBy && e.A == 0 {
 			d.M.StartRow = 12
 		}
@@ -283,6 +300,16 @@ func (d *decision) dispatch(e Event) {
 }
 func (d *decision) row(e Event) {
 	r := d.M
+	// Receipt made this fatal eligible. It has priority over a held or already
+	// stopped claim too: M6/O3 require its durable failure, not a pause stop.
+	if !d.W.FatalStuck && d.W.Fatal == e && (e.K == KReport && e.A == RpFatal || e.K == KResult && e.A == AFatal) {
+		// A runtime stop may have landed before its transaction did. Failure
+		// owns the claim now, so that uncommitted pause stop is cancelled.
+		d.StopOwed, d.StopRetry = false, false
+		d.fail(&r)
+		d.write(EvidenceWrite, r, e)
+		return
+	}
 	if !r.live() {
 		switch e.K {
 		case KResume, KSuspend, KStartedBy, KPauseBegins, KFailEffects, KTimerStopWrite:
@@ -358,7 +385,12 @@ func (d *decision) row(e Event) {
 		}
 	case KTimerTurn:
 		if r.TurnBy != 0 && r.TurnBy <= d.Now {
-			r.TurnBy = 0
+			for k, a := range r.Att {
+				if a.open() && a.TurnBy != 0 && a.TurnBy <= d.Now {
+					r.Att[k].TurnBy = 0
+				}
+			}
+			refreshTurnBy(&r)
 			take(&r)
 			if r.Charges < ChargeLimit {
 				r.Charges++
@@ -431,8 +463,22 @@ func (d *decision) row(e Event) {
 		} else {
 			d.leave(e)
 		}
-	case KDeath, KWake, KExit:
+	case KDeath, KExit:
 		d.leave(e)
+	case KWake:
+		// D10: a parked wake is not a no-process, forced-stop or expiry
+		// cause. It remains parked until the recovery answer decides.
+		if r.RecoverBy != 0 && d.W.Proc && !d.wakeBreaksRecovery {
+			return
+		}
+		d.leave(e)
+	}
+	if d.P.Kind == 0 && !d.crash && d.M.Wake && d.M.Phase == PhIdle && d.M.Hold.By == 0 && d.M.RecoverBy == 0 &&
+		(e.K == KResult || e.K == KRefusal || e.K == KTimerRecov) {
+		// A wake parked across recovery runs only after its deciding answer
+		// or the recovery bound. An ordinary park still waits for KWake.
+		d.leave(Event{K: KWake})
+		return
 	}
 	if d.P.Kind == 0 && !d.crash && d.M.Relaunch && d.M.Phase == PhIdle && d.M.Hold.By == 0 && d.M.RecoverBy == 0 && d.Sending == 0 && !hasAck(d.M) {
 		d.leave(Event{K: KStale})

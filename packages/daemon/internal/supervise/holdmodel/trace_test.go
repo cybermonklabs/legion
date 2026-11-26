@@ -141,6 +141,8 @@ func verdict(s State, v string) bool {
 		return r.Task.ID > 1
 	case "launch":
 		return r.Phase == PhLaunch
+	case "turnBound":
+		return r.TurnBy != 0 && r.Att[1].TurnBy == r.TurnBy
 	case "relaunch":
 		return r.Relaunch
 	case "noError":

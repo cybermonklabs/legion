@@ -16,7 +16,7 @@ type Witness struct {
 type Stats struct {
 	States, Edges, Sequences uint64
 	Roots                    int
-	Violations               map[uint8]Witness
+	Violations               map[uint16]Witness
 }
 type path struct {
 	before *path
@@ -35,7 +35,7 @@ type transition func(State, Event) (State, Effects)
 // Terminal states are checked on the incoming edge and need no expansion.
 func Explore(prefixes []Prefix, depth int) Stats { return explore(prefixes, depth, run) }
 func explore(roots []Prefix, depth int, step transition) Stats {
-	out := Stats{Violations: map[uint8]Witness{}}
+	out := Stats{Violations: map[uint16]Witness{}}
 	front := map[State]reach{}
 	for i, r := range roots {
 		n, ok := front[r.State]
@@ -53,7 +53,7 @@ func explore(roots []Prefix, depth int, step transition) Stats {
 				out.Sequences += n.ways
 				bad := Check(t)
 				if bad != 0 {
-					for bit := uint8(1); bit != 0 && bit <= Ended; bit <<= 1 {
+					for bit := uint16(1); bit != 0 && bit <= AttemptBound; bit <<= 1 {
 						if bad&bit == 0 {
 							continue
 						}

@@ -97,6 +97,9 @@ type Task struct {
 type Attempt struct {
 	Stage          Stage
 	L, Under, News uint8
+	// TurnBy belongs to this request, not to the task: an earlier prompt's
+	// turn cannot suppress a separately forwarded resend's wait.
+	TurnBy uint16
 }
 
 func (a Attempt) open() bool { return a.Stage >= AtReg && a.Stage <= AtLost }
@@ -192,6 +195,7 @@ type World struct {
 	Requests                                          [NA]WireRequest
 	Backlog                                           [3]Event
 	N                                                 uint8
+	FatalStuck                                        bool  // test-only plant: source redelivers but the machine never applies
 	Fatal                                             Event // redelivered until its durable acknowledgement (M6)
 }
 type Write uint8
@@ -230,9 +234,10 @@ type History struct {
 	Recovering uint8 // bit per logical task, from boot until an authoritative decision
 	// Turned is a bit per request whose attempt a turn start confirmed the
 	// logical task through. The replacement oracle reads it, not Task.Conf.
-	Turned [3]uint8
-	Need   [3]uint8 // independent pre-runtime launch snapshots
-	Bad    uint8
+	Turned       [3]uint8
+	Need         [3]uint8 // independent pre-runtime launch snapshots
+	FatalPending bool     // fatal evidence received, until the failure commits (M6)
+	Bad          uint16
 }
 type State struct {
 	M, S                                        Row
@@ -243,6 +248,7 @@ type State struct {
 	Root, Restored, StopRetry, StopOwed, Resend bool
 	Prepared, Sending                           uint8 // slot+1; zero means none
 	Deferred                                    Event // M8: one unconsumed input, then backpressure
+	Booted                                      bool  // Check the immediate state rebuilt by restart
 }
 
 // Start is a reachable ready, launching or working claim with a live process.
@@ -290,17 +296,18 @@ func (s State) Class() string {
 		return "H4o"
 	case s.M.Phase == PhSusp:
 		return "H4"
+	case s.M.Phase == PhWork && s.StopRetry:
+		return "H1r"
+	case s.StopRetry:
+		// A committed intent survives a restart even though the transient hold
+		// does not; its retry is still H3r.
+		return "H3r"
 	case s.M.Hold.By == 0:
 		return "H0"
 	case s.M.Phase == PhLaunch:
 		return "HL"
 	case s.M.Phase == PhWork:
-		if s.StopRetry {
-			return "H1r"
-		}
 		return "H1"
-	case s.StopRetry:
-		return "H3r"
 	case s.M.waiting():
 		return "H2"
 	default:

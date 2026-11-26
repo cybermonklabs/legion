@@ -5,8 +5,18 @@ func invalidate(r *Row) {
 		if a.open() {
 			r.Att[k].Stage = AtInvalid
 		}
+		r.Att[k].TurnBy = 0
 	}
 	r.TurnBy, r.RecoverBy = 0, 0
+}
+
+func refreshTurnBy(r *Row) {
+	r.TurnBy = 0
+	for _, a := range r.Att {
+		if a.open() {
+			r.TurnBy = earlier(r.TurnBy, a.TurnBy)
+		}
+	}
 }
 func take(r *Row) {
 	if r.Task.L != 0 {
@@ -45,7 +55,7 @@ func (d *decision) queue(e Event) {
 func (d *decision) prepare() { d.W.Alloc++; d.Prepared = d.W.Alloc; d.Resend = false }
 func (d *decision) register(e Event) {
 	r := d.M
-	r.Att[d.Prepared-1] = Attempt{AtReg, r.Task.L, r.Task.ID, r.Meta}
+	r.Att[d.Prepared-1] = Attempt{Stage: AtReg, L: r.Task.L, Under: r.Task.ID, News: r.Meta}
 	d.write(RegisterWrite, r, e)
 }
 func (d *decision) wire(k uint8) {
@@ -109,18 +119,20 @@ func (d *decision) turn(e Event) {
 				if a.Under != q.Under || a.L != q.L {
 					continue
 				}
-			} else if !(a.Stage == AtAcked || a.Stage == AtReg && d.W.Requests[k].Written && a.Under == r.Task.ID && d.Sending == uint8(k+1)) {
+			} else if e.R == Foreign || !(a.Stage == AtAcked || a.Stage == AtReg && d.W.Requests[k].Written && a.Under == r.Task.ID && d.Sending == uint8(k+1)) {
 				continue
 			}
 			r.Task.Conf = 1
 			r.News = a.News
+			r.Att[k].TurnBy = 0
+			refreshTurnBy(&r)
 			d.H.Turned[r.Task.L] |= 1 << k // the oracle's own record of the credit
 			break
 		}
 		if d.Restored && r.Task.L != 0 && r.RecoverBy != 0 {
 			r.Task.Conf = 2
 		}
-		r.TurnBy = 0
+		refreshTurnBy(&r)
 	case KTurnEnd, KProbeIdle:
 		if e.K == KProbeIdle && e.A == 1 {
 			if r.RecoverBy != 0 {
@@ -149,11 +161,12 @@ func (d *decision) outcome(e Event) {
 	case OcAck:
 		r.Att[k].Stage = AtAcked
 		d.W.Requests[k].Ack = true
-		// A turn already confirmed the task: that turn has started and may
-		// have ended, so the acknowledgement arms no wait for a turn
-		// (#5535's ackedInTurn).
-		if r.Phase == PhIdle && r.Task.Conf == 0 {
-			r.TurnBy = after(d.Now, 1)
+		// Only this prompt's turn suppresses its timer. An earlier prompt's
+		// confirmation can remain while a separately forwarded resend still
+		// waits for its own turn (M3, D6).
+		if !d.W.Requests[k].Started {
+			r.Att[k].TurnBy = after(d.Now, 1)
+			refreshTurnBy(&r)
 		}
 	case OcLost:
 		r.Att[k].Stage = AtLost
@@ -209,11 +222,14 @@ func (d *decision) answer(e Event) {
 		for j, b := range r.Att {
 			if b.open() && b.L == a.L && b.Under == a.Under && (!d.W.Requests[j].Written || d.W.Requests[j].Root == k) {
 				r.Att[j].Stage = AtClosed
+				r.Att[j].TurnBy = 0
 			}
 		}
 	} else {
 		r.Att[k].Stage = AtClosed
+		r.Att[k].TurnBy = 0
 	}
+	refreshTurnBy(&r)
 	if !r.outstanding() {
 		r.RecoverBy, r.TurnBy = 0, 0
 	}

@@ -25,7 +25,7 @@ func counterSeeds() []seed {
 	// answer or the bound; it neither replaces the process nor takes the task.
 	add("H2/stale-waits-for-recovery", wire+"start end boot reconnect stale :doubt :kept :relaunch rec :launch :unread")
 	add("H2/replay-decides-before-refresh", wire+"start stale end boot ok reconnect replay :served :single :launch")
-	add("H2/held-stale-waits-for-recovery", wire+"start end open row boot reconnect stale :doubt :H2 :relaunch bound :H4 :owed")
+	add("H2/held-stale-waits-for-recovery", wire+"start end open row boot reconnect row stale :doubt :H2 :relaunch bound :H4 :owed")
 	// Medium 3: the operator's earlier bound fires before the recovery bound.
 	add("M3/operator-bound-before-recovery", ack+"boot open row op :op :doubt bound :H4 :unread")
 	// Medium 4: fatal evidence is kept from its receipt until the failure
@@ -39,10 +39,22 @@ func counterSeeds() []seed {
 	add("M5/pause-ends-before-repair", waiting+"down no unpause :pending :pauseEnded up repair :H0 :noStop :unread")
 	add("M5/pause-ends-write-fails-then-restart", waiting+"unpause!1.1 :pending boot :H0 :doubt :noStop")
 	add("M5/pause-ends-behind-deferred-input", waiting+"down no ready :pending unpause up repair :H0 drain :H0 :noStop")
-	add("M5/open-pause-survives-restart", waiting+"boot :H2 :pause bound :H4 :owed")
+	add("M5/open-pause-survives-restart", waiting+"boot row :H2 :pause bound :H4 :owed")
 	// Medium 6 (M7): a committed displacement intent over a live process is
 	// a stop still to ask, not a stop that happened.
 	add("M6/displaced-intent-over-live-process", waiting+"stale!4.1 :H3r :proc retry :H4 :owed")
+	// Second-read restart, recovery and receipt orders. A boot forgets the
+	// transient hold; the pause row or operator asks again explicitly.
+	add("second/restart-forgets-operator-hold", work+"end op boot :H0 :doubt op :op bound :H4")
+	add("second/parked-wake-waits-for-recovery-answer", work+"end park boot ok reconnect wake :doubt replay :served")
+	add("second/old-socket-fatal-redelivers", waiting+"crashTakingFrame(r0,fatal) reconnect :failed :kept")
+	// Post-receipt orders: receipt fixes fatal eligibility before a repair can
+	// invalidate it, and a resend owns its own turn deadline.
+	add("receipt/fatal-survives-pending-takeback", waiting+"bound!1.1 fatal :failed :kept")
+	add("receipt/resend-owns-turn-bound", ack+"wait "+next+"start end error ack1 :turnBound wait :rotated")
+	// This is the review's direct older-id guard: the send is open and written
+	// when the foreign turn arrives (unlike the old compaction control).
+	add("receipt/open-written-older-id-cannot-confirm", wire+"lost "+next+"late foreign :unread")
 	add("M6/displaced-intent-over-dead-process", waiting+"death!4.1 :H4o save :H4 :owed")
 	// Medium 8: an acknowledgement read after its turn ended arms no wait.
 	add("M8/late-ack-arms-no-turn-wait", wire+"start end open row ack :H2 :zeroCharge ok :served :H4")
@@ -97,7 +109,7 @@ func xSeeds() []seed {
 	add("N6/compaction-restart-pause", ack+"compact boot reconnect open row :H1 compactEnd :H4 :unread :owed")
 	add("N7/intent-commit-crash-restart-retry", waiting+"bound!4.1 :H3r boot :H3r retry :H4 :owed :unread")
 	add("N8/earlier-id-result-restart-write-fails", ack+"wait "+next+"ack1 boot reconnect hello :doubt ok!1.1 :pending repair :served")
-	add("N9/operator-restart-bound", waiting+"op boot reconnect :op bound :H4 :unread")
+	add("N9/operator-restart-bound", waiting+"op boot reconnect op :op bound :H4 :unread")
 	add("N10/bound-resend-late-success-of-first", waiting+"bound unpause resume "+next+"ok :kept :again")
 	add("FIFO/fourth-frame-evicted", ack+"wait "+next+"ack1 start1 detach end late ok1 foreign reconnect replay replay replay :served")
 	return cs
@@ -165,7 +177,7 @@ func TestCounterorderContracts(t *testing.T) {
 		}
 	})
 	t.Run("O2-intent-before-stop", func(t *testing.T) {
-		s, fx := trace(t, ready, waiting+"boot bound!1.1")
+		s, fx := trace(t, ready, waiting+"boot row bound!1.1")
 		if count(fx, RuntimeStop) != 0 || s.S.Task.Conf == 0 || s.S.Stops[1] != 0 || s.P.Kind != IntentWrite {
 			t.Fatal("a stop passed a failed take-back")
 		}

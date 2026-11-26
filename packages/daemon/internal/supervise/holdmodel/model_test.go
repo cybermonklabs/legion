@@ -58,7 +58,7 @@ func TestPlants(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name    string
-		bit     uint8
+		bit     uint16
 		pre     string // "" for every seed's prefixes
 		depth   int
 		variant func(*decision)
@@ -137,6 +137,34 @@ func TestPlants(t *testing.T) {
 				return r
 			}
 		}},
+		// Oracle 1: the reader incorrectly restores an in-memory operator hold.
+		{"boot-memory-restores-hold", BootMemory, work + "end op :op", 1, func(d *decision) {
+			d.load = func(r Row) Row {
+				r.Hold = Hold{By: SrcOperator, Request: SrcOperator, Deadline: 4}
+				return r
+			}
+		}},
+		// Oracle 2: a parked wake replaces the process during recovery.
+		{"recovery-wake-replaces", RecoveryFence, work + "end park boot ok reconnect :doubt", 1, func(d *decision) {
+			d.wakeBreaksRecovery = true
+		}},
+		// Oracle 3: receipt is remembered but the source's redeliverable item is lost.
+		{"fatal-receipt-lost", FatalReceipt, waiting + ":H2", 1, func(d *decision) {
+			d.dropFatal = true
+		}},
+		// Oracle 4: a received fatal remains pending but the model never applies it.
+		{"settle-leaves-fatal", Settled, waiting + "bound!1.1 :pending", 1, func(d *decision) {
+			d.skipFatalApply = true
+		}},
+		// Oracle 5: an earlier prompt's confirmation erases a resend's own timer.
+		{"resend-loses-own-turn-bound", AttemptBound, ack + "wait " + next + "start end error :kept", 1, func(d *decision) {
+			d.store = func(_ State, k Write, r Row) Row {
+				if k == DeliveryWrite && r.Att[1].Stage == AtAcked {
+					r.Att[1].TurnBy = 0
+				}
+				return r
+			}
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			from := roots
@@ -157,8 +185,13 @@ func TestPlants(t *testing.T) {
 		})
 	}
 }
-func invariantName(bit uint8) string {
-	return map[uint8]string{I1: "I1", I2: "I2", I3: "I3", Twice: "told-twice", Late: "deadline", Ended: "ended-pause-stop"}[bit]
+func invariantName(bit uint16) string {
+	return map[uint16]string{
+		I1: "I1", I2: "I2", I3: "I3", Twice: "told-twice",
+		Late: "deadline", Ended: "ended-pause-stop", BootMemory: "boot-memory",
+		RecoveryFence: "recovery-fence", FatalReceipt: "fatal-receipt",
+		Settled: "settle", AttemptBound: "attempt-bound",
+	}[bit]
 }
 
 // TestCleanRestartSendPlant removes D10's fence where it lives: the restore

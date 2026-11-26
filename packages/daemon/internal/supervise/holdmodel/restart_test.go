@@ -34,7 +34,7 @@ func restartSeeds() []seed {
 	add("RT4/accepted-but-not-durable", work+"end ok!3.1 reconnect rec "+next+":again :rt4")
 	add("RT5/late-success", work+"end boot reconnect rec "+next+"ok :again :rt5 :kept")
 	add("lost-send/cost-at-bound", wire+"lost open row bound unpause resume "+next+":again :lostCost")
-	add("RS3/unconsumed-copy", waiting+"late!1.1 boot reconnect :doubt bound :unread :owed")
+	add("RS3/unconsumed-copy", waiting+"late!1.1 boot reconnect row :doubt bound :unread :owed")
 	add("RS4/stop-commit-reply-lost", waiting+"bound!2.2 boot :H4 :owed")
 	add("M1/crash-after-prepare", "q prepare boot reconnect prepare register w1 :single")
 	add("M1/crash-before-registration", "q prepare register!3.1 reconnect prepare register w1 :single")

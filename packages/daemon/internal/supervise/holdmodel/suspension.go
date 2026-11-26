@@ -233,6 +233,18 @@ func (d *decision) relaunch(r *Row) {
 func carriesRequest(e Event) bool {
 	return e.K == KResult || e.K == KRefusal || e.K == KOutcome
 }
+
+// forgetMemory projects the stored row into a new daemon's memory. Holds and
+// their timers are in-memory only (supervise/suspend.go): a caller must ask
+// again after boot. Wake and relaunch are durable work the model's row carries;
+// committed intent is a separate durable stop fact.
+func forgetMemory(r *Row) {
+	r.Hold = Hold{}
+	r.TurnBy = 0
+	for k := range r.Att {
+		r.Att[k].TurnBy = 0
+	}
+}
 func (d *decision) restart(dead bool) {
 	defer func() {
 		if !d.StopOwed && !d.StopRetry {
@@ -254,12 +266,18 @@ func (d *decision) restart(dead bool) {
 	for k := uint8(0); k < d.W.Alloc; k++ {
 		d.W.Requests[k].Returned = true
 	}
+	// A restart rebuilds the machine from the persisted delivery and the
+	// world. The hold, its timers, wakes and relaunches do not survive.
+	forgetMemory(&d.S)
 	d.M = d.S
 	if d.load != nil {
 		d.M = d.load(d.M)
 	}
-	if !d.S.live() {
+	d.Booted = true
+	if d.S.Phase == PhFailed {
 		d.W.Fatal = Event{}
+		d.W.FatalStuck = false
+		d.H.FatalPending = false
 	}
 	if dead {
 		d.W.Proc = false
@@ -283,12 +301,8 @@ func (d *decision) restart(dead bool) {
 		d.StopOwed = true
 		return
 	}
-	// The hold lives in memory only (supervise/suspend.go): whoever holds a
-	// request asks again after a restart, and a pause that has ended asks
-	// nothing, since askBootStops asks only for the open pause. The model keeps
-	// the stored hold for the holders that ask again and drops it for a pause
-	// that has ended.
-	d.endedPause(&r)
+	// Holds are gone until a source makes a new request. A committed intent is
+	// distinct: it is already a durable stop fact and is reconciled below.
 	if r.Intent.By != 0 {
 		// M7: a process that is still there has not stopped, displaced or
 		// not, so its stop is asked again.

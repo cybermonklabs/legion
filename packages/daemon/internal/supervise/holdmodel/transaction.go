@@ -38,14 +38,14 @@ func (x *Effects) add(a Action, w Write, k uint8) { x.List[x.N] = Effect{a, w, k
 type decision struct {
 	State
 	Effects
-	input Event
-	crash bool
+	input                                         Event
+	crash, keepEnded                              bool
+	wakeBreaksRecovery, dropFatal, skipFatalApply bool
 	// Test variants substitute one door; nil is the specified one. store sees
 	// the deciding state and one write; load sees the row a restart reads;
-	// keepEnded keeps a hold whose pause has ended (the defect Ended names).
-	store     func(State, Write, Row) Row
-	load      func(Row) Row
-	keepEnded bool
+	// the booleans are the named plant defects.
+	store func(State, Write, Row) Row
+	load  func(Row) Row
 }
 
 func (d *decision) fault(f uint8) bool { return d.input.Fault == f && d.input.At == d.Writes }
@@ -143,6 +143,8 @@ func (d *decision) install() {
 	}
 	if d.M.Phase == PhFailed {
 		d.W.Fatal = Event{}
+		d.W.FatalStuck = false
+		d.H.FatalPending = false
 	}
 }
 
@@ -198,12 +200,17 @@ func (d *decision) observeCommit(prev Row, p Pending) {
 }
 
 const (
-	I1 uint8 = 1 << iota
+	I1 uint16 = 1 << iota
 	I2
 	I3
 	Twice
-	Late  // a timer fired past an earlier armed deadline (O1, D2)
-	Ended // a runtime stop ran for a pause that had ended (E, D1)
+	Late          // a timer fired past an earlier armed deadline (O1, D2)
+	Ended         // a runtime stop ran for a pause that had ended (E, D1)
+	BootMemory    // restart restored a memory-only field without a new request
+	RecoveryFence // recovery replaced, let go, or invalidated before an allowed cause
+	FatalReceipt  // fatal evidence taken from the shim was lost before failure committed
+	Settled       // drain, repair or an armed timer left work no own step can make
+	AttemptBound  // an open attempt waits without its own turn or answer bound
 )
 
 // creditedOpen is whether an attempt the oracle saw a turn credited through
@@ -218,7 +225,155 @@ func creditedOpen(r Row, turned uint8) bool {
 	return false
 }
 
-func checkServed(r Row, h History) uint8 {
+// bootMemoryBad is the restart projection rule. A boot starts from the
+// committed delivery and the world; every field the product keeps only in
+// memory is zero until a source asks again. An intent is persisted separately,
+// so its stop progress is derived from the world.
+func bootMemoryBad(s State) bool {
+	if !s.Booted {
+		return false
+	}
+	r := s.M
+	if r.Hold != (Hold{}) || r.TurnBy != 0 ||
+		s.Prepared != 0 || s.Sending != 0 || s.Resend || s.Deferred != (Event{}) {
+		return true
+	}
+	if s.W.Fatal.K != 0 {
+		return false // fatal evidence decides before a stored intent is reconciled
+	}
+	return s.StopRetry != (s.S.Intent.By != 0 && s.W.Proc) ||
+		s.StopOwed != (s.S.Intent.By != 0 && !s.W.Proc)
+}
+
+func recoveryMutation(before, after State, fx Effects) bool {
+	if before.M.RecoverBy == 0 || !before.W.Proc || before.M.Task.L == 0 {
+		return false
+	}
+	for _, f := range fx.List[:fx.N] {
+		if f.Action == RuntimeReplace {
+			return true
+		}
+	}
+	if !after.W.Proc {
+		return true
+	}
+	for k, a := range before.M.Att {
+		if a.open() && (after.M.Att[k].Stage == AtInvalid ||
+			after.P.Kind != 0 && after.P.Want.Att[k].Stage == AtInvalid) {
+			return true
+		}
+	}
+	return false
+}
+
+// recoveryAuthorized names D10's causes: its deciding answer, its answer
+// bound, no live process, or a stop that cannot wait (which records an intent
+// or calls the runtime rather than replacing it).
+func recoveryAuthorized(before State, e Event, after State, fx Effects) bool {
+	switch e.K {
+	case KResult, KRefusal, KReplay, KTimerRecov, KDeath, KExit, KReport:
+		return true
+	case KRestart:
+		return e.A != 0 // the claim has no process after a process-ended boot
+	}
+	if before.P.Cause.K == KResult || before.P.Cause.K == KRefusal {
+		return true // a repair is applying the recovery answer it accepted
+	}
+	if after.M.Intent.By != 0 || after.P.Kind == IntentWrite && after.P.Want.Intent.By != 0 {
+		return true
+	}
+	for _, f := range fx.List[:fx.N] {
+		if f.Action == RuntimeStop {
+			return true
+		}
+	}
+	return false
+}
+
+// attemptBoundBad checks the deadline an acknowledgement arms for its own
+// prompt. A task may keep an earlier prompt's confirmation while a separate
+// resend waits for a turn, so this is intentionally per request. An open
+// attempt under a hold shares that hold's answer bound.
+func attemptBoundBad(s State) bool {
+	if s.H.FatalPending || s.W.Fatal.K != 0 {
+		return false // fatal evidence decides before an attempt can wait again
+	}
+	r := s.M
+	if s.P.Kind != 0 {
+		r = s.P.Want // a failed repair already computed and armed its bounds
+	}
+	for k, a := range r.Att {
+		if !a.open() || a.L != r.Task.L {
+			continue
+		}
+		if a.Stage == AtAcked && a.Under == r.Task.ID && r.RecoverBy == 0 &&
+			s.W.Requests[k].Root == uint8(k) && !s.W.Requests[k].Started {
+			if a.TurnBy == 0 || r.TurnBy == 0 || r.TurnBy > a.TurnBy {
+				return true
+			}
+		}
+		if r.Hold.By != 0 && r.waiting() && r.Hold.Answer == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// settleOne is the model's own immediate maintenance loop: repair first, then
+// a fatal redelivery, an owed stop write, a refused runtime retry, and a timer
+// already due at Now. It deliberately does not invent an external frame.
+func settleOne(s State) (State, bool) {
+	var e Event
+	switch {
+	case s.W.Fatal.K != 0 || s.Deferred.K != 0:
+		e.K = KDrain
+	case s.StopOwed:
+		e.K = KTimerStopWrite
+	case s.P.Kind != 0:
+		e.K = KTimerWrite
+	case s.StopRetry:
+		e.K = KTimerStopRetry
+	case s.M.Hold.By != 0 && !s.StopRetry && s.M.Hold.due() != 0 && s.M.Hold.due() <= s.Now:
+		e.K = KTimerHold
+	case s.M.RecoverBy != 0 && s.M.RecoverBy <= s.Now:
+		e.K = KTimerRecov
+	case s.M.TurnBy != 0 && s.M.TurnBy <= s.Now:
+		e.K = KTimerTurn
+	default:
+		return s, false
+	}
+	if !Enabled(s, e) {
+		return s, false
+	}
+	t, _ := Step(s, e)
+	return t, t != s
+}
+
+// settleBad reaches the fixed point of the model's own maintenance steps.
+// A no-progress store or runtime is explicit in World; otherwise a received
+// fatal, an owed write or a due hold has no excuse to remain.
+func settleBad(s State) bool {
+	t := s
+	for range 16 {
+		next, changed := settleOne(t)
+		if !changed {
+			break
+		}
+		t = next
+	}
+	if !t.W.Down && t.W.Fatal.K != 0 {
+		return true
+	}
+	if !t.W.Down && (t.P.Kind != 0 || t.StopOwed) {
+		return true
+	}
+	if !t.W.Refuses && t.StopRetry {
+		return true
+	}
+	return !t.W.Down && t.M.Hold.By != 0 && !t.StopRetry && t.M.Hold.due() != 0 && t.M.Hold.due() <= t.Now
+}
+
+func checkServed(r Row, h History) uint16 {
 	for l, reason := range r.Ret {
 		if reason == RServed {
 			k := r.ServedBy[l]
@@ -229,7 +384,7 @@ func checkServed(r Row, h History) uint8 {
 	}
 	return 0
 }
-func checkCommit(s State, prev Row, p Pending) uint8 {
+func checkCommit(s State, prev Row, p Pending) uint16 {
 	bad := checkServed(s.S, s.H)
 	if r := s.S; r.Hold.By != 0 && r.Intent.By == 0 && (r.Hold.due() == 0 || r.waiting() && r.Hold.Answer == 0) {
 		bad |= I2
@@ -286,8 +441,20 @@ func checkCommit(s State, prev Row, p Pending) uint8 {
 
 // Check compares control state with the timers that can actually run. Transient
 // due states inside a decision are checked at its return, not mid-transaction.
-func Check(s State) uint8 {
+func Check(s State) uint16 {
 	bad := s.H.Bad | checkServed(s.M, s.H) | checkServed(s.S, s.H)
+	if bootMemoryBad(s) {
+		bad |= BootMemory
+	}
+	if s.H.FatalPending && s.W.Fatal.K == 0 && s.M.Phase != PhFailed && s.S.Phase != PhFailed {
+		bad |= FatalReceipt
+	}
+	if attemptBoundBad(s) {
+		bad |= AttemptBound
+	}
+	if settleBad(s) {
+		bad |= Settled
+	}
 	r := s.M
 	repair := s.P.Kind != 0 || s.StopRetry || s.StopOwed || s.W.Fatal.K != 0
 	if r.Hold.By != 0 && !repair {
