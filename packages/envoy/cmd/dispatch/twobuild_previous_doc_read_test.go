@@ -123,10 +123,13 @@ func TestThePreviousReleasesDocReadReadsWhichAsksAreDecided(t *testing.T) {
 			}
 		}
 	}
+	// This build's trailer quotes each block id as JSON, so a block id holding a line feed forges no
+	// trailer line (text-asks.ts, settledAskLines).
 	words := map[string]string{"first": "Ship the first now.", "second": "Hold the second."}
 	for block, node := range answered {
+		id, _ := json.Marshal(block)
 		quoted, _ := json.Marshal(words[block])
-		if line := fmt.Sprintf("Answered %s by %s at %s: %s", block, node[0], node[1], quoted); !strings.Contains(currentRead.stdout, line) {
+		if line := fmt.Sprintf("Answered %s by %s at %s: %s", id, node[0], node[1], quoted); !strings.Contains(currentRead.stdout, line) {
 			t.Errorf("this build's dispatch doc-read prints no line opening %q, the answer the asks member holds:\n%s", line, currentRead.stdout)
 		}
 	}
