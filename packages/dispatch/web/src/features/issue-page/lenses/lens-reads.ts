@@ -170,10 +170,13 @@ function readTreeAgain(
   return promise;
 }
 
+/** The head of every key the query client keeps a lens invocation under (`invocationKey`). */
+const INVOCATIONS = "lens-invocation";
+
 /** The key the query client keeps the invocations on the node at `on` of the issue `issueKey`
- *  under: `"lens-invocation"`, then the issue, then the node. */
+ *  under: `INVOCATIONS`, then the issue, then the node. */
 function invocationKey(issueKey: string, on: string): readonly string[] {
-  return ["lens-invocation", issueKey, on];
+  return [INVOCATIONS, issueKey, on];
 }
 
 /** What the lenses invoked on one node say, as its row's act reads them. */
@@ -210,7 +213,7 @@ export function useLensInvocations(
   issueKey: string | undefined
 ): ReadonlyMap<string, NodeInvocations> {
   const invocations = useMutationState({
-    filters: { mutationKey: ["lens-invocation"] },
+    filters: { mutationKey: [INVOCATIONS] },
     select: ({ options, state }) => ({
       issue: options.mutationKey?.[1],
       on: options.mutationKey?.[2],
