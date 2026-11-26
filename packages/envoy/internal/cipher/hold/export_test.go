@@ -13,7 +13,7 @@ var (
 	ErrDeadlinePassed = errDeadlinePassed
 )
 
-func Reason(err error) string { return Verdict{Kind: kindOf(err)}.reason() }
+func Reason(err error) string { _, words := decode(err); return words }
 
 // Check is the check's error, which the package's tests read by its sentinels. Every point that
 // serves a credential reads Decide's Verdict instead, which reads this error in the one order.

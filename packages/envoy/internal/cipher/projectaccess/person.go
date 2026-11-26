@@ -17,9 +17,11 @@ import (
 // failureTTL is how long a read of the person route that failed is the answer to the next reads
 // of the same person, MemberKind's, Person's and the hold gate's alike, counted from when the
 // failure came back: while Dispatch does not answer, those reads fail at once rather than each
-// waiting up to requestTimeout for a call of its own. It stays two seconds rather than the hold
-// gate's former five: one person route answers a trade's membership decision and its hold, so both
-// retry at the same short bound. A failure is no answer, and the read is asked again once it passes.
+// waiting up to requestTimeout for a call of its own. It is also how long a call may be in flight
+// before a later read of the same person stops joining it and answers errStillAsking at once, so a
+// Dispatch that hangs does not make every check wait its own bound for the one ten-second call. One
+// person route answers a trade's membership decision and its hold, so both retry at this one short
+// bound. A failure is no answer, and the read is asked again once it passes.
 const failureTTL = 2 * time.Second
 
 // cachedPerson is one answer of the person route: the member kind as Dispatch answered it, held
@@ -41,11 +43,14 @@ type failedRead struct {
 }
 
 // personFlight is one call of the person route for a person, which every read of that person made
-// while it is in flight waits on: answer and err are its outcome, set before done closes.
+// while it is in flight waits on: answer and err are its outcome, set before done closes. startedAt
+// is when the call began, by the client's clock, so a reader that joins a call already older than
+// failureTTL answers at once rather than waiting its own bound on a Dispatch that hangs.
 type personFlight struct {
-	done   chan struct{}
-	answer cachedPerson
-	err    error
+	done      chan struct{}
+	startedAt time.Time
+	answer    cachedPerson
+	err       error
 }
 
 // cachedOnlyKey marks a context whose person questions are answered from the cache alone
@@ -193,7 +198,11 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 // is asked. A failure an earlier read kept for person within failureTTL is the answer, with no
 // call. Otherwise the read joins the person's call in flight, or starts one, which runs on none of
 // its readers' contexts (askPerson): a reader whose own context ends stops waiting, and the call
-// goes on for every reader still waiting and for the cache.
+// goes on for every reader still waiting and for the cache. A reader that joins a call already
+// older than failureTTL does not wait: a Dispatch that hangs holds its call open requestTimeout, so
+// without this every check in those ten seconds would wait its own bound; instead, once a call has
+// run failureTTL with no answer, later reads of that person, MemberKind's and the hold gate's
+// alike, answer errStillAsking at once, as a kept failure would, until the call settles.
 func (c *Client) personAnswer(ctx context.Context, person string, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	if isAskedNow(ctx) {
 		return c.personAnswerNow(ctx, person, keep)
@@ -212,10 +221,14 @@ func (c *Client) personAnswer(ctx context.Context, person string, keep func(cach
 		return cachedPerson{}, failed.err
 	}
 	flight, joined := c.flights[person]
-	if !joined {
-		flight = &personFlight{done: make(chan struct{})}
+	switch {
+	case !joined:
+		flight = &personFlight{done: make(chan struct{}), startedAt: c.now()}
 		c.flights[person] = flight
 		go c.askPerson(context.WithoutCancel(ctx), person, flight)
+	case c.now().Sub(flight.startedAt) >= failureTTL:
+		c.mu.Unlock()
+		return cachedPerson{}, fmt.Errorf("%w: dispatch has been asked about %s for over %s with no answer", errStillAsking, person, failureTTL)
 	}
 	hook := c.joined
 	c.mu.Unlock()
@@ -280,15 +293,13 @@ func (c *Client) askPerson(ctx context.Context, person string, flight *personFli
 
 // settleLocked keeps the outcome of a call of the person route for person: an answer is kept,
 // aged from before its question, unless one to a question asked later is already held, and clears
-// a kept failure; a failure is kept failureTTL from when it came back. A kept hold read belongs to
-// exactly that outcome, so either one replaces it. A caller whose own context ended settles
-// nothing (personAnswerNow), and the shared call runs on no caller's context (askPerson). c.mu is
-// held.
+// a kept failure; a failure is kept failureTTL from when it came back. A caller whose own context
+// ended settles nothing (personAnswerNow), and the shared call runs on no caller's context
+// (askPerson). c.mu is held.
 func (c *Client) settleLocked(person string, answer cachedPerson, err error) {
-	if len(c.people) >= maxCached || len(c.failures) >= maxCached || len(c.keptHolds) >= maxCached {
+	if len(c.people) >= maxCached || len(c.failures) >= maxCached {
 		c.sweepLocked()
 	}
-	delete(c.keptHolds, person)
 	if err != nil {
 		if len(c.failures) < maxCached {
 			c.failures[person] = failedRead{err: err, at: c.now()}
