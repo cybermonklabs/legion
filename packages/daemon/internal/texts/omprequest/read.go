@@ -66,8 +66,12 @@ func Read(body []byte) (Request, error) {
 	}
 	request := Request{System: strings.Join(system, "\n\n")}
 	request.Skills = skillList(request.System)
+	// A pane's Oh My Pi offers its built-in tools to an Anthropic Messages endpoint under a name of
+	// its own spelling, `_task` (measured in the texts-folder live proof's panes, whose first requests
+	// offer `_read`, `_task`, `_legion` …), where the captured fixtures' Oh My Pi offered `task`: the
+	// tool is the task tool under either spelling.
 	for _, tool := range raw.Tools {
-		if tool.Name == "task" {
+		if strings.TrimLeft(tool.Name, "_") == "task" {
 			request.Agents = agentList(tool.Description)
 		}
 	}

@@ -1,6 +1,7 @@
 package omprequest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,5 +181,41 @@ func TestTheReaderReadsEachCapturedRequest(t *testing.T) {
 		if request, err := Read([]byte(body)); err == nil {
 			t.Errorf("Read(%s) = %+v, want an error: it is no conversation request", name, request)
 		}
+	}
+}
+
+// A pane's Oh My Pi offers its built-in tools under a name with a leading `_` (`_task`, `_read`),
+// which the texts-folder live proof's panes measured, where the captured fixtures' Oh My Pi offered
+// them bare. Read takes the task tool's agent list under either spelling: fixture 3 with every tool
+// renamed so gives the same agents as fixture 3 itself.
+func TestTheReaderTakesTheTaskToolUnderAPanesSpelling(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "requests", "3-changed-reference.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := raw["tools"].([]any)
+	for _, tool := range tools {
+		if named, ok := tool.(map[string]any); ok {
+			named["name"] = "_" + named["name"].(string)
+		}
+	}
+	spelled, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := Read(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane, err := Read(spelled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.Agents) == 0 || !slices.Equal(pane.Agents, bare.Agents) {
+		t.Errorf("Read of the request whose tools are spelled `_task` gives the agents %+v, want fixture 3's own %+v", pane.Agents, bare.Agents)
 	}
 }
