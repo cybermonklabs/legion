@@ -45,9 +45,9 @@ import {
   SPEC_SLUG,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
+import { FIRST_LINE_LIMIT } from "./first-line";
 import {
   buildIssueTree,
-  FIRST_LINE_LIMIT,
   type IssueTreeReads,
   type NodeChip,
   type ParentLine,

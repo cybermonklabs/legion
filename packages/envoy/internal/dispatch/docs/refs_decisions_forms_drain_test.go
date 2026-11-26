@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -25,6 +26,8 @@ func decisionsFormsSeedOwedRows(t *testing.T, database *store.Store) map[string]
 	return owedRowsOf(t, database, "refs_decisions_forms_seed_owed")
 }
 
+// owedRowsOf is every row of queue, a refs_*_owed table, as "kind id", with the enqueued_at each
+// holds.
 func owedRowsOf(t *testing.T, database *store.Store, queue string) map[string]time.Time {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `select kind || ' ' || id::text, enqueued_at from `+queue)
@@ -245,12 +248,12 @@ func TestTheFormsDutyDrainsWhileTheReleaseBeforeHoldsItsLease(t *testing.T) {
 	held, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(context.Background(), holder, "refs-forms", time.Now(), BlockIndexReconcileInterval, func(context.Context) {
+		duty.Exclusive(context.Background(), nil, holder, "refs-forms", time.Now(), BlockIndexReconcileInterval, func(context.Context) {
 			close(held)
 			<-release
 		})
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		close(release)
 		<-done
 	})

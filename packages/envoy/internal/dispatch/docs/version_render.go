@@ -1164,7 +1164,7 @@ func (l *Ledger) readStatedDocuments(ctx context.Context) error {
 	var deferred []statedVersion
 	if l.owesDigests() && len(l.restores) == 0 {
 		for _, artifactID := range slices.Sorted(maps.Keys(l.latest)) {
-			version := statedVersion{artifactID: artifactID, number: l.latest[artifactID].version.Number}
+			version := statedVersion{artifactID: artifactID, number: l.latest[artifactID].Number}
 			if !slices.Contains(l.stated, version) {
 				deferred = append(deferred, version)
 			}
@@ -1498,7 +1498,7 @@ func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int
 		return carry()
 	}
 	pending, queued := ledger.latest[artifactID]
-	if !queued || pending.version.Number != number {
+	if !queued || pending.Number != number {
 		return carry()
 	}
 	rendered, err := rendersInTransaction(ctx, tx, artifactID, number)

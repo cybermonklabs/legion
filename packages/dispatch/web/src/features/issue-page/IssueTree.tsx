@@ -1293,6 +1293,7 @@ export function IssueTree({
               message={read.message}
               onRetry={read.retry}
               retrying={read.retrying}
+              speaks={read.speaks}
             />
           ))}
         </div>
@@ -1512,7 +1513,7 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * `landed` is called once the row holds the focus the frame gave it, and only then.
  *
  * It is exported for the Plan view's chart, which is to land on the row an address names as the
- * outline does.
+ * outline does, and for the Spec view's tree, which does the same.
  */
 export function landOnRow(
   row: HTMLElement,

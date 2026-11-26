@@ -265,6 +265,11 @@ const (
 	// beneath it or its failed worker): the release that moves it back into a phase carries what it
 	// is owed then.
 	UntoldHeld UntoldReason = "held"
+	// UntoldAwaitingChildren is a parent that stands in awaiting_children while a Dispatch child of
+	// it is open: no restart moves it back, and the admission pass's return that moves it back into
+	// its phase once no child of it is open (workflow's ReturnFromChildren) carries what it is owed
+	// then.
+	UntoldAwaitingChildren UntoldReason = "awaiting-children"
 	// UntoldHeldBack is a member none of the reasons above explains: its holder has not taken a
 	// version that concerns it, and OwedNews holds that news back, because the tree's standing gate
 	// is not open or the tree lingers.
@@ -329,8 +334,9 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //     tree root alone, since its checks are the root's to prove;
 //   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
 //     tree's root, as TreeLingers reads it), and its phase has a holder, a phase whose work
-//     phase.RoleFor names a role for: not awaiting_person, done, or held, which a restart moves
-//     back into its phase, and not admitted, which phase.RoleFor names the tree's architect for
+//     phase.RoleFor names a role for: not awaiting_person, done, held or awaiting_children, which a
+//     restart or the return from the children moves back into its phase, and not admitted, which
+//     phase.RoleFor names the tree's architect for
 //     (dispatch://INFRA-2614) and which comes before any working phase of the member, so its first
 //     phase's holder takes its baseline at that phase's start (workflow's Engine.enter);
 //   - its pull request has not merged, in whatever phase it stands: merging is the usual case,
@@ -418,8 +424,9 @@ func OwedNews(facts NewsFacts) TreeNews {
 // or "" where member is owed news: owes says its holder has not taken some approved version that
 // concerns it, or its row owes the opening while the gate stands open, and other that it has not
 // taken one that does not concern it. Every phase no holder works is named before the last case
-// (done, admitted, awaiting_person, held; admitted is the tree architect's, which holds no member's
-// phase), so the role check there only keeps a phase the record never holds from being owed.
+// (done, admitted, awaiting_person, held, awaiting_children; admitted is the tree architect's,
+// which holds no member's phase), so the role check there only keeps a phase the record never
+// holds from being owed.
 func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 	switch {
 	case !owes && other:
@@ -438,6 +445,8 @@ func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 		return UntoldAwaitingPerson
 	case member.Phase == phase.Held:
 		return UntoldHeld
+	case member.Phase == phase.AwaitingChildren:
+		return UntoldAwaitingChildren
 	case heldBack || phase.RoleFor(member.Phase) == "":
 		return UntoldHeldBack
 	}

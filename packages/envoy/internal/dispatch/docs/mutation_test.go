@@ -548,6 +548,46 @@ func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedCon
 		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write", again.Version.Number, again.Wrote, latest.Version.Number)
 	}
 }
+
+// A version another renderer version wrote holds its renderer's spelling of the document, and an
+// edit typed and undone since it changed the content and changed it back. An anchor's snapshot
+// renders the same tree in this build's spelling, which the version holds in another: it writes no
+// version, so an approval of that version still reads approved. An edit that stays is still
+// versioned.
+func TestSnapshotVersionWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	snapshot := func() VersionResult {
+		t.Helper()
+		var result VersionResult
+		if err := joinedWrite(service, func(ctx context.Context) (err error) {
+			result, err = service.SnapshotVersion(ctx, artifactID, alice)
+			return err
+		}); err != nil {
+			t.Fatalf("snapshot the document: %v", err)
+		}
+		return result
+	}
+	seedServiceText(t, service, artifactID, looseList)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := respellLatestVersion(t, service.store, artifactID, respelledLooseList)
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+	typeAndUndo(t, service, artifactID)
+
+	if again := snapshot(); again.Wrote || again.Version.Number != approved {
+		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write: it holds the same tree in another renderer version's spelling", again.Version.Number, again.Wrote, approved)
+	}
+	if stored := latestVersionMarkdown(t, service, artifactID); stored != respelledLooseList {
+		t.Fatalf("the latest version holds %q, want %q as it was stored", stored, respelledLooseList)
+	}
+	requireApprovedAt(t, service, artifactID, approved)
+
+	editLiveTree(t, service, artifactID, replaceRun("third", "third, edited"))
+	if edited := snapshot(); !edited.Wrote || edited.Version.Number != approved+1 {
+		t.Fatalf("snapshot of an edit that stays = version %d wrote=%t, want version %d written", edited.Version.Number, edited.Wrote, approved+1)
+	}
+}
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)

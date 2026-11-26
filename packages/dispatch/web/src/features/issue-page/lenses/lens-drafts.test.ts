@@ -1115,7 +1115,7 @@ test("a store address inside a link's words reads as its node's name in that one
 
 // An author's link whose words are a code span, ``[`RFC 9110`](dispatch://constraint/<uuid>)``,
 // keeps its words and links the node's row, as an author's other words do: a verdict draws it as
-// one link in its one line, its words carrying the link alone.
+// one link in its one line, the run of its words carrying the link alone, with no code mark.
 test("a verdict's author's link whose words are code links the constraint's row", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const held = `dispatch://constraint/${constraint}`;
@@ -1135,7 +1135,15 @@ test("a verdict's author's link whose words are code links the constraint's row"
   const verdict = rowOf(root, FIRST);
 
   expect(verdict.text).toBe("Held to RFC 9110.");
-  expect(linksIn(verdict.tree)).toEqual([["RFC 9110", { href: held, title: rowPath(constraint) }]]);
+  expect((verdict.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Held to ", type: "text" },
+    {
+      marks: [{ attrs: { href: held, title: rowPath(constraint) }, type: "link" }],
+      text: "RFC 9110",
+      type: "text",
+    },
+    { text: ".", type: "text" },
+  ]);
 });
 
 // A server's reading of an author's link whose words are code keeps the run's code mark and its

@@ -1,13 +1,15 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
-import type { IssueDetails } from "../../api/types";
-import { useKnownReferences } from "../refs/reference-names";
-import { parseNodeReference, shortForm } from "../refs/routes";
-import { chipName, drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { type AgentText, useAgentText } from "../refs/AgentName";
+import { type KnownReferences, useKnownReferences } from "../refs/reference-names";
+import { drawnLine, firstLineOf } from "./first-line";
 import { withoutDirectiveLines } from "./RowText";
-import { rowReferences } from "./row-references";
-import { treeContext } from "./tree-drafts";
+import {
+  knownIssueKeys,
+  rowReferenceNames,
+  rowReferences,
+  rowReferenceWords,
+} from "./row-references";
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
@@ -205,8 +207,9 @@ export interface ReferenceStandIns {
   /** A line cut from words `standIn` gave, with each reference in it named and each private-use
    *  character its author wrote drawn as written. */
   readonly named: (line: string) => string;
-  /** `text` as the words a line is cut from: its typed blocks' source lines left out, and each
-   *  reference it cites and each private-use character it holds stood in for by its token. */
+  /** `text` as the words a line is cut from: its typed blocks' source lines left out, each word
+   *  of each reference's name and each private-use character it holds stood in for by its
+   *  token. */
   readonly standIn: (text: string) => string;
 }
 
@@ -214,8 +217,9 @@ export interface ReferenceStandIns {
  *  characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
 const STAND_IN = 0xe000;
 
-/** How many tokens one holder makes, one private-use character each: one for each reference it
- *  stands in for, and one for each private-use character its texts hold of their own. */
+/** How many tokens one holder makes, one private-use character each: one for each word of a
+ *  reference's name it stands in for, and one for each private-use character its texts hold of
+ *  their own. */
 const STAND_INS = 0xf8ff - STAND_IN + 1;
 
 /** One private-use character, which an author may write of their own: an icon pasted from a
@@ -226,8 +230,8 @@ const PRIVATE_USE = /[\ue000-\uf8ff]/gu;
  *  cut drew right after it where that ellipsis ends the line. */
 const TOKEN = /(([\ue000-\uf8ff])\2*)(…$)?/gu;
 
-/** How a name ends that a line draws no ellipsis after: with an ellipsis of its own, after which
- *  `drawnLine` draws none. */
+/** How a name's word ends that a line draws no ellipsis after: with an ellipsis of its own, after
+ *  which `drawnLine` draws none. */
 const NAME_END = /…$/u;
 
 /** What a private-use character the author wrote is drawn as where its holder has no token left
@@ -235,34 +239,61 @@ const NAME_END = /…$/u;
 const NO_TOKEN = "\ufffd";
 
 /**
+ * What a plain line names the references it cites by (`referenceStandIns`), all of it what the
+ * page already published from its one batched read (`useKnownReferences`), so a line asks the
+ * server for nothing: the published names and the lines a chip names a block and a whole
+ * document by, the posts read as deleted and as edited, the references read as ambiguous, the
+ * keys an issue is named for, which a line names where they stand bare (`knownIssueKeys`), how
+ * the page names an author (`AgentText.author`), which a deleted post's line names its actor
+ * by, and `issue`, the issue the line's record is on, by which a whole document is told
+ * (`documentWord`). These are what the node's row in the outline names the same references by
+ * (`RowText.tsx`'s `useRowNames`).
+ */
+export interface LineNames
+  extends Pick<KnownReferences, "ambiguous" | "deleted" | "edited" | "lines" | "names"> {
+  readonly author: AgentText["author"];
+  readonly issue: string | undefined;
+  readonly issues: readonly string[];
+}
+
+/**
  * How the page draws a plain line that cites references: with every reference named in plain
  * words, and named only after the line is cut. A plain line is no link, so an address, a block id
  * or a fence drawn in it is one a reader can neither follow nor read: a typed block's source
- * lines are markup and no word of the text, so they are left out, and each `dispatch://`
- * reference the row's reader finds (`rowReferences`) is named by the words for what it names -
- * an issue's key; else the page's name for it (`nameOf`, `useReferenceNames`); else its short
- * form, as a link to it reads until its title resolves (`shortForm`). A one-line place names a
- * reference by the page's name wherever the page knows one, and by its short form only where it
- * does not. So the words `standIn` is given hold each bare address as its author wrote it
- * (`lineWordsRaw`, and a person's quote's `firstBlockWordsRaw`), since one already written short
- * leaves it nothing to name.
- * A statement's name opens with its label where its spec numbers its statements ("R2. Every
- * address…"), so a cut made after the naming ended its author's sentence at that label, inside
- * the name.
+ * lines are markup and no word of the text, so they are left out, and each reference the row's
+ * reader finds (`rowReferences`: each address, and each bare key the page named an issue for,
+ * and none the page read as ambiguous) is named as the node's row in the outline names it
+ * (`RowText.tsx`), by the same rule (`rowReferenceNames`, `rowReferenceWords`) from the same
+ * published names (`LineNames`): an issue by its key, a space and its title; a block or a whole
+ * document as its chip names it; a deleted post by its deleted line; a post its author edited
+ * with its mark; and a reference the page published no name for - a party, a target that is
+ * gone or has not answered - as the words its author wrote (`RowReference.written`). So the
+ * words `standIn` is given hold each bare address as its author wrote it (`lineWordsRaw`, and a
+ * person's quote's `firstBlockWordsRaw`), since one already named leaves it nothing to name.
  *
- * `standIn` stands in for each reference by a token as long as its name: one private-use
- * character of its own, repeated, so a token holds no space, letter, digit or sentence mark.
- * Every cut is made on those words - a sentence end, a leading label, `firstLineOf`'s limit, a
- * row's width - and `named` puts each name in the place of its token. So no cut falls inside a
- * name, and a name counts against `firstLineOf`'s 100 characters as the characters the line
- * draws of it, so the drawn line keeps to R1's limit. A limit that falls inside a token, which
- * only a token run into the words before it with no space can make, draws the whole name. One
- * holder may stand in for the references of several texts whose lines are read together, as a
- * summary's runs are; past the 6,400 tokens the private-use characters make, a reference is
- * named in its place, with each private-use character of its name stood in for as the author's
- * own are, so `named` reads none of them as a token.
+ * `standIn` stands in for each word of a name by a token as long as the word: one private-use
+ * character of its own, repeated, so a token holds no space, letter, digit or sentence mark,
+ * with the name's own spaces between its tokens. Every cut is made on those words - a sentence
+ * end, a leading label, `firstLineOf`'s limit, a row's width - and `named` puts each word in the
+ * place of its token. So:
  *
- * A private-use character the author wrote is stood in for as a reference is, by a token whose
+ * - a name's own label ("R2. Every address…"), or any other mark inside a name, ends no
+ *   sentence, where a cut made after the naming ended its author's sentence there;
+ * - a name counts against `firstLineOf`'s 100 characters and a row's pixels as the characters
+ *   the line draws of it, so the drawn line keeps to R1's limit;
+ * - a cut never falls inside a word: it falls at a space, before a name, after it, or between
+ *   two of its words, so a long title is cut at a word ("Read ACME-7 The new issue page…")
+ *   rather than dropped whole or carried past the limit whole. A limit that falls inside a
+ *   token, which only a token run into the words before it with no space can make, draws the
+ *   whole word;
+ * - a line draws one ellipsis, never two (below).
+ *
+ * One holder may stand in for the references of several texts whose lines are read together, as
+ * a summary's runs are; past the 6,400 tokens the private-use characters make, a word is named
+ * in its place, with each private-use character of it stood in for as the author's own are, so
+ * `named` reads none of them as a token.
+ *
+ * A private-use character the author wrote is stood in for as a name's word is, by a token whose
  * name is that character, so `named` draws it as written and never as a reference's name. The
  * name is one character long, as the character is, so the line's length and its cuts are the
  * text's own. Every use of one character in the holder's texts takes the same token, and a run
@@ -271,18 +302,25 @@ const NO_TOKEN = "\ufffd";
  * replacement character, since drawn as written it would be read as a token.
  *
  * A cut's ellipsis is decided on the line before the names go in (`drawnLine`), and a line cut
- * right after a reference ends in its token, not in its name's own last character. So `named`
+ * right after a name's word ends in its token, not in the word's own last character. So `named`
  * decides again, by `drawnLine`'s own rule, on an ellipsis that ends the line right after a
- * token: where the name ends with an ellipsis of its own ("R2. Every address…", which
- * `chipWords` cut), the line draws no second after it. A name that ends with a sentence's mark
+ * token: where the word ends with an ellipsis of its own ("R2. Every address…", which
+ * `chipWords` cut), the line draws no second after it. A word that ends with a sentence's mark
  * keeps the cut's ellipsis, since a line cut inside its sentence draws one whatever its last
  * character. An ellipsis anywhere else stays as written.
  *
  * A line no cut is made in is `named(standIn(text))`.
  */
-export function referenceStandIns(
-  nameOf: (reference: string) => string | undefined
-): ReferenceStandIns {
+export function referenceStandIns({
+  ambiguous,
+  author,
+  deleted,
+  edited,
+  issue,
+  issues,
+  lines,
+  names: published,
+}: LineNames): ReferenceStandIns {
   const names: string[] = [];
   // The token each private-use character the author wrote is stood in for by, one per character.
   const owned = new Map<string, string>();
@@ -309,25 +347,37 @@ export function referenceStandIns(
         : line.replace(TOKEN, (whole: string, token: string, character: string, cut?: string) => {
             const name = names[character.charCodeAt(0) - STAND_IN];
             if (name === undefined) return whole;
-            // A reference's token stands in a line once, whole or cut inside it, and draws its
-            // whole name once; an author's character's token is one character long, and a run
+            // A name's word's token stands in a line once, whole or cut inside it, and draws its
+            // whole word once; an author's character's token is one character long, and a run
             // of it draws the character as many times as the run is long.
             const drawn = name.repeat(Math.ceil(token.length / name.length));
             return cut === undefined || NAME_END.test(name) ? drawn : `${drawn}${cut}`;
           }),
     standIn: (text) => {
       const words = withoutDirectiveLines(text);
+      const found = rowReferences(words, issues, ambiguous);
+      const known = rowReferenceNames(
+        found,
+        { deleted, lines },
+        (reference) => published.get(reference),
+        issue,
+        author
+      );
       let held = "";
       let at = 0;
-      for (const one of rowReferences(words, [])) {
+      for (const one of found) {
         // The author's words before the reference are stood in for first, so the holder's tokens
         // are taken in the order the text holds them.
         held += ownStandIns(words.slice(at, one.start));
-        const name =
-          one.route.kind === "issue"
-            ? one.route.key
-            : (nameOf(one.reference) ?? shortForm(one.route));
-        held += names.length < STAND_INS ? tokenOf(name).repeat(name.length) : ownStandIns(name);
+        const { key, words: name } = rowReferenceWords(one, known, issue, edited);
+        // Each word of the name a token as long as the word, with the name's own spaces between
+        // them, so a cut falls between two of its words and inside none.
+        held += (key === undefined ? name : `${key} ${name}`)
+          .split(" ")
+          .map((word) =>
+            names.length < STAND_INS ? tokenOf(word).repeat(word.length) : ownStandIns(word)
+          )
+          .join(" ");
         at = one.end;
       }
       return `${held}${ownStandIns(words.slice(at))}`;
@@ -336,59 +386,35 @@ export function referenceStandIns(
 }
 
 /**
- * How the page names a reference that a plain line cites (`referenceStandIns`), read once over
- * the whole tree: by the words of the first chip of the tree that names the same node, as that
- * chip draws them - the line the names store projects for its target (`KnownReferences.lines`,
- * else `names`), cut as a chip cuts it (`chipName`); else, for a node the tree holds, by its
- * kind's word; else not at all. These are the names a chip draws, the page's one naming rule,
- * so no markdown is read here. `nodeIdOf` is how the issue addresses a node (`treeContext`), so
- * two addresses of one block are named alike.
+ * The page's rule for an author (`AgentText.author`) as a plain line reads it, which is only
+ * through the deleted line of a post in `deleted` (`rowReferenceNames`). The rule is made anew
+ * at every poll of the agent registry, though it names those posts' actors alike almost every
+ * time, so the rule read before is kept while `deleted` stands and the new rule names every
+ * actor in it as the kept one does.
  */
-export function useReferenceNames(
-  root: TreeNode,
-  nodeIdOf: (reference: string) => string | undefined
-): (reference: string) => string | undefined {
-  const { lines, names: known } = useKnownReferences();
-  return useMemo(() => {
-    const types = new Map<string, NodeType>();
-    const names = new Map<string, string>();
-    const walk = (node: TreeNode): void => {
-      types.set(node.id, node.type);
-      for (const chip of node.chips) {
-        if (chip.gone) continue;
-        const drawn = lines.get(chip.ref) ?? known.get(chip.ref);
-        if (drawn === undefined || drawn === "") continue;
-        const id = nodeIdOf(chip.ref);
-        if (id === undefined || names.has(id)) continue;
-        const words = chipName(parseNodeReference(chip.ref), drawn);
-        if (words !== "") names.set(id, words);
-      }
-      for (const child of node.children) walk(child);
-    };
-    walk(root);
-    return (reference: string) => {
-      const id = nodeIdOf(reference);
-      if (id === undefined) return undefined;
-      const type = types.get(id);
-      return names.get(id) ?? (type === undefined ? undefined : NODE_TYPE_NAMES[type]);
-    };
-  }, [known, lines, nodeIdOf, root]);
+function useDeletedActorsAuthor(deleted: LineNames["deleted"]): AgentText["author"] {
+  const { author } = useAgentText();
+  // Each deleted post's actor as `author` names it, the name its deleted line draws, and null
+  // for a post that names no actor, whose line names none (`deletedLineText`).
+  const actors = JSON.stringify(
+    [...deleted.values()].map(({ by }) => (by === null ? null : author(by)))
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `author` is kept while `deleted` and `actors` stand, since `actors` is everything `author` is read for here
+  return useMemo(() => author, [actors, deleted]);
 }
 
 /**
- * How the page names a reference that a plain line cites, for one issue's tree
- * (`useReferenceNames`), and how that issue addresses a node, which a caller that resolves a
- * decision's tie reads too. Only the addressing of the issue's context is read here, and the
- * names are the page's published ones.
+ * What a plain line of the issue `issueKey`'s page names the references it cites by
+ * (`LineNames`), read from what the page published. It is the same object while nothing a line
+ * names a reference by changes, a poll of the agent registry that names every deleted post's
+ * actor alike included (`useDeletedActorsAuthor`).
  */
-export function useIssueNames(
-  issue: IssueDetails,
-  root: TreeNode
-): {
-  readonly nameOf: (reference: string) => string | undefined;
-  readonly nodeIdOf: (reference: string) => string | undefined;
-} {
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  const nameOf = useReferenceNames(root, nodeIdOf);
-  return { nameOf, nodeIdOf };
+export function useIssueNames(issueKey: string): LineNames {
+  const { ambiguous, deleted, edited, lines, names } = useKnownReferences();
+  const author = useDeletedActorsAuthor(deleted);
+  const issues = useMemo(() => knownIssueKeys(names), [names]);
+  return useMemo(
+    () => ({ ambiguous, author, deleted, edited, issue: issueKey, issues, lines, names }),
+    [ambiguous, author, deleted, edited, issueKey, issues, lines, names]
+  );
 }

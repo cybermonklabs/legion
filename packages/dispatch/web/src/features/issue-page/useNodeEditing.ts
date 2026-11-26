@@ -8,6 +8,7 @@ import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import {
+  type CaretAt,
   caretInBlock,
   caretOutOfBlock,
   confineKey,
@@ -46,6 +47,7 @@ export type OnEditing = (artifactId: string | undefined, onEditor?: OnEditor) =>
  *  tells one placement of a node from another. */
 export interface EditedRow {
   readonly artifactId: string;
+  readonly at?: CaretAt;
   readonly blockId: string;
   readonly row: string;
 }
@@ -54,7 +56,7 @@ export interface NodeEditing {
   /** The row holding the editor, or `undefined` while the reader is editing nothing. */
   readonly editing: EditedRow | undefined;
   /** Puts the caret in one row's node, in the document that node's text lives in. */
-  readonly edit: (row: string, node: TreeNode) => void;
+  readonly edit: (row: string, node: TreeNode, at?: CaretAt) => void;
   /** Takes the caret out again and gives the row the focus back. */
   readonly stopEditing: () => void;
 }
@@ -122,6 +124,7 @@ export function nodeEditable(
  * does. That act is the reader's latest press, or a key pressed after that press had ended: a key
  * pressed while a press is held is part of the press, and a key after it - Tab out, `j` - or a
  * press in the tree moves on from the row.
+ * A press starts at the pressed text without moving the page; Enter starts at the block's start.
  * The editor's own redrawing can drop that caret before the reader has done anything, and this
  * puts it back until they have. From then on, a focus the editor drops while the reader writes
  * goes back to the caret they had, or to the node's block where the editor has redrawn the text
@@ -211,7 +214,7 @@ export function useNodeEditing({
   const leaving = useRef<string | undefined>(undefined);
 
   const edit = useCallback(
-    (row: string, node: TreeNode) => {
+    (row: string, node: TreeNode, at?: CaretAt) => {
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
         onReport(KEY_REPORTS.no_text);
@@ -220,7 +223,7 @@ export function useNodeEditing({
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
       // look for the caret under way.
       if (editing?.row === row && hold.current !== "on") return;
-      setEditing({ artifactId: place.artifact.id, blockId: place.blockId, row });
+      setEditing({ artifactId: place.artifact.id, at, blockId: place.blockId, row });
     },
     [artifacts, editing, onReport]
   );
@@ -535,7 +538,7 @@ export function useNodeEditing({
         // An editor made again in the row's place is no editor a caret goes in until its own
         // hold is on.
         if (hold.current === "on" && (focusOnDocument() || caretOutOfBlock(row, blockId))) {
-          caretInBlock(row, blockId);
+          caretInBlock(row, blockId, editing.at);
         }
         return acts.signal.aborted;
       }
@@ -591,8 +594,8 @@ export function useNodeEditing({
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
-      if (hold.current !== "on" || !caretInBlock(row, blockId)) return false;
-      settled = holdEditorAtBlock(row, blockId);
+      if (hold.current !== "on" || !caretInBlock(row, blockId, editing.at)) return false;
+      settled = holdEditorAtBlock(row, blockId, editing.at);
       window.clearTimeout(look);
       looking.abort();
       // Only a selection moved after the caret was placed is the editor's doing.

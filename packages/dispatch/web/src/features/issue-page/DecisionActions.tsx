@@ -1,5 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { refreshQueries } from "../../api/query-refresh";
@@ -31,6 +32,7 @@ import {
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
+import { parseIssuePath } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -39,10 +41,18 @@ import {
   decidedByPerson,
   decisionsOfAnswer,
 } from "./decision-nodes/decision-nodes";
+import { presetOf } from "./issue-address";
 import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { dropViews, outlineTargets, useOutlineAnswer } from "./tree-read/tree-read";
+import { treeRead } from "./spec-filter/tree-read";
+import {
+  dropViews,
+  outlineTargets,
+  type TreeAnswer,
+  useOutlineAnswer,
+  viewQuery,
+} from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -138,6 +148,20 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
   return <ChangeDrafts.Provider value={drafts}>{children}</ChangeDrafts.Provider>;
 }
 
+/** The decision at `reference` in the first of `reads` whose decisions hold it
+ *  (`decisionsOfAnswer`), each read for issue `key`; none where no read holds it. */
+function decisionIn(
+  reads: readonly (TreeAnswer | undefined)[],
+  key: string,
+  reference: string
+): DecisionNode | undefined {
+  for (const read of reads) {
+    const decision = read === undefined ? undefined : decisionsOfAnswer(read, key).get(reference);
+    if (decision !== undefined) return decision;
+  }
+  return undefined;
+}
+
 /**
  * What a reader does with a decision, on the decision's own node (R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
@@ -152,9 +176,15 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * against the decision node's own document and block, carrying the sum of the text this node
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
  * comment anchored to the decision's own block and the words of its first paragraph, its
- * `heading` (`decision-nodes.ts`). The decision is the node of the outline read the page already
- * holds, the one its address chooses (`useOutlineAnswer`), found by its address among that
- * answer's decisions (`decisionsOfAnswer`), so the node makes no read of its own to draw its
+ * `heading` (`decision-nodes.ts`). The decision is a node of a read the page already holds, found
+ * by its address among that answer's decisions (`decisionIn`): first in the read its row is
+ * drawn from - on the Decisions view the decisions view read (`?view=decisions`), which holds
+ * every decision of the issue, and in every other view the outline read the address chooses
+ * (`useOutlineAnswer`) - and, where that read does not hold it, in the other. The outline read
+ * is paged (R15), so a decision past the pages of it held so far is found in the decisions view
+ * wherever the page holds that read; and the page reads the decisions view only once the
+ * Decisions filter is on (`ViewReadProvider`), so until then a decision is found in the outline
+ * read. Both are watched and never sent, so the node makes no read of its own to draw its
  * controls.
  */
 export function DecisionActions({
@@ -176,7 +206,7 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  // The decisions of the outline read are read once per answer for every node of the page
+  // The decisions of each read are read once per answer for every node of the page
   // (`decisionsOfAnswer`), with no asks: the read answers a person's decision on every ask a
   // person answered, which is what says a question is a person's decision and an agent's
   // decision restates it (`restatesAnswer`), and these controls are drawn only on a decision
@@ -184,11 +214,16 @@ export function DecisionActions({
   // without them. A decision a person decided is never one, whatever the read's
   // `waiting_review` says (`decidedByPerson`, INFRA-1196's decision 516): the person's own
   // decision is not an agent's to keep or change, so neither control is drawn on it.
-  const tree = useOutlineAnswer(issueKey);
+  const outline = useOutlineAnswer(issueKey);
+  const decisionsView = useQuery(treeRead(viewQuery(issueKey, "decisions"))).data;
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  const reads =
+    route !== undefined && presetOf(route) === "decisions"
+      ? [decisionsView, outline]
+      : [outline, decisionsView];
   const decision =
-    tree === undefined || nodeReference === undefined
-      ? undefined
-      : decisionsOfAnswer(tree, issueKey).get(nodeReference);
+    nodeReference === undefined ? undefined : decisionIn(reads, issueKey, nodeReference);
   const documentId = decision?.document;
   if (decision === undefined || documentId === undefined || isClosed || decidedByPerson(decision)) {
     return null;
