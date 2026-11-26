@@ -94,10 +94,14 @@ export function ThreadTitle({
   const text = `${className} ${
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
+  // Below 1280 px every link is an `inline-flex` touch target (styles.css), which makes the
+  // preview inside the title's link a flex item that draws in lines of its own: there it cuts
+  // its own line, with its own ellipsis (`truncate`). Drawn inline, as the host's text, the
+  // host's ellipsis cuts it and `truncate` does nothing.
   const line =
     deletedWords === undefined ? (
       <MarkdownPreview
-        className="inline"
+        className="inline min-w-0 truncate"
         fullTitle
         lines={1}
         markdown={thread.subject}
