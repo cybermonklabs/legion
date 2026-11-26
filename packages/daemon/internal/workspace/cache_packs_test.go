@@ -319,8 +319,9 @@ func moved(t *testing.T, address, host string) string {
 // afresh with the cache's token, on a staging repository holding nothing the bucket's attempt
 // wrote, says why in its report's TarReason, and ends with the /tar's feed: a
 // cache of an earlier release or with no bucket (a 404 naming no repository); a 503; an answer that
-// is no manifest; a manifest listing a pack without its index, a pack and its index twice, a ref a
-// feed does not take, an object of another repository, or an address at another host; an object of
+// is no manifest; a manifest listing no ref, no object, or neither, which no whole set is, a pack
+// without its index, a pack and its index twice, a ref a feed does not take, an object of another
+// repository, or an address at another host, each refused before any download; an object of
 // another size; a pack and an index whose bytes the bucket changed; a download the bucket refuses
 // for want of the object, one cut off mid-body, one whose signature the bucket refuses, one past
 // its expiry, and one that stalls below the low-speed bound; a pack whose bytes the manifest's
@@ -366,6 +367,15 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 				_, _ = w.Write([]byte(`{"bucket":"` + testPacksBucket + `","refs":[`))
 			})
 		}, source: SourceTar, reason: reasonInvalid + ": GET ", says: "/packs answered no manifest"},
+		{name: "a manifest that lists no ref", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
+			c.edit(func(m *PackManifest) { m.Refs = []PackRef{} })
+		}, source: SourceTar, reason: reasonInvalid, says: "it lists no ref"},
+		{name: "a manifest that lists no object", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
+			c.edit(func(m *PackManifest) { m.Objects = []PackObject{} })
+		}, source: SourceTar, reason: reasonInvalid, says: "it lists no object"},
+		{name: "a manifest that lists neither a ref nor an object", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
+			c.edit(func(m *PackManifest) { m.Refs, m.Objects = []PackRef{}, []PackObject{} })
+		}, source: SourceTar, reason: reasonInvalid, says: "it lists no ref"},
 		{name: "a pack listed without its index", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) {
 				m.Objects = slices.DeleteFunc(m.Objects, func(o PackObject) bool { return strings.HasSuffix(o.Name, ".idx") })
@@ -540,8 +550,12 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 					t.Errorf("the reason %q or the failure %v names %q", report.TarReason, err, secret)
 				}
 			}
-			if downloads := c.double.Count(fakegcs.RouteDownload); downloads.WithAuthorization != 0 {
+			downloads := c.double.Count(fakegcs.RouteDownload)
+			if downloads.WithAuthorization != 0 {
 				t.Errorf("%d of the bucket's %d downloads carried an Authorization header", downloads.WithAuthorization, downloads.Requests)
+			}
+			if tc.reason == reasonInvalid && downloads.Requests != 0 {
+				t.Errorf("the fetch refused the manifest as invalid after it asked the bucket for %d downloads, not before any", downloads.Requests)
 			}
 			if c.packsAsked != 1 || c.packsBearers[0] != "Bearer "+testCacheToken {
 				t.Errorf("/packs was asked %d times, presenting %q, want once with the cache's token", c.packsAsked, c.packsBearers)

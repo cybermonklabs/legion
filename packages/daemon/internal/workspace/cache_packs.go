@@ -324,6 +324,10 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // check is why the manifest may not fill request's feed, or nil when every member of it is one the
 // fetch takes. It holds the whole answer before the fetch asks for any object:
 //   - the bucket is a bucket's name;
+//   - it lists at least one ref and at least one object: a whole set of the cache's clone lists at
+//     least one ref and one pack with its index, so an answer that lists no ref or no object is no
+//     whole set, and taken, it would leave the whole of the feed's history to the fetch from GitHub
+//     that follows while the report named the bucket as its source;
 //   - each ref is a file a feed takes from its cache (FeedEntry), outside objects/pack/, its path
 //     slash-separated, clean and inside the repository, named once, and no other ref's directory;
 //   - each object is a pack or an index of request's repository, its PackPrefix,
@@ -339,6 +343,12 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func (m PackManifest) check(request FetchRequest) error {
 	if !validBucketName(m.Bucket) {
 		return fmt.Errorf("it names the bucket %q, which is no Cloud Storage bucket's name", m.Bucket)
+	}
+	if len(m.Refs) == 0 {
+		return errors.New("it lists no ref, so it is no whole set of the cache's clone, which lists at least one")
+	}
+	if len(m.Objects) == 0 {
+		return errors.New("it lists no object, so it is no whole set of the cache's clone, which lists at least one pack with its index")
 	}
 	refs := map[string]bool{}
 	for _, ref := range m.Refs {

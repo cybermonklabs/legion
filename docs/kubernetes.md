@@ -4219,6 +4219,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   a `bucket` without a `service_account` or a `service_account` without a `bucket` (`runtime.kubernetes.repository_cache.bucket needs runtime.kubernetes.repository_cache.service_account: …`, and the other way round);
   either one blank (`… must not be empty`) or still holding a `${…}` placeholder (`… is an unfilled placeholder: …`);
   a `bucket` that is not a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots, so a `gs://` address or a capital is refused (Cloud Storage refuses the rest of its naming rules when the bucket is made);
+  a `service_account` that is no ServiceAccount's name, which Kubernetes takes only as a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, beginning and ending with a letter or a digit, in at most 253 characters, so `Legion_Cache` or `a/b` is refused (`runtime.kubernetes.repository_cache.service_account "<value>" is no ServiceAccount's name: …`);
   a `service_account` that is the account every other pod runs as: `pod.service_account`, or `default` while `pod.service_account` is unset (`… must differ from runtime.kubernetes.pod.service_account, the account every other pod runs as: the bucket's grant to it would reach every pod`);
 
 - a `memory_guard` that is not a mapping, or names a member but `issue_pods` and `controller_pod`;
@@ -6264,6 +6265,7 @@ The cache's Google identity needs, on the bucket, `storage.objects.list`, `stora
 An issue pod's `workspace-fetch` asks `/packs` once the cache is ready, presenting the cache's token, and reads the answer within one minute.
 It holds the whole answer to check before it asks for any object:
 the bucket is a bucket's name;
+it lists at least one ref and at least one object, as every whole set does, so a fetch never takes an empty answer and then brings the whole history from GitHub as its delta;
 each ref is a file a feed takes from a cache (`HEAD`, `packed-refs`, `refs/…`), outside `objects/pack/`, named once and no other ref's directory;
 each object is a pack or an index of the pod's own repository, `<owner>/<repo>/objects/pack/pack-<id>.pack` or `.idx`, named once, each pack with its index and each index with its pack, with a size and a SHA-256 of 64 lower-case hex digits;
 and each address is a `GET` of that object in that bucket at `https://storage.googleapis.com`, or, only while the cache's own address is a loopback one, as in a test or the burst Job beside a double of Cloud Storage, at a loopback `http://` address.
@@ -6281,7 +6283,7 @@ Any failure of the attempt removes everything it wrote, and the fetch fills the 
 
 - `unavailable manifest: …`: `/packs` answered another status, such as 503 while the cache has listed no set or cannot sign, or no answer came.
 
-- `invalid manifest: …`: the answer is no manifest, or a member of it does not hold, named.
+- `invalid manifest: …`: the answer is no manifest, lists no ref or no object, or a member of it does not hold, named.
 
 - `failed download: …`: an object's download failed, named with what the bucket answered (with Cloud Storage's own code, such as `ExpiredToken` for an address past its life or `SignatureDoesNotMatch`), a connection cut off, a download below the low-speed bound, a redirect, or the attempt's 15 minutes run out.
 
@@ -9534,7 +9536,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a `secret` or `config_map` source may set `default_mode`, the octal mode of every file it projects, such as `0440` in place of Kubernetes' default 0644 ([Configuration](#configuration));
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
-  `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
+  `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key and the value (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
   Changing it reaches a running pod only by replacing it, which the item after this one describes.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
