@@ -1514,7 +1514,7 @@ Dispatch reads no list of terms yet, so the line names no terms.
 `dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
 The version is the latest settled one by default.
 A version number belongs to one document, and an issue has several, so `--version` needs `--artifact` (or a `--ref` that names the document), and the argument check refuses it beside an issue alone before any request.
-A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node> in <where>: <detail>.`, or `- <kind> <node> in <where>: <detail>. <ways>.` for a finding that gives ways out, or what Dispatch read.
+A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node> in <where>: <detail>.`, or what Dispatch read.
 Dispatch writes these lines (`finding_lines` of the read), each finding's line as its refusal writes it, and the command prints them as they are.
 The read lists at most 500 findings; when it holds more, the lines say how many it lists.
 A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.

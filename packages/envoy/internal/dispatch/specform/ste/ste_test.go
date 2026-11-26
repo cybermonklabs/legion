@@ -343,11 +343,11 @@ func TestWordsAreWhatSteLintLints(t *testing.T) {
 	}
 }
 
-// A text of Dispatch is no markdown document: Dispatch joins the lines of a text into one, with its
-// fence markers written as white space (TestNoFencesWritesEachFenceMarkerAsWhiteSpace), and the
-// judge of the ways out reads one sentence of it alone, which can start with three backticks of
-// code font. So LintVerbs, Words and SpreadOf read no line as a fence, where Lint, the port of
-// ste-lint, still does (the control, and TestPortMatchesSteLintOnTheCorpus).
+// A text of Dispatch is no markdown document: Dispatch joins the lines of a text into one and
+// reads it with each fence marker written as white space (NoFences,
+// TestNoFencesWritesEachFenceMarkerAsWhiteSpace), so a sentence of it can start with three
+// backticks of code font. So LintVerbs, Words and SpreadOf read no line as a fence, where Lint,
+// the port of ste-lint, still does (the control, and TestPortMatchesSteLintOnTheCorpus).
 func TestTheReadersOfATextOfDispatchReadNoFence(t *testing.T) {
 	const piece = "```x``` a; b"
 	if got := Lint(piece); len(got) != 0 {

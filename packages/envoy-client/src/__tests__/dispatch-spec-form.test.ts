@@ -179,15 +179,14 @@ function summaryBody(issue: StubIssue) {
   };
 }
 
-/** One finding as the read route and the refusal carry it, with the ways out it gives (`ways`). */
+/** One finding as the read route and the refusal carry it. */
 function finding(
   artifactID: string,
   document: string,
   version: number,
   node: string,
   kind: string,
-  detail: string,
-  ways = ""
+  detail: string
 ): SpecFormFinding {
   return {
     document,
@@ -198,7 +197,6 @@ function finding(
     where: `${document} version ${version}`,
     rule: "sentences",
     detail,
-    ways,
     excerpt: "Dispatch stores each comment. Dispatch indexes it. Dispatch shows it.",
   };
 }

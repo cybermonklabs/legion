@@ -39,14 +39,13 @@ func holdsWords(notes []*Footnote) {
 }
 
 // footnoteJudge judges the footnotes of the texts of one Check. It judges each footnote once
-// (judgment, findings), and gives each of its findings once: the findings of the form rules to the
-// first text that holds the footnote and whose kind those rules judge (prose), and the findings of
-// the reference rules to the first text that holds it, so that the work and the findings of a
+// (judgment), and gives each of its findings once: the findings of the form rules to the first
+// text that holds the footnote and whose kind those rules judge (prose), and the findings of the
+// reference rules to the first text that holds it, so that the work and the findings of a
 // judgment grow with the texts and their footnotes, not with their product. A text holds a
 // footnote that it refers to, and each footnote that such a footnote refers to in turn. The words
 // of each finding name the footnote and how many other texts refer to it (place). The sentences of
-// each footnote that a statement holds count among the statement's (held), and so the ways out of
-// its findings are judged in the largest statement that holds it (statements). Two verbs for one
+// each footnote that a statement holds count among the statement's (held). Two verbs for one
 // action are the one finding of the text or the footnote that holds them both with no one footnote
 // that it refers to holding them all (held, rotations).
 type footnoteJudge struct {
@@ -62,36 +61,18 @@ type footnoteJudge struct {
 	// counted is, for each footnote that a text holds, the footnotes with sentences that it holds,
 	// until their sentences pass maxSentences, and verbs the verbs of the synonym groups that it
 	// and the footnotes that it holds use (carry). gives is the verbs of each synonym group that a
-	// footnote rotates with the footnotes that it refers to (rotations), and rings and ring the
-	// loops of the footnotes (footnoteRings).
+	// footnote rotates with the footnotes that it refers to (rotations).
 	counted map[*Footnote]*sentenceCount
 	verbs   map[*Footnote]ste.Verbs
 	gives   map[*Footnote]ste.Verbs
-	rings   []footnoteRing
-	ring    map[*Footnote]int
-	// inStatement is, for each footnote that a statement holds, the count of sentences of the
-	// largest such statement (statements).
-	inStatement map[*Footnote]int
-	// The fields below are what rotationCanChange reads, each the first time that a way out asks:
-	// the sets of a synonym group in each ring (ringCount) and below each text (textCount), the
-	// verbs of each text's words, the texts of prose that refer to each ring, and the place of each
-	// footnote that a text of prose holds (formPlace).
-	ringCounts    map[ringGroup]ringCount
-	textCounts    map[ringGroup]verbCount
-	textVerbsRead map[int]ste.Verbs
-	textsOfRing   [][]int
-	formPlaces    map[*Footnote]string
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
-// reference rules, the count of its sentences and the verbs of the synonym groups that it uses;
-// the judge of the ways out of its findings, and whether it judged them (findings).
+// reference rules, the count of its sentences and the verbs of the synonym groups that it uses.
 type footnoteJudgment struct {
 	form, references []broken
 	sentences        int
 	verbs            ste.Verbs
-	judge            *wayJudge
-	judged           bool
 }
 
 // sentenceCount is the footnotes with sentences that one footnote holds, itself among them, and the
@@ -140,69 +121,17 @@ func newFootnoteJudge(c Context, people [][]string, texts []Text) *footnoteJudge
 	return judge
 }
 
-// judgment is note as the judge reads it, the first time that a text asks for it: the count of its
-// sentences and the verbs that it uses, and each place of each finding, which the judge of its ways
-// out takes first (survey), before it judges them (findings).
+// judgment is note judged, the first time that a text asks for it: each finding of the form rules
+// and of the reference rules, the count of its sentences and the verbs that it uses.
 func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 	if judged, ok := j.judged[note]; ok {
 		return judged
 	}
-	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote, note.Held.Shown != "")}
-	judged.judge.elsewhere = func(before, after ste.Verbs) bool { return j.rotationCanChange(note, before, after) }
-	judged.judge.survey(func() { j.find(note, judged) })
+	judged := &footnoteJudgment{}
+	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, proseLine(note.Body), footnotesHeld{})
+	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held)
 	j.judged[note] = judged
 	return judged
-}
-
-// findings is note judged, with the ways out of its findings judged at each place of each, the
-// first time that a text asks for them: in the largest statement that holds note (statements), with
-// the statement's sentences in the count of the rule sentences, as the refusal counts them.
-func (j *footnoteJudge) findings(note *Footnote) *footnoteJudgment {
-	judged := j.judgment(note)
-	if !judged.judged {
-		if count, ok := j.statements()[note]; ok {
-			judged.judge.heldIn(count)
-		}
-		j.find(note, judged)
-		judged.judged = true
-	}
-	return judged
-}
-
-// find writes each finding of note into judged, of the form rules and of the reference rules, with
-// the count of its sentences and its verbs, the ways out judged by judged.judge.
-func (j *footnoteJudge) find(note *Footnote, judged *footnoteJudgment) {
-	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, proseLine(note.Body), footnotesHeld{}, judged.judge)
-	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held, judged.judge)
-}
-
-// statements is, for each footnote that a statement holds, the count of sentences of the largest
-// such statement, with those of its footnotes (held), up to maxSentences+1, past which a way out
-// that adds a sentence makes a count that the statement does not give, as the one before it: one
-// number for each footnote, which each statement that holds it raises, along each reference, at
-// most maxSentences+2 times, so its work grows with the texts and the footnotes.
-func (j *footnoteJudge) statements() map[*Footnote]int {
-	if j.inStatement != nil {
-		return j.inStatement
-	}
-	j.inStatement = map[*Footnote]int{}
-	for _, text := range j.texts {
-		if text.Kind != KindStatement || len(text.Notes) == 0 {
-			continue
-		}
-		count := min(maxSentences+1, len(sentencesOf(proseLine(text.Body)))+j.held(text).count)
-		walk := slices.Clone(text.Notes)
-		for len(walk) > 0 {
-			note := walk[len(walk)-1]
-			walk = walk[:len(walk)-1]
-			if held, ok := j.inStatement[note]; ok && held >= count {
-				continue
-			}
-			j.inStatement[note] = count
-			walk = append(walk, note.Notes...)
-		}
-	}
-	return j.inStatement
 }
 
 // owned is the findings of each footnote that text is the first text to hold, for each of the two
@@ -215,18 +144,18 @@ func (j *footnoteJudge) owned(text Text) []broken {
 		})
 	}
 	j.walk(text, j.referencesGiven, func(via, note *Footnote) {
-		found = append(found, j.placed(via, note, j.findings(note).references)...)
+		found = append(found, j.placed(via, note, j.judgment(note).references)...)
 	})
 	return found
 }
 
-// form is the findings of the form rules of note: those of its words (findings), then each synonym
+// form is the findings of the form rules of note: those of its words (judgment), then each synonym
 // group that it rotates with the footnotes that it refers to (rotations).
 func (j *footnoteJudge) form(note *Footnote) []broken {
 	if j.counted == nil {
 		j.carry()
 	}
-	form := j.findings(note).form
+	form := j.judgment(note).form
 	if gives := j.gives[note]; gives != 0 {
 		return append(slices.Clip(form), rotationBreaks(gives, "the footnotes that it refers to")...)
 	}
@@ -425,16 +354,16 @@ func (j *footnoteJudge) carry() {
 // itself. A ring reads each reference to a footnote outside it once, so the work is in proportion
 // to the footnotes and their references.
 func (j *footnoteJudge) rotations(order []*Footnote) {
-	j.rings, j.ring = footnoteRings(order)
+	rings := footnoteRings(order)
 	j.gives = map[*Footnote]ste.Verbs{}
-	for _, ring := range j.rings {
+	for _, ring := range rings {
 		verbs := j.verbs[ring.notes[0]]
 		rotated := verbs.Rotated()
 		for _, note := range ring.notes {
 			rotated &^= usesAll(verbs, j.judgment(note).verbs)
 		}
 		for _, below := range ring.below {
-			rotated &^= usesAll(verbs, j.verbs[j.rings[below].notes[0]])
+			rotated &^= usesAll(verbs, j.verbs[rings[below].notes[0]])
 		}
 		if rotated != 0 {
 			j.gives[ring.notes[0]] = rotated

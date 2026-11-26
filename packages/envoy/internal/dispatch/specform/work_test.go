@@ -22,16 +22,14 @@ const workSamples = 3
 // plain runs of the table at a load average of 138 to 310 (the race build claims no bound), the
 // worst growth was 28.7 (the row "many addresses of a pull request"); and with each walk that a
 // row is for made a walk for each pair in turn, the least growth of a broken row was 39.0 (the
-// ste-lint walk). With the five rows of the split and of the judge of the ways out, 10 more plain
-// runs at a load average of 414 to 978 gave a worst growth of 22.2 (the row "many claims that
-// refer to one long footnote of two verbs for one action"), and each of those five rows, a walk
-// that it guards broken, grew 60.5 times or more in 5 of 5 runs (the walks below). With the four
-// rows of the whole text and of the holders of a footnote, 10 more plain runs at a load average of
-// 299 to 634 gave a worst growth of 18.8 (the row "many sentences of one text, each with a way out
-// that the whole text reads"). Those numbers are of the user time of the thread alone; the table
-// now reads its user and system time (cputest's thread clock). Read on both over the same windows,
-// in 4 plain runs at a load average of 205 to 366, two of them in a cgroup full of page cache, one
-// of which took 363 MiB of reclaim on the test's own thread, the worst growth was 21.1 to 21.8 on
+// ste-lint walk). With the three rows of the split, 10 more plain runs at a load average of 414
+// to 978 gave a worst growth of 22.2 (the row "many claims that refer to one long footnote of two
+// verbs for one action"), and each of those rows, a walk that it guards broken, grew 60.5 times
+// or more in 5 of 5 runs (the walks below). Those numbers are of the user time of the thread
+// alone; the table now reads its user and system time (cputest's thread clock). Read on both over
+// the same windows, in 4 plain runs at a load average of 205 to 366, two of them in a cgroup full
+// of page cache, one of which took 363 MiB of reclaim on the test's own thread, the worst growth
+// was 21.1 to 21.8 on
 // user and system time and 20.4 to 21.3 on user time alone.
 const (
 	workScale = 16
@@ -94,7 +92,7 @@ func workRows(race bool) []workRow {
 // walk that the row is for, made a walk for each pair, still failed the bound when its n was
 // searched at steps of about 1.41, and the n at which the row's smaller window lasts about 110 ms
 // on the machine of 288 cores, so that a machine somewhat faster still reads a window of tens of
-// milliseconds. Each of the sixteen walks failed its rows in 5 of 5 runs at the table's n, each
+// milliseconds. Each of the fifteen walks failed its rows in 5 of 5 runs at the table's n, each
 // walk broken in turn: ste-lint's count of a column from the start of the line (many semicolons,
 // many phrasal verbs, many marketing adjectives, many nominalizations); the list of distinct
 // addresses and titles, read through for each one (many links, many titles, many images); the
@@ -118,88 +116,15 @@ func workRows(race bool) []workRow {
 // means, read again from each word (the same two rows), 60.5 times or more; its reading of the
 // condition that opens a sentence as a sentence of its own, read again from each comma (one
 // sentence of many instructions after the condition that opens it, which it does not split), 85.1
-// times or more; and the judge of the ways out (wayJudge), made to read the ways out of every
-// finding of one sentence where it reads those of maxJudgedInSentence (8) findings at most (many
-// stops with no space in one sentence, many addresses of a person in one sentence), 206.8 times or
-// more. Each of those last four walks was broken in the code that this table reads. The bound of 8
-// keeps the work of a sentence's ways out at most 8 readings of the sentence for each way out a
-// finding can give, so the work of a judgment stays linear in its text, and each finding past it
-// is still refused and named. A row's smaller text can be shorter than 16 KB, which Go's regexp
-// reads a faster way, so that its growth is up to about 1.3 times more; the worst growth of the
+// times or more. Each of those last three walks was broken in the code that this table reads. A
+// row's smaller text can be shorter than 16 KB, which Go's regexp reads a faster way, so that its
+// growth is up to about 1.3 times more; the worst growth of the
 // table (workScale) holds that. A walk for each pair whose step is a comparison of a few
 // nanoseconds needs units that cost little else: so the footnotes of the rows "many footnotes" and
 // "one statement that refers to many footnotes", and the statements of the first, hold a word or
 // two each, and the row of purpose lines of one id times the reader alone (read), since the walk
 // that it is for is the reader's, and the judgment of each line costs several times the reading of
-// it. The judge of the ways out in the whole text (wholeText) and the count of the texts and
-// footnotes that hold a footnote (rotationCanChange) have four rows, each n found in the same way,
-// on the machine of 288 cores at a load average of about 1,200: many sentences of one text, each
-// with a way out that the whole text reads, whose walk, every text read whole for each way out,
-// grew 133.6 times at the least n whose windows cputest reads (6), so its n is that of a smaller
-// window of about 110 ms (23); many lines of one text, whose walk, the bound of the readings of a
-// text read whole taken away, grew 128.6 times at 6, so its n is 12; one claim that refers to many
-// footnotes, one in each eight of which has a way out that takes a verb away, whose walk, the
-// count of the claim's footnotes read again for each way out, first passed the bound at 1,024
-// (32.5; 31.8 at 724), so its n is 2,048, where the footnotes of the other seven, "It.", keep the
-// table's time; and a chain of footnotes, each of whose ways out takes a verb away, whose walk, the
-// walk up from a footnote's ring that goes on where the verbs stay as they were, first passed it at
-// 64 (33.9), so its n is 128. At those n each of the four walks, broken in turn, failed its row in
-// 5 of 5 runs, 228.7, 169.4, 50.8 and 47.8 times or more, and failed no other row but the row of
-// many lines, which the first break also reads whole for each way out (153.5 times or more). The
-// charge of each reading of a sentence (charge.Texts) has two rows, one sentence that holds in
-// code font the words of many findings that stand in the sentences after it, and the same as a
-// document holds them, the sentence after the findings: each finding's way out is read in that
-// sentence too (wayJudge.alsoAt), so with the charge taken out one sentence is read once for each
-// finding, and the work grows with the square of the text. Each n was found in the same way, on
-// the machine of 288 cores at a load average of 750 to 1,340: with the charge taken out, each row
-// first passed the bound at the least n whose windows cputest reads (8: 65.9 and 68.4 times), so
-// its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms. At 16,
-// with the charge taken out, each row failed in 5 of 5 runs, 106.6 and 93.6 times or more. The
-// judge's look for the sentences where a finding's words stand (wholeText.holding) and its walk of
-// the sentences that a piece of ste-lint runs through between two that a way out changes
-// (wholeText.changedRuns) have three rows, each n found in the same way, on the machine of 288
-// cores at a load average of 900 to 1,000: one finding beside one sentence that holds its bare
-// form many times in code font, whose walk, a lookup keyed by the sentence's text for each word of
-// that form, first passed the bound at 5,793 (32.0; 26.1 at 4,096), so its n is 11,585; many
-// findings of one bare form beside such a sentence, whose walk, the bare form's hit tested in the
-// whole sentence for each word of it, first passed it at 90 (46.4; 28.5 at 64), so its n is 180,
-// where the smaller window lasts about 110 ms unbroken; and many findings whose two places a run
-// of open quoted sentences joins, whose walk, each sentence between read with no charge, first
-// passed it at 64 (32.7; 29.2 at 45), so its n was 128. The types hold the third walk's charge (no
-// code of the judge reads a sentence but through charge.Texts.Read), so its break loosens them.
-// At those n each of the three walks, broken in turn, failed its row in 5 of 5 runs, 38.3, 83.7
-// and 40.9 times or more; the second also fails the first row (119.9 times), and the first and
-// the third fail no other of the three rows. The third walk read from a copy of the sentences'
-// records kept in a field of wholeText (the acceptance's fieldcopy-runs), which costs less for each
-// sentence, passed the row at 128 (28.5 to 31.3) and first passed the bound at 256 (40.5; 31.5 at
-// 181, on the machine of 288 cores at a load average of about 230), so the row's n is 512. At 512
-// that walk failed the row in 5 of 5 runs, 54.1 times or more, and the same walk from a copy of each
-// sentence's counts of words and whether it is open in 3 of 3, 54.4 times or more; the row grew
-// 15.8 to 17.0 times unbroken. A walk that the types cannot hold, a look at each sentence of the text
-// through its charge for each finding that holding looks for, costs a step for each sentence also
-// after the charge refuses it, a few nanoseconds, so its row needs many sentences that cost little
-// else: many findings, each beside ten sentences that hold none. Its n was found in the same way,
-// on the machine of 288 cores at a load average of about 1,000: that walk, written into holding,
-// first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is 1,448, where the smaller window
-// lasts about 10 s unbroken, the longest of the table. At 1,448 that walk failed the row in 5 of 5
-// runs, 37.0 times or more, and the row grows 16.4 times unbroken. A copy of a sentence kept in a
-// field of the judge, read again later, is read outside the charge. The judge's fields hold no text
-// of a sentence, which a test of their types holds (TestTheJudgeKeepsNoTextOfASentenceInAField),
-// but no type can tell a copy of what a reading gave as counts or flags from what the judge keeps
-// of the split of its text, so the walk of a copy for each finding has a row in changedRuns (the
-// row of runs, above) and one in holding: many findings of one claim whose words one sentence after
-// them holds in code font, the shape of the charge's second row as a claim. Its n was found in the
-// same way, on the machine of 288 cores at a load average of about 150: that walk, the sentences
-// where a finding's words stand and it does not each read for its Spread from a copy of the
-// sentences kept in a field of wholeText, once for each finding, first passed the bound at 45
-// (34.1; 27.1 at 32), so its n is 90, where the smaller window lasts about 500 ms unbroken and the
-// row grows 15.5 times. At 90 that walk failed the row in 5 of 5 runs, 54.6 times or more, and the
-// row grew 16.3 to 17.9 times unbroken; the same walk through the charge passes it (17.4), and with
-// the charge taken out the row fails (235.6). The walk of every word of every sentence from such a
-// copy for each finding (the acceptance's sb-holding-fields) passes this row (22.7 to 25.8 in 5
-// runs), and fails the row of many findings beside ten sentences each (142.1 to 147.1 in 3 runs) and
-// the row of runs at 512 (61.4 to 66.2 in 3 runs); at the row of runs' n of 128 it sat at the bound
-// (29.7 to 34.5 in 6 runs).
+// it.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -207,13 +132,6 @@ func workTable() []workRow {
 	checked := func(kind Kind, before, unit, after string) workJudgment {
 		return func(_ *testing.T, n int) func() []Finding {
 			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: before + strings.Repeat(unit, n) + after, Where: where}}}
-			return func() []Finding { return check(context, in) }
-		}
-	}
-	// built judges one text of kind whose words body writes for n units.
-	built := func(kind Kind, body func(n int) string) workJudgment {
-		return func(_ *testing.T, n int) func() []Finding {
-			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: body(n), Where: where}}}
 			return func() []Finding { return check(context, in) }
 		}
 	}
@@ -376,73 +294,6 @@ func workTable() []workRow {
 		{"one sentence of many instructions after the condition that opens it", ruleInstructions, 200,
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
-			})},
-		{"many sentences of one text, each with a way out that the whole text reads", ruleStopNoSpace, 23,
-			extracted(units(":::check{#c}\nDispatch reads it.", " Dispatch checks a%d.B now.", end))},
-		{"many lines of one text, each with a way out that the whole text reads", ruleStopNoSpace, 12,
-			extracted(units(":::check{#c}\nDispatch reads it.", "\u2028Dispatch checks a%d.B now.", end))},
-		{"one claim that refers to many footnotes, one in each eight of which has a way out that takes a verb away", "ste100-synonym-rotation", 2_048,
-			extracted(func(n int) string {
-				var markdown strings.Builder
-				markdown.WriteString(units(":::check{#c}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n))
-				for index := 1; index <= n; index++ {
-					if index%8 == 0 {
-						fmt.Fprintf(&markdown, "[^%d]: It checks Foo%[1]d.Validate at boot.\n\n", index)
-					} else {
-						fmt.Fprintf(&markdown, "[^%d]: It.\n\n", index)
-					}
-				}
-				return markdown.String()
-			})},
-		{"a chain of footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 128,
-			extracted(func(n int) string {
-				var markdown strings.Builder
-				markdown.WriteString(":::check{#c}\nDispatch keeps it[^1].\n:::\n\n")
-				for index := 1; index <= n; index++ {
-					fmt.Fprintf(&markdown, "[^%d]: It checks Foo%[1]d.Validate at boot[^%d].\n\n", index, index+1)
-				}
-				return markdown.String()
-			})},
-		{"one sentence that holds in code font the words of many findings that stand in the sentences after it", ruleStopNoSpace, 16,
-			built(KindClaim, func(n int) string {
-				return units("It keeps", " `a%d.B`", " at boot.")(n) + units("", " It reads a%d.B now.", "")(n)
-			})},
-		{"many findings whose words one sentence after them holds in code font, as a document holds them", ruleStopNoSpace, 16,
-			extracted(func(n int) string {
-				return ":::check{#c}\n" + units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.\n:::\n")(n)
-			})},
-		{"one finding beside one sentence that holds its bare form many times in code font", ruleStopNoSpace, 11_585,
-			built(KindClaim, func(n int) string {
-				return "It keeps `" + strings.TrimSpace(strings.Repeat("a1.B ", n)) + "` at boot. It reads a1.B."
-			})},
-		{"many findings of one bare form beside one sentence that holds it many times in code font", ruleStopNoSpace, 180,
-			built(KindClaim, func(n int) string {
-				var text strings.Builder
-				for _, mark := range []string{",", ";", ":", ")", "]", "}", "'", "\"", ">", "*", "-", "_"} {
-					fmt.Fprintf(&text, "It reads Web.Config%s now. ", mark)
-				}
-				return text.String() + "It logs" + strings.Repeat(" `Web.Config`", n) + " today."
-			})},
-		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 512,
-			built(KindClaim, func(n int) string {
-				var text strings.Builder
-				text.WriteString("It starts.")
-				for index := 1; index <= n; index++ {
-					fmt.Fprintf(&text, ` He said "b%d.C now."`, index)
-				}
-				text.WriteString(strings.Repeat(` He said "go."`, n))
-				for index := n; index >= 1; index-- {
-					fmt.Fprintf(&text, ` He said "b%d.C now."`, index)
-				}
-				return text.String() + " It ends."
-			})},
-		{"many findings, each beside ten sentences that hold none", ruleStopNoSpace, 1_448,
-			built(KindClaim, func(n int) string {
-				return strings.TrimSpace(units("", "It reads a%d.B now."+strings.Repeat(" It.", 10)+" ", "")(n))
-			})},
-		{"many findings of one claim whose words one sentence after them holds in code font", ruleStopNoSpace, 90,
-			built(KindClaim, func(n int) string {
-				return units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.")(n)
 			})},
 	}
 }

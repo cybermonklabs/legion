@@ -496,7 +496,7 @@ type specFormJudge struct {
 
 // judge reads document's named version and judges its texts, each definition of a term among them.
 // A version that the parser refuses is one finding of its document (specform.UnreadableError), so
-// the judgment that names it refuses it, with its way out: a new version of the document.
+// the judgment that names it refuses it, and its detail says to write a new version.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) error {
 	markdown, err := specFormMarkdown(ctx, j.q, document.artifact, document.version)
 	if err != nil {

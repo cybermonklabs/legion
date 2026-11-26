@@ -20,8 +20,8 @@ import (
 // 1 MiB that a document's markdown may hold.
 const boundDocumentBytes = 1_000_000
 
-// boundBroken is a statement of stops that no space follows, which gives eight findings with ways
-// out that the judge reads, and boundClean a statement of as many bytes that breaks no rule.
+// boundBroken is a statement of stops that no space follows, which gives eight findings, and
+// boundClean a statement of as many bytes that breaks no rule.
 const (
 	boundBroken = "Dispatch.Keeps it.Each.Record ends.It.Stops here.Then.Again it.Runs on.And.On it.Goes back.Now."
 	boundClean  = "Dispatch keeps each record of each issue, and it shows each record to each person who reads it."

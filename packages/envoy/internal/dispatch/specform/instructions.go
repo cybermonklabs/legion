@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
@@ -54,8 +53,7 @@ var (
 		return verbs
 	}()
 	// conditions open a condition. At the start of a sentence a comma ends it, and the instruction
-	// starts after that comma; outside the first instruction a split cannot keep its scope
-	// (splitKeepsMeaning).
+	// starts after that comma.
 	conditions = wordSet("if", "when", "after", "before", "once", "unless", "until", "while")
 	// objectStarts start the object of an instruction: an article, a word of quantity, a
 	// possessive, a demonstrative, a pronoun, or a span in code font.
@@ -75,17 +73,9 @@ var (
 
 // instructionBreaks is a finding of the rule instructions for each sentence of a procedure that
 // gives two instructions (instructionStarts). A span in code font counts as one word of the
-// sentence, where the rules that count words read none. The finding gives its ways out, each
-// written from a change of the sentence that gives one instruction in each sentence: the
-// instructions in sentences of their own (splitInstructions), where that keeps what the sentence
-// means (splitKeepsMeaning); "that" before the clause, for a listed verb that is a noun of the
-// object there; and, after a condition at the start, the condition as a sentence of its own
-// (conditionSentence), for a list of verbs in the condition. Where the split would change what the
-// sentence means, the finding says what the sentences must keep, and gives no split. It gives only
-// the ways out that judge passes in the sentence (wayJudge), the sentence as line holds it, white
-// space and all (each way out changes those bytes, and writes the words of the change with one
-// space between them), so that the whole-text reading finds it among the sentences of line.
-func instructionBreaks(line string, judge *wayJudge) []broken {
+// sentence, where the rules that count words read none. The finding quotes the first words of the
+// second instruction.
+func instructionBreaks(line string) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
 	for _, each := range sentencesOf(coded) {
@@ -96,151 +86,11 @@ func instructionBreaks(line string, judge *wayJudge) []broken {
 			continue
 		}
 		second := starts[1]
-		said := func(words []string) string { return spans.Replace(strings.Join(words, " ")) }
-		held := spans.Replace(each.in(coded))
-		var ways [maxWays]wayOut
-		keep := splitKeepsMeaning(words, commas, starts)
-		if len(keep) == 0 {
-			ways[0] = wayOut{held, said(splitInstructions(sentence, words, starts))}
-		}
-		ways[1] = wayOut{held, said(slices.Insert(slices.Clone(sentence), second+1, "that"))}
-		if condition, ok := conditionSentence(sentence, words, commas); ok {
-			ways[2] = wayOut{held, said(condition)}
-		}
-		given := judge.offered(judge.named(held, false), ruleInstructions, held, ways)
-		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
-		found = append(found, broken{rule: ruleInstructions, ways: given.ways,
-			detail:   fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q", quoted),
-			waysSaid: given.said(instructionsWays(words[second], keep, given.ways))})
+		quoted := strings.TrimRight(spans.Replace(strings.Join(sentence[second:min(len(sentence), second+instructionQuote)], " ")), ".!?")
+		found = append(found, broken{rule: ruleInstructions,
+			detail: fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q", quoted)})
 	}
 	return found
-}
-
-// instructionsWays is the words of the ways out of a finding of the rule instructions whose second
-// instruction starts with the word verb, written from the ways out that the finding gives (ways):
-// each instruction in a sentence of its own, as in the split, or, where the split would change what
-// the sentence means, with the words that each sentence must keep (keep, splitKeepsMeaning); "that"
-// before the clause; and the condition as a sentence of its own.
-func instructionsWays(verb string, keep []string, ways [maxWays]wayOut) string {
-	own := "write each instruction in a sentence of its own"
-	switch {
-	case ways[0] != (wayOut{}):
-		own += fmt.Sprintf(", as in %q", ways[0].to)
-	case len(keep) > 0:
-		own += " and keep " + joinList(keep)
-	}
-	options := []string{own}
-	if ways[1] != (wayOut{}) {
-		options = append(options, fmt.Sprintf(`if %q is no verb here, write "that" before the clause after it`, verb))
-	}
-	if ways[2] != (wayOut{}) {
-		options = append(options, fmt.Sprintf("if the words before it are part of the condition, write the condition as a sentence of its own, as in %q", ways[2].to))
-	}
-	return capitalized(strings.Join(options, ", or, "))
-}
-
-// splitKeepsMeaning is what the sentences that splitInstructions writes would lose of what the
-// sentence means, none where they keep it: the choice between two instructions that "or" joins, as
-// two sentences are two steps where "Read the diff or run the tests" is one of them; and a
-// condition that stands outside the first instruction, as the split cannot keep the scope of such a
-// condition. A condition before the first instruction governs each instruction, as in "If the run
-// fails, read the log and send the report", and one after it can govern each instruction before it,
-// as in "Read the log and send the report if the run fails", with or without a comma before it, or
-// only the instruction after it, as in "Read the log and, if it fails, send the report": a split
-// cuts an instruction off from it in each reading. The first instruction runs from its verb to the
-// first comma or word that joins an instruction (joiners), so a condition word inside it, as in
-// "Read the log before the run ends and send the report", governs it alone and keeps the split.
-func splitKeepsMeaning(words []string, commas []bool, starts []int) []string {
-	var keep []string
-	for _, start := range starts[1:] {
-		if words[start-1] == "or" {
-			keep = append(keep, "the choice between them")
-			break
-		}
-	}
-	end := starts[0] + 1
-	for end < len(words) && !commas[end-1] && !joiners[words[end]] {
-		end++
-	}
-	for at, word := range words {
-		if conditions[word] && (at < starts[0] || at >= end) {
-			keep = append(keep, "the condition with each instruction that it governs")
-			break
-		}
-	}
-	return keep
-}
-
-// splitInstructions is sentence with each instruction in a sentence of its own, written in one pass
-// from where each instruction starts (starts, instructionStarts): the words before each later
-// instruction, without the word that joins it, end with a stop, and that instruction starts with a
-// capital.
-func splitInstructions(sentence, words []string, starts []int) []string {
-	split := make([]string, 0, len(sentence))
-	from := 0
-	for _, start := range starts[1:] {
-		end := start
-		if joiners[words[start-1]] {
-			end--
-		}
-		split = append(split, sentence[from:end]...)
-		last := len(split) - 1
-		split[last] = strings.TrimRight(split[last], ",") + "."
-		split = append(split, capitalized(sentence[start]))
-		from = start + 1
-	}
-	return append(split, sentence[from:]...)
-}
-
-// conditionThen is how a sentence after a condition of its own goes on from it, for each word
-// that opens a condition and reads as one again after it (conditionSentence).
-var conditionThen = map[string]string{
-	"after": "After that,", "before": "Before that,", "if": "If so,", "once": "Once that is done,",
-	"until": "Until then,", "when": "When that happens,", "while": "While that happens,",
-}
-
-// conditionSentence is sentence with the condition at its start as a sentence of its own, for a
-// list of verbs in the condition: the words from after the condition's first word to the last
-// comma that an instruction follows end with a stop, and a sentence that goes on from the
-// condition (conditionThen) gives that last instruction, as in "You plan, file an issue or post
-// a finding. Before that, run the search." False for a sentence with no condition at its start,
-// and where that change still gives a sentence two instructions, which no finding offers.
-func conditionSentence(sentence, words []string, commas []bool) ([]string, bool) {
-	then, ok := conditionThen[words[0]]
-	if !ok {
-		return nil, false
-	}
-	last := 0
-	for at := 1; at < len(words); at++ {
-		if commas[at-1] && opensInstruction(words, commas, at) {
-			last = at
-		}
-	}
-	if last < 2 {
-		return nil, false
-	}
-	condition := slices.Clone(sentence[1:last])
-	condition[0] = capitalized(condition[0])
-	condition[len(condition)-1] = strings.TrimRight(condition[len(condition)-1], ",") + "."
-	changed := append(append(condition, strings.Fields(then)...), sentence[last:]...)
-	for _, each := range sentencesOf(strings.Join(changed, " ")) {
-		if words, commas := sentenceWords(each.words); words != nil {
-			if _, two := secondInstruction(words, commas); two {
-				return nil, false
-			}
-		}
-	}
-	return changed, true
-}
-
-// capitalized is word with its first letter in upper case, and "" for no word; a span in code font
-// stays as it is.
-func capitalized(word string) string {
-	if word == "" {
-		return ""
-	}
-	first, size := utf8.DecodeRuneInString(word)
-	return string(unicode.ToUpper(first)) + word[size:]
 }
 
 // codeAsWords is line with each span in code font, as ste-lint cuts one ("`" to the next "`"),
@@ -363,18 +213,6 @@ func instructionStarts(words []string, commas []bool) []int {
 		return true
 	})
 	return starts
-}
-
-// secondInstruction is where the second instruction of a sentence starts, when it gives two
-// (eachInstruction).
-func secondInstruction(words []string, commas []bool) (int, bool) {
-	second, seen := 0, 0
-	eachInstruction(words, commas, func(at int) bool {
-		seen++
-		second = at
-		return seen < 2
-	})
-	return second, seen == 2
 }
 
 // isInstruction reports whether the sentence, which sentencesOf read from line, is an instruction:
