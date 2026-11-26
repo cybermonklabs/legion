@@ -394,29 +394,6 @@ func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
 }
 
-// sourceProjectVisible answers the caller as a read binds it (readerOf) and whether it sees
-// project key (requireVisibleProject), and, where it does not, answers notFound, the answer of a
-// source nobody configured, before any lock, delete, GitHub call or sync: a source write to a
-// hidden project answers exactly as one to a project with no such source
-// (TestNoWriteReachesAHiddenObject). A key no project holds answers the same. A read that fails
-// otherwise answers the handler error.
-func (s *server) sourceProjectVisible(w http.ResponseWriter, r *http.Request, key string, notFound func()) (model.Actor, bool) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return model.Actor{}, false
-	}
-	err := s.requireVisibleProject(r.Context(), who, key)
-	switch {
-	case err == nil:
-		return who, true
-	case errors.Is(err, pgx.ErrNoRows):
-		notFound()
-	default:
-		s.writeHandlerError(w, err)
-	}
-	return model.Actor{}, false
-}
-
 // sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository,
 // and names the repository by its new name where a rename pair renames it away
 // (renamedOwnerName). So a save stores no old name, its access check reads the repository by

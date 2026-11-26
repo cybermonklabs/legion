@@ -146,25 +146,6 @@ func ownerClause(listOwner owner, keyParam, viewerParam string) string {
 	return access.ItemOwnerClause("null::text", keyParam, viewerParam)
 }
 
-// commentListViewOf is the part of who's viewer a comment list's bytes turn on, which its kept
-// answer is filed under beside the owner. The comments, their reply blocks and their mentions and
-// deliveries are read as everyReader; the one read made for who is which sessions they name it
-// sees (leaveOutHiddenCommentSessions), and access.SessionClause decides that from the viewer's
-// session, whether it is open and what it sees, never from its person. So two people who agree on
-// those three share one kept list, where keptViewOf, which an event feed's backlink counts need,
-// would file each person apart. A reader that sees every object reads every session (R9) and files
-// under the owner alone, as keptViewOf does.
-func commentListViewOf(who model.Actor) string {
-	viewer := who.Viewer
-	switch {
-	case viewer == nil:
-		return "\x00closed"
-	case seesEveryObject(who):
-		return ""
-	}
-	return fmt.Sprintf("\x00%s\x00%t\x00%s", viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
-}
-
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
 // write the list shows raises, and the owner's event sequence, closed with the lines both lists'
 // ETags carry (listETag): one line per part, then the hash of them. Unlike the feed's, it names
@@ -208,13 +189,6 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 		return nil, err
 	}
 	return s.hydrateCommentSideTables(ctx, q, who, comments)
-}
-
-func commentHasOwner(comment model.Comment, owner owner) bool {
-	if owner.IssueKey != nil {
-		return comment.IssueKey != nil && *comment.IssueKey == *owner.IssueKey
-	}
-	return owner.ArtifactID != nil && comment.ArtifactID != nil && *comment.ArtifactID == *owner.ArtifactID
 }
 
 // commentRead is the body GET /api/v1/comments/{id} answers.
@@ -465,49 +439,6 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 		comments[index].Deliveries = deliveries[comments[index].ID]
 	}
 	return comments, nil
-}
-
-// leaveOutHiddenCommentSessions writes comments as who reads them (the rule of references,
-// references_seen.go): a mention or a delivery attempt naming a session who does not see - by the
-// session it resolved to or reached, or by a `session:<id>` target - or targeting a role of a
-// private project who does not see (a `role:legion-<project>-…` target), is left out, as the
-// comment would read had it never named it. Its one read is made whatever the comments name
-// (seenReferences); no comment reads nothing.
-func leaveOutHiddenCommentSessions(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) error {
-	if seesEveryObject(who) || len(comments) == 0 {
-		return nil
-	}
-	named := references{}
-	for _, comment := range comments {
-		for _, mention := range comment.Mentions {
-			named.nameRoute(&mention.Target)
-			if mention.SessionID != nil {
-				named.name(sessionReference, *mention.SessionID)
-			}
-		}
-		for _, delivery := range comment.Deliveries {
-			named.nameRoute(&delivery.Target)
-			if delivery.SessionID != nil {
-				named.name(sessionReference, *delivery.SessionID)
-			}
-		}
-	}
-	seen, err := seenReferences(ctx, q, who, named)
-	if err != nil {
-		return err
-	}
-	hidden := func(target string, session *string) bool {
-		return !seen.holdsRoute(target) || session != nil && *session != "" && !seen.holds(sessionReference, *session)
-	}
-	for index := range comments {
-		comments[index].Mentions = slices.DeleteFunc(comments[index].Mentions, func(mention model.Mention) bool {
-			return hidden(mention.Target, mention.SessionID)
-		})
-		comments[index].Deliveries = slices.DeleteFunc(comments[index].Deliveries, func(delivery model.CommentDelivery) bool {
-			return hidden(delivery.Target, delivery.SessionID)
-		})
-	}
-	return nil
 }
 
 // hydrateWrittenComment is the comment a write answers, with the side tables

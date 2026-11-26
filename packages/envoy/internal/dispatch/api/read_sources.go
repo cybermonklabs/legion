@@ -292,24 +292,9 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 	}
 }
 
-// readRefusal is how a read refuses its caller before anything is read: its code and message,
-// and, for a scope the credential does not hold, that scope.
+// readRefusal is how a read refuses its caller before anything is read: its code and message.
 type readRefusal struct {
-	code, message, scope string
-}
-
-// scopeReadRefusal is the refusal of the first of scopes, a row's OAuth scopes in the order it
-// declares them (routeScopes), that a credential does not hold, or nil: 403 OAUTH_SCOPE_REQUIRED,
-// as gateRouteScopes answers it over HTTP and the live socket answers it as a view's error frame
-// (liveReadRefusal). holds nil holds no scope.
-func scopeReadRefusal(scopes []string, holds func(string) bool) *readRefusal {
-	for _, scope := range scopes {
-		if holds == nil || !holds(scope) {
-			return &readRefusal{code: codeScopeRequired, scope: scope, message: fmt.Sprintf(
-				"this request's credential does not hold the %s scope, which this route requires", scope)}
-		}
-	}
-	return nil
+	code, message string
 }
 
 // codeDeploymentReadRefused refuses a read of a row of the deployment to a viewer that is not open
@@ -318,7 +303,7 @@ const codeDeploymentReadRefused = "DEPLOYMENT_READ_REFUSED"
 
 // deploymentReadRefusal is the refusal of a read of a row of the deployment (readclass.Deployment
 // among classes) to a viewer that is not open, or nil: 403 DEPLOYMENT_READ_REFUSED, naming the
-// row, which withinReadScope answers over HTTP and the live socket as a view's error frame. A nil
+// row, which withinReadScope answers over HTTP. A nil
 // viewer is the closed one, which is not open.
 func deploymentReadRefusal(method, pattern string, classes []readclass.Class, viewer *model.Viewer) *readRefusal {
 	if !slices.Contains(classes, readclass.Deployment) || (viewer != nil && viewer.Open) {
