@@ -417,7 +417,7 @@ func (s *server) readDeliveryRows(ctx context.Context, pool *store.Pool, setting
 				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
 			}, &pop.windowRuns, &pop.windowJobs),
 			func(ctx context.Context) (err error) {
-				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool)
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
 				return err
 			})
 	}

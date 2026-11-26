@@ -92,7 +92,7 @@ func TestAProjectFactCannotAgePastTheBoundBeforeTheRelease(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}, publicTeam)
+			m, enr, key, dispatch := newProjectFixture(t, bound(rule(slackToken, "slack")), publicTeam)
 			nameProjects(t, m, enr, others...)
 			for _, p := range others {
 				row := projectaccesstest.Row{Visibility: "public", Owner: fixtureOperator}
@@ -260,7 +260,7 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 		handedAged(t, front)
 	})
 	t.Run("the airlock's channel limit", func(t *testing.T) {
-		m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}, publicTeam)
+		m, enr, key, dispatch := newProjectFixture(t, bound(rule(slackToken, "slack")), publicTeam)
 		nameProjects(t, m, enr, teamProject)
 		_, grantID := grantOf(t, m, enr, key, "post the release notes", slackToken)
 		checked, err := m.checkRelease(t.Context(), grantID, "", "")

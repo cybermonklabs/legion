@@ -530,9 +530,17 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 			}
 			rig.requireClosedAfterRefusal(t, meter, "the document socket", heartbeat, 1)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
-			// the socket without a close frame.
-			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
-				t.Fatalf("the document socket closed with %d, want %d: the server dropping it", code, gws.CloseAbnormalClosure)
+			// the socket without a close frame. The peer can read that drop as the end of the
+			// stream or as a reset, so the test reads the frame the peer received (CloseFrame),
+			// not gorilla's status for the drop.
+			connection := peer.connection()
+			dropped, err := connection.DroppedWithoutCloseFrame()
+			if code := connection.CloseFrame(); code != 0 {
+				t.Fatalf("the document socket closed with a close frame of %d (its last read: %v), want none: the server dropping it", code, err)
+			}
+			// Do not count a parser error or a timed-out read as the server dropping the socket.
+			if !dropped {
+				t.Fatalf("the document socket did not end in a transport disconnect: last read: %v", err)
 			}
 			// The close is the cookie's: nothing asked the broker about the token, and the
 			// broker holds it live still.

@@ -139,6 +139,8 @@ const checkTaskLead = "Production check of "
 // is a fail too, whether or not production carries the merge. The last look's task gives pending
 // only for an issue with none of those requirements, a pending that closes the check as not run.
 // The fail clause says so once, the same on every look, in terms of the look that follows.
+// For an issue whose spec is a view on an ancestor's requirements, the line after the first says
+// so (viewSentence), as every phase task of the issue does.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -146,6 +148,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
+	if view := viewSentence(issue); view != "" {
+		text.WriteString(view + "\n")
+	}
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
 	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
 	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",
@@ -356,7 +361,10 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 // whether that retry has one attempt left of the budget the failure spent (the daemon's outbox,
 // supervise.RequestRetry.OneAttemptLeft) or starts a fresh run, the failure having spent none; or,
 // once the check's last look lost its role, that the check closed as not run. The count of failed
-// looks in a row closes it, which is what the backoff doubles by (failedLookRetry).
+// looks in a row closes it, which is what the backoff doubles by (failedLookRetry). A claim that
+// failed on OpenAI's cyber-policy refusal is retried by no look, since no start of the daemon's
+// own launches its agent again (supervise.ErrHeldForCyberPolicy), so its notice says only that
+// it does not start again by itself (noStartOfItsOwn) where the look would be named.
 func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck) string {
 	said := deathReason(fact, false)
 	if said == "" {
@@ -367,6 +375,9 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 	}
 	if !check.Open() {
 		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	}
+	if clause := noStartOfItsOwn(fact); clause != "" {
+		return fmt.Sprintf("%s; %s (failed looks in a row: %d)", said, clause, check.FailedLooks)
 	}
 	how := "with a fresh run, since its failure spent no budget"
 	if fact.Budgets.Spent(fact.Limits) {

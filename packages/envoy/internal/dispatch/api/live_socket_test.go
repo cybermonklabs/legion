@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -719,6 +720,14 @@ func (spans *servedSpans) span(n int) (time.Duration, bool) {
 	return conn.closed.Sub(conn.opened), true
 }
 
+// wroteCloseFrame reports whether the server began to write a close frame on the nth connection it
+// accepted (spannedConn.Write), whether or not the frame then reached the peer.
+func (spans *servedSpans) wroteCloseFrame(n int) bool {
+	spans.mu.Lock()
+	defer spans.mu.Unlock()
+	return n < len(spans.conns) && !spans.conns[n].closeFrame.IsZero()
+}
+
 type spannedListener struct {
 	net.Listener
 	spans *servedSpans
@@ -1283,10 +1292,14 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 }
 
 // A page that answers no ping is closed once two heartbeats pass without a pong. It has gone or
-// stopped reading, so the socket sends it no close frame: the connection ends, which gorilla and a
-// browser report as 1006, and the page reconnects on its backoff, as after every close but 1012,
-// which starts the backoff over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would
-// say its caller no longer resolves.
+// stopped reading, so the socket sends it no close frame: the connection ends, which a browser
+// reports as 1006, and the page reconnects on its backoff, as after every close but 1012, which
+// starts the backoff over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would say its
+// caller no longer resolves. The page reads that end as the end of the stream, which gorilla
+// reports as a 1006 no frame carried, or as a reset, which gorilla reports with no code. So the row
+// requires each page's read to end on the transport (docstest.ReadEndedOnTransport), and reads
+// whether the server began a close frame off its own writes (servedSpans), which record a frame
+// even where a reset after it can keep the frame from the page.
 func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 	t.Parallel()
 	const heartbeat = 200 * time.Millisecond
@@ -1305,15 +1318,17 @@ func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 
 	for i, page := range silent {
 		testwait.Receive(t, fmt.Sprintf("the end of silent page %d's socket, which answers no ping", i), page.ended)
-		var closed *gws.CloseError
-		if !errors.As(page.err, &closed) || closed.Code != gws.CloseAbnormalClosure {
-			t.Errorf("silent page %d's socket ended with %v, want an end with no close frame (1006)", i, page.err)
+		// A close this side made, a timed-out read or a parse error is no drop by the server.
+		if !docstest.ReadEndedOnTransport(page.err) {
+			t.Errorf("silent page %d's socket did not end in a transport disconnect: its last read: %v", i, page.err)
 		}
 	}
 	// The server drops each socket from its set once it has closed the connection, so every span is
 	// whole by then: from the server's answer to the upgrade, written just before it armed the
 	// socket's first pong deadline, to that close. The pages opened one after another, so the
-	// server accepted their connections in their order.
+	// server accepted their connections in their order. The server's writer has stopped before
+	// that close too (serveLiveSocket), so the record of each connection holds every close frame
+	// the server began to write on it.
 	rig.sockets(t, 0)
 	for i := range silent {
 		served, ok := spans.span(i)
@@ -1322,6 +1337,9 @@ func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 			t.Errorf("UNKNOWN: the server's span of silent page %d's socket was not recorded", i)
 		case served < heartbeat || served > 2*heartbeat+time.Second:
 			t.Errorf("the server served silent page %d's socket for %s, want about two heartbeats (%s), its pong deadline", i, served, 2*heartbeat)
+		}
+		if spans.wroteCloseFrame(i) {
+			t.Errorf("the server began to write a close frame on silent page %d's socket, want none: a page that answers no ping loses its socket with no close frame", i)
 		}
 	}
 }

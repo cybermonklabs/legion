@@ -157,15 +157,16 @@ negative_control() {
   begin base-tree
   # The base run's own prerequisites read the DSN too, but only after the archive and the install
   # below; a DSN it would refuse is refused here first, with the same guard and the same exit 2.
-  [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+  [ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
     refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
   for tool in git tar bun python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
   # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
-  # these three, and why the call comes after the tool check above.
+  # these three, and why the call comes after the tool check above. The call names the variable
+  # and not its value (require_loopback_env), so a run under `bash -x` traces no DSN.
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
-  require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
+  require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops a database there" ||
     refuse "$db_host"
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
     refuse "--base-commit '$base_commit' names no commit of this repository"

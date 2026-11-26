@@ -179,6 +179,44 @@ func TestTheBuiltinListIsTheImageWrappers(t *testing.T) {
 	t.Fatal("packages/daemon/docker/jj holds no builtins= line")
 }
 
+// The pane's lists of jj's global options are the pod's wrapper's: in command_word of
+// packages/daemon/docker/jj, the case that sets takes=1 names jjWordValues, and the case of flags
+// in front of `-h* | --help` names jjWordFlags, each in the same order. A flag one list skips and
+// the other does not would leave one form's line of `jj <flag> git push` with no command word, and
+// that form's push with no author step.
+func TestTheGlobalOptionListsAreTheImageWrappers(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("..", "..", "docker", "jj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, ok := strings.Cut(string(data), "\ncommand_word() {\n")
+	if !ok {
+		t.Fatal("packages/daemon/docker/jj holds no command_word function")
+	}
+	body, _, _ = strings.Cut(body, "\n}\n")
+	var values, flags []string
+	previous := ""
+	for line := range strings.SplitSeq(body, "\n") {
+		line = strings.TrimSpace(line)
+		if pattern, ok := strings.CutSuffix(line, ") takes=1 ;;"); ok && values == nil {
+			values = strings.Split(pattern, " | ")
+		}
+		if strings.HasPrefix(line, "-h* | --help") && flags == nil {
+			if pattern, ok := strings.CutSuffix(previous, ") ;;"); ok {
+				flags = strings.Split(pattern, " | ")
+			}
+		}
+		previous = line
+	}
+	if !slices.Equal(values, jjWordValues) {
+		t.Errorf("command_word's options that take a value are %q, want jjWordValues, %q", values, jjWordValues)
+	}
+	if !slices.Equal(flags, jjWordFlags) {
+		t.Errorf("command_word's flags are %q, want jjWordFlags, %q", flags, jjWordFlags)
+	}
+}
+
 // The pane's list of built-in commands is jj's own: with an alias named for each name of
 // jjBuiltins and for each command `jj help` lists, in the user's configuration of a scratch home,
 // the names that `jj config list` warns `Cannot define an alias that overrides the built-in
