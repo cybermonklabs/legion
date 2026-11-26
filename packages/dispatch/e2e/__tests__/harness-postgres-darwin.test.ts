@@ -65,7 +65,7 @@ test("a stack whose socket path would pass 107 bytes is refused at once, naming 
   // past the limit. The sibling row below holds the 88 that does, so this is the length alone.
   const refused = socketOf(89);
   expect(refused.length).toBe(108);
-  expect(startUnder(89)).rejects.toThrow(
+  await expect(startUnder(89)).rejects.toThrow(
     `the stack's socket ${refused} is 108 bytes, past the 107 a unix socket path holds, so no server could bind it: run it with a shorter TMPDIR.`
   );
 });
@@ -74,5 +74,5 @@ test("a stack whose socket path is exactly 107 bytes is not refused for its leng
   // The longest run directory that fits. Its start gets past `socketUrl` and fails at `docker
   // run`, which this image name has no image for: the refusal names the image, not the path.
   expect(socketOf(88).length).toBe(107);
-  expect(startUnder(88)).rejects.toThrow(/did not start from example\.invalid\/postgres/);
+  await expect(startUnder(88)).rejects.toThrow(/did not start from example\.invalid\/postgres/);
 });
