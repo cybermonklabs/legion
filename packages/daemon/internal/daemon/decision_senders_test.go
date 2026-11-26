@@ -139,6 +139,18 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     person's approval of a version, and a send of the task that carries it tells that approval
 //     to its audience, so the ask of whether it still stands is a sender's.
 //
+// One notice that names a person's changes request is no sender's here, and stands outside R2:
+// basis-changes-requested, which workflow.Engine.tellBasisChanges queues when a person requests
+// changes on the version of an ancestor's document that a step of a root stands open on. The walk
+// cannot see it: its kind is none of record.SpecDecision's, so no reader of a queued notice asks
+// it again either (record.ChangesRequest), and its words hold no phrase of
+// decisionReviewSentences. Asking would change nothing for the root: the notice queued on the
+// root names the ancestor's document (its Ref is the ancestor's step reference), and
+// workflow.RefSuperseded, asked of the root's gates, finds no step of the root in another issue's
+// reference (refStep) and answers that the request stands. The copy queued on the ancestor, where
+// the daemon records it in a live tree, names the ancestor's own document, which RefSuperseded
+// would resolve to the ancestor's step; nothing asks it there either.
+//
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
 // (and record, for SpecDecision's switch) against the compiler's export data of their
@@ -162,28 +174,12 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more, by the rule decision_senders_kept_loops_test.go holds
-// it to, which says as well what that rule does not follow. Every loop, a for or a range over
-// anything (a slice, a map, an iterator, or a count that indexes the list), one pass of whose
-// body reads a kept decision (keptDecisionTypes) must ask the predicate, in that pass, of each
-// decision the pass reads (unaskedKeptLoops): through a call the pass itself makes with that
-// decision, not through a call before or after the loop, and not through a loop nested in it,
-// whose body is a pass of that loop's own. An ask of another decision — a fixed one (marks[0], a
-// parameter), another list's element at the loop's index, or the kept approval — is no ask of the
-// decision the pass reads. A loop that renders nothing a person or architect reads passes only
-// where keptLoopReaders names it, by its function and its clause, with why; a row allows that one
-// loop, so a second such loop of the function fails, and so does a row that names no such loop or
-// two of them. And no function writes a list of kept decisions into text as one value
-// (wholeListRenders), in a loop or outside one: a slice or a map of them, or a struct that holds
-// one (record.KeptDecisions), printed by fmt or handed to a function of the walk that prints that
-// parameter, since no ask can be of each decision of a value printed whole. A function that asks
-// about one decision, or about the kept approval, and renders the rest of the list unasked —
-// naming only Ref and Actor, handing the whole decision to a helper or a method, switching on
-// Decision to write constants, or printing the decision or the list whole — is what this test
-// fails on: a task named a changes request that the person's approval had superseded that way.
+// it to, which also says what that rule does not follow. The rule is there because a task named a
+// changes request that the person's approval had superseded: a function asked about one kept
+// decision, or about the kept approval, and rendered the rest of the list unasked.
 // TestDecisionSendersSeeEveryLoopThatReadsAKeptDecision and
-// TestDecisionSendersSeeEveryKeptListWrittenWhole plant each of those shapes, and
-// TestDecisionSendersAllowAnUnaskedKeptLoopOnlyByItsOwnRow the list's rows, and hold the walk to
-// what each must read.
+// TestDecisionSendersSeeEveryKeptListWrittenWhole plant each shape that rule must read, and
+// TestDecisionSendersAllowAnUnaskedKeptLoopOnlyByItsOwnRow the rows of keptLoopReaders.
 //
 // A task a phase entry stored when it was raised is held to more as well: a function that reads
 // record.PhaseRow.EntryTask can send a text rendered at the raise, and no call it makes at the send
@@ -594,7 +590,7 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	f := &decisionFunc{pkg: pkg.name, name: info.Defs[fn.Name].(*types.Func).FullName(), at: pkg.pos(fn), info: info,
 		params: funcParams(info, fn)}
 	body := func(visit func(ast.Node) bool) { ast.Inspect(fn.Body, visit) }
-	f.calls = namedCalls(info, body)
+	f.calls = namedCalls(info, fn.Body)
 	f.sites = callSites(pkg, body)
 	f.asks = slices.Contains(f.calls, decisionRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
@@ -749,12 +745,11 @@ func localAssignments(info *types.Info, body *ast.BlockStmt) map[types.Object][]
 	return assigned
 }
 
-// namedCalls is the FullName of every function the identifiers walk visits name, each once: a
-// call of the function, or the function taken as a value. walk is ast.Inspect of a node, or one
-// pass of a loop (ownPass).
-func namedCalls(info *types.Info, walk func(visit func(ast.Node) bool)) []string {
+// namedCalls is the FullName of every function the identifiers of body name, each once: a call of
+// the function, or the function taken as a value.
+func namedCalls(info *types.Info, body *ast.BlockStmt) []string {
 	var calls []string
-	walk(func(n ast.Node) bool {
+	ast.Inspect(body, func(n ast.Node) bool {
 		if ident, ok := n.(*ast.Ident); ok {
 			if fun, ok := info.Uses[ident].(*types.Func); ok && !slices.Contains(calls, fun.Origin().FullName()) {
 				calls = append(calls, fun.Origin().FullName())

@@ -45,11 +45,12 @@ import (
 // holds one, through any cycle of named types, such as record.KeptDecisions or a type of the
 // function's own that holds it), given as an argument fmt prints (its Sprint, Print, Fprint and
 // Append families, and Errorf), or at a position of a function of the walk that hands that
-// parameter whole to such a print, however many calls down (resolve). No ask can be of each
-// decision of a value printed as one, so this holds in a loop that asks as much as outside any
-// loop, and it holds a range over a map of lists that prints each list. A value read for a field
-// that holds no decision (owed.Approved, owed.Step) is no such value, nor is a parameter a
-// function reads only such fields of.
+// parameter whole to such a print, however many calls down (resolve). A field, an element or a
+// slice of a parameter that holds kept decisions fails where the function prints it, not at its
+// callers. No ask can be of each decision of a value printed as one, so this holds in a loop that
+// asks as much as outside any loop, and it holds a range over a map of lists that prints each
+// list. A value read for a field that holds no decision (owed.Approved, owed.Step) is no such
+// value.
 //
 // The rule reads the source as written, and holds what it follows and no more; it is no proof of
 // where a value flows or of what runs:
@@ -356,33 +357,15 @@ func printsText(name string) bool {
 		func(family string) bool { return strings.HasPrefix(rest, family) }))
 }
 
-// paramRendered is the position (callSite) of the parameter of params that arg gives whole to
-// what prints it: the parameter itself, whatever its type, since a parameter of type any, of an
-// interface or of a type parameter prints whatever its caller gives it; or a field, an element or
-// a slice of it that holds kept decisions and is not one (keptList). It is -1 for anything else.
-// Parentheses, a dereference, an address taken and a conversion pass the value through
-// (asWritten).
+// paramRendered is the position (callSite) of the parameter of params that arg is, as written
+// (asWritten: parentheses, a dereference, an address taken and a conversion pass the value
+// through), whatever its type, since a parameter of type any, of an interface or of a type
+// parameter prints whatever its caller gives it. It is -1 where arg is no parameter: a field, an
+// element or a slice of one is a value the function itself writes, which resolve reports at that
+// print where it holds kept decisions (keptList).
 func paramRendered(info *types.Info, arg ast.Expr, params []types.Object) int {
-	arg = asWritten(info, arg)
-	base, projected := arg, false
-	for {
-		switch x := base.(type) {
-		case *ast.SelectorExpr:
-			if selection := info.Selections[x]; selection != nil && selection.Kind() == types.FieldVal {
-				base, projected = asWritten(info, x.X), true
-				continue
-			}
-		case *ast.IndexExpr:
-			base, projected = asWritten(info, x.X), true
-			continue
-		case *ast.SliceExpr:
-			base, projected = asWritten(info, x.X), true
-			continue
-		}
-		break
-	}
-	ident, ok := base.(*ast.Ident)
-	if !ok || info.Uses[ident] == nil || projected && !keptList(info.TypeOf(arg)) {
+	ident, ok := asWritten(info, arg).(*ast.Ident)
+	if !ok || info.Uses[ident] == nil {
 		return -1
 	}
 	return slices.Index(params, info.Uses[ident])

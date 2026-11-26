@@ -522,6 +522,18 @@ func render(owed record.KeptDecisions) string {
 	return "decided: " + listed(owed.Decisions)
 }
 `},
+		{name: "a whole list handed to a method that prints its any parameter", renders: []string{"marks"}, source: `
+type task struct{ text strings.Builder }
+
+// list writes whatever it is given into the task's text.
+func (t *task) list(items any) { fmt.Fprint(&t.text, items) }
+
+func render(marks []record.DecisionMark) string {
+	var t task
+	t.list(marks)
+	return t.text.String()
+}
+`},
 		{name: "a whole list converted to any at the print", renders: []string{"any(marks)"}, source: `
 func render(marks []record.DecisionMark) string {
 	return fmt.Sprint(any(marks))
@@ -535,6 +547,11 @@ func render(marks []record.DecisionMark) error {
 		{name: "a map keyed by decisions printed whole", renders: []string{"told"}, source: `
 func render(told map[record.DecisionMark]bool) string {
 	return fmt.Sprint(told)
+}
+`},
+		{name: "a map whose values are decisions printed whole", renders: []string{"byRef"}, source: `
+func render(byRef map[string]record.DecisionMark) string {
+	return fmt.Sprint(byRef)
 }
 `},
 		{name: "a map of lists printed list by list", renders: []string{"marks"}, source: `
