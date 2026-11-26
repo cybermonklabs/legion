@@ -47,8 +47,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
   - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
 
-  - retro on the architect's answer to a defect it reported;
-
   - a pushing role whose second push still did not carry the pull request onto its commit.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
@@ -84,6 +82,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
+  After the last step passed, `report_defect` sends a defect to the next change: no deferral.
   So is any clear fix in a file it touches: a later round costs a CI pass and a review, if any.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 

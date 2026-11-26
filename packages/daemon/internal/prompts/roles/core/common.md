@@ -2,6 +2,6 @@
 
 Before you change or design anything, read the code that already does the nearest thing: the callers of what you will touch, the existing helper that may already exist, and the test that exercises the path. State what you read. A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one.
 
-Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done.
+Nothing needed for correctness is deferred. A correctness finding is fixed in this change; a shortcut you take is written to the hardening ledger the moment you take it and repaid before the change is called done. After the task's last step passed, a correctness finding goes to `report_defect`, and the issue's next change fixes it: that is no deferral.
 
 Give a person no estimated date or duration: say what work is left and what decides when it ends.
