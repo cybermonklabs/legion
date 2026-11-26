@@ -836,7 +836,8 @@ export const HEADER_LINE = "[data-inbox-header-line]";
 /** A computed background no fill paints. */
 const NO_FILL = /^(transparent|rgba\(0, 0, 0, 0\))$/;
 
-/** The two tabs that each draw an Issues table, with their own address keys. */
+/** The two tabs that each draw an Issues table, with their own address keys, and a word of the
+ *  title of the one seeded issue each lists. */
 const PRIORITY_FAULTS = [
   {
     tab: "none",
@@ -844,6 +845,7 @@ const PRIORITY_FAULTS = [
     status: "in_progress",
     word: "In progress",
     key: "n",
+    title: "Ledger",
   },
   {
     tab: "backlog",
@@ -851,6 +853,7 @@ const PRIORITY_FAULTS = [
     status: "backlog",
     word: "Backlog",
     key: "k",
+    title: "audit",
   },
 ] as const;
 
@@ -874,7 +877,7 @@ async function openPriorityFault(
     head: main.getByRole("heading", { level: 1, name: "Priorities" }),
     narrow: async () => {
       await page.goto(`${address}&${fault.key}.status=${fault.status}`);
-      await settledBar(page, "project List", bar, 1);
+      await settledBar(page, "project List", bar, 1, `${fault.label}, one narrowing on`);
     },
     panel: async () => {
       await openFilterPanel(page, root);
@@ -887,6 +890,27 @@ async function openPriorityFault(
       await expect(control(root, CONTROL.selectionBar)).toBeVisible();
     },
   };
+}
+
+/**
+ * A fault tab with its first `count` narrowings on, as the address writes them: **Needs you**, a
+ * flag the address keeps bare whichever table is drawn, and the tab's own status filter - one
+ * flag and one column filter - then, under the tab's own prefix, **Unclaimed** and its Key and
+ * Title filters, and **Unread**, bare too: six, each one chip, as a priority's own page takes
+ * them. The status, the key and the title word are the seeded issue's own, and no status picked
+ * is `done`, so no narrowing reads the closed issues (`IssuesTable`'s `wantsDone`); no reading of
+ * a bar needs a row.
+ */
+function faultAddress(fault: (typeof PRIORITY_FAULTS)[number], count: number): string {
+  const narrowings = [
+    "needs-you=1",
+    `${fault.key}.status=${fault.status}`,
+    `${fault.key}.unclaimed=1`,
+    `${fault.key}.f.key=BOOKS`,
+    `${fault.key}.f.title=${fault.title}`,
+    "unread=1",
+  ];
+  return [`/priorities?tab=${fault.tab}`, ...narrowings.slice(0, count)].join("&");
 }
 
 /** The narrowings each page that keeps them in its address is read under, as the address writes
@@ -1019,27 +1043,68 @@ const SEARCH_BAR_PICKS: readonly ((
   },
 ];
 
-/** Waits until the bar of `name` stands for the narrowings put on: **Filter** or **Filters**
- *  says their number, or - on the priorities table's bar, which has no trigger - its chips are
- *  drawn. The chips line reads its chips' widths after the commit that drew them and draws again
- *  by that reading, so two frames more hold both. */
-async function settledBar(page: Page, name: SurfaceName, bar: Locator, count: number) {
-  if (name === "priorities page") await expect(control(bar, CONTROL.chip).first()).toBeVisible();
+/** A bar's chips: the ones its line draws, each by its remove control, and its `+N more`. */
+function barChips(bar: Locator): { line: Locator; more: Locator } {
+  return {
+    line: bar.locator("[data-chip-strip]").getByRole("button", { name: REMOVE_CHIP }),
+    more: bar.getByRole("button", { name: MORE_CHIPS }),
+  };
+}
+
+/** Waits until the chips `bar` draws stand for `count` narrowings: the chips its line draws and
+ *  the N its `+N more` names add up to `count`, N alone where the narrow layout of a bar with no
+ *  trigger keeps every chip behind `+N more`. Hands back N as the passing reading saw it. */
+async function expectChipsStandFor(bar: Locator, count: number, where: string): Promise<number> {
+  const { line, more } = barChips(bar);
+  let n = 0;
+  await expect
+    .poll(
+      async () => {
+        n =
+          (await more.count()) === 0
+            ? 0
+            : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+        return (await line.count()) + n;
+      },
+      {
+        message: `${where}: the chips line and its +N more stand for another number than the ${count} narrowings on`,
+      }
+    )
+    .toBe(count);
+  return n;
+}
+
+/** Waits until the bar of `name` stands for exactly the `count` narrowings put on, and fails,
+ *  naming `where`, if it stands for another number: **Filter** or **Filters** says their number,
+ *  or - on the priorities table's bar, which has no trigger - its chips do, counted with the N of
+ *  its `+N more` (`expectChipsStandFor`), so a bar that drew one chip of four never passes for one
+ *  that drew all four. The chips line reads its chips' widths after the commit that drew them and
+ *  draws again by that reading, so two frames more hold both. */
+async function settledBar(
+  page: Page,
+  name: SurfaceName,
+  bar: Locator,
+  count: number,
+  where: string
+) {
+  if (name === "priorities page") await expectChipsStandFor(bar, count, where);
   else {
-    await expect(control(bar, CONTROL.panelTrigger)).toHaveAccessibleName(
-      new RegExp(`^Filters? · ${count}$`)
-    );
+    await expect(
+      control(bar, CONTROL.panelTrigger),
+      `${where}: its trigger counts another number than the ${count} narrowings on`
+    ).toHaveAccessibleName(new RegExp(`^Filters? · ${count}$`));
   }
   await nextFrames(page);
   await nextFrames(page);
 }
 
 /**
- * Puts up to `count` narrowings on the page `name` and waits until its bar stands for them: by
- * the address on the pages that keep their narrowings there; on the Inbox drawer and the search
- * bar, which keep them in their own state, the search bar offering four, by picks in the Filter
- * panel; and on an issue's Artifacts tab, which has no trigger and no chip, by one word typed in
- * its search box. Hands back what is on, in the words a failure names it by.
+ * Puts up to `count` narrowings on the page `name` and waits until its bar stands for exactly
+ * the ones it put on (`settledBar`, whose failure names `where` and their number): by the address
+ * on the pages that keep their narrowings there; on the Inbox drawer and the search bar, which
+ * keep them in their own state, the search bar offering four, by picks in the Filter panel; and
+ * on an issue's Artifacts tab, which has no trigger and no chip, by one word typed in its search
+ * box, which no count stands for. Hands back what is on, in the words a failure names it by.
  */
 async function narrowBar(
   page: Page,
@@ -1047,7 +1112,8 @@ async function narrowBar(
   scene: SurfaceScene,
   surface: Surface,
   count: number,
-  phone: boolean
+  phone: boolean,
+  where: string
 ): Promise<string> {
   if (name === "Artifacts tab") {
     await surface.narrow();
@@ -1077,11 +1143,11 @@ async function narrowBar(
       for (const pick of SEARCH_BAR_PICKS.slice(0, picked)) await pick(page, panel, scene);
       await closeControlPanel(surface.root);
     }
-    await settledBar(page, name, surface.row, picked);
+    await settledBar(page, name, surface.row, picked, `${where}, ${picked} narrowings on`);
     return `${picked} narrowings on`;
   }
   await page.goto(narrowedAddress(name, scene, count));
-  await settledBar(page, name, surface.row, count);
+  await settledBar(page, name, surface.row, count, `${where}, ${count} narrowings on`);
   return `${count} narrowings on`;
 }
 
@@ -1231,24 +1297,9 @@ async function chipsOfBar(
   count: number,
   where: string
 ): Promise<{ line: string[]; listed: string[] }> {
-  const line = bar.locator("[data-chip-strip]").getByRole("button", { name: REMOVE_CHIP });
-  const more = bar.getByRole("button", { name: MORE_CHIPS });
+  const { line, more } = barChips(bar);
   // `N` as the poll's passing reading saw it, once the line and `N` add up to `count`.
-  let n = 0;
-  await expect
-    .poll(
-      async () => {
-        n =
-          (await more.count()) === 0
-            ? 0
-            : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
-        return (await line.count()) + n;
-      },
-      {
-        message: `${where}: the chips line and its +N more stand for another number than the ${count} narrowings on`,
-      }
-    )
-    .toBe(count);
+  const n = await expectChipsStandFor(bar, count, where);
   const names = (chips: Locator) =>
     chips.evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? ""));
   const drawn = await names(line);
@@ -1352,7 +1403,8 @@ async function expectActionsInMore(
 /** `k-one-row` on the page `name` at `size`: exactly one bar above its list or table (one above
  *  each table of the priorities page), nothing between its title - or its own top, for the search
  *  bar - and its first row outside the bar, and the bar one line with its search box first and
- *  its placeholder whole, with no narrowing on and with six, or as many as the page has. */
+ *  its placeholder whole, with no narrowing on and with six, or as many as the page has, each
+ *  read on before the bar is measured under them. */
 export async function expectOneBarOn(
   page: Page,
   name: SurfaceName,
@@ -1389,12 +1441,16 @@ export async function expectOneBarOn(
     ).toBeLessThan(NARROW_BELOW);
   }
   if (name === "Artifacts tab" && phone) await expectActionsInMore(page, surface.row, rest, where);
-  const on = await narrowBar(page, name, scene, surface, name === "priorities page" ? 4 : 6, phone);
+  // `narrowBar` reads that the bar stands for exactly the narrowings it put on, at this width,
+  // before the bar is measured under them: the trigger's count, or - on the priorities table,
+  // which has no trigger and filters four columns - its chips, with the N of its `+N more`.
+  const wanted = name === "priorities page" ? 4 : 6;
+  const on = await narrowBar(page, name, scene, surface, wanted, phone, where);
   await expectOneBar(page, name, surface.row, `${where}, ${on}`);
   if (phone && name === "priorities page") {
     // A bar with chips and no trigger keeps one `+N more` in its narrow line, which holds them.
     await page.goto(narrowedAddress(name, scene, 2));
-    await settledBar(page, name, surface.row, 2);
+    await settledBar(page, name, surface.row, 2, `${where}, two narrowings on`);
     const line = (await readBar(surface.row)).controls.filter(
       (one) => one.control === CONTROL.chip
     );
@@ -1549,7 +1605,7 @@ async function expectInboxBar(
   }
   if (name !== "Inbox") return;
   await page.goto(`/?agent=${encodeURIComponent(SURFACE_SESSION.actor.id)}`);
-  await settledBar(page, name, bar, 1);
+  await settledBar(page, name, bar, 1, `${where}, an agent narrowing on`);
   const panel = await openFilterPanel(page, page.getByTestId("main-content"));
   await expect(
     panel.getByRole("button", { name: /^Remove Asks from .+ filter$/ }),
@@ -1611,7 +1667,7 @@ async function expectPriorityIssueChips(
   status: string
 ): Promise<void> {
   const bar = controlRow(region);
-  await settledBar(page, "project List", bar, 1);
+  await settledBar(page, "project List", bar, 1, where);
   const chip = `Remove Status: ${status} filter`;
   // settledBar waited for the bar to count its one narrowing, so its width is settled.
   const width = await bar.evaluate((node) => node.getBoundingClientRect().width);
@@ -1628,11 +1684,71 @@ async function expectPriorityIssueChips(
   }
 }
 
+/** `k-bar`'s reading of the List's bar - the project List's, or the one above an issues table of
+ *  the priorities page - with one flag and one column filter on, at `address`: **Filters** counts
+ *  the two, and its open panel lists `chips`, each with the control that removes it. */
+async function expectFlagAndColumn(
+  page: Page,
+  bar: Locator,
+  root: Locator,
+  address: string,
+  chips: readonly string[],
+  where: string
+): Promise<void> {
+  await page.goto(address);
+  await settledBar(page, "project List", bar, chips.length, `${where}, a flag and a column on`);
+  const panel = await openFilterPanel(page, root);
+  for (const chip of chips) {
+    await expect(
+      panel.getByRole("button", { exact: true, name: `Remove ${chip} filter` }),
+      `${where}: the Filters panel does not list ${chip}`
+    ).toHaveCount(1);
+  }
+  await closeControlPanel(root);
+}
+
+/** `k-bar`'s reading of a bar whose trigger counted the `count` narrowings on (`settledBar`): in
+ *  the wide layout the chips that do not fit stand behind one `+N more`, each chip once; in the
+ *  narrow one none stands in the line, the trigger's badge says their number and no Clear filters
+ *  is drawn; at every width the trigger's panel lists them all at its top, each with the control
+ *  that removes it. `at` names the page, its width and the narrowings on. */
+async function expectNarrowingsListed(
+  page: Page,
+  bar: Locator,
+  root: Locator,
+  count: number,
+  at: string
+): Promise<void> {
+  const many = await readBar(bar);
+  if (many.width < NARROW_BELOW) {
+    expect(
+      many.controls.find((each) => each.control === CONTROL.panelTrigger)?.words,
+      `${at}: ${saidOf(many)}, its trigger's badge`
+    ).toBe(String(count));
+    expect(
+      many.controls.filter((each) => each.control === CONTROL.chip || each.control === "clear"),
+      `${at}: ${saidOf(many)}, chips or Clear filters in the narrow line`
+    ).toEqual([]);
+  } else {
+    const { line, listed } = await chipsOfBar(page, bar, count, at);
+    expect(new Set([...line, ...listed]).size, `${at}: ${count} chips, each once`).toBe(count);
+  }
+  const panel = await openFilterPanel(page, root);
+  await expect(
+    panel.getByRole("button", { name: REMOVE_CHIP }),
+    `${at}: the panel's top does not list every narrowing with its remove control`
+  ).toHaveCount(count);
+  await closeControlPanel(root);
+  await expect(control(bar, CONTROL.panelTrigger)).toHaveAttribute("aria-expanded", "false");
+}
+
 /** `k-bar` on the page `name` at `size`: its design's controls and no other in the layout its
  *  bar's width gives, each button quiet at rest and, at the phone's width, at least 44 px each
  *  way; and on a page with a trigger, **Filter**'s tint and count, **Clear filters** in its group
  *  where the page has one, and its chips in the line, behind `+N more` or - below 640 px - behind
- *  the trigger's badge, each listed at the top of its panel. */
+ *  the trigger's badge, each listed at the top of its panel. On the priorities page the bar above
+ *  each fault tab's issues table, which is the List's, is read as the List's is: under one flag
+ *  and one column filter, and under six narrowings. */
 export async function expectBarDesign(
   page: Page,
   name: SurfaceName,
@@ -1667,7 +1783,7 @@ export async function expectBarDesign(
   if (name === "priorities page") {
     // The priorities table's own chips, which have no Filter trigger to stand for them.
     if (!narrow) {
-      await narrowBar(page, name, scene, surface, 4, phone);
+      await narrowBar(page, name, scene, surface, 4, phone, where);
       const { line, listed } = await chipsOfBar(page, bar, 4, `${where}, four narrowings on`);
       expect(new Set([...line, ...listed]).size, `${where}: four chips, each once`).toBe(4);
     }
@@ -1678,6 +1794,20 @@ export async function expectBarDesign(
       await expectRestingBar(tab.row, tab.name, at, phone);
       await tab.narrow();
       await expectPriorityIssueChips(page, tab.root, at, fault.word);
+      // The bar above the tab's own issues table is the List's, read as the List's is: one flag
+      // and one column filter, then six narrowings, six at the phone's width too.
+      await expectFlagAndColumn(
+        page,
+        tab.row,
+        tab.root,
+        faultAddress(fault, 2),
+        ["Needs you", `Status: ${fault.word}`],
+        at
+      );
+      const six = `${at}, six narrowings on`;
+      await page.goto(faultAddress(fault, 6));
+      await settledBar(page, tab.name, tab.row, 6, six);
+      await expectNarrowingsListed(page, tab.row, tab.root, 6, six);
     }
     // The work table now lives on the priority's own page. Read its status chip there.
     const work = await openPriorityPage(page, scene);
@@ -1693,11 +1823,10 @@ export async function expectBarDesign(
     return;
   }
   if (INBOXES.includes(name)) await expectInboxBar(page, name, bar, rest, phone, where);
-  const trigger = control(bar, CONTROL.panelTrigger);
 
   // One narrowing: the trigger on a tint, its count in its name, and - on the List's bar in the
   // wide layout - Clear filters beside it in its group, a button of its own.
-  await narrowBar(page, name, scene, surface, 1, phone);
+  await narrowBar(page, name, scene, surface, 1, phone, where);
   // `narrowBar` waited until the trigger counted the one narrowing, and two frames more for the
   // chips line (`settledBar`), so the bar read here stands for it.
   const one = await readBar(bar);
@@ -1722,16 +1851,14 @@ export async function expectBarDesign(
   // The List's flag and column filter: counted as two, each listed at the panel's top with the
   // control that removes it.
   if (name === "project List") {
-    await page.goto(`/projects/${scene.project}/issues?needs-you=1&label=frontend`);
-    await settledBar(page, name, bar, 2);
-    const panel = await openFilterPanel(page, surface.root);
-    for (const chip of ["Needs you", "Label: frontend"]) {
-      await expect(
-        panel.getByRole("button", { exact: true, name: `Remove ${chip} filter` }),
-        `${where}: the Filters panel does not list ${chip}`
-      ).toHaveCount(1);
-    }
-    await closeControlPanel(surface.root);
+    await expectFlagAndColumn(
+      page,
+      bar,
+      surface.root,
+      `/projects/${scene.project}/issues?needs-you=1&label=frontend`,
+      ["Needs you", "Label: frontend"],
+      where
+    );
   }
 
   // Six at 1280x800 (the search bar's four), three at the phone width: in the wide layout the
@@ -1740,31 +1867,11 @@ export async function expectBarDesign(
   // panel lists them all.
   const wanted = phone ? 3 : 6;
   const count = name === "search bar" ? Math.min(wanted, SEARCH_BAR_PICKS.length) : wanted;
-  await narrowBar(page, name, scene, surface, count, phone);
+  await narrowBar(page, name, scene, surface, count, phone, where);
   // `narrowBar` waited until the trigger counted these narrowings, and two frames more for the
   // chips line (`settledBar`), so the bar read here stands for them.
-  const many = await readBar(bar);
   const at = `${where}, ${count} narrowings on`;
-  if (many.width < NARROW_BELOW) {
-    expect(
-      many.controls.find((each) => each.control === CONTROL.panelTrigger)?.words,
-      `${at}: ${saidOf(many)}, its trigger's badge`
-    ).toBe(String(count));
-    expect(
-      many.controls.filter((each) => each.control === CONTROL.chip || each.control === "clear"),
-      `${at}: ${saidOf(many)}, chips or Clear filters in the narrow line`
-    ).toEqual([]);
-  } else {
-    const { line, listed } = await chipsOfBar(page, bar, count, at);
-    expect(new Set([...line, ...listed]).size, `${at}: ${count} chips, each once`).toBe(count);
-  }
-  const panel = await openFilterPanel(page, surface.root);
-  await expect(
-    panel.getByRole("button", { name: REMOVE_CHIP }),
-    `${at}: the panel's top does not list every narrowing with its remove control`
-  ).toHaveCount(count);
-  await closeControlPanel(surface.root);
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expectNarrowingsListed(page, bar, surface.root, count, at);
 }
 
 /**
