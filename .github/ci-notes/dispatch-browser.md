@@ -19,19 +19,19 @@ on a pull request that changes what the reference rows test; the nightly workflo
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
-the fake-embedder job and the containerised visual review take one each, and one merge job
-joins what the shard and alone legs wrote into a single report and publishes the run's flake
-rate.
+over four shard machines, the three `-alone` projects and the two load ones (`chromium-load`
+and `iphone-load`) get a machine each, the two-process job, the fake-embedder job and the
+containerised visual review take one each, and one merge job joins what the shard and alone
+legs wrote into a single report and publishes the run's flake rate.
 
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-parallel project, the three `-alone` ones, the two-process job, the visual review and that
-same embedder job, over every row. So a pull request pays for the rows that answer it, and the
-merge queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest,
-each of which has the wall time for them. A third lane, `references`, is a preview of the
-reference rows on a pull request that gates nothing
+parallel project, the three `-alone` ones, the two load ones, the two-process job, the visual
+review and that same embedder job, over every row. So a pull request pays for the rows that
+answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
+run pay for the rest, each of which has the wall time for them. A third lane, `references`, is
+a preview of the reference rows on a pull request that gates nothing
 ([its section](#the-third-lane-references)).
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
@@ -702,7 +702,9 @@ attempt failed. A green run's upload is small.
 
 ## The alone job, and what it keeps the same as the shard job
 
-The three projects whose rows are read from the wall clock, one machine each. Each leg runs
+The five projects whose rows are read from the wall clock, one machine each: the three
+`-alone` ones and the two load ones
+([their section](#the-two-load-legs-what-they-run-and-their-limits)). Each leg runs
 one worker and names one project, and a wall-clock project takes nothing else with it - it
 names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
 while it measures. The full lane alone: a pull request runs no clock row, since a shard
@@ -724,7 +726,9 @@ job and rides in it, which is what keeps one job list and not two
 (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
 digest is a literal.
 
-The browser step's budget, its `timeout-minutes: 3`, is measured, on the full-lane run of the head that sharded
+The budgets below are the three `-alone` legs'; the two load legs take limits of their own
+([their section](#the-two-load-legs-what-they-run-and-their-limits)). The browser step's
+budget on those three legs, 3 minutes, is measured, on the full-lane run of the head that sharded
 this suite, 42316487530. The pull-request lane runs no leg of this job, so there is one
 run and three legs behind each figure, in seconds:
 
@@ -738,7 +742,7 @@ projects whose rows are read from the wall clock, so a slower machine moves them
 than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
 leg that outran it fails the browser step by name, which is a reading of its own.
 
-The job budget, the alone job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193 and not on the
+The job budget of those three legs, 15 minutes, is the rule's arithmetic, read on sha256:ba003193 and not on the
 digest this file pins, for the reason the shard job's head gives, which also says why a
 reading taken on that build carries across the rebuilds after it: the figures it replaces
 were read at 99bdf09cf435, which pinned the image from before build-essential was added to it
@@ -791,10 +795,50 @@ image, and the 6-minute budget cancelled it 3 s into its checkout. The download 
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
 budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
 without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+minutes the alone job's `timeout-minutes` gives those three legs, whose 38 s left over hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
 The browser step's own budget is unchanged, and it still
 fires first.
+
+## The two load legs, what they run and their limits
+
+Two legs of this job, `alone (chromium-load)` and `alone (iphone-load)`, run the load rows of
+the new issue page (dispatch://INFRA-5939): the one file e2e/issue-page-load.e2e.ts, in the
+Playwright projects of those names. `chromium-load` opens the page at 1440 by 900 with the
+processor slowed by 2, and `iphone-load` opens it as Playwright's iPhone 13 in Chromium, 390 px
+wide, with the processor slowed by 4. Each of the two runs one worker and no retry, as the
+three `-alone` projects do. Each row reads each of its bounds over five loads of one seed, each
+load in a new browser context so that its cache is empty, and prints one reading line for each
+bound it reads, which the leg's log then holds. The browser step runs them through
+.github/scripts/dispatch-browser-alone-suite.sh as it runs the other three legs, with the same
+command, one stack and no file store, since no load row uploads or downloads a file.
+
+They are legs of this job, and not rows of the shard job or a job of their own, for the reason
+[the job's first section](#the-alone-job-and-what-it-keeps-the-same-as-the-shard-job) gives
+for the other three: a row that reads the clock reads right only one worker wide, on a machine
+with nothing else on it. A second worker, or another leg's rows on the same machine, would be in
+its readings, and these rows refuse a run of more than one worker before they read a clock, as
+the measuring rows of the `-alone` projects do. So the parallel projects that would otherwise
+select the file, `chromium`, `iphone`, `webkit` and `firefox`, leave it out, as they leave out
+every wall-clock file, and each of the two load projects has a machine of this job.
+
+Both are values of the matrix's one key, `project`, and not rows an `include:` adds: GitHub
+names a matrix leg by all of its values, so a field added to these two would rename them, and
+the checks of dispatch://INFRA-5939 that read their rows name them `alone (chromium-load)` and
+`alone (iphone-load)`. Nothing else of the workflow names the projects of this job: the merge
+job reads each leg's name from the run's jobs, and its blob report and row count from the
+artifacts that leg uploaded, so it reads these two as it reads the other three.
+
+Their limits are temporary: 45 minutes for the job and 40 for the browser step, the limits
+dispatch://INFRA-5939 gives the first full-lane run that runs them, since no run had measured
+either leg when they joined the matrix. The three `-alone` legs keep the 15 and 3 minutes the
+section above derives: the job's and the browser step's `timeout-minutes` are each an
+expression on `matrix.project` that gives the two load legs their limit and every other leg the
+one it had. Once that first run ends, each load leg's step limit becomes its measured browser
+step plus 15 per cent, rounded up to the next whole minute, and its job limit the step limits
+plus the measured maximum of every step without one, by the rule this file's head gives; this
+section then names that run, each step's duration in it, the arithmetic and the limits, in
+place of this paragraph.
 
 ## What the alone job downloads in place of a Go build
 
@@ -851,9 +895,12 @@ pgvector; the binaries directory is set on the command line, not in this step's
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
 legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both wall-clock specs (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
-heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
-that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
+chromium-alone runs three of the four wall-clock specs. Its `testMatch` is `clockSpecPattern`,
+the pattern built from `packages/dispatch/e2e/configurations.ts#clockSpecNames`, which names
+agent-workspace-timing, heavy-bodies, nested-directive and issue-page-load; its `testIgnore`
+leaves issue-page-load out, so it runs agent-workspace-timing, heavy-bodies and
+nested-directive. firefox-alone and webkit-alone run heavy-bodies alone, and chromium-load and
+iphone-load run issue-page-load.
 And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
 answers `undefined` on `count === 1`. A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is
@@ -871,10 +918,12 @@ beside the stack's own run directory: a file
 this step wrote into the checkout would leave it dirty afterwards. The blob report
 goes beside the list reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 3`, is the 3 minutes the job's head derives from the sharded head's own
+The step's budget on the three `-alone` legs is the 3 minutes the job's head derives from the sharded head's own
 run, and the containerised reading taken on sha256:ba003193 does not move it: the most
 this step took over the nine legs the job's head lists is 69 s, well under
-webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s.
+webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s. The two load
+legs' step takes the limit
+[their section](#the-two-load-legs-what-they-run-and-their-limits) gives.
 
 ## Why the alone job's blob upload is always
 
@@ -891,7 +940,7 @@ store log to collect.
 
 Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
 since they say what the stack's servers did while the clock was read, and the memory and
-CPU readings are also what says the machine was quiet while it measured. These three
+CPU readings are also what says the machine was quiet while it measured. These five
 projects set `retries: 0` of their own (e2e/playwright.config.ts), so no row of this job
 is retried and none is reported flaky.
 
@@ -900,7 +949,10 @@ is retried and none is reported flaky.
 The traces of the rows that failed, which the "What the run left behind" step does not collect: they are
 under the checkout, so this path needs no translation and stays as it was. A row that
 fails fails the leg, and the trace it carries is of its one attempt, which the config's
-`trace: 'retain-on-first-failure'` keeps. A green run's upload is small.
+`trace: 'retain-on-first-failure'` keeps. A green run's upload is small. The two load
+projects record no trace (`trace: "off"`), whose snapshots of the document would run in the
+page they time, so a failed load row's upload holds none; the reading lines its rows print
+are in the leg's log.
 
 ## What the two-process job runs
 

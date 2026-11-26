@@ -582,8 +582,8 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-holds: the shards, the three `-alone` projects, the two-process job, the
-fake-embedder job, the visual review and the merge job. Every entry is something a
+holds: the shards, the three `-alone` projects and the two load ones, the two-process job,
+the fake-embedder job, the visual review and the merge job. Every entry is something a
 browser row reads: the dashboard and its contracts, the Dispatch server its harness
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
 filter also held three fixture sets whose only readers are the dashboard's and the
@@ -2375,10 +2375,10 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-`-alone` projects a machine each, the two-process job, the fake-embedder job that runs on the
-pull-request and full lanes, the containerised visual review, and the merge job that joins the
-shard and alone reports into one and posts its caller's ci-ok report. Three jobs of this file
-call it.
+`-alone` projects and the two load ones a machine each, the two-process job, the fake-embedder
+job that runs on the pull-request and full lanes, the containerised visual review, and the
+merge job that joins the shard and alone reports into one and posts its caller's ci-ok report.
+Three jobs of this file call it.
 
 Two lanes, and which run pays for which. dispatch-browser-pr runs `pull-request` on a pull
 request: the two projects a change is held to (chromium and iphone) over the `@pr` rows, so such
