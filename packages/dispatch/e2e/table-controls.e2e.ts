@@ -12732,3 +12732,141 @@ test("with the agent list refilling from the start, the project List still says 
     AGENT_LIST_REFILLING
   );
 });
+
+// INFRA-3135, round 29 (the tester's), by the architect's ruling of 2026-11-26 14:10Z on the
+// selection bar's return (dispatch://INFRA-3135/artifact/bar-return-design-md version 7): after the
+// reader's act while a landing is owed, once the rows the press took have gone, the focus is on a
+// control of the list and never on the page's body; it stands where the reader's act put it when
+// that control is still drawn, else where the hand-off lands. Measured at b04db619 in builds Jobs
+// infra-3135-i-h7-b6rbn (the build as shipped) and infra-3135-i-h2-lh6c2, in Chromium and WebKit at
+// 1024x768 and 390x664, three runs each: with two Inbox threads marked and the pointer travelling
+// over the list, so the Inbox's motion hold keeps the rows the bar's Dismiss took drawn after the
+// bar goes, the hand-off parks the focus on the checkbox of the row marked last, `j` moves it into
+// the other row the press took, and when that row goes the focus falls to the page body, 12 of 12.
+// At 53f87411 the focus stood on the next row's checkbox before the rows went and `j` took it to the
+// row after, where it stayed, 12 of 12 (infra-3135-i-b7-7t2sw). The park
+// (components/SelectionBar.tsx:363-372) puts the reader's `j` inside the rows being taken, and the
+// act's own check (:199) answers only a focus left on the parked checkbox itself. The bar's Snooze
+// is the second case, one bar and one rule on both (the architect, 14:10Z); it ends on the body at
+// both heads.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): thirty threads and thirty asks seeded, and four bar presses with a `j` while the rows
+// the press took are still drawn.
+test("a j while the selection bar's landing is owed leaves the focus on a control of the Inbox list, never the page body, once the rows the bar's Dismiss or Snooze took have gone, at 1024 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "CORE", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  for (let index = 0; index < 30; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
+    await seedCommentThread(
+      issue.key,
+      `Thread ${index}: when does it run?`,
+      `At 0${index % 10}:00.`
+    );
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  /** Starts or stops a pointer travelling over the Inbox list: a pointermove on the list's root every
+   *  40 ms, which the Inbox's motion hold answers by keeping the read the list draws. */
+  const pointerTravels = (on: boolean) =>
+    page.evaluate((go) => {
+      const w = window as unknown as { __travelTimer?: number };
+      window.clearInterval(w.__travelTimer);
+      if (!go) return;
+      w.__travelTimer = window.setInterval(() => {
+        const root =
+          document.querySelector('[data-testid="inbox-list"]')?.firstElementChild ?? null;
+        const target = root?.querySelector("ul") ?? root;
+        if (target === null || target === undefined) return;
+        const rect = target.getBoundingClientRect();
+        target.dispatchEvent(
+          new PointerEvent("pointermove", {
+            bubbles: true,
+            clientX: rect.left + 3,
+            clientY: rect.top + 3,
+            pointerType: "mouse",
+          })
+        );
+      }, 40);
+    }, on);
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 768, width: 1024 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Dismiss", "Snooze"] as const) {
+      const where = `${press} at ${size.width}x${size.height}`;
+      await page.goto("/?group=none");
+      await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+      // The rows read once the poll above found the list drawn; they only name the two rows marked:
+      // two neighbours of the press's own kind with rows below them.
+      const ids = await page
+        .locator("[data-inbox-row]")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+      const threadRow = (id: string) => id.startsWith("reply:") || id.startsWith("agent:");
+      const kindRows = ids.filter((id) => threadRow(id) === (press === "Dismiss"));
+      const upper = kindRows[8] ?? "";
+      const lower = kindRows[9] ?? "";
+      for (const id of [lower, upper]) {
+        const mark = inboxRow(page, id).getByRole("checkbox").first();
+        await mark.evaluate((node) => (node as HTMLInputElement).click());
+        await expect(mark).toBeChecked();
+      }
+      await expect(bar).toBeVisible();
+      // The row marked last's checkbox stands in the middle of the reader's sight.
+      await inboxRow(page, upper)
+        .getByRole("checkbox")
+        .first()
+        .evaluate((node) => node.scrollIntoView({ block: "center" }));
+      await settledScrollTop(page);
+      await settledScrollTop(page.getByTestId("inbox-list"));
+      await pointerTravels(true);
+      if (press === "Dismiss") {
+        await bar.getByRole("button", { name: /selected threads$/u }).focus();
+        await page.keyboard.press("Enter");
+      } else {
+        const trigger = listTrigger(bar, "Snooze selected asks");
+        await trigger.focus();
+        await page.keyboard.press("Enter");
+        await page.keyboard.type("tom");
+        await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+        await page.keyboard.press("Enter");
+      }
+      await expect(bar).toHaveCount(0, { timeout: 15_000 });
+      await nextFrames(page);
+      await page.keyboard.press("j");
+      await nextFrames(page);
+      await pointerTravels(false);
+      await expect(inboxRow(page, upper)).toHaveCount(0, { timeout: 15_000 });
+      await expect(inboxRow(page, lower)).toHaveCount(0, { timeout: 15_000 });
+      await settledScrollTop(page);
+      await nextFrames(page);
+      // One read is the answer: both rows have gone and the window holds still, so nothing moves
+      // the focus after this.
+      const focus = await page.evaluate(() => {
+        const active = document.activeElement;
+        const list = document.querySelector('[data-testid="inbox-list"]');
+        return {
+          body: active === null || active === document.body,
+          inList: active !== null && list?.contains(active) === true,
+          name:
+            active === null
+              ? "nothing"
+              : `${active.tagName.toLowerCase()} "${(active.getAttribute("aria-label") ?? active.textContent ?? "").trim().slice(0, 60)}"`,
+        };
+      });
+      if (focus.body || !focus.inList) {
+        wrong.push(
+          `${where}: after j and the rows' going the focus is on ${focus.body ? "the page body" : focus.name}`
+        );
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
