@@ -45,6 +45,10 @@ interface PublicScenario {
    *  follows its 10 s between trades and the start of its probe, and the leg then read no socket
    *  open at the refusal (dispatch://INFRA-3904). */
   readonly holdCode?: number;
+  /** The relay socket closes the moment it opens, with `holdCode`, so it is closed well before
+   *  the leg's first refused trade: the leg reads no socket open at the refusal, and a close it
+   *  reads then says nothing of the removal. */
+  readonly holdClosesAtOpen?: boolean;
   /** The probe's answers by command, where they differ from an edge that refuses as it should. */
   readonly foreignSend?: Record<string, unknown>;
   readonly approve?: Record<string, unknown>;
@@ -114,6 +118,10 @@ switch (command) {
   }
   case "hold": {
     print({ opened_at: Date.now() });
+    if (scenario.holdClosesAtOpen) {
+      print({ closed_at: Date.now(), code: scenario.holdCode ?? 4401 });
+      break;
+    }
     const end = Date.now() + Number(args[0]) * 1000;
     if (closes) {
       while ((await tradesMade()) <= firstRefusal + 1 && Date.now() < end) await Bun.sleep(25);
@@ -225,7 +233,7 @@ describe.skipIf(skipWithout("bash", "bun"))(
     test(
       "P6, P7 and P10 pass only on the edge's own refusals, and T5's agent part only when every later trade is refused and the socket open at the refusal closes 4401 or 4403",
       async () => {
-        const [pass, crossing, early, dropped, unread] = await Promise.all([
+        const [pass, crossing, early, dropped, unread, closedBefore] = await Promise.all([
           publicStandInRun({ trades: [true, false, false], holdCode: 4401 }),
           publicStandInRun({
             trades: [true, false, true],
@@ -237,6 +245,11 @@ describe.skipIf(skipWithout("bash", "bun"))(
           publicStandInRun({ trades: [false] }),
           publicStandInRun({ trades: [true, false, false], holdCode: 1006 }),
           publicStandInRun({ trades: [true, false, null], holdCode: 4401 }),
+          publicStandInRun({
+            trades: [true, false, false],
+            holdCode: 4401,
+            holdClosesAtOpen: true,
+          }),
         ]);
         expect({ verdicts: verdictsOf(pass.stdout), stdout: pass.stdout }).toMatchObject({
           verdicts: {
@@ -288,9 +301,21 @@ describe.skipIf(skipWithout("bash", "bun"))(
           stdout: unread.stdout,
         }).toMatchObject({ agent: { verdict: "UNKNOWN" } });
         expect(rowsOf(unread.stdout).get("T5-agent")?.got).toContain("got no readable answer");
+        // A socket that closed before the refusal, even with the edge's own 4401, was not the
+        // socket open at the removal: the leg reads its close as nothing of the removal, and the
+        // socket part as not read, where it would read PASS if it took a closed socket for open.
+        expect({
+          agent: rowsOf(closedBefore.stdout).get("T5-agent"),
+          stdout: closedBefore.stdout,
+        }).toMatchObject({ agent: { verdict: "UNKNOWN" } });
+        expect(rowsOf(closedBefore.stdout).get("T5-agent")?.got).toContain(
+          "no relay socket was open at the first refusal"
+        );
       },
-      // The five runs at once, each a bounded child under the public leg's own bound.
-      rowLimit({ atOnce: ["publicRun", "publicRun", "publicRun", "publicRun", "publicRun"] })
+      // The six runs at once, each a bounded child under the public leg's own bound.
+      rowLimit({
+        atOnce: ["publicRun", "publicRun", "publicRun", "publicRun", "publicRun", "publicRun"],
+      })
     );
 
     test(
