@@ -9,7 +9,9 @@ import { Timestamp } from "../../refs/Timestamp";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import { useDocumentTitle } from "../../shell/useDocumentTitle";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
+import { drawnLine, firstLineOf } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { referenceStandIns } from "../one-line";
 import { authorText, pageChrome } from "../page-structure";
 import {
   ANSWER_LINES,
@@ -19,7 +21,7 @@ import {
   sentenceCase,
 } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { namedFirstLine, useRunNames } from "../run-references/run-references";
+import { RunReferenceNames } from "../run-references/run-references";
 import { type RunChange, type RunPart, runView, useRun } from "./run-page";
 
 /** The page's heading: the word for what a run is. */
@@ -136,16 +138,17 @@ function RunAnswer({
         <h2 className={SECTION_HEADING} id={changedHeading} {...pageChrome}>
           {RUN_PAGE_WORDS.what_changed}
         </h2>
-        {view.changed.length === 0 ? (
-          <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
-            {CONTROL_LABELS.none}
-          </p>
-        ) : (
-          <ChangedNodes changed={view.changed} />
-        )}
+        <ChangedNodes changed={view.changed} />
       </section>
     </article>
   );
+}
+
+/** Cut the first line before substituting reference names, so no cut falls inside a name.
+ *  Twin of `spec-filter/spec-decided-by.ts`'s `namedFirstLine`. */
+function namedFirstLine(words: string, nameOf: (reference: string) => string | undefined): string {
+  const references = referenceStandIns(nameOf);
+  return references.named(drawnLine(firstLineOf(references.standIn(words))));
 }
 
 /**
@@ -154,22 +157,45 @@ function RunAnswer({
  * first-line rule and each reference in it named as every one-line place of the page names one
  * (`namedFirstLine`): an issue by its key, any other target by the page's name for it, and by its
  * short form where the page knows none, never as the address its author typed. A node whose words
- * hold none is named by its kind's word alone, which is then its link.
+ * hold none is named by its kind's word alone, which is then its link, or left out if it has neither.
  */
 function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
   const words = useMemo(() => changed.map((node) => node.words), [changed]);
-  const { nameOf, reads } = useRunNames(words);
-  const lines = useMemo(
-    () => changed.map((node) => namedFirstLine(node.words, nameOf)),
+  return (
+    <RunReferenceNames
+      draw={(nameOf) => <ChangedNodeList changed={changed} nameOf={nameOf} />}
+      texts={words}
+    />
+  );
+}
+
+function ChangedNodeList({
+  changed,
+  nameOf,
+}: {
+  changed: readonly RunChange[];
+  nameOf: (reference: string) => string | undefined;
+}): ReactNode {
+  const entries = useMemo(
+    () =>
+      changed.flatMap((node) => {
+        // The node's first line: the reading list's `run-page-changed-line`.
+        const first = namedFirstLine(node.words, nameOf);
+        const line = first || node.kind;
+        return line === "" ? [] : [{ named: first !== "", node, line }];
+      }),
     [changed, nameOf]
   );
+  if (entries.length === 0) {
+    return (
+      <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
+        {CONTROL_LABELS.none}
+      </p>
+    );
+  }
   return (
     <ul className="flex min-w-0 flex-col gap-0.5">
-      {reads}
-      {changed.map((node, at) => {
-        const line = lines[at] ?? "";
-        const named = line !== "";
-        const text = named ? line : node.kind;
+      {entries.map(({ named, node, line }) => {
         return (
           <li className="flex min-w-0 items-baseline gap-2 text-sm" key={node.key}>
             {named && node.kind !== "" ? (
@@ -179,8 +205,7 @@ function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode
             ) : null}
             {node.href === undefined ? (
               <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
-                {/* The node's first line: the reading list's `run-page-changed-line`. */}
-                {text}
+                {line}
               </span>
             ) : (
               <Link
@@ -188,8 +213,7 @@ function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode
                 to={node.href}
                 {...(named ? authorText : pageChrome)}
               >
-                {/* The node's first line: the reading list's `run-page-changed-line`. */}
-                {text}
+                {line}
               </Link>
             )}
           </li>

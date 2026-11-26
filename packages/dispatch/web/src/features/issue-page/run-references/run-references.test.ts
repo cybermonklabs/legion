@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { ReferenceNamesProvider } from "../../refs/reference-names";
@@ -15,7 +15,7 @@ import {
   type TreeAnswerNode,
   type TreeTuple,
 } from "../tree-read/tree-read";
-import { runRows, useRunRows } from "./run-references";
+import { NamedRunRows, runRows, useRunRows } from "./run-references";
 
 /** The issue the tree read answers, as `treeAnswer` answers it. */
 const KEY = "CORE-1";
@@ -125,14 +125,20 @@ test("a run's row names each reference in its question as one-line places do, ne
       { client },
       createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children)
     );
-  const { result, unmount } = renderHook(() => useRunRows(issue, false), { wrapper });
+  function Questions(): ReactNode {
+    const { rows } = useRunRows(issue, false);
+    return createElement(NamedRunRows, {
+      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
+      issue,
+      rows,
+    });
+  }
+  const { container, unmount } = render(createElement(Questions), { wrapper });
   try {
-    await waitFor(() =>
-      expect(result.current.rows.map((row) => row.excerpt)).toEqual([
-        `Does CORE-2 wait on Warm the cache first or on ${shortForm(route)}?`,
-      ])
-    );
-    expect(result.current.rows[0]?.excerpt).not.toContain("dispatch://");
+    const expected = `Does CORE-2 wait on Warm the cache first or on ${shortForm(route)}?`;
+    const excerpt = await screen.findByText(expected);
+    expect([...container.querySelectorAll("p")].map((row) => row.textContent)).toEqual([expected]);
+    expect(excerpt.textContent).not.toContain("dispatch://");
   } finally {
     unmount();
     client.clear();

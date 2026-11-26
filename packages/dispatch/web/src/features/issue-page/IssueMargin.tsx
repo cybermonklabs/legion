@@ -85,7 +85,7 @@ import {
   PROGRESS_NOUNS,
 } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { useRunRows } from "./run-references/run-references";
+import { NamedRunRows, useRunRows } from "./run-references/run-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
@@ -921,17 +921,20 @@ export function IssueMarginPanel({
               them, whose Retry reads the tree again. */}
           {referencesDrawn ? (
             <>
-              {/* The reads of what the runs' questions cite that the page names nothing for
-                  (`useRunRows`), which draw nothing. */}
-              {runs.reads}
-              <ReferencedBy
-                className="w-full"
-                extraRows={runs.rows}
-                page
-                pages={referencePages}
-                reference={issueReference}
-                {...referencesRetry}
-                toggle={{ id: referencesPanelId }}
+              <NamedRunRows
+                draw={(extraRows) => (
+                  <ReferencedBy
+                    className="w-full"
+                    extraRows={extraRows}
+                    page
+                    pages={referencePages}
+                    reference={issueReference}
+                    {...referencesRetry}
+                    toggle={{ id: referencesPanelId }}
+                  />
+                )}
+                issue={issue}
+                rows={runs.rows}
               />
               {runs.failed ? (
                 <DetailsErrorLine

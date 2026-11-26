@@ -817,7 +817,9 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
  * `chipNaming`.
  */
-export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
+export function targetNaming(
+  reads: Omit<IssueTreeReads, "issue"> & { readonly issue?: IssueDetails }
+): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
   return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
 }

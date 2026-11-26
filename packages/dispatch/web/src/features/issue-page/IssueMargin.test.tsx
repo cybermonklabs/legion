@@ -3170,6 +3170,46 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
   }
 });
 
+test("opening Referenced by reads the run question's three comment names in one batch", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const names = ["Warm the cache", "Check the logs", "Ship the build"];
+  const targets = names.map((name, at) => ({
+    gone: false,
+    kind: "comment",
+    name,
+    ref: `dispatch://CORE-2/comment/44444444-4444-4444-8444-00000000000${at + 1}`,
+  }));
+  const refs = targets.map(({ ref }) => ref);
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const perTarget = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const tree = treeWithRun(RUN, `What follows ${refs.join(" and ")}?`);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), tree);
+  try {
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
+    expect(batch).not.toHaveBeenCalled();
+    expect(perTarget).not.toHaveBeenCalled();
+    await user.click(toggle);
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByRole("link", {
+      name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+    });
+    expect(perTarget, "individual comment reads while the batch is out").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+    await act(async () => answer.resolve({ targets }));
+    await within(list).findByText(`What follows ${names.join(" and ")}?`);
+    expect(perTarget, "individual comment reads after the batch answered").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+  } finally {
+    unmount();
+    perTarget.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // Details draws the list 20 rows at a time, the reader's runs after its own rows in the one
 // sequence (`ReferencedBy`'s `pages`, `extraRows`): the control counts every row of the list, its
 // own and the runs, and not the rows its first page draws, and Show more under them says how many

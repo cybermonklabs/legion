@@ -1,17 +1,32 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import {
+  createElement,
+  Fragment,
+  type ReactNode,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
+import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
+import { isPartyRoute } from "../../refs/party-references";
 import { useReferenceNames } from "../../refs/plain-text";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
-import { standsFailed } from "../../refs/reference-target";
-import { buildRunPath } from "../../refs/routes";
+import {
+  NOTHING_PUBLISHED,
+  PublishedReferenceNames,
+  useKnownReferences,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
+import { buildDispatchReference, buildRunPath, parseNodeReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
-import { drawnLine, firstLineOf } from "../issue-tree";
+import { targetNaming } from "../issue-tree";
 import { referenceStandIns } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
-import { rowReferences } from "../row-references";
 import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -56,8 +71,7 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
  *  run's own page. Only the key and the link hold the run's id. The question's plain words are
  *  the words of the server's reading of it (`text_tree`), and of its stored text's reading where
  *  the read sent none (`storedReading`), on one line, with each bare address as its asker wrote
- *  it: `useRunRows` names each reference in them as a one-line place names one
- *  (`namedWords`). */
+ *  it. `NamedRunRows` names the references only where the list draws them. */
 function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   const excerpt = wordsOf(run.text_tree ?? storedReading(run.text, run))
     .replace(/\s+/gu, " ")
@@ -72,47 +86,184 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   };
 }
 
-/** How a run's words name a reference they cite, by its `dispatch://` reference: the page's name
- *  for it where the page knows one, and undefined where it does not. */
-export type RunNameOf = (reference: string) => string | undefined;
+/** How a run's one-line place names a reference it cites: by the page's name for it, and by its
+ *  short form where the page knows none (`referenceStandIns`). */
+type RunNameOf = (reference: string) => string | undefined;
 
-/** The references of `words` a one-line place names by the page's name for each
- *  (`referenceStandIns`): every one it names but an issue, which it names by its key. These are
- *  the references the page is asked to name (`useRunNames`). */
-export function namedReferences(words: string): string[] {
-  return rowReferences(words, []).flatMap((one) =>
-    one.route.kind === "issue" ? [] : [one.reference]
+/** The references that `texts` name by the page's name, as a one-line place reads them: the
+ *  addresses `referenceStandIns` asks a name for. That leaves out an issue, which is named by its
+ *  key, and a reference on a typed block's own line, which no line draws, so this set and the
+ *  lines drawn cannot differ. */
+function namedReferences(texts: readonly string[]): string[] {
+  const refs = new Set<string>();
+  for (const words of texts) {
+    referenceStandIns((ref) => {
+      refs.add(ref);
+      return undefined;
+    }).standIn(words);
+  }
+  return [...refs];
+}
+
+/** The names of `addresses` that the page has not published or asked for, read in one batched
+ *  read of reference targets (`referenceTargetsQuery`, decision 515) and published from its
+ *  answer, so each line reads them from the store and mounts no read of its own. A reference this
+ *  read asked for stays in its set while `addresses` cites it, although its answer is now
+ *  published: dropping it would drop the query that holds the answer. */
+function useRunTargets(addresses: readonly string[], issue: IssueDetails | undefined) {
+  const known = useKnownReferences();
+  // The batch is chosen once the first commit has laid out, so a publisher mounted in that same
+  // commit has registered what it asks for. Until then nothing is asked for in the store.
+  const [ready, setReady] = useState(false);
+  useLayoutEffect(() => {
+    if (addresses.length > 0) setReady(true);
+  }, [addresses.length]);
+  const held = useRef<ReadonlySet<string>>(NOTHING_PUBLISHED.asked);
+  const asked = useMemo(() => {
+    if (!ready) return NOTHING_PUBLISHED.asked;
+    const next = new Set<string>();
+    for (const ref of addresses) {
+      const route = parseNodeReference(ref);
+      // A party (a person, a role) is named by the registry, which this read does not answer.
+      if (route === undefined || isPartyRoute(route)) continue;
+      if (
+        !held.current.has(ref) &&
+        (known.asked.has(ref) ||
+          known.names.has(ref) ||
+          known.gone.has(ref) ||
+          known.ambiguous.has(ref) ||
+          known.unnamed.has(ref))
+      ) {
+        continue;
+      }
+      next.add(ref);
+      // A whole spec is titled by its issue (`useIssueTree.ts`'s `treeReferences`).
+      if (route.kind === "spec" && route.block === undefined && route.key !== issue?.key) {
+        next.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+      }
+    }
+    const previous = held.current;
+    return next.size === previous.size && [...next].every((ref) => previous.has(ref))
+      ? previous
+      : next;
+  }, [addresses, issue?.key, known, ready]);
+  useLayoutEffect(() => {
+    held.current = asked;
+  }, [asked]);
+  const query = useMemo(() => referenceTargetsQuery([...asked]), [asked]);
+  const { data } = useQuery({ ...query, ...EVENT_FRESH });
+  const published = useMemo(
+    () =>
+      asked.size === 0
+        ? NOTHING_PUBLISHED
+        : {
+            ...(data === undefined
+              ? NOTHING_PUBLISHED
+              : targetNaming({ issue, targets: data.targets })),
+            asked,
+          },
+    [asked, data, issue]
+  );
+  usePublishReferenceNames(asked.size === 0 ? undefined : published);
+  return useMemo(
+    () =>
+      ready || addresses.length === 0
+        ? published
+        : { ...NOTHING_PUBLISHED, asked: new Set(addresses) },
+    [addresses, published, ready]
   );
 }
 
-/** The names the page knows for the references `texts` cite (`namedReferences`), by the one rule
- *  every plain line names a reference by (`refs/plain-text.tsx`'s `useReferenceNames`): what the
- *  page published from its batched read, and else the target's own read. `reads` draws nothing,
- *  and the caller mounts it where it draws the words. A run is on no issue, so no role is read by
- *  one. */
-export function useRunNames(texts: readonly string[]): { nameOf: RunNameOf; reads: ReactNode } {
-  const addresses = useMemo(() => [...new Set(texts.flatMap(namedReferences))], [texts]);
-  const { names, reads } = useReferenceNames(addresses, undefined);
+/** Draws a run's one-line places (`draw`) with the page's name for each reference they cite,
+ *  read in one batch (`useRunTargets`). `issue` is the issue the page shows, whose own documents
+ *  are named by the issue read; the run's page shows none. The batch's references are handed to
+ *  the lines as asked for from the first render, before the store holds them, so no line mounts a
+ *  read of its own while the batch is out. */
+export function RunReferenceNames({
+  draw,
+  issue,
+  texts,
+}: {
+  draw: (nameOf: RunNameOf) => ReactNode;
+  issue?: IssueDetails;
+  texts: readonly string[];
+}): ReactNode {
+  const addresses = useMemo(() => namedReferences(texts), [texts]);
+  const published = useRunTargets(addresses, issue);
+  const props = { children: createElement(RunNameReader, { addresses, draw }), published };
+  return createElement(PublishedReferenceNames, props);
+}
+
+function RunNameReader({
+  addresses,
+  draw,
+}: {
+  addresses: readonly string[];
+  draw: (nameOf: RunNameOf) => ReactNode;
+}): ReactNode {
+  // A target the batch answered with no words to name it by is drawn by its short form: reading
+  // it again would be the read per target that decision 515 removes. A party is read as every
+  // line reads one, since the batch does not name it.
+  const { unnamed } = useKnownReferences();
+  const readable = useMemo(
+    () => addresses.filter((ref) => !unnamed.has(ref)),
+    [addresses, unnamed]
+  );
+  const { names, reads } = useReferenceNames(readable, undefined);
   const nameOf = useMemo<RunNameOf>(() => (reference) => names.get(reference)?.name, [names]);
-  return { nameOf, reads };
+  return createElement(Fragment, null, reads, draw(nameOf));
 }
 
-/** `words`, a run's words on one line with each bare address as written, with each reference
- *  they cite named as a one-line place names one (`referenceStandIns`, decisions 140 and 491): an
- *  issue by its key, any other target by the page's name for it (`nameOf`), and by its short form
- *  where the page knows none (`shortForm`) - never as the address that was typed. */
-export function namedWords(words: string, nameOf: RunNameOf): string {
-  const references = referenceStandIns(nameOf);
-  return references.named(references.standIn(words));
+/** Draws Details' run rows (`draw`) with each question's references named, mounted only while
+ *  Referenced by draws its list, so a shut list reads no name. Its count is taken on the rows
+ *  unnamed (`useRunRows`), whose number the naming does not change. */
+export function NamedRunRows({
+  draw,
+  issue,
+  rows,
+}: {
+  draw: (rows: readonly ExtraReferenceRow[]) => ReactNode;
+  issue: IssueDetails;
+  rows: readonly ExtraReferenceRow[];
+}): ReactNode {
+  const texts = useMemo(
+    () => rows.flatMap((row) => (row.excerpt === undefined ? [] : [row.excerpt])),
+    [rows]
+  );
+  return createElement(RunReferenceNames, {
+    draw: (nameOf) => createElement(RunExcerpts, { draw, nameOf, rows }),
+    issue,
+    texts,
+  });
 }
 
-/** The first line of `words`, a node's words with each bare address as written
- *  (`lineWordsRaw`), cut by R1's first-line rule (`firstLineOf`, `drawnLine`) with each reference
- *  in it unnamed, and then named as `namedWords` names one, so no cut falls inside a name: the
- *  shape every one-line place of the page draws a node's line in (`IssueContents.tsx`). */
-export function namedFirstLine(words: string, nameOf: RunNameOf): string {
-  const references = referenceStandIns(nameOf);
-  return references.named(drawnLine(firstLineOf(references.standIn(words))));
+function RunExcerpts({
+  draw,
+  nameOf,
+  rows,
+}: {
+  draw: (rows: readonly ExtraReferenceRow[]) => ReactNode;
+  nameOf: RunNameOf;
+  rows: readonly ExtraReferenceRow[];
+}): ReactNode {
+  const held = useRef({ named: rows, rows });
+  const named = useMemo(() => {
+    const previous = held.current.rows === rows ? held.current.named : rows;
+    let next: ExtraReferenceRow[] | undefined;
+    for (const [at, row] of rows.entries()) {
+      if (row.excerpt === undefined) continue;
+      const references = referenceStandIns(nameOf);
+      const excerpt = references.named(references.standIn(row.excerpt));
+      if (excerpt === previous[at]?.excerpt) continue;
+      next ??= [...previous];
+      next[at] = excerpt === row.excerpt ? row : { ...row, excerpt };
+    }
+    return next ?? previous;
+  }, [nameOf, rows]);
+  useLayoutEffect(() => {
+    held.current = { named, rows };
+  }, [named, rows]);
+  return draw(named);
 }
 
 /** One row for each run whose node some page holds and that a `changed_by_run` tuple of some page
@@ -151,12 +302,8 @@ function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
 /** The run rows of the issue's tree read, and how that read stands, as Details says a read of
  *  its own failed (`DetailsErrorLine`). */
 export interface RunRowsRead {
-  /** The rows (`runRows`), each question's references named (`namedWords`): made anew only where
-   *  the read's answer or the names the page knows change; none while the read holds no answer. */
+  /** The unnamed rows (`runRows`), or none while the read holds no answer. */
   readonly rows: readonly ExtraReferenceRow[];
-  /** The reads of the references the questions cite that the page has no name for, which draw
-   *  nothing: the caller mounts them where it draws the rows (`useRunNames`). */
-  readonly reads: ReactNode;
   /** Whether the rows are known: the read holds an answer, or stands failed. */
   readonly settled: boolean;
   /** Whether the read stands failed (`standsFailed`): it holds no answer, and a read of it has
@@ -189,29 +336,13 @@ export interface RunRowsRead {
  * an answer nor a refusal (`mayReadNow`): a first opening while a write is out sends the read,
  * and the tree's freshness asks for it again once the last write settles
  * (`subscribeTreeFreshness`). Only the asker's tree read holds a run, so another reader's rows
- * are none. Each question is a one-line place: each reference it cites is named by the page's
- * name for it where the page knows one, and else by its short form, never as the address its
- * asker typed (`namedWords`, the reading list's `referenced-by-run-question`).
+ * are none.
  */
 export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
   const tree = issueTreeQuery(issue.key);
   const read = useQuery({ ...tree, enabled: false, select: answerRows });
   useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;
-  const questions = useMemo(
-    () => (rows ?? NO_ROWS).flatMap((row) => (row.excerpt === undefined ? [] : [row.excerpt])),
-    [rows]
-  );
-  const { nameOf, reads } = useRunNames(questions);
-  const named = useMemo(
-    () =>
-      rows === undefined || rows.length === 0
-        ? NO_ROWS
-        : rows.map((row) =>
-            row.excerpt === undefined ? row : { ...row, excerpt: namedWords(row.excerpt, nameOf) }
-          ),
-    [nameOf, rows]
-  );
   const failed = standsFailed(read);
   // `isFetching` is read only while the read stands failed, the one time its Retry is drawn.
   const retrying = failed && read.isFetching;
@@ -219,12 +350,11 @@ export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
     () => ({
       failed,
       failure: errorUpdateCount,
-      reads,
       retry: retryRead({ refetch }),
       retrying,
-      rows: named,
+      rows: rows ?? NO_ROWS,
       settled: rows !== undefined || failed,
     }),
-    [errorUpdateCount, failed, named, reads, refetch, retrying, rows]
+    [errorUpdateCount, failed, refetch, retrying, rows]
   );
 }

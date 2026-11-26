@@ -304,11 +304,18 @@ export function deletedPostLine(deleted: PostDeletion): string {
  * (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one string
  * writes it with `editedName`.
  */
-export function treeContext(reads: IssueTreeReads): TreeContext {
-  const key = reads.issue.key;
-  const artifacts = reads.issue.artifacts ?? [];
+export function treeContext(reads: IssueTreeReads): TreeContext;
+export function treeContext(
+  reads: Omit<IssueTreeReads, "issue"> & { readonly issue?: IssueDetails }
+): Omit<TreeContext, "key"> & { readonly key: string | undefined };
+export function treeContext(
+  reads: Omit<IssueTreeReads, "issue"> & { readonly issue?: IssueDetails }
+): Omit<TreeContext, "key"> & { readonly key: string | undefined } {
+  const { issue } = reads;
+  const key = issue?.key;
+  const artifacts = issue?.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const spec = primarySpec(reads.issue);
+  const spec = primarySpec(issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   // The kind of each typed block of this issue the tree read answers, by its node id, which is
@@ -320,13 +327,15 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       kinds.set(blockNodeId(node.document.slug, blockIdOfNode(node)), node.supertag as NodeType);
     }
   }
-  const nodeIdOfReference = nodeIdOf(reads.issue);
+  const nodeIdOfReference = issue === undefined ? () => undefined : nodeIdOf(issue);
   // The whole title of the issue and of each child the issue read lists, by its own address:
   // the names read cuts a title to its first 240 characters, and the issue read holds these
   // whole, as the rows draw them.
   const titles = new Map<string, string>([
-    [buildDispatchReference({ key, kind: "issue" }), reads.issue.title],
-    ...(reads.issue.children ?? []).map((child): [string, string] => [
+    ...(issue === undefined
+      ? []
+      : [[buildDispatchReference({ key: issue.key, kind: "issue" }), issue.title] as const]),
+    ...(issue?.children ?? []).map((child): [string, string] => [
       buildDispatchReference({ key: child.key, kind: "issue" }),
       child.title,
     ]),
@@ -370,7 +379,7 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
             : artifactAtAddress(artifacts, route.slug);
       const answered = target?.kind === "artifact" ? target : undefined;
       return documentReading(
-        reads.issue,
+        issue,
         own,
         issueOrDocumentTitle(route, titledIssue(route.key), own ?? answered)
       );
@@ -433,7 +442,7 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
  * nothing titles is published by that word as well.
  */
 function documentReading(
-  issue: IssueDetails,
+  issue: IssueDetails | undefined,
   own: Pick<Artifact, "id"> | undefined,
   title: string | undefined
 ): ReferenceNameReading {
@@ -464,7 +473,10 @@ function documentReading(
  * document, and a decisions document an earlier release stored is named by the page's word for a
  * document too.
  */
-function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
+function documentWord(
+  issue: IssueDetails | undefined,
+  document: Pick<Artifact, "id"> | undefined
+): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
   if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
   for (const role of ["plan", "verification"] as const) {

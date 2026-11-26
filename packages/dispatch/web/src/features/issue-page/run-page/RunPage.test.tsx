@@ -21,7 +21,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
-import type { GraphEdge, GraphReferences } from "../../../api/types";
+import type { GraphEdge, GraphReferences, ReferenceTargets } from "../../../api/types";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { referencesQuery } from "../../refs/reference-target";
 import { parseNodeReference, RUN_PATH, shortForm } from "../../refs/routes";
@@ -76,11 +76,13 @@ afterEach(() => {
 function runPage(client: QueryClient, id = RUN): ReactElement {
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[`/runs/${id}`]}>
-        <Routes>
-          <Route element={<RunPage />} path={RUN_PATH} />
-        </Routes>
-      </MemoryRouter>
+      <ReferenceNamesProvider>
+        <MemoryRouter initialEntries={[`/runs/${id}`]}>
+          <Routes>
+            <Route element={<RunPage />} path={RUN_PATH} />
+          </Routes>
+        </MemoryRouter>
+      </ReferenceNamesProvider>
     </QueryClientProvider>
   );
 }
@@ -499,12 +501,28 @@ test("a changed node of a kind the page has no word for is named by its line alo
     node: graphNode({ id: "4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6", kind: "risk" }),
     source_seq: null,
   };
-  draw(() => Promise.resolve(answerOf([], [risk])));
+  const sourceOnly: NonNullable<GraphReferences["edges"]>[number] = {
+    ...risk,
+    excerpt: {
+      text: ":::risk{#r1}\n:::",
+      text_tree: {
+        content: [{ content: [{ text: ":::risk{#r1}\n:::", type: "text" }], type: "paragraph" }],
+        type: "doc",
+      },
+    },
+    node: graphNode({
+      id: "b752b280-b6fa-4ce0-aae0-3cf81ae5106e",
+      kind: "risk",
+      ref: "dispatch://CORE-1/spec#b-r1",
+    }),
+  };
+  draw(() => Promise.resolve(answerOf([], [risk, sourceOnly])));
   await screen.findByRole("heading", { level: 1, name: RUN_WORD });
   const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
   const entry = within(what).getByRole("listitem");
   expect(entry.textContent).toBe(excerpt);
   expect(wordsIn(entry.textContent ?? "")).not.toContain("risk");
+  expect(within(what).queryByRole("link")).toBeNull();
 });
 
 /** An edge from the issue CORE-1, which the run changed, whose excerpt is `excerpt`. */
@@ -521,24 +539,37 @@ function changedIssue(
   };
 }
 
-// The line is drawn from the server's reading of the node's words where the read sent one, and
-// reads nothing of the words as stored where it has that reading.
-test("a changed node's line is drawn from the reading the read sends beside its words", async () => {
-  const changed = changedIssue({
-    text: "Ship the **release** on Friday.",
-    text_tree: {
-      content: [
-        { content: [{ text: "Ship the release on Monday.", type: "text" }], type: "paragraph" },
-      ],
-      type: "doc",
-    },
-  });
-  draw(() => Promise.resolve(answerOf([], [changed])));
-  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
-  const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
-  expect(
-    await within(what).findByRole("link", { name: "Ship the release on Monday." })
-  ).toHaveAttribute("href", "/issues/CORE-1");
+test("a changed node's line reads three comment names in one batch", async () => {
+  const names = ["Warm cache", "Check logs", "Ship build"];
+  const targets = names.map((name, at) => ({
+    gone: false,
+    kind: "comment",
+    name,
+    ref: `dispatch://CORE-2/comment/44444444-4444-4444-8444-00000000000${at + 1}`,
+  }));
+  const refs = targets.map(({ ref }) => ref);
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const perTarget = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
+  try {
+    const changed = changedIssue({ text: `Close after ${refs.join(" and ")}. Then rest.` });
+    // The run's question is drawn as typed and does not join the batch.
+    const question = "What about dispatch://CORE-2/comment/44444444-4444-4444-8444-000000000004?";
+    draw(() => Promise.resolve(answerOf([], [changed], question)));
+    const what = await screen.findByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+    expect(perTarget, "individual comment reads while the batch is out").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+    await act(async () => answer.resolve({ targets }));
+    expect(
+      await within(what).findByRole("link", { name: `Close after ${names.join(" and ")}.` })
+    ).toHaveAttribute("href", "/issues/CORE-1");
+    expect(screen.getByText(question)).toBeInTheDocument();
+    expect(perTarget, "individual comment reads after the batch answered").toHaveBeenCalledTimes(0);
+    expect(batch.mock.calls).toEqual([[refs]]);
+  } finally {
+    batch.mockRestore();
+    perTarget.mockRestore();
+  }
 });
 
 // A changed node's line is a one-line place (the reading list's `run-page-changed-line`): each

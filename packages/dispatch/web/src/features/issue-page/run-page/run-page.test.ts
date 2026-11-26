@@ -14,8 +14,17 @@ import {
 } from "@legion/contracts";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
-import type { GraphEdge, GraphReferences } from "../../../api/types";
-import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
+import type { GraphEdge, GraphReferences, ReferenceTarget } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
+import { targetNaming } from "../issue-tree";
+import {
+  EMPTY_STATE_LINES,
+  NODE_REFERENCES_WORDS,
+  NODE_TYPE_NAMES,
+  STATE_LINES,
+  sentenceCase,
+} from "../page-words";
+import { treeContext } from "../tree-drafts";
 import { linkedHref, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
@@ -158,8 +167,8 @@ test("a changed node is named by the page's words alone, and an edge the page do
     excerpt: { text: riskText },
     node: graphNode({ id: "4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6", kind: "risk" }),
   };
-  // A node of a kind the page has no word for, whose read carries no words either: the page
-  // could name it by nothing.
+  // A node with neither a kind word nor an excerpt is kept for the view to decide whether
+  // to draw, just like a node whose excerpt becomes empty after its first line is cut.
   const silent: GraphEdge = {
     ...risk,
     excerpt: undefined,
@@ -172,8 +181,7 @@ test("a changed node is named by the page's words alone, and an edge the page do
     node: graphNode({ id: "9f8e7d6c", kind: "widget" as GraphEdge["node"]["kind"] }),
   };
 
-  // Only the risk is drawn: by its words, with no kind word, since the page has no word for its
-  // kind and the kind's schema token is none.
+  // Neither unfamiliar edge is passed to the view. The risks carry no schema token as a kind word.
   expect(runView(answerOf([], [newerEdge, risk, newerNode, silent])).changed).toEqual([
     {
       href: undefined,
@@ -181,6 +189,53 @@ test("a changed node is named by the page's words alone, and an edge the page do
       kind: "",
       words: "Drop the release if the checks fail. Then wait.",
     },
+    {
+      href: undefined,
+      key: "risk:7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      kind: "",
+      words: "",
+    },
+  ]);
+});
+
+test("a run page with no issue names a comment, spec block and document as external targets", () => {
+  const comment = "dispatch://CORE-2/comment/44444444-4444-4444-8444-000000000001";
+  const block = "dispatch://CORE-2/spec#b-r1";
+  const document = "dispatch://CORE-2/artifact/notes";
+  const blockTree = {
+    content: [{ content: [{ text: "Keep the cache warm.", type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+  const targets: ReferenceTarget[] = [
+    { gone: false, kind: "comment", name: "**Check the logs**", ref: comment },
+    {
+      gone: false,
+      kind: "block",
+      name: "Not the displayed reading.",
+      ref: block,
+      text_tree: blockTree,
+    },
+    { gone: false, kind: "artifact", name: "release-notes.md", ref: document },
+  ];
+  const { readings } = targetNaming({ targets });
+  expect(
+    [...readings].map(([ref, reading]) => [
+      ref,
+      "tree" in reading ? wordsOf(reading.tree) : reading.words,
+    ])
+  ).toEqual([
+    [comment, "Check the logs"],
+    [block, "Keep the cache warm."],
+    [document, "release-notes.md"],
+  ]);
+  expect(readings.get(block)).toEqual({ tree: blockTree });
+  expect(readings.get(document)?.chipWord).toBe(NODE_TYPE_NAMES.document);
+  const context = treeContext({ targets });
+  expect(context.key).toBeUndefined();
+  expect(targets.map(({ ref }) => context.nodeIdOf(ref))).toEqual([
+    undefined,
+    undefined,
+    undefined,
   ]);
 });
 
