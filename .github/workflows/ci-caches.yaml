@@ -51,7 +51,8 @@ name: CI caches
 # Three entries here are no Go family: the elan home the airlock-lean job restores, whose key is
 # the content of the Lean toolchain the model names rather than a Go version, and the two earlier
 # Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash of the
-# script that builds it, which the dispatch-builds job fills.
+# script that builds it, which the dispatch-builds job fills. The changes job's two entries are
+# ci-caches-changes.yaml's, which runs once per commit rather than one run at a time.
 # why: .github/ci-notes/ci-caches.md#the-two-entries-that-went-with-the-jobs-that-read-them
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
@@ -683,8 +684,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs[matrix.job].outputs[format('{0}-{1}', matrix.family, matrix.arch)] != ''
         with:
@@ -699,34 +700,7 @@ jobs:
           KEEP: ${{ needs[matrix.job].outputs[format('{0}-{1}', matrix.family, matrix.arch)] }}
           SHA: ${{ github.sha }}
           REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          # Each call waits out a spent API budget within this job's limit, and fails by name
-          # past it.
-          source .github/scripts/gh-read.sh
-          # The readers' key: the saved one without the commit the fill put at its end.
-          base=${KEEP%"-$SHA"}
-          if [ "$base-$SHA" != "$KEEP" ]; then
-            echo "::error::the $FAMILY key this leg saved does not end in this run's commit, so nothing is deleted"
-            exit 1
-          fi
-          # Newest first, by GitHub's own creation order, so the new entry is among the entries
-          # read however many older ones a failed run left behind.
-          entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted"
-            exit 0
-          fi
-          jq -r --arg keep "$KEEP" --arg base "$base" --arg ref "$REF" \
-            '.[] | select(.ref == $ref and .key != $keep and (.key == $base or (.key | startswith($base + "-")))) | .id' <<<"$entries" |
-            while read -r id; do
-              if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
-                exit 1
-              fi
-              echo "Deleting $FAMILY entry $id, which the new entry supersedes"
-              gh_wait_reset gh cache delete "$id"
-            done
+        run: .github/scripts/cache-superseded.sh commit "$FAMILY"
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-build runs it. The action sets
@@ -897,8 +871,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
         with:
@@ -911,28 +885,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           KEEP: ${{ needs.envoy-infra.outputs[format('key-{0}', matrix.arch)] }}
           REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          # Each call waits out a spent API budget within this job's limit, and fails by name
-          # past it.
-          source .github/scripts/gh-read.sh
-          entries=$(gh_wait_reset gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
-            exit 0
-          fi
-          jq -r --arg keep "$KEEP" --arg ref "$REF" \
-            'def base: gsub("-[0-9a-f]{64}"; "");
-             .[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep
-                          and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
-            while read -r id; do
-              if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
-                exit 1
-              fi
-              echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
-              gh_wait_reset gh cache delete "$id"
-            done
+        run: .github/scripts/cache-superseded.sh hash go-envoy-infra
 
   # The two earlier Dispatch builds ci.yaml's dispatch-two-builds job runs beside this tree,
   # filled in main's scope on ubuntu-24.04, the runner that job runs on.
@@ -1045,8 +998,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.dispatch-builds.outputs[matrix.build] != ''
         with:
@@ -1059,37 +1012,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           KEEP: ${{ needs.dispatch-builds.outputs[matrix.build] }}
           REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          # Each call waits out a spent API budget within this job's limit, and fails by name
-          # past it.
-          source .github/scripts/gh-read.sh
-          if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
-            echo "::error::the kept key does not have the shape dispatch-builds gives it, so nothing is deleted"
-            exit 1
-          fi
-          # The build, OS and architecture: the key without its script hash and commit.
-          prefix=${KEEP%-*}
-          prefix=${prefix%-*}-
-          # Every ref's entries, newest first by GitHub's creation order; gh pages past 100 up to
-          # the limit, far above what one build holds.
-          entries=$(gh_wait_reset gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
-          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::main holds no entry under $KEEP, so none is deleted"
-            exit 0
-          fi
-          jq -r --arg keep "$KEEP" --arg ref "$REF" --arg prefix "$prefix" \
-            '(map(.key == $keep and .ref == $ref) | index(true)) as $kept
-             | to_entries[] | .key as $at | .value
-             | select((.key | startswith($prefix)) and (.ref != $ref or $at > $kept)) | .id' <<<"$entries" |
-            while read -r id; do
-              if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
-                exit 1
-              fi
-              echo "Deleting entry $id of $prefix, which this repository keeps no more"
-              gh_wait_reset gh cache delete "$id"
-            done
+        run: .github/scripts/cache-superseded.sh build
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the runner's architecture, since elan and the
