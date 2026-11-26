@@ -30,7 +30,8 @@ type FreshSessionResponse struct {
 	// tell, which is one of two things and never both (freshSession):
 	//
 	//   - the claim is back in a new session owing no task, and the workflow refused the
-	//     restart that would have handed it one (restartWorkedPhase);
+	//     restart that would have handed it one, or moved the issue to awaiting_children in its
+	//     place, which the sentence names with the open children (restartWorkedPhase);
 	//   - this request stopped the claim, and the machine refused a step that would have
 	//     brought it back — the forget of the session it recorded, or the start of it in a
 	//     new session — and the sentence names that refusal and the state the claim stands in

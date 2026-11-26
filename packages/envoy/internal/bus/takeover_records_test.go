@@ -1,12 +1,10 @@
 package bus
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -23,6 +21,7 @@ import (
 // reads are read off the wire from a second connection, up to a mark the client publishes after
 // each read of the records.
 func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {
@@ -45,8 +44,8 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	finished := TakeoverSubject("cache", "ses_finished", "attempt1")
 	unfinished := TakeoverSubject("cache", "ses_unfinished", "attempt2")
 	// Each write names the subject's newest message as a pass does (WriteTakeoverRecordAt); a
@@ -136,8 +135,7 @@ func TestAHandoverRecordNamesItsRoleAndSessionsInItsSubjectAlone(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	const role, previous, successor = "ACME.reviewer", "ses_replaced", "ses_successor"
 	subject := HandoverSubject(role, previous, successor)
@@ -199,8 +197,7 @@ func TestHandoverSuccessorsAreTheSessionsTheHandoverRecordsOfASessionName(t *tes
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	for _, subject := range []string{
 		HandoverSubject("ACME.reviewer", "ses_a", "ses_b"),
