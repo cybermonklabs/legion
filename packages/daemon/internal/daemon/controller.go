@@ -186,8 +186,10 @@ func (k *controllerKeeper) keep() error {
 	err := m.Handle(ctx, request)
 	// A retry resumes the recorded session (R5 of dispatch://INFRA-4508): the run of refused turns
 	// no longer starts a new one, and the machine starts one only after the session's launches keep
-	// ending (supervise's SessionRun). The keeper asks for a new session in a retry in one case
-	// alone: the resume is refused because one of the recorded session's names is held for another
+	// ending (supervise's SessionRun, dispatch://INFRA-2045 R1) or when the session is older than
+	// its age (supervise's replaceAgedSession, R3: the keeper's retry is no operator's, so it is not
+	// exempt from that rule). The keeper asks for a new session in a retry in one case alone: the
+	// resume is refused because one of the recorded session's names is held for another
 	// claim, or for none (supervise.IsSessionHeldElsewhere, claim.SessionHeldRefusal). Such a resume
 	// would be refused at every retry, and nobody else retries this claim, so the keeper asks the
 	// retry again in a new session, as an operator's `legion claims retry --fresh-session` does,
@@ -276,11 +278,16 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	case errors.Is(err, supervise.ErrDeliveryPending):
 		k.log.Info("controller: the start message waits behind the controller's pending delivery", "claim", c.Token)
 	case errors.As(err, &refused):
-		k.log.Info("controller: the start message is not sent: the controller left its ready before it", "claim", c.Token, "reason", err)
+		k.log.Info(startMessageRefusedLine, "claim", c.Token, "reason", err)
 	default:
 		k.log.Error("controller: hand the daemon's controller its start message", "claim", c.Token, "error", err)
 	}
 }
+
+// startMessageRefusedLine is the keeper's Info line for a start message a suspended controller
+// refused (ready, supervise.RequestDeliver.ResumesNothing): an operator suspended it at or after
+// this ready, and the next launch's ready sends the message again.
+const startMessageRefusedLine = "controller: the start message is not sent: the controller left its ready before it"
 
 // stopLaunchedController ends the daemon's own controller on a daemon that leaves the controller to
 // its operator (`controller: operator`). A claim an earlier boot under `controller: daemon` stored

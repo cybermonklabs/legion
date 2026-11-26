@@ -330,11 +330,53 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		}
 	})
 
-	t.Run("an operator's suspension between the controller's ready and its start message is not undone by the message", func(t *testing.T) {
+}
+
+// storedDelivery is the delivery the test store holds for the controller's claim, and whether it
+// holds one: what the machine wrote as queued for the controller (Store.PutDelivery).
+func storedDelivery(sup *supervisor) (supervise.Delivery, bool) {
+	store := sup.deps.Store.(*outboxClaimStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	d, ok := store.deliveries[claim.ControllerToken("legion")]
+	return d, ok
+}
+
+// The keeper's start message is the daemon's own task and resumes nothing
+// (supervise.RequestDeliver.ResumesNothing): a controller an operator suspended at or after its
+// ready refuses it, queues nothing and launches nothing, and stays suspended by the operator on its
+// session, with one Info line of the keeper's. Two ways reach that claim: an operator's suspension
+// between the ready and the message, and one made while the controller was launching, held until
+// its ready and ended there, after which the ready route still hands the keeper its turn. The
+// control: on main the message reads as an operator's delivery, which resumes the claim whoever
+// suspended it, so both rows find the controller launching with the message queued.
+func TestTheStartMessageDoesNotUndoAnOperatorsSuspension(t *testing.T) {
+	now := time.Now()
+	// wantUndisturbed is the controller after the keeper's start message: suspended by the operator
+	// on session, holding no delivery in memory or in the store, launched no more than launches
+	// times, with the keeper's one Info line.
+	wantUndisturbed := func(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *syncBuffer, session string, launches int) {
+		t.Helper()
+		after := controllerOf(t, sup)
+		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != session || after.Pending != nil {
+			t.Errorf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
+				after.State, after.SuspendedBy, after.Session, after.Pending, session)
+		}
+		if d, queued := storedDelivery(sup); queued {
+			t.Errorf("the store holds the delivery %q for the suspended controller, want none: the start message queues nothing", d.Task)
+		}
+		if got := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); got != launches {
+			t.Errorf("the start message launched the controller %d times, want never", got-launches)
+		}
+		if lines := linesOf(t, logs, startMessageRefusedLine); len(lines) != 1 || lines[0]["level"] != "INFO" {
+			t.Errorf("the keeper's lines for a start message the suspension refused are %+v, want one at Info", lines)
+		}
+	}
+
+	t.Run("an operator's suspension between the controller's ready and its start message", func(t *testing.T) {
 		old := sessionAged(now, 73*time.Hour)
-		c := idle(old)
-		c.State = supervise.StateReady
-		k, sup, rt, logs := keptController(t, c)
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: old,
+			LastTurnStart: now.Add(-2 * time.Hour), LastTurnEnd: now.Add(-time.Hour), SessionRun: supervise.SessionRun{TurnFinished: true}})
 		m, _ := sup.Machine(claim.ControllerToken("legion"))
 		// The operator suspends the ready controller before the ready route hands it the start
 		// message.
@@ -344,20 +386,10 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		k.ready(m.Claim())
 		m.Wait()
 
-		after := controllerOf(t, sup)
-		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != old || after.Pending != nil {
-			t.Fatalf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
-				after.State, after.SuspendedBy, after.Session, after.Pending, old)
-		}
-		if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 0 || len(spawns) != 0 {
-			t.Fatalf("the start message launched %d resumes and %d spawns, want none", len(resumes), len(spawns))
-		}
-		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 || lines[0]["level"] != "INFO" {
-			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one at Info", lines)
-		}
+		wantUndisturbed(t, sup, rt, logs, old, 0)
 	})
 
-	t.Run("an operator's suspension of a launching controller, held until its ready, is not undone by the start message", func(t *testing.T) {
+	t.Run("an operator's suspension of a launching controller, held until its ready", func(t *testing.T) {
 		// A session younger than the age, so the keeper's retry resumes it on main and at this head
 		// alike, and the row reads the suspension alone.
 		young := sessionAged(now, time.Hour)
@@ -378,18 +410,13 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 			t.Fatalf("the operator's suspension of a launching controller answered %v, want it held until ready", err)
 		}
 		// The resumed agent comes up, and its ready ends in the held suspension.
-		conn := fake.NewConn()
-		sup.deps.Conns.(*fake.Conns).Register(token, conn)
-		for _, ev := range []supervise.Event{
-			supervise.StreamHello{Claim: token, Generation: m.Claim().Generation},
-			supervise.RequestRegister{Claim: token, Generation: m.Claim().Generation, Session: young, SessionFile: controllerSessionFile,
+		sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+		generation := m.Claim().Generation
+		handleAll(t, m,
+			supervise.StreamHello{Claim: token, Generation: generation},
+			supervise.RequestRegister{Claim: token, Generation: generation, Session: young, SessionFile: controllerSessionFile,
 				CapabilityHash: []byte("capability"), PluginContract: sup.deps.PluginContract},
-			supervise.RequestReady{Claim: token, Generation: m.Claim().Generation, Session: young},
-		} {
-			if err := m.Handle(context.Background(), ev); err != nil {
-				t.Fatalf("handle %T: %v", ev, err)
-			}
-		}
+			supervise.RequestReady{Claim: token, Generation: generation, Session: young})
 		if c := m.Claim(); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByOperator {
 			t.Fatalf("after its ready the controller is %s, suspended by %q, want the operator's held suspension in force", c.State, c.SuspendedBy)
 		}
@@ -398,20 +425,7 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 		k.ready(m.Claim())
 		m.Wait()
 
-		after := controllerOf(t, sup)
-		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != young || after.Pending != nil {
-			t.Fatalf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
-				after.State, after.SuspendedBy, after.Session, after.Pending, young)
-		}
-		if got := len(rt.CallsOf("Resume")) + len(rt.CallsOf("Spawn")); got != launches {
-			t.Fatalf("the start message launched the controller %d times, want never", got-launches)
-		}
-		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 || lines[0]["level"] != "INFO" {
-			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one at Info", lines)
-		}
-		if len(conn.Prompts()) != 0 {
-			t.Fatalf("the suspended controller was prompted %d times, want never", len(conn.Prompts()))
-		}
+		wantUndisturbed(t, sup, rt, logs, young, launches)
 	})
 }
 
