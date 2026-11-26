@@ -3,30 +3,37 @@ package pgmigrate
 import (
 	"context"
 	"errors"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-// spyTx stands in for the census's transaction in censusTable. Each savepoint it begins is a
-// spySavepoint, which reads current_setting('statement_timeout') just before its first rollback,
-// the statement that ends it, and keeps what it read. With plant set, a spySavepoint runs plant in
-// place of the statement that sets CensusStatementTimeout back (restoreCensusBound), which it
-// tells by its one argument, the minute's setting.
+// spyTx stands in for the census's transaction in censusTable, and in the classifier boundedWrites
+// reads the catalog through. Each savepoint it begins is a spySavepoint. The first statement sent
+// on the transaction itself once a savepoint has begun, a savepoint of its own included, first
+// reads current_setting('statement_timeout') and keeps it in after: in censusTable the first such
+// statement is boundedWrites' first read of the catalog, sent after the reads' savepoint.
 type spyTx struct {
 	pgx.Tx
 	plant      string
 	savepoints []*spySavepoint
+	after      string
+}
+
+func (s *spyTx) note(ctx context.Context) {
+	if len(s.savepoints) == 0 || s.after != "" {
+		return
+	}
+	if err := s.Tx.QueryRow(ctx, "select current_setting('statement_timeout')").Scan(&s.after); err != nil {
+		s.after = "unread: " + err.Error()
+	}
 }
 
 func (s *spyTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	s.note(ctx)
 	nested, err := s.Tx.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -36,19 +43,37 @@ func (s *spyTx) Begin(ctx context.Context) (pgx.Tx, error) {
 	return savepoint, nil
 }
 
+func (s *spyTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	s.note(ctx)
+	return s.Tx.Exec(ctx, sql, args...)
+}
+
+func (s *spyTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	s.note(ctx)
+	return s.Tx.Query(ctx, sql, args...)
+}
+
+func (s *spyTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	s.note(ctx)
+	return s.Tx.QueryRow(ctx, sql, args...)
+}
+
+// spySavepoint is a savepoint of a spyTx. It counts the set_config statements of
+// statement_timeout sent in it (bounds), and just before its first rollback, the statement that
+// ends it, it reads current_setting('statement_timeout') and keeps it in atEnd. With plant set,
+// that first rollback sends plant first, and returns plant's error without ending the savepoint
+// when plant fails; the rollback after it, censusTable's deferred one, ends the savepoint.
 type spySavepoint struct {
 	pgx.Tx
 	plant   string
-	planted int
-	// atEnd is the statement_timeout the savepoint read just before the statement that ends it;
-	// empty until that statement.
-	atEnd string
+	planted bool
+	bounds  int
+	atEnd   string
 }
 
 func (s *spySavepoint) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if s.plant != "" && len(args) == 1 && args[0] == censusStatementTimeoutSetting {
-		s.planted++
-		return s.Tx.Exec(ctx, s.plant, args...)
+	if strings.Contains(sql, "set_config('statement_timeout'") {
+		s.bounds++
 	}
 	return s.Tx.Exec(ctx, sql, args...)
 }
@@ -59,113 +84,139 @@ func (s *spySavepoint) Rollback(ctx context.Context) error {
 			s.atEnd = "unread: " + err.Error()
 		}
 	}
+	if s.plant != "" && !s.planted {
+		s.planted = true
+		if _, err := s.Tx.Exec(ctx, s.plant); err != nil {
+			return err
+		}
+	}
 	return s.Tx.Rollback(ctx)
 }
 
-// readBoundTx is a read-only transaction on a database of the test's own, holding a table things
-// with a row, under the bounds Census gives its own transaction: statement_timeout at
-// CensusStatementTimeout and lock_timeout at LockTimeout. It skips the test when
-// DISPATCH_TEST_DATABASE_URL is unset, as boundedWritesDatabase does.
+// readBoundTx is a read-only transaction on a database of the test's own (fixtureDatabase),
+// holding a table things with a row, under the settings Census gives its own transaction
+// (censusSettings).
 func readBoundTx(t *testing.T, ctx context.Context) pgx.Tx {
 	t.Helper()
-	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's read-bound tests")
-	}
-	adminURL, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's own error quotes the URL, which carries a credential.
-		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
-	}
-	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_read_bound"))
-	if _, err := conn.Exec(ctx, "create table things (id integer); insert into things values (1)"); err != nil {
-		t.Fatalf("load the fixture: %v", err)
-	}
+	conn := fixtureDatabase(t, ctx, "pgmigrate_read_bound", "read-bound tests", "create table things (id integer); insert into things values (1)")
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	if _, err := tx.Exec(ctx, "select set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", censusStatementTimeoutSetting, lockTimeoutSetting); err != nil {
-		t.Fatalf("set the census's bounds: %v", err)
+	set, args := setConfig(true, censusSettings())
+	if _, err := tx.Exec(ctx, set, args...); err != nil {
+		t.Fatalf("set the census's settings: %v", err)
 	}
 	return tx
 }
 
-// readBoundOptions are the options censusTable reads, as Census fills them, with tableLimit and a
-// TableReadTimeout of readTimeout.
+// readBoundOptions are the three options censusTable reads (TableLimit, LongTransaction and
+// TableReadTimeout), filled as Census fills them, with tableLimit and a TableReadTimeout of
+// readTimeout.
 func readBoundOptions(tableLimit int64, readTimeout time.Duration) CensusOptions {
-	return CensusOptions{TableLimit: tableLimit, LongTransaction: CensusLongTransaction, TableReadTimeout: readTimeout, reviewedTriggers: reviewedTriggers}
+	return CensusOptions{TableLimit: tableLimit, LongTransaction: CensusLongTransaction, TableReadTimeout: readTimeout}
 }
 
-// After a read of a touched table that answered, the statement that ends the reads' savepoint
-// starts under CensusStatementTimeout, not under the reads' shorter TableReadTimeout, on each of
-// the three ways out of a read that answered: a table counted, a table above the limit (judged on
-// its size, its rows not counted) and a table a foreign key reaches (its size read alone). The
-// savepoint reads its statement_timeout just before that statement (spySavepoint), and 1min is
-// the minute as PostgreSQL prints it. The table has no other session's lock on it, so the
-// savepoint is the census's one.
-func TestCensusTableEndsTheSavepointOfAReadThatAnsweredUnderTheCensusBound(t *testing.T) {
+// The reads of a touched table run under TableReadTimeout, and only they and the rollback that
+// ends their savepoint do: every statement censusTable sends after that rollback, and the
+// census's statement after censusTable returns, starts under CensusStatementTimeout. This holds
+// on each way out of reads that answered: a table counted; a table above the limit, whose writes
+// boundedWrites then reads in the catalog; and a table a foreign key reaches, whose size alone is
+// read. The reads' bound is 30 s, which differs from the minute and leaves the reads, which take
+// milliseconds, half a minute: the rollback starting under 30s shows the reads ran under it, and
+// a statement after it starting under 1min, as PostgreSQL prints the minute, shows it came back.
+// At TableReadTimeout equal to CensusStatementTimeout, the bound the transaction already holds,
+// censusTable sends no set_config, as the merge base sent none. The table has no other session's
+// lock on it, so the reads' savepoint is the first censusTable begins.
+func TestCensusTableRunsOnlyTheTablesReadsUnderTheReadBound(t *testing.T) {
 	t.Parallel()
+	const insert = "insert into things (id) values (2)"
 	for name, row := range map[string]struct {
-		touched    TouchedTable
-		tableLimit int64
+		touched     TouchedTable
+		tableLimit  int64
+		readTimeout time.Duration
+		writes      string
+		bounds      int
+		atEnd       string
 	}{
-		"a table counted":               {TouchedTable{Name: "things"}, CensusTableLimit},
-		"a table above the limit":       {TouchedTable{Name: "things"}, 1},
-		"a table a foreign key reaches": {TouchedTable{Name: "things", Through: "others"}, CensusTableLimit},
+		"a table counted":                          {TouchedTable{Name: "things"}, CensusTableLimit, 30 * time.Second, "", 1, "30s"},
+		"a table above the limit, its writes read": {TouchedTable{Name: "things"}, 1, 30 * time.Second, insert, 1, "30s"},
+		"a table a foreign key reaches":            {TouchedTable{Name: "things", Through: "others"}, CensusTableLimit, 30 * time.Second, "", 1, "30s"},
+		"a table counted, the bound the minute":    {TouchedTable{Name: "things"}, CensusTableLimit, CensusStatementTimeout, "", 0, "1min"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			spy := &spyTx{Tx: readBoundTx(t, ctx)}
+			tx := readBoundTx(t, ctx)
+			spy := &spyTx{Tx: tx}
+			writes := &writeReading{}
+			if row.writes != "" {
+				classified, err := tableSizeExemption(ctx, tx, tx, row.writes)
+				if err != nil || classified.statements == nil {
+					t.Fatalf("parse %q: %v", row.writes, err)
+				}
+				writes = &writeReading{c: &classifier{ctx: ctx, census: spy, catalog: spy}, statements: classified.statements, changedBy: map[string]string{}, reviewed: reviewedTriggers}
+			}
 			entry := &MigrationCensus{}
-			if err := censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, time.Second), lockBound{setting: lockTimeoutSetting}, entry, &writeReading{}); err != nil {
+			if err := censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, writes); err != nil {
 				t.Fatalf("censusTable: %v", err)
 			}
-			if len(spy.savepoints) != 1 {
-				t.Fatalf("censusTable began %d savepoints, want 1, the reads'", len(spy.savepoints))
+			if len(spy.savepoints) == 0 {
+				t.Fatal("censusTable began no savepoint for the table's reads")
 			}
-			if got := spy.savepoints[0].atEnd; got != "1min" {
-				t.Errorf("the statement that ended the reads' savepoint started under statement_timeout %q, want 1min, CensusStatementTimeout", got)
+			reads := spy.savepoints[0]
+			if reads.bounds != row.bounds || reads.atEnd != row.atEnd {
+				t.Errorf("the reads' savepoint sent %d set_config of statement_timeout and ended under %q; want %d and %q", reads.bounds, reads.atEnd, row.bounds, row.atEnd)
+			}
+			if row.writes != "" {
+				if len(entry.Tables) != 1 || entry.Tables[0].BoundedWrites != 1 || len(entry.Refusals) != 0 {
+					t.Fatalf("tables %+v, refusals %q; want things admitted for one bounded write", entry.Tables, entry.Refusals)
+				}
+				if spy.after != "1min" {
+					t.Errorf("boundedWrites' first read of the catalog started under statement_timeout %q, want 1min, CensusStatementTimeout", spy.after)
+				}
+			}
+			var next string
+			if err := tx.QueryRow(ctx, "select current_setting('statement_timeout')").Scan(&next); err != nil || next != "1min" {
+				t.Errorf("the census's statement after censusTable started under statement_timeout %q (%v), want 1min, CensusStatementTimeout", next, err)
 			}
 		})
 	}
 }
 
-// The statement that sets CensusStatementTimeout back after a read that answered runs under the
-// reads' TableReadTimeout, the one statement besides the reads that does (restoreCensusBound),
-// and one that outlasts it fails censusTable with its own error, SQLSTATE 57014 and the table's
-// name, rather than leaving the savepoint aborted. The plant puts a 2 s sleep in that statement.
-// Under a TableReadTimeout of 1 s, PostgreSQL cancels it at 1 s. The control gives the reads
-// 30 s, and the same planted statement answers, so the failure comes from the bound it starts
-// under. (A control at the minute would set the reads' bound with the restore's own argument,
-// which the plant would take for the restore.)
-func TestCensusTableFailsByNameWhenTheRestoreOfItsBoundOutlastsTheReadBound(t *testing.T) {
+// The rollback that ends the savepoint of reads that answered starts under the reads'
+// TableReadTimeout, and one that outlasts it fails censusTable with its own error, SQLSTATE 57014
+// and the table's name, where a rollback whose error nothing read would leave the savepoint
+// aborted and fail the census's next statement with 25P02 and no name. The plant sends a 10 s
+// sleep where that rollback starts (spySavepoint), under the setting the rollback starts under.
+// Under a TableReadTimeout of 5 s, PostgreSQL cancels it at 5 s; the reads before it take
+// milliseconds, and a read past 5 s would fail the row by another message. The control gives
+// the reads 30 s, and the same plant answers, so the failure comes from the bound in force where
+// the savepoint ends.
+func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testing.T) {
 	t.Parallel()
-	const plant = "select set_config('statement_timeout', $1, true) from pg_sleep(2)"
 	for name, row := range map[string]struct {
 		readTimeout time.Duration
 		fails       bool
 	}{
-		"under the reads' 1 s":           {time.Second, true},
+		"under the reads' 5 s":           {5 * time.Second, true},
 		"control: under the reads' 30 s": {30 * time.Second, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			spy := &spyTx{Tx: readBoundTx(t, ctx), plant: plant}
+			spy := &spyTx{Tx: readBoundTx(t, ctx), plant: "select pg_sleep(10)"}
 			err := censusTable(ctx, spy, TouchedTable{Name: "things"}, readBoundOptions(CensusTableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, &MigrationCensus{}, &writeReading{})
-			if len(spy.savepoints) != 1 || spy.savepoints[0].planted != 1 {
-				t.Fatalf("the plant did not run once in the reads' savepoint (%d savepoints)", len(spy.savepoints))
+			if len(spy.savepoints) == 0 || !spy.savepoints[0].planted {
+				t.Fatalf("the plant did not run where the reads' savepoint ends (%d savepoints)", len(spy.savepoints))
 			}
 			var pgErr *pgconn.PgError
 			switch {
 			case !row.fails && err != nil:
-				t.Fatalf("censusTable: %v, want the planted restore to answer under 30 s", err)
-			case row.fails && (err == nil || !errors.As(err, &pgErr) || pgErr.Code != queryCanceled || !strings.Contains(err.Error(), "census: set the statement timeout back to 1m0s after the reads of things")):
-				t.Fatalf("censusTable: %v, want the restore's own error, naming things, with SQLSTATE 57014", err)
+				t.Fatalf("censusTable: %v, want the plant to answer under 30 s", err)
+			case row.fails && (err == nil || !errors.As(err, &pgErr) || pgErr.Code != queryCanceled || !strings.Contains(err.Error(), "census: end the savepoint of the reads of things: ")):
+				t.Fatalf("censusTable: %v, want the savepoint end's own error, naming things, with SQLSTATE 57014", err)
 			}
 		})
 	}
