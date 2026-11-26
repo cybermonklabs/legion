@@ -505,8 +505,10 @@ export function ThreadList({
             <ThreadRow
               href={buildIssuePath({ key: issue.key, kind: "threads", record: record.id })}
               id={record.id}
+              issueKey={issue.key}
               key={record.id}
               mark={recordMark(record, marks)}
+              record={record}
               text={threadRow(record, names)}
             />
           ))}

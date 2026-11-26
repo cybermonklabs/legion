@@ -1,23 +1,19 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import {
-  focusVisibleRing,
-  pageInkText,
-  pageLineBorder,
-  pageMutedText,
-} from "../../../theme/classes";
+import { myRepliesOwnerQuery } from "../../../api/queries";
+import { focusVisibleRing, pageLineBorder, pageMutedText } from "../../../theme/classes";
+import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { issueAddress } from "../issue-address";
 import { pageChrome } from "../page-structure";
 import { EMPTY_STATE_LINES, PRESET_NAMES, THREADS_WORDS } from "../page-words";
 import type { SlotProps } from "../slot-props";
-import { ThreadList, useRowNames, useThreadLists } from "./ThreadList";
-import { KindWords } from "./ThreadRow";
-import type { ThreadRecord } from "./thread-records";
-import { threadRow } from "./thread-row";
+import { ThreadList, useThreadLists } from "./ThreadList";
+import { OpenedRecord } from "./ThreadRecord";
 
 /** From this width up the list and the main column stand side by side (R2): 1024 px. */
 export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
@@ -55,6 +51,14 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
   const listPath = buildIssuePath({ key: issue.key, kind: "threads" });
   const opened = record === undefined ? undefined : lists.records.get(record);
   const open = record !== undefined || newThread;
+  // The read mark of an opened record reads the reader's unread threads of the issue once
+  // (`useMarkThreadRead`, R9, R15). From the first record opened the view watches that read
+  // itself, as long as Threads stays open, so each mark that lands, and each event that moves
+  // it, reads it again at once, while a record is open or not, and the next record opened
+  // finds it fresh and sends no read of its own.
+  const [marking, setMarking] = useState(false);
+  if (opened !== undefined && !marking) setMarking(true);
+  useQuery({ ...myRepliesOwnerQuery({ issue: issue.key }), ...EVENT_FRESH, enabled: marking });
 
   const main = (
     <div className="flex min-w-0 flex-1 flex-col gap-3" data-thread-main="">
@@ -73,7 +77,13 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
       )}
       {record !== undefined ? (
         opened === undefined ? null : (
-          <OpenedRecord project={issue.project} record={opened} />
+          // One record at a time: another record opened starts with no box of the last one open.
+          <OpenedRecord
+            issue={issue}
+            key={opened.id}
+            record={opened}
+            thread={[...lists.records.values()].filter((one) => one.thread === opened.thread)}
+          />
         )
       ) : newThread ? null : (
         <p className={`text-sm ${pageMutedText}`} {...pageChrome}>
@@ -101,27 +111,5 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
       ) : null}
       {wide || open ? main : null}
     </section>
-  );
-}
-
-/**
- * The record the address opens, in the main column (R2): it carries the record's id
- * (`data-thread-record`) and names its kind, as its row does. Its entries, its boxes and its read
- * mark stand under that name (R9).
- */
-function OpenedRecord({
-  project,
-  record,
-}: {
-  readonly project: string;
-  readonly record: ThreadRecord;
-}): ReactNode {
-  const names = useRowNames(project);
-  return (
-    <article className="min-w-0" data-thread-record={record.id}>
-      <h2 className={`text-[15px] font-semibold ${pageInkText}`} {...pageChrome}>
-        <KindWords text={threadRow(record, names)} />
-      </h2>
-    </article>
   );
 }

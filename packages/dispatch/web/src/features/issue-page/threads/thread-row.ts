@@ -1,13 +1,13 @@
 /**
- * What one row of Threads says of its record (dispatch://INFRA-5704/spec#b-r-row): its kind, its
- * first line, who is in it and its last activity (R7). Its mark is `recordMark`'s
+ * What one row of Threads says of its record (dispatch://INFRA-5704/spec#b-r-row): its kind, who
+ * is in it and its last activity (R7). Its first line is the page's one line of a node, drawn by
+ * the row itself through the shared projection (`ThreadRow.tsx`), and its mark is `recordMark`'s
  * (`thread-marks.ts`). Every word comes from the page's list (`THREADS_WORDS`, R17), and a name
  * comes from the page's own naming of an author on a row, which the view hands in
  * (`useRowNames` in `ThreadList.tsx`, root R9).
  */
 import type { Actor } from "../../../api/types";
 import { partyOfAddress } from "../../refs/routes";
-import { FIRST_LINE_LIMIT } from "../first-line";
 import { THREADS_WORDS } from "../page-words";
 import type { ThreadRecord } from "./thread-records";
 
@@ -21,25 +21,23 @@ export interface RowNames {
   readonly project: string;
 }
 
-/** What a row draws of its record, but its mark. */
+/** What a row draws of its record, but its first line and its mark. */
 export interface RowText {
   /** The words of the record's kind. */
   readonly kind: string;
   /** For a message whose root targets an agent, that agent's name, which ends `kind`. A row
    *  draws it as a value of the page, not a word of its list (`data-author-text`). */
   readonly agent: string | undefined;
-  /** The root's text to its first line break, cut at a word with an ellipsis where it is longer
-   *  than a row holds. */
-  readonly firstLine: string;
   /** Each author of the record once, in the order of their first write. */
   readonly people: readonly string[];
   /** The record's last activity, a server time. */
   readonly activity: string;
 }
 
-/** An author's name on a row: the Legion daemon by the page's words and its project's key, which
- *  the page never draws as its session's id, and every other author as the page names one. */
-function nameOf(actor: Actor, names: RowNames): string {
+/** An author's name on a row and on an entry of an opened record (R7, R9): the Legion daemon by
+ *  the page's words and its project's key, which the page never draws as its session's id, and
+ *  every other author as the page names one. */
+export function nameOf(actor: Actor, names: RowNames): string {
   return actor.kind === "session" && actor.id === `legion-daemon:${names.project}`
     ? `${THREADS_WORDS.daemon} · ${names.project}`
     : names.author(actor);
@@ -57,22 +55,7 @@ function targetName(target: string, record: ThreadRecord, names: RowNames): stri
   return nameOf(author ?? { id: session, kind: "session" }, names);
 }
 
-/**
- * The text of `record`'s root to its first line break, and where that is longer than a row
- * holds (`FIRST_LINE_LIMIT`, the characters a row's first line holds on the new page), cut in
- * script after the last word that fits, with an ellipsis (R7), never by a style. A line whose
- * first word alone is longer is cut after that word.
- */
-function firstLineOf(text: string): string {
-  const line = (text.split("\n")[0] ?? "").trim();
-  if (line.length <= FIRST_LINE_LIMIT) return line;
-  const space = line.slice(0, FIRST_LINE_LIMIT + 1).search(/\s\S*$/u);
-  if (space > 0) return `${line.slice(0, space).trimEnd()}…`;
-  const word = line.search(/\s/u);
-  return word < 0 ? line : `${line.slice(0, word)}…`;
-}
-
-/** What the row of `record` draws but its mark (R7). */
+/** What the row of `record` draws but its first line and its mark (R7). */
 export function threadRow(record: ThreadRecord, names: RowNames): RowText {
   const words = THREADS_WORDS.kinds;
   const agent =
@@ -94,11 +77,5 @@ export function threadRow(record: ThreadRecord, names: RowNames): RowText {
     const name = nameOf(write.author, names);
     if (!people.includes(name)) people.push(name);
   }
-  return {
-    activity: record.lastActivity,
-    agent,
-    firstLine: firstLineOf(record.kind === "ask" ? record.root.question : record.root.body),
-    kind,
-    people,
-  };
+  return { activity: record.lastActivity, agent, kind, people };
 }

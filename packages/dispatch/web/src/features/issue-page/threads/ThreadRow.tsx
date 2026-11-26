@@ -11,15 +11,55 @@ import {
   pageWaitingChip,
 } from "../../../theme/classes";
 import { Timestamp } from "../../refs/Timestamp";
+import { textSourceOf } from "../../refs/text-references";
+import { useNodeLine } from "../node-line";
 import { authorText, pageChrome } from "../page-structure";
 import { THREADS_WORDS } from "../page-words";
+import type { ThreadRecord } from "./thread-records";
 import type { RowText } from "./thread-row";
+
+/**
+ * A record's first line (R7), as the page draws a node's one line (`node-line.tsx`'s
+ * `useNodeLine`, the `node-row-first-line` form): its root's first block of words, projected
+ * from the reading so a reference reads as its target's name and no mark of markdown stays, cut
+ * at a word with an ellipsis by the page's first-line rule, in script and never by a style.
+ */
+function FirstLine({
+  issueKey,
+  record,
+}: {
+  readonly issueKey: string;
+  readonly record: ThreadRecord;
+}): ReactNode {
+  const ask = record.kind === "ask" ? record.root : undefined;
+  const post = record.kind === "ask" ? undefined : record.root;
+  const { line, reads } = useNodeLine(
+    {
+      id: record.id,
+      source: textSourceOf(record.kind, record.root.id, issueKey),
+      text: ask?.question ?? post?.body ?? "",
+      tree: ask?.question_tree ?? post?.body_tree,
+      type: record.kind,
+    },
+    { surface: "node-row-first-line" }
+  );
+  return (
+    <span
+      className={`text-sm ${pageInkText} [overflow-wrap:anywhere]`}
+      data-thread-first-line=""
+      {...authorText}
+    >
+      {reads}
+      {line ?? ""}
+    </span>
+  );
+}
 
 /**
  * One row of Threads (dispatch://INFRA-5704/spec#b-r-row, R7): one link to its record's address
  * (R12), which draws the six things R7 names and no other mark. What it says comes from the rules
- * of `thread-row.ts` and `thread-marks.ts`, which the list hands in: the first line is cut at a
- * word in script there, never by a style, so no `text-overflow` and no line clamp stands here.
+ * of `thread-row.ts` and `thread-marks.ts`, which the list hands in, and its first line from the
+ * page's one line of a node (`FirstLine`), so no `text-overflow` and no line clamp stands here.
  *
  * Its groups, in this order, each on a line of its own:
  * 1. The record's kind, its last activity and its mark, which wrap as words where the list is
@@ -33,15 +73,20 @@ import type { RowText } from "./thread-row";
 export function ThreadRow({
   href,
   id,
+  issueKey,
   mark,
+  record,
   text,
 }: {
   /** The record's address, `/issues/<KEY>/threads/<id>`. */
   readonly href: string;
   /** The record's id, which the row carries as `data-thread-row`. */
   readonly id: string;
+  /** The issue the record is on, which its first line reads a reference by. */
+  readonly issueKey: string;
   /** The count of new writes (`recordMark`), or undefined for a row with no counted write. */
   readonly mark: string | undefined;
+  readonly record: ThreadRecord;
   /** What the row says of its record (`threadRow`). */
   readonly text: RowText;
 }): ReactNode {
@@ -74,13 +119,7 @@ export function ThreadRow({
               </span>
             )}
           </span>
-          <span
-            className={`text-sm ${pageInkText} [overflow-wrap:anywhere]`}
-            data-thread-first-line=""
-            {...authorText}
-          >
-            {text.firstLine}
-          </span>
+          <FirstLine issueKey={issueKey} record={record} />
           <span className="flex min-w-0 flex-wrap gap-x-2 text-xs">
             {text.people.map((name) => (
               <span

@@ -24,6 +24,9 @@ export type DispatchWritingBox =
   | "conversation-composer"
   | "phone-thread-composer"
   | "issue-page-composer"
+  | "threads-reply"
+  | "threads-comment-edit"
+  | "threads-message"
   | "inbox-thread-reply"
   | "margin-composer"
   | "margin-comment-edit"
@@ -322,6 +325,39 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reason:
       "No reader reaches it yet: only an Edit opens the box's edit line - part M's in the facts, or part T's on the row of the reader's own comment - and the row is covered, with a driver step through that Edit, once the first of them is under the box.",
     write: "comment-edit",
+  },
+  // Threads on the new issue page (dispatch://INFRA-5704): the box at the foot of an opened
+  // comment thread or settled ask and the box a reply control opens under a comment or under a
+  // settled ask, which write a comment with the picker; the reader's own comment opened to edit;
+  // and the boxes of a message thread, which are Threads' own field and take no picker (R11).
+  {
+    box: "threads-reply",
+    covered: true,
+    delivers: true,
+    files: ["packages/dispatch/web/src/features/issue-page/threads/CommentBox.tsx"],
+    issueRows: true,
+    reach: "Reply",
+    write: "comment",
+  },
+  {
+    box: "threads-comment-edit",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/threads/CommentBox.tsx"],
+    issueRows: true,
+    reach: "Edit comment",
+    write: "comment-edit",
+  },
+  {
+    box: "threads-message",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/threads/MessageBox.tsx"],
+    issueRows: true,
+    reach: "Reply",
+    reason:
+      "A message names its agent by its target, so the box offers no @ and stores no mention (R11 of dispatch://INFRA-5704): it is Threads' own field, which mounts no picker.",
+    write: "message-reply",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread. A
   // thread item of Dashboard draws the same box under the same thread.

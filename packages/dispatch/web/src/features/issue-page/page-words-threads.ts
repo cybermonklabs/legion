@@ -86,6 +86,9 @@ export default {
        *  (R12). It answers an address the reader followed, as part L's lines for an address the
        *  outline cannot find do (`ADDRESS_FALLBACK_WORDS`). */
       threads_not_found: "This issue holds no thread at this address.",
+      /** What a box that writes a message says beside its Retry where its send failed and
+       *  Dispatch gave no words of its own, as for a lost connection (R9). */
+      threads_reply_not_sent: "Could not send the reply.",
     },
     EMPTY_STATE_LINES: {
       /** All, where the issue holds no thread that All lists (R3). */

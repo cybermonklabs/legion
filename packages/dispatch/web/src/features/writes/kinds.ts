@@ -11,3 +11,4 @@ import "../issue/issue-field-writes";
 import "../issue/pin-write";
 import "../priorities/priority-writes";
 import "../project/issues-table-recovery";
+import "../threads/thread-message-write";

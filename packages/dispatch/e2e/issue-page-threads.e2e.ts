@@ -41,6 +41,7 @@ import {
   parentOfRow,
   rowAct,
   tree,
+  unfoldEveryBranch,
 } from "./issue-page-g";
 import { childrenSection, expectActivePreset, focusedNodeId, focusInside } from "./issue-page-i";
 import { composer, composerTarget, outlineEnd, panelEntry, replyFromRow } from "./issue-page-l";
@@ -2021,7 +2022,10 @@ test("opening Threads sends six reads and none for each row", async ({ browser }
     ).toBeLessThanOrEqual(COLD_LOAD_AT_MOST);
 
     // The first row opened sends the read mark's read and its PUT, and the second its PUT alone.
+    // Each window opens once the page has gone quiet, so the reads a mark that landed sets off -
+    // its own refresh of the unread threads and its event's - fall before the next press.
     for (const [at, thread] of [seed.messages.first, seed.comments.remark].entries()) {
+      await expectLoadSettled(reads);
       reads.reset();
       const marked = answerTo(cold, "PUT", `/api/v1/me/threads/${thread}/read`);
       await threadRow(cold, thread).getByRole("link").click();
@@ -2267,9 +2271,11 @@ test("a thread is one record: a reply sent in Threads is drawn in Conversation, 
       seed.asks.openReply
     );
 
-    // In Conversation, each under its entry.
+    // In Conversation, each under its entry. The outline folds a thread's replies into its
+    // parent's row, so every branch is opened before a reply's row is read.
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
     for (const [reply, parent] of [
       [toRemark.id, seed.comments.remark],
       [inAsk.id, seed.asks.openReply],
