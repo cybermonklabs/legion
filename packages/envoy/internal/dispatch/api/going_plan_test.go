@@ -204,7 +204,11 @@ func goingToolNames(request *agenttest.Request) []string {
 // Dispatch, a priority change on an issue routed to a session, the close of an issue whose claim
 // a session holds, a message to a session that holds no claim on the issue, and a broadcast.
 // Before the write of an approved plan a session takes a claim of its item, and that row waits
-// again.
+// again. In Auto-review, "route the issue to S and raise its priority" waits whole: the route row
+// waits, judged by the route it sets, since its own event goes to S, and so does the priority row,
+// which needs it; nothing is written and nothing reaches S before the person approves the plan,
+// whose two rows then run. And a row Auto-review let through whose issue another writer routes to
+// a session before its write waits for the person, with nothing written, until they approve it.
 func TestWhatWaitsInEachMode(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -371,6 +375,89 @@ func TestWhatWaitsInEachMode(t *testing.T) {
 		plan := rig.waiting(t, run)
 		if row := plan.Rows[0]; row.State != "waiting" || !row.Changed || rig.title(t, issue) != "Claimed meanwhile" {
 			t.Fatalf("the row is %s (changed %v) and the title %q, want it waiting again with nothing written", row.State, row.Changed, rig.title(t, issue))
+		}
+	})
+
+	t.Run("in Auto-review a route to a session waits, and so does the row that needs it", func(t *testing.T) {
+		issue := rig.issue(t, "Routed by the plan")
+		route := "session:" + goingPlanner
+		const words = "route Routed by the plan to the planner and raise its priority"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			switch n {
+			case 1:
+				return proposing(goingChange("dispatch_issue_update", map[string]any{"issue": issue, "route": route}),
+					goingChange("dispatch_issue_update", map[string]any{"issue": issue, "priority": 1}, 0))
+			case 2:
+				return toolCall(toolReviewPlanName, map[string]any{"asked": everyRow(2)})
+			}
+			return answered("It is routed, and its priority is raised.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words, mode: goingModeAutoReview})
+		plan := rig.waiting(t, run)
+		read := rig.issueRead(t, issue)
+		if states := rowStates(plan); !slices.Equal(states, []string{"waiting", "waiting"}) || read.Route != nil || read.Priority != nil {
+			t.Fatalf("the plan's rows are %v, and the issue routes to %v with priority %v; want both rows waiting and nothing written",
+				states, read.Route, read.Priority)
+		}
+		if waits := plan.Rows[0].Waits; !slices.Contains(waits, goingWaitsDelivery) {
+			t.Fatalf("the route row waits for %v, want %s: its own event goes to the route it sets", waits, goingWaitsDelivery)
+		}
+		// Nothing reaches S before the approval: no write of the plan appended an event for the
+		// outbox to send.
+		if events := rig.count(t, `
+			select count(*) from events where issue_key = $1 and type = 'issue.updated' and payload->'changed' ?| array['route', 'priority']`, issue); events != 0 {
+			t.Fatalf("the issue holds %d events of the plan's writes, want none before the approval", events)
+		}
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("after the person's approval the run ended %s with %q, want done", record.state, record.reason)
+		}
+		if read := rig.issueRead(t, issue); read.Route == nil || *read.Route != route || read.Priority == nil || *read.Priority != 1 {
+			t.Fatalf("after the person's approval the issue routes to %v with priority %v, want %s and 1", read.Route, read.Priority, route)
+		}
+	})
+
+	t.Run("in Auto-review a row whose issue another writer routes to a session before its write waits for the person", func(t *testing.T) {
+		renamed, raised := rig.issue(t, "Renamed first"), rig.issue(t, "Routed meanwhile")
+		const words = "rename Renamed first and raise the priority of Routed meanwhile"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			switch n {
+			case 1:
+				return proposing(goingChange("dispatch_issue_update", retitle(renamed, "Renamed by review")),
+					goingChange("dispatch_issue_update", map[string]any{"issue": raised, "priority": 1}))
+			case 2:
+				return toolCall(toolReviewPlanName, map[string]any{"asked": everyRow(2)})
+			}
+			return answered("One ran, and one waits for you.")
+		})
+		// Once the rename lands, and before the priority's write, another writer routes the issue
+		// of the priority to a session.
+		var renames atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+renamed, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			inner.ServeHTTP(w, r)
+			if renames.Add(1) == 1 {
+				rig.exec(t, `update issues set route = $2 where key = $1`, raised, "session:"+goingPlanner)
+			}
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words, mode: goingModeAutoReview})
+		plan := rig.waiting(t, run)
+		if states := rowStates(plan); !slices.Equal(states, []string{"done", "waiting"}) || rig.title(t, renamed) != "Renamed by review" {
+			t.Fatalf("the plan's rows are %v and the title %q, want the rename done and the priority waiting", states, rig.title(t, renamed))
+		}
+		if row, priority := plan.Rows[1], rig.issueRead(t, raised).Priority; !row.Changed || !slices.Contains(row.Waits, goingWaitsDelivery) || priority != nil {
+			t.Fatalf("the priority's row is changed %v, waiting for %v, and the issue's priority %v; want it waiting again for %s, with nothing written",
+				row.Changed, row.Waits, priority, goingWaitsDelivery)
+		}
+		if events := rig.count(t, `
+			select count(*) from events where issue_key = $1 and type = 'issue.updated' and payload->'changed' ? 'priority'`, raised); events != 0 {
+			t.Fatalf("the routed issue holds %d events of a priority change, want none before the approval", events)
+		}
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("after the person's approval the run ended %s with %q, want done", record.state, record.reason)
+		}
+		if priority := rig.issueRead(t, raised).Priority; priority == nil || *priority != 1 {
+			t.Fatalf("after the person's approval the issue's priority is %v, want 1", priority)
 		}
 	})
 }
@@ -783,14 +870,16 @@ func goingNamesNone(t *testing.T, what, text string, tokens ...string) {
 	}
 }
 
-// TestAnUntickedRowsLandedReasonStaysTheRowsToUndo: a reasoned close whose reason landed and that
-// waits for its person again (partlyLandedWaiting) is unticked: Undo of the run answers the row's
-// line for the reason that landed, sent, not undone, and no line of a call that names no row.
-func TestAnUntickedRowsLandedReasonStaysTheRowsToUndo(t *testing.T) {
+// TestARejectedRowsLandedReasonStaysTheRowsToUndo: a reasoned close whose reason landed and that
+// waits for its person again (partlyLandedWaiting) is its plan's one row, so its person ends the
+// plan with nothing more done by rejecting it, since an approval approves at least one row: Undo
+// of the run answers the row's line for the reason that landed, sent, not undone, and no line of
+// a call that names no row.
+func TestARejectedRowsLandedReasonStaysTheRowsToUndo(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
-	run, issue, _ := rig.partlyLandedWaiting(t, "Unticked after its reason landed")
-	rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
+	run, issue, _ := rig.partlyLandedWaiting(t, "Rejected after its reason landed")
+	rig.answer(t, run, "reject", map[string]any{"plan": 1})
 	goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
 }
 
@@ -1595,6 +1684,52 @@ func TestThePlanStates(t *testing.T) {
 	})
 }
 
+// TestAnApprovalThatLeavesOutEveryRowIsRefused: an approval approves at least one row. One that
+// leaves out every waiting row - each unticked, or one unticked with the row that needs it - would
+// approve nothing and end the plan with its run still waiting for an answer no route could take, so
+// it is refused, 400 GOING_PLAN_INPUT, with nothing written, in words that tell the person to
+// reject the plan instead. The plan still waits, and an approval of one of its rows runs it.
+func TestAnApprovalThatLeavesOutEveryRowIsRefused(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	first, second := rig.issue(t, "Left out first"), rig.issue(t, "Left out second")
+	const words = "rename Left out first and Left out second"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", retitle(first, "First renamed")),
+				goingChange("dispatch_issue_update", retitle(second, "Second renamed"), 0))
+		}
+		return answered("Renamed the first.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	shown := rig.waiting(t, run)
+	for _, rows := range [][]map[string]any{
+		{{"row": 0, "tick": false}, {"row": 1, "tick": false}},
+		{{"row": 0, "tick": false}}, // row 1 needs row 0, so it is left out too
+	} {
+		refused := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{"plan": 1, "rows": rows}, "alice")
+		if refused.Code != http.StatusBadRequest || responseCode(t, refused) != codeGoingPlanInput || !strings.Contains(refused.Body.String(), "reject the plan") {
+			t.Fatalf("an approval of %v answered %d %s, want 400 %s saying to reject the plan", rows, refused.Code, refused.Body.String(), codeGoingPlanInput)
+		}
+	}
+	if plan := rig.plan(t, run); plan.State != "waiting" || !slices.Equal(rowStates(plan), []string{"waiting", "waiting"}) || plan.Version != shown.Version {
+		t.Fatalf("after the refusals the plan is %s with rows %v (version %s, shown %s), want it waiting as shown", plan.State, rowStates(plan), plan.Version, shown.Version)
+	}
+	if record := rig.record(t, run); record.state != "waiting" {
+		t.Fatalf("after the refusals the run is %s, want it waiting for its person", record.state)
+	}
+	if written := rig.count(t, `
+		select (select count(*) from going_run_steps where run_id = $1::uuid and kind = $2)
+		  + (select count(*) from going_plans where run_id = $1::uuid and approved_by is not null)`, run, agentwire.StepPerson); written != 0 {
+		t.Fatalf("the refusals wrote %d answers of the person, want none", written)
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 1, "tick": false}}})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, first) != "First renamed" || rig.title(t, second) != "Left out second" {
+		t.Fatalf("after the approval of the first row the run is %s and the titles %q and %q, want done with the first renamed alone",
+			record.state, rig.title(t, first), rig.title(t, second))
+	}
+}
+
 // TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused: an approval names the version of the plan
 // its page read. Where another page read the plan since and the plan moved - its waiting row read
 // again with the value another writer left - the older page's approval is refused, 409
@@ -1631,6 +1766,43 @@ func TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused(t *testing.T) {
 	rig.answer(t, run, "approve", map[string]any{"plan": 1, "version": newer.Version})
 	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, issue) != "Ours" {
 		t.Fatalf("after the second page's approval the run is %s and the title %q, want done with Ours", record.state, rig.title(t, issue))
+	}
+}
+
+// TestAReadOfAPlanWritesNothingOverARowApprovedMeanwhile: a page's read of a waiting plan reads
+// each waiting row's item again and keeps what it shows. Where the person approves the row on
+// another page after that read began, and another person then changes the item, which the read
+// finds, the read keeps nothing over the approved row, which goes on showing the read its approval
+// was made over.
+func TestAReadOfAPlanWritesNothingOverARowApprovedMeanwhile(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Approved during a read")
+	const words = "rename Approved during a read"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		}
+		return answered("Renamed.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.loop.stop()
+	var reads atomic.Int32
+	rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if reads.Add(1) == 1 {
+			// The first page's read of the row's item is under way: the second page approves the
+			// row over the title the plan shows, and then bob retitles the issue.
+			rig.answer(t, run, "approve", map[string]any{"plan": 1})
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+		}
+		inner.ServeHTTP(w, r)
+	})
+	if stale := rig.plan(t, run); !strings.Contains(string(stale.Rows[0].Now), "Bob's") {
+		t.Fatalf("the first page's read shows %s, want Bob's title, which it read after the approval", stale.Rows[0].Now)
+	}
+	if row := rig.plan(t, run).Rows[0]; row.State != "approved" || !strings.Contains(string(row.Now), "Approved during a read") {
+		t.Fatalf("the approved row is %s showing %s, want it approved and showing the title its approval was made over", row.State, row.Now)
 	}
 }
 

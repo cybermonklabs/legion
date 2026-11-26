@@ -856,7 +856,7 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	// Last: partlyLandedWaiting stops the rig's agent loop.
 	t.Run("a reasoned close of which only the reason landed is not undoable", func(t *testing.T) {
 		run, issue, _ := rig.partlyLandedWaiting(t, "Only its reason landed")
-		rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
+		rig.answer(t, run, "reject", map[string]any{"plan": 1})
 		neverUndoable(t, run, "before Undo", 0)
 		goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
 		neverUndoable(t, run, "after Undo", 0)

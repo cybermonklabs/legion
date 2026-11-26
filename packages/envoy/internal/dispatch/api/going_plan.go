@@ -526,10 +526,11 @@ func goingJSONEqual(a, b json.RawMessage) bool {
 // goingReadRow reads what a row of tool with arguments changes, as the person doer acts for
 // (login): the call prepared as its write will be, and what the plan shows of its item - the
 // item, the issue it is or belongs to, the fields the change writes and their value now, the
-// holder of that issue's claim, why the row waits in every mode, and, for a comment or an issue
-// message, whether its author deleted it. sendIssue is the issue a send to an agent session is
-// posted on (going_messages.go), "" for none. A call the tool's schema or translation refuses, and
-// a read the person may not make, answers its error.
+// holder of that issue's claim, why the row waits in every mode (a row that sets its issue's
+// route by the route it sets, goingRouteSet), and, for a comment or an issue message, whether its
+// author deleted it. sendIssue is the issue a send to an agent session is posted on
+// (going_messages.go), "" for none. A call the tool's schema or translation refuses, and a read
+// the person may not make, answers its error.
 func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool string, arguments map[string]any, sendIssue string) (goingRowShown, error) {
 	caller := GoingCaller{Catalogue: s.going, Doer: doer, knownSession: s.goingKnownSession, sendIssue: sendIssue}
 	prepared, err := caller.prepare(ctx, tool, arguments)
@@ -561,7 +562,7 @@ func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool s
 	if err != nil {
 		return goingRowShown{}, err
 	}
-	if shown.Waits, err = s.goingRowWaits(ctx, tool, event, shown.Claim); err != nil {
+	if shown.Waits, err = s.goingRowWaits(ctx, tool, event, goingRouteSet(prepared), shown.Claim); err != nil {
 		return goingRowShown{}, err
 	}
 	return shown, nil
@@ -1288,9 +1289,10 @@ func (s *server) planRoute(w http.ResponseWriter, r *http.Request) (string, goin
 
 // getGoingPlan is GET /api/v1/going/runs/{id}/plan: the run's latest plan. While the run waits for
 // its person, each waiting row's item is read again as the caller, and its value now, its claim
-// and why it waits are what the plan shows from then on. A withdrawn run's plan is read as
-// withdrawnAnswer gives it, or withdrawnByRunAnswer for a run its own deletes alone withdrew, and
-// none of its items is read again.
+// and why it waits are what the plan shows from then on, of a row that still waits once the read
+// is done (storeRowShown). A withdrawn run's plan is read as withdrawnAnswer gives it, or
+// withdrawnByRunAnswer for a run its own deletes alone withdrew, and none of its items is read
+// again.
 func (s *server) getGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -1338,14 +1340,16 @@ func (s *server) getGoingPlan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, plan.answer(run.id, run.mode))
 }
 
-// storeRowShown keeps shown as what row of plan of run shows.
+// storeRowShown keeps shown as what row of plan of run shows, while the row still waits: a read
+// made before an approval of the row committed writes nothing over the read that approval was
+// made over.
 func (s *server) storeRowShown(ctx context.Context, run string, plan, row int, shown goingRowShown) error {
 	encoded, err := json.Marshal(shown)
 	if err != nil {
 		return err
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
-		update going_plan_rows set shown = $4::jsonb where run_id = $1::uuid and plan = $2 and row = $3
+		update going_plan_rows set shown = $4::jsonb where run_id = $1::uuid and plan = $2 and row = $3 and state = 'waiting'
 	`, run, plan, row, string(encoded)); err != nil {
 		return fmt.Errorf("keep what the plan shows: %w", err)
 	}
@@ -1417,12 +1421,15 @@ type goingPlanRejectInput struct {
 // their page showed; a row the body names that is no waiting row of the plan, a value its tool's
 // schema refuses, or a value naming a new issue of the plan ("$N") that the row may not name,
 // 400 GOING_PLAN_VALUES; the last in the person's words (goingNewIssueApprovalRefusal), which
-// name rows and new issues as the page does. A ticked row whose comment or issue message its
-// author deleted after the plan read it is 409 POST_DELETED, with nothing written: it shows no word
-// of the post, and nothing changes a deleted one. The plan of a run another writer's delete
-// withdrew (goingRunWithdrawnByOther) is 409 GOING_RUN_WITHDRAWN, with nothing written
-// (writeGoingRunWithdrawn); a run its own deletes alone withdrew is stopped (readOwnGoingRun), so
-// its plan is refused as any ended run's is, 409 GOING_PLAN_NOT_WAITING.
+// name rows and new issues as the page does. An approval approves at least one row: one that
+// leaves out every waiting row, by its unticks and the rows that need them, is 400
+// GOING_PLAN_INPUT, with nothing written, in words that tell the person to reject the plan
+// instead, since a reject is how a plan ends with nothing done. A ticked row whose comment or
+// issue message its author deleted after the plan read it is 409 POST_DELETED, with nothing
+// written: it shows no word of the post, and nothing changes a deleted one. The plan of a run
+// another writer's delete withdrew (goingRunWithdrawnByOther) is 409 GOING_RUN_WITHDRAWN, with
+// nothing written (writeGoingRunWithdrawn); a run its own deletes alone withdrew is stopped
+// (readOwnGoingRun), so its plan is refused as any ended run's is, 409 GOING_PLAN_NOT_WAITING.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -1478,6 +1485,10 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 				unticked[row.row] = true
 			}
 		}
+	}
+	if !slices.ContainsFunc(plan.rows, func(row goingPlanRowStored) bool { return row.state == "waiting" && !unticked[row.row] }) {
+		writeError(w, codeGoingPlanInput, http.StatusBadRequest, goingApprovesNothing)
+		return
 	}
 	var approvals []goingRowAnswer
 	var approved []agentwire.PlanRun
@@ -1567,6 +1578,12 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	})
 	s.writePlanAnswered(w, r, run, err)
 }
+
+// goingApprovesNothing refuses an approval that leaves out every waiting row of its plan, in the
+// words the page shows the person: it would approve nothing, and the plan would end with its run
+// waiting on an answer it can no longer take, so the person rejects the plan to end it instead.
+const goingApprovesNothing = "This approval leaves out every change, so it approves nothing. " +
+	"Tick a change to approve it, or reject the plan to end it with nothing done."
 
 // goingRowAnswer is what the person's answer makes of one waiting row: its state, the arguments
 // it runs with, what it shows, and the approval it runs under.

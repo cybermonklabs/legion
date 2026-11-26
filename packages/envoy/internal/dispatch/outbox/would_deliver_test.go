@@ -160,7 +160,7 @@ func TestWouldDeliverAgreesWithEventDestinations(t *testing.T) {
 	answers := make([]bool, len(rows))
 	ids := make([]int64, len(rows))
 	for index, row := range rows {
-		delivers, err := WouldDeliver(ctx, database, broker, row.event)
+		delivers, err := WouldDeliver(ctx, database, broker, row.event, nil)
 		if err != nil {
 			t.Fatalf("%s: WouldDeliver: %v", row.name, err)
 		}
@@ -196,5 +196,68 @@ func TestWouldDeliverAgreesWithEventDestinations(t *testing.T) {
 	}
 	if delivered == 0 || kept == 0 {
 		t.Errorf("of %d events %d reached a session, want the table to hold both answers", len(rows), delivered)
+	}
+}
+
+// TestWouldDeliverJudgesARouteWriteByTheRouteItSets: the event of a person's write that sets an
+// issue's route goes to the route the write sets, which the batch reads when it publishes it, so
+// WouldDeliver, given that route, answers what the outbox does once the write is in, where the
+// route stored before the write answers otherwise: a route to a session or to a role set on an
+// issue routed to nobody reaches a session, and a session's route cleared reaches none.
+func TestWouldDeliverJudgesARouteWriteByTheRouteItSets(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	sessionRoute := "session:session-route"
+	rows := []struct {
+		name, issue string
+		stored      *string
+		set         string
+		want        bool
+	}{
+		{"a route to a session set on an issue routed to nobody", "T-1", nil, "session:session-new", true},
+		{"a route to a role set on an issue routed to nobody", "T-2", nil, "role:reviewer", true},
+		{"a session's route cleared", "T-3", &sessionRoute, "", false},
+	}
+	ids := make([]int64, len(rows))
+	for index, row := range rows {
+		seedRoutedIssue(t, database, row.issue, index+1, row.stored)
+		event := model.Event{IssueKey: &row.issue, Type: "issue.updated", Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: map[string]any{"changed": []string{"route"}}}
+		before, err := WouldDeliver(ctx, database, broker, event, nil)
+		if err != nil {
+			t.Fatalf("%s: WouldDeliver over the stored route: %v", row.name, err)
+		}
+		set, err := WouldDeliver(ctx, database, broker, event, &row.set)
+		if err != nil {
+			t.Fatalf("%s: WouldDeliver over the route set: %v", row.name, err)
+		}
+		if set != row.want || before == row.want {
+			t.Errorf("%s: WouldDeliver answers %v over the route set and %v over the stored one, want %v and %v", row.name, set, before, row.want, !row.want)
+		}
+		// The write: the route it sets, and its event in the same transaction.
+		if _, err := database.Pool.Exec(ctx, `update issues set route = nullif($2, '') where key = $1`, row.issue, row.set); err != nil {
+			t.Fatalf("%s: set the route: %v", row.name, err)
+		}
+		ids[index] = appendEvent(t, database, broker, event).ID
+	}
+	stop := run(t, database, &recordingPublisher{}, broker)
+	waitFor(t, "the outbox to publish every event", func() bool {
+		for _, id := range ids {
+			if publishedAt(t, database, id) == nil {
+				return false
+			}
+		}
+		return true
+	})
+	stop()
+	for index, row := range rows {
+		destinations, _ := publishedDestinations(t, database, ids[index])
+		if sent := slices.ContainsFunc(destinations, reachesSession); sent != row.want {
+			t.Errorf("%s: the outbox sent the write's event to %v, want a session reached: %v", row.name, destinations, row.want)
+		}
 	}
 }

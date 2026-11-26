@@ -6,8 +6,9 @@ package api
 // goingAutoReviewClasses names that those words ask for, that wait for none of the reasons of
 // goingRowWaits, and whose needed rows it lets through too. In both modes these wait: a row of a
 // class goingClassesThatWait names, a row whose event the outbox would deliver to an agent session
-// (outbox.WouldDeliver), and a row whose issue's claim a session holds, read when the plan shows
-// and again before the row's write (going_plan_run.go).
+// (outbox.WouldDeliver) - for a row that sets its issue's route, by the route it sets, where the
+// outbox sends the write's own event - and a row whose issue's claim a session holds, read when the
+// plan shows and again before the row's write (going_plan_run.go).
 
 import (
 	"context"
@@ -71,16 +72,18 @@ const (
 
 // goingRowWaits is why a row of tool waits for the person in both modes: its class, where
 // goingClassesThatWait names it; goingWaitsDelivery where event, the event its write would append
-// (goingRowEvent), would reach an agent session (outbox.WouldDeliver); and goingWaitsClaimed where
-// a session holds the claim of its issue (claim). None for a row Auto-review may let through.
-func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Event, claim *goingHolder) ([]string, error) {
+// (goingRowEvent), would reach an agent session (outbox.WouldDeliver), read over routeSet, the
+// route the write sets on its issue (goingRouteSet), nil for a write that sets none; and
+// goingWaitsClaimed where a session holds the claim of its issue (claim). None for a row
+// Auto-review may let through.
+func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Event, routeSet *string, claim *goingHolder) ([]string, error) {
 	entry := goingWriteTools[tool]
 	var waits []string
 	if goingClassesThatWait[entry.Class] {
 		waits = append(waits, string(entry.Class))
 	}
 	if event != nil {
-		delivers, err := outbox.WouldDeliver(ctx, s.deps.Store, s.deps.Events, *event)
+		delivers, err := outbox.WouldDeliver(ctx, s.deps.Store, s.deps.Events, *event, routeSet)
 		if err != nil {
 			return nil, err
 		}
@@ -92,6 +95,23 @@ func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Ev
 		waits = append(waits, goingWaitsClaimed)
 	}
 	return waits, nil
+}
+
+// goingRouteSet is the route a write, prepared, sets on its issue, "" for one that clears it, and
+// nil for a write that sets none: an update of an issue (goingIssuePatchRoute) whose body names a
+// route its route takes, none or role:<name> or session:<id> (checkIssueRoute). The outbox sends
+// the write's own event to that route, which it reads once the write is in (outbox.WouldDeliver).
+// A route that does not parse is refused by the write's route with nothing written, so its write
+// is read over the route stored.
+func goingRouteSet(prepared goingPrepared) *string {
+	if prepared.route.Method+" "+prepared.route.Pattern != goingIssuePatchRoute {
+		return nil
+	}
+	route, named := prepared.call.body["route"].(string)
+	if !named || checkIssueRoute(&route) != nil {
+		return nil
+	}
+	return &route
 }
 
 // goingRowEvent is the event the write of a row of tool, prepared, would append, as far as the

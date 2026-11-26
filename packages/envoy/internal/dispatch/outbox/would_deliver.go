@@ -33,13 +33,17 @@ const wouldDeliverRoutingSQL = `
 // session: whether the destinations eventDestinations lists for it hold a session's own subject or
 // a role's topic. It is answered by eventDestinations itself, over the routing a batch would read
 // of the event's owner now and the recipients the batch's lookups would read, with the payload
-// decoded from JSON as the batch decodes the stored event's, so the two cannot disagree. Notify is
-// set as broker sets it at the event's append (events.Broker.Notify). It writes nothing:
-// eventDestinations lists the fallback rows the batch would hold without writing them, and a new
-// comment's mentions are left out of the payload, as their own sends reach the sessions they name
-// and their settle writes, so no mention is read and no copy is left to such a row. An event that
-// names no issue, document or project reaches nobody.
-func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Broker, event model.Event) (bool, error) {
+// decoded from JSON as the batch decodes the stored event's, so the two cannot disagree. routeSet
+// is the route the write that appends event sets on its issue ("" clears it), nil for a write that
+// sets none: a batch reads the route when it publishes the event, not when the event was written
+// (routing), so such a write's own event goes to the route it sets (suppressesCurrentRoute), and
+// eventDestinations is read over that route in place of the one stored. Notify is set as broker
+// sets it at the event's append (events.Broker.Notify). It writes nothing: eventDestinations lists
+// the fallback rows the batch would hold without writing them, and a new comment's mentions are
+// left out of the payload, as their own sends reach the sessions they name and their settle
+// writes, so no mention is read and no copy is left to such a row. An event that names no issue,
+// document or project reaches nobody.
+func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Broker, event model.Event, routeSet *string) (bool, error) {
 	if event.IssueKey == nil && event.ArtifactID == nil && event.ProjectKey == nil && event.Project == "" {
 		return false, nil
 	}
@@ -61,6 +65,13 @@ func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Bro
 		&item.routing.route, &item.routing.claimant, &item.slug, &project)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read the routing of a %s event: %w", event.Type, err)
+	}
+	if routeSet != nil {
+		// A route written empty is cleared, which the batch reads as no route.
+		item.routing.route = nil
+		if *routeSet != "" {
+			item.routing.route = routeSet
+		}
 	}
 	if item.event.Project == "" && event.ProjectKey != nil {
 		item.event.Project = *event.ProjectKey

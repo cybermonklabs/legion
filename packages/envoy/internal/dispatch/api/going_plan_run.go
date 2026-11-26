@@ -10,7 +10,8 @@ package api
 // of a row its item is read again as the person - before its first try, and before a second try
 // of its call key that finds the key's own write not landed, which writes too: a row whose item
 // changed after its approval - another value, or another holder of its issue's claim - waits for
-// the person again, ROW_WAITS, saying what of its call already landed and stands, and a row whose
+// the person again, ROW_WAITS, saying what of its call already landed and stands, and so does a
+// row Auto-review let through that would wait for the person now (autoReviewLapsed); a row whose
 // needed row failed or was skipped is skipped, ROW_SKIPPED; the rows that need neither run on. A
 // row's call key is kept on the row, so a second try of that key - the agent died after the call,
 // or the server between the write's commit and its answer - answers what the first landed and
@@ -27,7 +28,10 @@ package api
 //
 // Auto-review (going_modes.go) is a review call of the agent's (agentwire.KindReview), once its
 // model call named the rows the person's words ask for: the server lets through those its mode
-// policy lets through and answers the rows to run.
+// policy lets through and answers the rows to run. What it let through is held to that policy
+// again before each write: a row whose issue another writer routes to a session after the plan was
+// proposed waits for the person. A row of the plan that routes an issue to a session waits itself,
+// judged by the route it sets (goingRouteSet), so Auto-review never lets it through.
 
 import (
 	"context"
@@ -401,13 +405,15 @@ func goingWithNewIssues(tool string, arguments map[string]any, keys map[int]stri
 
 // rowItemChanged reads the item of row, an approved row, again as the person (login, through doer)
 // before a write of it, and makes the row wait again, showing the new read, where its item no
-// longer reads as it did at its approval: another value, or another holder of its issue's claim. A
-// read refused as the person (goingReadRefused) is passed over, since the write's own preparation
-// or route refuses it the same, and that refusal is kept on the row; any other failure of the read
-// ends the call failed, since a read that failed is no reason to write unchecked. landed is what
-// of the call already landed under request's key, in words (goingLandedWords), none for a try
-// before any of it landed: a row that waits again says it stands, and adds the key to the keys
-// of its earlier tries, whose landings stay the row's (goingRowRecord.Resumes).
+// longer reads as it did at its approval - another value, or another holder of its issue's claim -
+// or where Auto-review approved it and would not let it through over the new read
+// (autoReviewLapsed). A read refused as the person (goingReadRefused) is passed over, since the
+// write's own preparation or route refuses it the same, and that refusal is kept on the row; any
+// other failure of the read ends the call failed, since a read that failed is no reason to write
+// unchecked. landed is what of the call already landed under request's key, in words
+// (goingLandedWords), none for a try before any of it landed: a row that waits again says it
+// stands, and adds the key to the keys of its earlier tries, whose landings stay the row's
+// (goingRowRecord.Resumes).
 func (a *AgentListener) rowItemChanged(ctx context.Context, request agentwire.CallRequest, row goingPlanRowStored,
 	login string, doer GoingDoer, landed []string,
 ) *agentwire.Error {
@@ -424,7 +430,7 @@ func (a *AgentListener) rowItemChanged(ctx context.Context, request agentwire.Ca
 		return nil
 	case err != nil:
 		return goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the item of %s again before its write: %w", goingRowLabel(row), err))
-	case row.approval.Seen.same(now):
+	case row.approval.Seen.same(now) && !row.autoReviewLapsed(now):
 		return nil
 	}
 	now.Changed = true
@@ -433,6 +439,20 @@ func (a *AgentListener) rowItemChanged(ctx context.Context, request agentwire.Ca
 		earlier = row.result.Resumes
 	}
 	return a.settleRow(ctx, request, row, "waiting", goingRowChanged(request, landed, earlier), &now)
+}
+
+// autoReviewLapsed reports whether row is one Auto-review approved (goingApprovedByAutoReview)
+// that it would not let through over now, a read of its item again before its write: by the rule
+// its review applied when the plan was proposed (autoReviewLets), the row now waits for the person
+// in every mode (goingRowWaits) - its write's event would reach an agent session, its issue routed
+// to one since by another writer, or a session holds its issue's claim. Auto-review decided once,
+// over the read the plan was proposed with, and only the person approves a row that waits.
+func (row goingPlanRowStored) autoReviewLapsed(now goingRowShown) bool {
+	if row.approval == nil || row.approval.By != goingApprovedByAutoReview {
+		return false
+	}
+	row.shown = now
+	return !row.autoReviewLets()
 }
 
 // goingReadRefused reports whether err, the error of a row's read again before its write, is a
