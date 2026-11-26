@@ -8,8 +8,9 @@
 // copy in the daemon would be a second size to keep equal. It imports pgxpool and the standard
 // library and nothing else, so a test binary that takes it links no more than that:
 // internal/testpg, beside which it would otherwise sit, imports testcontainers to start a Postgres
-// container. Its users are tests and test helpers of both modules, the daemon's internal/testpg's
-// ClonePool among them.
+// container. Its users are tests and test helpers of both modules: the daemon's internal/testpg's
+// ClonePool among them, and internal/testpg/testdb, whose PoolConns, the size it writes into each
+// DSN it hands a pool, is this one.
 package testpool
 
 import (

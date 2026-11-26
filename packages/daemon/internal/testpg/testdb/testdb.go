@@ -39,6 +39,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -243,8 +245,11 @@ const dsnName = "LEGION_TEST_PG_DSN"
 // at the greater of 4 and the machine's CPU count (pgxpool.ParseConfig), so on a box with 288 CPUs
 // one test that runs 100 statements at once asks for 100 connections, which is all PostgreSQL's
 // default max_connections allows, and fails with "too many clients" there while it passes on a
-// small machine. 4 is pgx's own floor: the size every pool has on a machine with 4 CPUs or fewer.
-const PoolConns = 4
+// small machine. It is Envoy's testpool.PoolConns, the size of every pool a test of either module
+// builds with pgxpool itself, so a pool opened on a DSN from here and one a test builds are one
+// size, named in one place. testpool is another module's package and imports only pgxpool, so this
+// package still imports no package of this module but internal/testwait.
+const PoolConns = testpool.PoolConns
 
 // poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.
 const poolMaxConns = "pool_max_conns"
