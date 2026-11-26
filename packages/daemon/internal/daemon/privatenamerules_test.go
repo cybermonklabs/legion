@@ -70,6 +70,7 @@ func rulesLines(t *testing.T, log, named string) (none, anyNamed, exactly int) {
 // file, and the boot logs neither of its lines on the rules: the refusal is the boot's word on
 // them.
 func TestBootRefusesAPrivateNameRuleFileItCannotUse(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// content is the file's, and "" writes no file at all.
@@ -125,6 +126,7 @@ func TestBootRefusesAPrivateNameRuleFileItCannotUse(t *testing.T) {
 // LEGION_PRIVATE_NAME_RULES_FILE pointer: its bytes exactly as the file holds them, whichever
 // setting named it. A deployment that names none hands no such secret.
 func TestThePrivateNameRulesAreALaunchSecretWhereTheDeploymentNamesAFile(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, named string
 	}{
@@ -159,6 +161,7 @@ func TestThePrivateNameRulesAreALaunchSecretWhereTheDeploymentNamesAFile(t *test
 // then fails on its port has logged it all the same; where it names one, the file, the sha256 of
 // its bytes and its number of rules, once boot has compiled it. Neither boot logs the other's line.
 func TestRunLogsThePrivateNameRulesLineAtBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		named bool
