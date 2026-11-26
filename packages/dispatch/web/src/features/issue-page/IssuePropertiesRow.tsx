@@ -329,7 +329,7 @@ function WaitingSlot(): ReactNode {
   return (
     <span
       aria-hidden="true"
-      className={`${WAITING_CHIP_BOX} invisible border-transparent`}
+      className={`${WAITING_CHIP_BOX} invisible`}
       data-whose-turn-slot=""
       {...pageChrome}
     >
