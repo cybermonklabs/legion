@@ -27,6 +27,7 @@ import { bearerCredential } from "../bearer";
 import {
   DISPATCH_ANSWER_LOST,
   DispatchAnswerMissingError,
+  DispatchAnswerNotKeptError,
   DispatchClient,
   type DispatchLandedCode,
   DispatchWriteLandedError,
@@ -103,15 +104,14 @@ const CASES: readonly WriteRowCase[] = [
       client.updateIssue("ACME-1", { components: { mode: "explicit", ids: ["web"] }, actor }),
   },
   {
+    method: "changeIssueStatus",
+    route: "POST /api/v1/issues/{key}/status-change",
+    call: (client) => client.changeIssueStatus("ACME-1", { status: "in_progress", actor }),
+  },
+  {
     method: "claimIssue",
     route: "POST /api/v1/issues/{key}/claim",
     call: (client) => client.claimIssue("ACME-1", { actor }),
-  },
-  {
-    method: "changeIssueStatus",
-    route: "POST /api/v1/issues/{key}/status-change",
-    call: (client) =>
-      client.changeIssueStatus("ACME-1", { status: "in_progress", include_parent: true, actor }),
   },
   {
     method: "ask",
@@ -248,6 +248,11 @@ const CASES: readonly WriteRowCase[] = [
     },
   },
   {
+    method: "editMessage",
+    route: "PATCH /api/v1/messages/{id}",
+    call: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
+  },
+  {
     method: "deliveryReply",
     route: "POST /api/v1/messages/{id}/reply",
     call: (client) =>
@@ -284,11 +289,6 @@ const CASES: readonly WriteRowCase[] = [
     method: "editComment",
     route: "PATCH /api/v1/comments/{id}",
     call: (client) => client.editComment("comment-1", { body: "Corrected.", actor }),
-  },
-  {
-    method: "editMessage",
-    route: "PATCH /api/v1/messages/{id}",
-    call: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
   },
   {
     method: "writeHandoff",
@@ -372,7 +372,8 @@ function dispatchAnswering(
 }
 
 /** What the call made of the answer: the answer, the landing's code, an outcome it cannot know,
- *  the answer missing from a call that stores nothing, or the error. */
+ *  the answer missing from a call that stores nothing, the answer Dispatch kept no copy of for a
+ *  call that stores nothing, or the error. */
 async function outcome(
   row: WriteRowCase,
   status: number,
@@ -387,6 +388,7 @@ async function outcome(
   } catch (error) {
     if (error instanceof DispatchWriteLandedError) return { sent, landed: error.code };
     if (error instanceof DispatchAnswerMissingError) return { sent, missing: error.code };
+    if (error instanceof DispatchAnswerNotKeptError) return { sent, notKept: error.code };
     if (writeOutcomeUnknown(error)) return { sent, unknown: true };
     return {
       sent,
@@ -577,22 +579,29 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     });
     // Dispatch keeps an answer up to 1 MiB; a repeat under the key of a larger one is a replayed
     // 2xx reading ANSWER_NOT_KEPT (`keyedAnswerKept`, request_keys.go). A route that stores
-    // nothing made nothing, so it is the missing answer there, and a landing only where the route
-    // stores.
-    const notKept: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+    // nothing made nothing, so it is no landing there: the call is asked once more under a new
+    // key (`#writingNothing`), and the same replay to that ask is a DispatchAnswerNotKeptError. It
+    // is a landing only where the route stores.
+    const notKept: { landed?: DispatchLandedCode; notKept?: string } = rowStores(
       WRITE_ROWS[row.method]
     )
       ? { landed: IDEMPOTENCY_ANSWER_NOT_KEPT }
-      : { missing: DISPATCH_ANSWER_LOST };
-    test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "ANSWER_NOT_KEPT" : "no answer"}`, async () => {
+      : { notKept: IDEMPOTENCY_ANSWER_NOT_KEPT };
+    test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "a landing" : "asked again under a new key, then not kept"}`, async () => {
       const body = JSON.stringify({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" });
       const got = await outcome(row, status, "application/json", body, "this", {
         "Idempotency-Replayed": "?1",
       });
-      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+      expect({
+        landed: got.landed,
+        unknown: got.unknown,
+        missing: got.missing,
+        notKept: got.notKept,
+      }).toEqual({
         landed: undefined,
         unknown: undefined,
         missing: undefined,
+        notKept: undefined,
         ...notKept,
       });
     });

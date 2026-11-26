@@ -5705,7 +5705,8 @@ describe("the dispatch CLI's subscription note", () => {
         { status, headers: { "Idempotency-Replayed": "?1" } }
       );
     const checkKeys: (string | null)[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Behind Dispatch's keyed layer: each replay names its request's key back, as Dispatch's do.
+    const fetchImpl = keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       const { pathname } = new URL(request.url);
       if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);

@@ -14311,26 +14311,34 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       const replies: unknown[] = [];
-      globalThis.fetch = async (input, init) => {
-        const path = new URL(input.toString()).pathname;
-        if (path === "/v1/interests/subscribe") {
-          return response({
-            session_id: "ses_delivery",
-            machine_id: "test",
-            dir: "/tmp",
-            topics: ["notifications.agent.ses_delivery"],
-            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
-          });
-        }
-        if (path === REPLY) {
-          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
-          return new Response(
-            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
-            { status: 409, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        return response({});
-      };
+      // Behind Dispatch's keyed layer, whose own refusal of a repeat that already ran names the
+      // reply's key back.
+      globalThis.fetch = keyedLayer(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const path = new URL(input.toString()).pathname;
+          if (path === "/v1/interests/subscribe") {
+            return response({
+              session_id: "ses_delivery",
+              machine_id: "test",
+              dir: "/tmp",
+              topics: ["notifications.agent.ses_delivery"],
+              delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+            });
+          }
+          if (path === REPLY) {
+            replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+            return new Response(
+              JSON.stringify({
+                code: IDEMPOTENCY_KEY_COMMITTED,
+                error: "this request already ran",
+              }),
+              { status: 409, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          return response({});
+        },
+        { judged: () => true }
+      ) as typeof fetch;
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);

@@ -18522,20 +18522,17 @@ test("refuses to resolve a comment named by an ask reference", async () => {
 // A model's tool call reaches the executor with no parse of flags, and the tools' schemas take an
 // empty value, white space, `.` or `..` for an id that goes into a URL path. The client refuses each
 // before any request (`DispatchEmptyPathError`), naming its place in the route: sent, `..` is a step
-// of the path, which the URL drops, and `POST /api/v1/comments/../resolve` asks another route.
+// of the path, which the URL drops, and `GET /api/v1/issues/..` asks another route. A comment's id
+// is held to a comment id's form first (the row above), so `..` for it is refused by that check,
+// also before any request.
 test("a path value that names nothing, as a tool call gives it, is refused before any request", async () => {
   let requests = 0;
   const fetchImpl = (() => {
     requests += 1;
     throw new Error("network must not be called");
   }) as unknown as typeof fetch;
-  for (const [tool, args, place] of [
-    ["dispatch_resolve_comment", { comment: ".." }, '/api/v1/comments/{".."}/resolve'],
-    ["dispatch_claim", { issue: "" }, "/api/v1/issues/{empty}/claim"],
-    ["dispatch_read", { issue: "." }, '/api/v1/issues/{"."}'],
-    ["dispatch_result", { retract: " ", reason: "Wrong commit." }, '/api/v1/results/{" "}/retract'],
-  ] as const) {
-    const refusal = await executeDispatchTool({
+  const call = (tool: string, args: Record<string, string>) =>
+    executeDispatchTool({
       tool,
       args,
       cwd: "/workspace",
@@ -18549,6 +18546,16 @@ test("a path value that names nothing, as a tool call gives it, is refused befor
       () => undefined,
       (error: unknown) => error
     );
+  const comment = await call("dispatch_resolve_comment", { comment: ".." });
+  expect(comment).toBeInstanceOf(ToolInputError);
+  expect((comment as Error).message).toContain("comment must be a bare comment id");
+  for (const [tool, args, place] of [
+    ["dispatch_read", { issue: ".." }, '/api/v1/issues/{".."}'],
+    ["dispatch_claim", { issue: "" }, "/api/v1/issues/{empty}/claim"],
+    ["dispatch_read", { issue: "." }, '/api/v1/issues/{"."}'],
+    ["dispatch_result", { retract: " ", reason: "Wrong commit." }, '/api/v1/results/{" "}/retract'],
+  ] as const) {
+    const refusal = await call(tool, args);
     expect(refusal, tool).toBeInstanceOf(DispatchEmptyPathError);
     expect((refusal as Error).message, tool).toContain(place);
   }

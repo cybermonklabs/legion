@@ -2800,9 +2800,10 @@ export class DispatchClient {
   /**
    * What a write's answer that is not its row is, by the one rule of a landing: a route that
    * stores nothing (`rowStores`) made nothing, so its replay whose first answer Dispatch did not
-   * keep is a `DispatchAnswerNotKeptError` (`code` `IDEMPOTENCY_ANSWER_NOT_KEPT`) and any other
-   * such answer is missing, a `DispatchAnswerMissingError`; an answer that names the call's key
-   * back is Dispatch's word that
+   * keep, naming the call's key back, is a `DispatchAnswerNotKeptError` (`code`
+   * `IDEMPOTENCY_ANSWER_NOT_KEPT`), which `#writingNothing` asks once more under a new key, and any
+   * other such answer is missing, a `DispatchAnswerMissingError`; an answer that names the call's
+   * key back is Dispatch's word that
    * the write committed under it, a landing whose answer is gone (`code`). Any other (a 2xx that
    * names no key back or another request's, a `409 IDEMPOTENCY_KEY_COMMITTED` that names none) is
    * no verdict of Dispatch's on this write, which may have reached Dispatch behind what answered
@@ -2821,7 +2822,7 @@ export class DispatchClient {
   ): Error {
     const shown = requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING);
     if (!write.writes)
-      return code === IDEMPOTENCY_ANSWER_NOT_KEPT
+      return code === IDEMPOTENCY_ANSWER_NOT_KEPT && keyEchoed(response, write.key)
         ? new DispatchAnswerNotKeptError(response.status, method, shown)
         : new DispatchAnswerMissingError(response.status, method, shown, { cause });
     if (keyEchoed(response, write.key))

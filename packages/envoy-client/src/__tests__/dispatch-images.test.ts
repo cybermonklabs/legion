@@ -556,8 +556,15 @@ describe("sending pictures", () => {
       ],
       [
         "KEY_COMMITTED",
-        () =>
-          json({ code: "KEY_COMMITTED", error: "the write landed and its answer was lost" }, 409),
+        // The layer's own refusal of a repeat whose write committed names the key back too.
+        (key: string) =>
+          new Response(
+            JSON.stringify({
+              code: "KEY_COMMITTED",
+              error: "the write landed and its answer was lost",
+            }),
+            { status: 409, headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+          ),
       ],
     ] as const) {
       let uploads = 0;
