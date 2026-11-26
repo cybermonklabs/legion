@@ -106,7 +106,12 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 				"so give a person's email; the default cannot be cleared")
 		return
 	}
-	assignee, err := s.allowedLogin(r.Context(), input.Assignee)
+	// The person is held to the writer's sight as well as to having signed in (allowedLogin).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	assignee, err := s.allowedLogin(r.Context(), who, input.Assignee)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

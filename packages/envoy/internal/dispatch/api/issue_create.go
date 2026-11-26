@@ -207,7 +207,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
 	// and defaultAssignee below fills it in, so a new issue always has somebody on it. Only the
 	// PATCH clears an issue's assignee.
-	assignee, _, err := s.parseIssueAssignee(r.Context(), input.Assignee)
+	assignee, _, err := s.parseIssueAssignee(r.Context(), who, input.Assignee)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

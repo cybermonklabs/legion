@@ -296,7 +296,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
-	assignee, assigneeProvided, err := s.parseIssueAssignee(ctx, input.Assignee)
+	assignee, assigneeProvided, err := s.parseIssueAssignee(ctx, who, input.Assignee)
 	if err != nil {
 		return issueWriteResult{}, err
 	}
