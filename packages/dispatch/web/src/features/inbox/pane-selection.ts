@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { focusNoScroll, landNearest, scrollToNearest } from "../../components/focus-place";
+import type { LandingTarget } from "../../components/SelectionBar";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
@@ -151,13 +152,14 @@ export interface PaneSelection extends InboxHandOff {
    * rather than when it is wanted.
    */
   showing: (listed: readonly PlacedRow[]) => InboxListRow | undefined;
-  /** Takes the landed hand-off whose row has not taken the focus yet off the record, and answers
-   *  that row, by `rowId`, else undefined: the bar of selected rows lands it itself, once the rows
-   *  its press takes away have gone and by the rule its own landing takes (`SelectionBar`'s
-   *  `useLastMarkedPlace`), so one landing runs per press (`Inbox.tsx`'s `returnFocus`). A
-   *  hand-off to the list's empty message stays here: the message is drawn only once those rows
-   *  have gone, and the hand-off's own focus lands it then. */
-  takeHandOff: () => string | undefined;
+  /** Takes the landed hand-off whose target has not taken the focus yet off the record, and
+   *  answers that target - the row after the rows acted on, or the list's empty message - as a
+   *  reading of the element this list draws for it, null while it draws none; undefined where no
+   *  hand-off is waiting. The bar of selected rows lands it itself (`SelectionBar`'s
+   *  `useLastMarkedPlace`): once the rows its press takes away have gone and the target is drawn,
+   *  with the list's own stop holding the focus until then. So one landing runs per press, and
+   *  this list's own focus of the target never runs for it (`Inbox.tsx`'s `returnFocus`). */
+  takeHandOff: () => LandingTarget | undefined;
 }
 
 /**
@@ -656,11 +658,11 @@ export function usePaneSelection({
   }, [paneShown, selectedId, selectedRow]);
 
   // `PaneSelection.takeHandOff`.
-  const takeHandOff = (): string | undefined => {
-    const target = focusTo.current?.target;
-    if (target === undefined || target === null) return undefined;
+  const takeHandOff = (): LandingTarget | undefined => {
+    const handOff = focusTo.current;
+    if (handOff === undefined) return undefined;
     focusTo.current = undefined;
-    return target;
+    return () => targetElement(handOff.target);
   };
 
   return {

@@ -4452,6 +4452,68 @@ test("after a refused bulk Dismiss, Clear selection lands on a row that came bac
   }
 });
 
+// INFRA-2160, round 22 (the architect's condition (2) of 2026-11-26 14:20Z): one bar press, one
+// landing. The bar's Dismiss of the list's last two threads hands the reader on to the list's
+// empty message (R8), which the list draws only once the threads have gone. The bar's landing
+// holds the focus on the list's own stop while they stand, and gives it to the message once the
+// list draws it (`useLastMarkedPlace`), and the list's own hand-off gives that target up to it
+// (`paneSelection.takeHandOff`). Where both landed, the bar's landing put the focus on the list's
+// stop in the commit the threads went in, and the list's own hand-off then moved it to the message.
+test("the bar's Dismiss of the list's last threads lands the focus once, on the empty message, and never by the bar's landing and the list's own both", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(2);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const real = HTMLElement.prototype.focus;
+  /** Each focus the page asks for from the press on: what takes it, by its name, and whether a
+   *  thread was still drawn as it was asked. */
+  const moves: { standing: boolean; to: string }[] = [];
+  let watching = false;
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (watching) {
+      moves.push({
+        standing: document.querySelector("[data-inbox-row]") !== null,
+        to: this.getAttribute("aria-label") ?? this.tagName,
+      });
+    }
+    real.call(this, options);
+  });
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(2));
+    for (const id of rowIds()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+    const dismiss = screen.getByRole("button", { name: "Dismiss selected threads" });
+    act(() => dismiss.focus());
+    watching = true;
+    await user.keyboard("{Enter}");
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    await waitFor(() => expect(empty).toHaveFocus());
+    // The foot's pass, each landing's own second look a microtask after it (`landNearest`), and
+    // the commits after them have all run: nothing moves the focus after this.
+    await afterFrameAndTasks();
+    expect(empty).toHaveFocus();
+    expect(
+      moves.filter(({ standing }) => !standing).map(({ to }) => to),
+      "the focus moves made once the threads had gone"
+    ).toEqual(["Inbox empty state"]);
+    expect(
+      moves.filter(({ standing }) => standing).map(({ to }) => to),
+      "the focus moves made while the threads stood"
+    ).toEqual(["Inbox list"]);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    focus.mockRestore();
+    reads();
+  }
+});
+
 // The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
 // marked last, and the next one, end wholly above the window. The row after the threads is the
