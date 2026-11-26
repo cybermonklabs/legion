@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,6 +41,21 @@ func TestARunThatGoTestReplaysFromItsCacheIsCached(t *testing.T) {
 	// The form " [no tests to run]" holds no run, so it gives no entry.
 	if got := readReport(t, "cached/cached-norun.jsonl"); len(got) != 0 {
 		t.Errorf("ReadGoTestJSON(cached/cached-norun.jsonl) = %q, want no entry", outcomes(got))
+	}
+}
+
+// A report can end before its package's cached summary line. The prefix then cannot prove that the
+// passed test ran at this commit, so it reads could_not_run.
+func TestACachedReportBeforeItsSummaryDoesNotCountAsFresh(t *testing.T) {
+	t.Parallel()
+	content, err := os.ReadFile("testdata/gotest/cached/cached.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	got, err := ReadGoTestJSON(strings.NewReader(strings.Join(events[:6], "\n") + "\n"))
+	if err != nil || !reflect.DeepEqual(outcomes(got), []string{"example.com/acme/gotest/cached TestA could_not_run"}) {
+		t.Errorf("ReadGoTestJSON(the cached report before its summary) = %q, %v; want TestA could_not_run", outcomes(got), err)
 	}
 }
 

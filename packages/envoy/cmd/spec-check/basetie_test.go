@@ -436,7 +436,8 @@ func TestTheBaseTieReadsGitsListOfTheBase(t *testing.T) {
 	atBase := &baseCheckout{repo: repo, commit: base}
 	defer atBase.close()
 	got := atBase.tie(check)
-	if !got.Known || !slices.Contains(got.Paths, "fixtures/data.json") || slices.Contains(got.Paths, "fixtures/other.json") {
-		t.Errorf("the tie at the base = %+v; want a known tie that names fixtures/data.json and not fixtures/other.json", got)
+	if !got.Known || !slices.Contains(got.Paths, "fixtures/data.json") || slices.Contains(got.Paths, "fixtures/other.json") ||
+		!got.Covers("mod/lib/lib.go") || !got.Covers("mod/lib/lib_test.go") {
+		t.Errorf("the tie at the base = %+v; want the fixture and compiled source reads, but not fixtures/other.json", got)
 	}
 }

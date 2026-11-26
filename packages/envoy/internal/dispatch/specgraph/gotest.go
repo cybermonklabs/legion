@@ -93,17 +93,17 @@ type run struct {
 	pkg     *pkgRun  // the run of go test over its package that it is part of
 }
 
-// pkgRun is one run of go test over one package while the report is read: whether its start and
-// own end events came, whether it wrote a summary line, whether that line said that go test
-// replayed it from its test cache, and the line of the package's output that has not ended yet.
+// pkgRun is one run of go test over one package while the report is read: whether its own end
+// event came, whether its summary line said that go test replayed it from the test cache, and the
+// line of the package's output that has not ended yet.
 type pkgRun struct {
-	pkg                             string // the package's import path
-	started, ended, summary, cached bool
-	line                            []byte // the first bytes of the open line, as many as keep
-	open                            bool   // a line has started and not ended
-	frame                           bool   // the open line is go test's own, of frame events
-	keep                            int    // how many bytes of the open line the rules read
-	owner                           *run   // the run whose own frame the open line is, or nil
+	pkg           string // the package's import path
+	ended, cached bool
+	line          []byte // the first bytes of the open line, as many as keep
+	open          bool   // a line has started and not ended
+	frame         bool   // the open line is go test's own, of frame events
+	keep          int    // how many bytes of the open line the rules read
+	owner         *run   // the run whose own frame the open line is, or nil
 }
 
 // output reads out, the Output of one output event of the package, frame or not, of the run owner
@@ -146,9 +146,6 @@ func (p *pkgRun) output(out string, frame bool, owner *run) {
 // read applies the rules of the reader to one whole line of the package: go test's summary line of
 // the package replayed from its cache, and the end line of owner's test.
 func (p *pkgRun) read(line string, owner *run) {
-	if _, summary := summaryRest(line, p.pkg); summary {
-		p.summary = true
-	}
 	if cachedLine(line, p.pkg) {
 		p.cached = true
 	}
@@ -327,7 +324,7 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 		framed = framed || frame
 		p := packages[e.Package]
 		if p == nil || (e.Test == "" && e.Action == "start") {
-			p = &pkgRun{pkg: e.Package, started: e.Test == "" && e.Action == "start"}
+			p = &pkgRun{pkg: e.Package}
 			packages[e.Package] = p
 		}
 		if e.Test == "" {
@@ -392,7 +389,7 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 		switch {
 		case this.pkg.cached:
 			this.outcome.Outcome = outcomeCached
-		case !this.pkg.started && !this.pkg.ended || this.pkg.summary && !this.pkg.ended || this.ends != 1 || !this.counted || this.overlap:
+		case !this.pkg.ended || this.ends != 1 || !this.counted || this.overlap:
 			this.outcome.Outcome = "could_not_run"
 		}
 		this.outcome.Output = this.output()

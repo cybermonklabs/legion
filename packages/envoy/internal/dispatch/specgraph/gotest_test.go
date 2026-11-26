@@ -125,7 +125,7 @@ func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 		{"killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
 		{"t2j-killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
 		{"killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter pass"}},
-		{"t2j-killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter pass"}},
+		{"t2j-killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter could_not_run"}},
 	})
 }
 
@@ -201,9 +201,17 @@ func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
 		{"killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter pass"}},
-		{"t2j-killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter could_not_run"}},
+		{"t2j-killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps could_not_run", acme + "killsiblingpass TestPrinter could_not_run"}},
 		{"piped-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps pass"}},
 	})
+}
+
+// A test's end line can span frame events, and a frame ends output that has no trailing line feed.
+// Both tests in splitlines.jsonl therefore have their own complete end line and pass.
+func TestASplitEndLineIsReadWhole(t *testing.T) {
+	t.Parallel()
+	long := acme + "splitlines TestLong" + strings.Repeat("X", 1178) + " pass"
+	readReports(t, []reportRow{{"splitlines.jsonl", []string{acme + "splitlines TestPrintsNoLineFeedThenPasses pass", long}}})
 }
 
 // The reader looks for a test's end line in each output event as it reads it, before it cuts the

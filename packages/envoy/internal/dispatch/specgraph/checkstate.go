@@ -728,7 +728,7 @@ func (j *checkJudge) carries(check, commit string) bool {
 		}
 		j.changed[commit] = changed
 	}
-	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
+	return changeBetween(func() ([]string, bool) { return changed.paths, changed.ok }, to, from).kind == noChange
 }
 
 // withoutRefused takes out of runs and faults, the candidates of c, each result of a commit where
