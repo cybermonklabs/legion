@@ -480,7 +480,7 @@ func TestOpenCheckOpensOneCheckForEachGenerationAndMerge(t *testing.T) {
 	root := rig.issue(waitRoot)
 	open := func() {
 		t.Helper()
-		seedRecord(t, rig.pool, func(tx pgx.Tx) error { return rig.engine.openCheck(t.Context(), tx, root, root.Merge, false) })
+		factTx(t, rig.pool, rig.engine, func(ctx context.Context, tx pgx.Tx) error { return rig.engine.openCheck(ctx, tx, root, root.Merge, false) })
 	}
 	open()
 	first := rig.check(waitRoot)
