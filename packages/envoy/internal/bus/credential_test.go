@@ -380,6 +380,8 @@ func TestHoldsSeedCostIsLinear(t *testing.T) {
 			done := make(chan bool, 1)
 			start := time.Now()
 			go func() { done <- bus.HoldsSeed(in.text) }()
+			// The bound under test, not a wait: costBound separates a linear cost from a quadratic
+			// one (above), so it stays a fixed span.
 			select {
 			case found := <-done:
 				if found {

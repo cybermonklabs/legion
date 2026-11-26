@@ -171,9 +171,9 @@ const refusal400 = "400 invalid_request_error: messages: unexpected role"
 // of provider-error turns and fails nothing however many there are (dispatch://INFRA-4508): the
 // daemon reads no status out of the words. The last is the take's own turn, whose end report names
 // the task with a provider error that cannot clear: an HTTP 400, a client error that is none of
-// 401, 403, 408 and 429, which fails the claim (supervise's holdsTheIssue, providerErrored). Every
-// report is of the claim's run of refused turns, which the daemon answers each report with and
-// which decides nothing.
+// 401, 403, 408 and 429, which fails the claim (supervise's classifyProviderError, providerErrored).
+// Every report is of the claim's run of refused turns, which the daemon answers each report with
+// and which decides nothing.
 func (r *freshSessionRig) refuseTurns(turns int) {
 	r.t.Helper()
 	r.machine.Wait()

@@ -1265,7 +1265,7 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // delivery above), as it makes every write a step left owed, so the decision goes on to its fence
 // and its row — the claim's first decision after a daemon start can be its shim's hello, which
 // opens its view and arms its deadline there (helloView, connview.go). Only a step that failed the
-// claim, for a status that holds the issue, returns its write's error, as the report's own
+// claim, for an error that cannot clear, returns its write's error, as the report's own
 // decision returns it (providerErrored): the failed claim's process is let go, so the event's row
 // has no view to open and no bound to arm over it.
 //
@@ -1287,12 +1287,13 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	if pe := m.ladderOwed; pe != nil {
+	if owed := m.ladderOwed; owed != nil {
 		m.ladderOwed = nil
 		if SaidReady(m.claim.State) && p.taken() {
 			m.claim.ProviderErrorRun++
-			m.log.Warn(ladderOwedLine, "task", p.Number, "httpStatus", pe.Status, "providerErrorRun", m.claim.ProviderErrorRun)
-			if err := m.takeToLadder(ctx, pe.Status); err != nil {
+			m.log.Warn(ladderOwedLine, "task", p.Number, "httpStatus", owed.ProviderErrorStatus, "code", owed.ProviderErrorCode,
+				"providerErrorRun", m.claim.ProviderErrorRun)
+			if err := m.takeToLadder(ctx, owed.ProviderErrorStatus, owed.ProviderErrorCode); err != nil {
 				if m.claim.State == StateFailed {
 					return err
 				}

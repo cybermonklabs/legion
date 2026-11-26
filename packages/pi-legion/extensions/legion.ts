@@ -401,7 +401,9 @@ export default function legionExtension(pi: PiApi): void {
   // controller's: a provider that refuses turn after turn ends any of them the same way, and the
   // report of a task's turn is what finishes that task. A `task` subagent, whose instance
   // registers no claim of its own, reports nothing, and neither does an operator's controller,
-  // which takes no task.
+  // which takes no task. A refused turn is classed with the host's own classifier, read as a
+  // string-literal import when the first refusal comes, since the module exists only inside Oh My
+  // Pi and `bun test` has no loader for it.
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
     claim: (sessionID) => {
@@ -410,6 +412,8 @@ export default function legionExtension(pi: PiApi): void {
       return { caller: claimCaller(claim, claim.sessionID), role: claim.role, issue: claim.issue };
     },
     log: logger,
+    cyberPolicyRefusal: async (message) =>
+      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
   });
 
   // The take a run of `sessionID` is heard by, as the report of that run is chosen above: the

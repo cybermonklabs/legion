@@ -611,7 +611,18 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // event of its own, as the closes are, because both answers are the same decision made by the same
 // caller — the claim runs again — and neither skips a check the other makes: it says only which
 // session the retry starts. A retry that asks for none resumes the recorded session, whatever the
-// claim's run of refused turns (freshSession).
+// claim's run of refused turns, unless the claim is held for a cyber-policy refusal, whose retry
+// starts a new session whoever asks (freshSession).
+//
+// Decided says a person, the controller or the issue's architect asked for this retry: the outbox
+// sets it from the start row's own mark (record.SuperviseRequest.Decided), which two starts
+// carry: the held phase's retry (workflow's restart), which the architect's retry_or_escalate, the
+// operator's `legion claims retry` of a phase worker and a person's todo on a held root each
+// start, and admission's start of a promoted root's architect, which a todo on the root brings,
+// the controller's restart of a tree among them (workflow's StartPromotedArchitect). Every other
+// start of a failed or retired claim, and the controller keeper's retry, is a retry the daemon
+// makes by itself, and is refused for a claim held for a cyber-policy refusal (Claim.RetryHeld,
+// ErrHeldForCyberPolicy).
 //
 // OneAttemptLeft is a production check look's retry of its checking role: the half-open trial of a
 // role that keeps failing, which gets one attempt of each budget its failure spent rather than a
@@ -620,6 +631,7 @@ type RequestOperatorClose struct{ Claim claim.Token }
 type RequestRetry struct {
 	Claim          claim.Token
 	FreshSession   bool
+	Decided        bool
 	OneAttemptLeft bool
 }
 
@@ -755,7 +767,10 @@ type RequestExit struct {
 // ran no task the daemon handed, which a plugin from before the task's number sends and a current
 // one says by naming no Task (claim.TurnOutcomeRequest). A report marked Unprompted is read as one
 // that names no task, whatever its Task says (turnOutcome): its refusal is judged as every turn's
-// that was not the take's (unpromptedTurnEnded), and it finishes nothing.
+// that was not the take's (unpromptedTurnEnded), and it finishes nothing. Code is the class the
+// producer gave the refusal, codeCyberPolicy or nothing (the route takes any other word as none),
+// which judges a refused turn beside its status, the take's (providerErrored) and any other
+// (unpromptedTurnEnded) alike (classifyProviderError).
 //
 // None of them is fenced by generation. A report naming a generation the claim has left is not
 // stale: it is a turn of that generation, which belongs in its own place in the order the run is
@@ -773,6 +788,7 @@ type RequestTurnOutcome struct {
 	Held          uint64
 	HTTPStatus    int
 	Unprompted    bool
+	Code          string
 }
 
 // status is the HTTP status the provider refused the report's turn with, 0 for none or one the
@@ -798,9 +814,9 @@ func (r RequestTurnOutcome) refusedByProvider() bool { return r.Refused || r.Pro
 // ProviderError is how a provider failed the turn a turn-outcome report is of: the status of the
 // provider request that failed (zero when it had none, as a content-filter refusal does), the
 // provider and the model that request went to, the failure's message, and whether the agent
-// called it retryable. The message is prose of the provider's and is never parsed, and Status
-// alone decides what the failure means (providerErrored); the rest are logged, and the model is
-// named in the controller's notice.
+// called it retryable. The message is prose of the provider's and is never parsed; Status, with
+// the report's Code, decides what the failure means (providerErrored, classifyProviderError); the
+// rest are logged, and the model is named in the controller's notice.
 type ProviderError struct {
 	Status    int
 	Provider  string
@@ -1477,7 +1493,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it; a claim held for a cyber-policy refusal only by a retry someone decided, in a new session", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -1486,7 +1502,7 @@ func fillTable(t *builder) {
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
 	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
-	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", operatorRetry,
+	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped, and of the daemon's controller held for a cyber-policy refusal: fresh budgets, and the same session relaunched unless the retry asked for a new one, the claim is held for a cyber-policy refusal or no store holds it", operatorRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
@@ -2724,10 +2740,11 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 //
 // A retry that asks for a new session (`legion claims retry --fresh-session`, the controller's
 // fresh_session) forgets the recorded session instead, so the launch spawns a fresh agent
-// (freshSession). Every other retry, whoever makes it, resumes the recorded session with fresh
-// budgets, whatever the claim's run of refused turns: a run that reached launch_failure_limit is
-// the claim's own count of refusals, mostly ones that can clear, such as a team limit's 429 that
-// refuses every session alike, and no sign that its session is bad (dispatch://INFRA-4508's R5).
+// (freshSession), and so does every retry of a claim held for OpenAI's cyber-policy refusal. Every
+// other retry, whoever makes it, resumes the recorded session with fresh budgets, whatever the
+// claim's run of refused turns: a run that reached launch_failure_limit is the claim's own count
+// of refusals, mostly ones that can clear, such as a team limit's 429 that refuses every session
+// alike, and no sign that its session is bad (dispatch://INFRA-4508's R5).
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2741,26 +2758,31 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
 // refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
-// the failure it still carries, which is what `legion claims list` reads off the live machine and
-// what the next persist writes. A launch check that refuses after the admission — launchAfter's
-// own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
-// live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
+// the failure it still carries and the session it records, which is what `legion claims list`
+// reads off the live machine and what the next persist writes. So a retry in a new session asks
+// whether the session may be left behind before the admission (mayForget), which changes nothing,
+// and leaves it behind only once the claim is admitted (forgetSession), beside the record's clear.
+// A launch check that refuses after the admission — launchAfter's own, or a parked wake's recheck
+// when its turn comes — finds both already cleared on the live machine, while the store still
+// holds them as AdmitClaim wrote them, until the next persist.
+//
+// The agent of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy) is
+// launched again by a retry someone decided alone: the held phase's retry (RequestRetry.Decided)
+// and the operator's (RequestOperatorRetry), each in a new session (freshSession). A retry the
+// daemon makes by itself is refused before anything moves (Claim.CyberPolicyRefusal), since
+// launching the agent again would send the session's content to OpenAI again.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if fresh, why := freshSession(ev); fresh {
+	if r, own := ev.(RequestRetry); own && m.claim.RetryHeld(r) {
+		return m.claim.CyberPolicyRefusal()
+	}
+	fresh, why := freshSession(m.claim, ev)
+	if fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
-		// lastRefusal is the provider's words for the newest refused turn, which the claim stores
-		// for the reason LastRefusal gives.
-		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
-			"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
-		// The failure the claim carries is the fuller answer where it has one — a provider error
-		// that cannot clear names its status, a death its cause — and the retry's own reason
-		// answers for a claim that failed nothing, an operator's retry of a worker it stopped.
-		m.forgetSession(cmp.Or(m.claim.Failure, why))
 	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over.
@@ -2771,6 +2793,17 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
 	return m.revive(ctx, exemptWake(ev), nil, func() {
+		if fresh {
+			// lastRefusal is the provider's words for the newest refused turn, which the claim
+			// stores for the reason LastRefusal gives.
+			m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
+				"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
+			// The failure the claim carries is the fuller answer where it has one — a provider
+			// error that cannot clear names its status, a death its cause — and the retry's own
+			// reason answers for a claim that failed nothing, an operator's retry of a worker it
+			// stopped. It is read here, before the record below is cleared.
+			m.forgetSession(cmp.Or(m.claim.Failure, why))
+		}
 		budgets := Budgets{}
 		if oneAttemptLeft {
 			budgets = m.claim.Budgets.OneAttemptLeft(m.deps.Limits)
@@ -2790,15 +2823,18 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
 // which the route has already established before it reaches the machine (api's retryStart starts
 // the phase itself for every other one).
-// The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
-// role never changes, so the refusal cannot race the decision it guards.
+// The daemon's controller has a retry of its own, its keeper, so it alone is refused, unless it is
+// held for a cyber-policy refusal, which the keeper retries no more, so the operator's retry is
+// its one way back (Claim.KeeperRetries). A claim's role never changes, and whether it is held is
+// the machine's own state, read inside this decision, so the refusal cannot race the decision it
+// guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession): retry then forgets the session, so the launch spawns a
-// fresh agent (freshSession). A launch whose session no session store holds any more starts a
-// fresh agent too (startFresh).
+// (RequestOperatorRetry.FreshSession) or the claim is held for a cyber-policy refusal: retry then
+// forgets the session, so the launch spawns a fresh agent (freshSession). A launch whose session
+// no session store holds any more starts a fresh agent too (startFresh).
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
-	if m.claim.Role == claim.RoleController {
+	if m.claim.KeeperRetries() {
 		return &RefusedError{State: m.claim.State, Request: "retry",
 			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryNotTheController)}
 	}

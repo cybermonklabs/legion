@@ -31,6 +31,20 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * neither here nor in the claim's take, and the end of the attempt the host goes on to is the
  * turn's end, reported in its turn.
  *
+ * A refused turn the host classes as OpenAI's cyber-policy refusal carries `code: "cyber_policy"`,
+ * the take's turn and every other turn alike. The class is the host's own: its
+ * `isCyberPolicyRefusal` (`@oh-my-pi/pi-ai/error`), handed the assistant message that ended the
+ * turn, as the host hands it the same message to set a `prompt_result`'s `code`; this plugin reads
+ * none of the provider's words itself. The status says nothing the daemon can act on there — a
+ * gateway relays the refusal as a 503, and a request the host held after one has none — so the
+ * class is what fails the claim, under its own cause, before the next take, input from outside the
+ * session, ends the host's hold and sends the refused content to OpenAI again; the report of the
+ * take's turn has the daemon take that task back first. The claim's take hears the turn's end
+ * before this report goes (`extensions/legion.ts`), so a take it asks at that end, of a task the
+ * claim was given while the turn ran, can still start a turn before the report lands; that turn's
+ * own report names its number and the class, which fails the claim, so the race costs one take at
+ * most (`packages/daemon/internal/supervise/providererror.go`'s codeCyberPolicy).
+ *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
  * only one of them can own the number a report is keyed by. It starts at 1 within a claim's
@@ -98,6 +112,10 @@ export interface TurnOutcomeReporterDeps {
    * loads an instance of its own and registers nothing. */
   readonly claim: (sessionID: string) => ReportedClaim | undefined;
   readonly log: TurnOutcomeLog;
+  /** The host's own cyber-policy classifier (`isCyberPolicyRefusal` of `@oh-my-pi/pi-ai/error`),
+   * asked about the assistant message that ended a refused turn. The entry reads the host's module
+   * lazily, so the answer is a promise, and a failure to read it is this reporter's to absorb. */
+  readonly cyberPolicyRefusal: (message: unknown) => Promise<boolean>;
   /** The wait between a report's attempts, and each attempt's bound: a timer by default; a test
    * passes its own clock. */
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<boolean>;
@@ -138,7 +156,8 @@ export interface TurnOutcomeReporter {
  * for a number that is no HTTP status, 100 to 599, which the host's field can hold), the provider
  * and the model, the provider's message, and whether this plugin reads the status as a failure
  * that may clear: a 408 or a 429, a provider's "not now" its own retries may still get through,
- * or a 5xx. The daemon decides by the status alone. No status is ever read out of the words.
+ * or a 5xx. The daemon decides by the status and the report's `code` (`cyberPolicy`, below). No
+ * status is ever read out of the words.
  */
 function providerError(
   message: AgentEndMessage,
@@ -189,6 +208,22 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   let sequence = 0;
   /** What stops the reports each session is still sending, until that session ends. */
   const stops = new Map<string, AbortController>();
+  /** Whether the host classes `message`, the last of a refused turn, as OpenAI's cyber-policy
+   * refusal. A host that cannot answer — its module unread, a pin without the classifier — classes
+   * it as none: the turn is still reported, with no code, and the pane says why. */
+  const classify = async (message: unknown): Promise<boolean> => {
+    try {
+      return await deps.cyberPolicyRefusal(message);
+    } catch (error) {
+      deps.log.warn(
+        "legion: the host could not class a refused turn; it is reported with no code",
+        {
+          error: messageFor(error),
+        }
+      );
+      return false;
+    }
+  };
 
   return {
     report: async (sessionID, event, task, held) => {
@@ -207,6 +242,9 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // below are written after an await.
       const mine = sequence;
       const { last, refusal } = endOf(event);
+      // The host's class of the refusal, read after the number is taken: the classifier may wait
+      // on the host's module, and the turns' order is fixed above.
+      const cyberPolicy = refusal !== undefined && (await classify(last));
       const request = {
         ...caller,
         sequence: mine,
@@ -217,6 +255,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         ...(refusal === undefined || last === undefined
           ? {}
           : { providerError: providerError(last, refusal) }),
+        ...(cyberPolicy ? { code: "cyber_policy" as const } : {}),
       };
       let stop = stops.get(sessionID);
       if (stop === undefined) {
@@ -230,6 +269,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         outcome: request.outcome,
         ...(task === undefined ? {} : { task }),
         ...(held === undefined ? {} : { held }),
+        ...(cyberPolicy ? { code: "cyber_policy" as const } : {}),
       };
       try {
         const outcome = await sendUntilAnswered(

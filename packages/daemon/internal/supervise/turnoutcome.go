@@ -31,16 +31,18 @@ import (
 //
 // Task is the number of the task the report named, 0 for none, and ProviderError whether it
 // carried the provider error its turn ended in, with that error's HTTP status
-// (ProviderErrorStatus, 0 for none). ProviderErrorRetries is, for a report whose provider error
-// reached the ladder (Claim.reportOfTake), the count of the task's sends the ladder's step makes it
-// (Delivery.ProviderErrorRetries), and 0 for every other report. They are what tells a daemon
-// that read the window back what an applied report did to the claim's pending task, where the
-// store holds the report and not what it did (Claim.owedReport): a report is applied with its
-// own write, before its finish or its take-back is written (turnOutcome, reportedTask), so a
-// store that took the one and refused the other leaves a window naming an effect nobody has
-// made, and the worker's report sent again is a repeat that makes none. An entry stored before
-// they were kept reads back with none of them, a report naming no task, which did nothing to
-// any task.
+// (ProviderErrorStatus, 0 for none) and the class the producer gave it (ProviderErrorCode,
+// RequestTurnOutcome.Code: codeCyberPolicy or none). ProviderErrorRetries is, for a report whose
+// provider error reached the ladder (Claim.reportOfTake), the count of the task's sends the
+// ladder's step makes it (Delivery.ProviderErrorRetries), and 0 for every other report. They are
+// what tells a daemon that read the window back what an applied report did to the claim's pending
+// task, where the store holds the report and not what it did (Claim.owedReport): a report is
+// applied with its own write, before its finish or its take-back is written (turnOutcome,
+// reportedTask), so a store that took the one and refused the other leaves a window naming an
+// effect nobody has made, and the worker's report sent again is a repeat that makes none. An entry
+// stored before they were kept reads back with none of them, a report naming no task, which did
+// nothing to any task; one stored before the class was kept reads back with none, which a
+// cyber-policy refusal's report could not have been, since that daemon read no class.
 type TurnOutcome struct {
 	Generation           uint64 `json:"generation"`
 	Sequence             uint64 `json:"sequence"`
@@ -50,6 +52,7 @@ type TurnOutcome struct {
 	Task                 uint64 `json:"task,omitempty"`
 	ProviderError        bool   `json:"providerError,omitempty"`
 	ProviderErrorStatus  int    `json:"providerErrorStatus,omitempty"`
+	ProviderErrorCode    string `json:"providerErrorCode,omitempty"`
 	ProviderErrorRetries int    `json:"providerErrorRetries,omitempty"`
 }
 
@@ -366,11 +369,14 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = n
 // task's number sends (claim.TurnOutcomeRequest), and is read as one naming no task whatever its
 // Task says: its refusal is of the second kind, and it finishes nothing. Either way the turn counts
 // in the claim's one run of provider-error turns (ProviderErrorRun), whose providerErrorRunTold-th
-// tells the project's controller once, and a refusal whose status cannot clear (holdsTheIssue)
-// fails the claim at once with CauseProviderError, so the workflow holds the issue for its
-// architect, and the answer's failed says so (HandleTurnOutcome). A refusal that can clear, or
-// whose report carries no status, fails nothing: the take's task goes on the ladder, and any
-// other turn's refusal is counted and nothing more. A current plugin names a provider error
+// tells the project's controller once, and a refusal that cannot clear (classifyProviderError) —
+// a status that cannot clear, or one the producer classed as OpenAI's cyber-policy refusal
+// (RequestTurnOutcome.Code), whatever its status — fails the claim at once, under
+// CauseProviderError or CauseCyberPolicy, so the workflow holds the issue for its architect, and
+// the answer's failed says so (HandleTurnOutcome); the take's task, where the report is of its
+// turn, is taken back first (takeBackAndFail). A refusal that can clear, or whose report carries
+// no status and no such class, fails nothing: the take's task goes on the ladder, and any other
+// turn's refusal is counted and nothing more. A current plugin names a provider error
 // beside every refused turn (claudebridge's turnEnded, pi-legion's turn-outcome); a plugin from
 // before the task's number names the refused outcome and its status (RequestTurnOutcome's
 // refusedByProvider and status). The window's run of refused turns counts every refused report,
@@ -411,7 +417,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused,
 		Message: redact.Runes(storetext.FarSideText(r.Message), maxRefusalMessage), Task: r.Task}
 	if r.ProviderError != nil {
-		o.ProviderError, o.ProviderErrorStatus = true, r.status()
+		o.ProviderError, o.ProviderErrorStatus, o.ProviderErrorCode = true, r.status(), r.Code
 	}
 	if r.ProviderError != nil && m.claim.reportOfTake(r.Generation, r.Task) {
 		o.ProviderErrorRetries = m.claim.Pending.ProviderErrorRetries + 1
@@ -421,7 +427,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	}
 	repeat := m.recordTurnOutcome(o)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", o.Refused, "providerError", r.ProviderError != nil, "httpStatus", r.status(),
+		"refused", o.Refused, "providerError", r.ProviderError != nil, "httpStatus", r.status(), "code", r.Code,
 		"unprompted", r.Unprompted, "task", r.Task, "refusedRun", m.claim.RefusedRun())
 	if !repeat && r.Generation == m.claim.Generation && !r.refusedByProvider() && m.newestTurnOutcome(o) {
 		m.providerErrorRunOver("supervise: a turn ended with no provider error; the run of provider errors is over",
@@ -703,18 +709,28 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 	return len(window) > 0 && compareTurnOutcomes(window[len(window)-1], o) == 0
 }
 
-// freshSession is whether a retry starts a new session rather than relaunching the recorded one,
-// and why, for the line it logs: only when the retry asks for one, with `legion claims retry
+// freshSession is whether a retry of c starts a new session rather than relaunching the recorded
+// one, and why, for the line it logs: when the retry asks for one, with `legion claims retry
 // --fresh-session` or the controller's fresh_session, since a new session is an operator's or the
-// controller's choice (dispatch://INFRA-956's Design). Every other retry — its architect's
-// retry_or_escalate, the next start of its role, an operator's retry that asks for nothing —
-// resumes the recorded session with fresh budgets, whatever the claim's run of refused turns
-// (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that cannot
-// clear fails the claim on the turn it ends, and holds the issue, so a run is mostly refusals that
-// can clear or carry no status, such as a team limit's 429, which refuses every session of the
-// team alike. A claim failed on a refusal that cannot clear resumes too; if its session is refused
-// again, it fails again at once.
-func freshSession(ev Event) (bool, string) {
+// controller's choice (dispatch://INFRA-956's Design), and for every retry of a claim held for
+// OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy), whoever makes it. Every other retry —
+// its architect's retry_or_escalate, the next start of its role, an operator's retry that asks for
+// nothing — resumes the recorded session with fresh budgets, whatever the claim's run of refused
+// turns (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that
+// cannot clear fails the claim on the turn it ends, and holds the issue, so a run is mostly
+// refusals that can clear or carry no status, such as a team limit's 429, which refuses every
+// session of the team alike. A claim failed on a refusal that cannot clear resumes too; if its
+// session is refused again, it fails again at once.
+//
+// A cyber-policy refusal is the one failure that a resume would repeat by itself: the retry's
+// first task is input from outside the session, which ends Oh My Pi's hold, so the session's
+// refused content goes to OpenAI again, the claim fails again, and its architect, told again,
+// retries again. The retries that reach such a claim are the ones someone decided (retry's
+// RetryHeld refuses the rest), and none of them decided to send that content again, so each
+// leaves the session behind: the claim's failure sentence is the reason the abandoned session is
+// recorded under (retry), and the run of provider-error turns starts over with it
+// (Machine.forgetSession).
+func freshSession(c Claim, ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {
 	case RequestRetry:
@@ -722,8 +738,11 @@ func freshSession(ev Event) (bool, string) {
 	case RequestOperatorRetry:
 		asked = ev.FreshSession
 	}
-	if asked {
+	switch {
+	case asked:
 		return true, "the retry asked for a new session"
+	case c.HeldForCyberPolicy():
+		return true, "the claim failed on OpenAI's cyber_policy refusal of its session's content, which a relaunch of that session would send again"
 	}
 	return false, ""
 }

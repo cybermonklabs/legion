@@ -3835,8 +3835,13 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // claim's agent is up from the later of that entry's first queueing and the agent's ready — and
 // when the bound of a root slow before its gate starts, which the admission pass reads of every
 // root it weighs (admit's architectStalls).
+//
+// The claim's failure cause is read as its machine reads it (RoleClaim.FailureCause): the row's
+// failure_cause and held_for, decoded by the claim store's own decoder (supervise.DecodeCause),
+// so this read and the claim store's cannot disagree on whether one claim is held.
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.failure_cause, c.held_for,
+		c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.session, c.task_written, c.task_finished, c.task_finished_session,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
 		c.update_round, c.step_at, c.turn_started_at,
@@ -3849,7 +3854,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var token string
+		var token, cause, heldFor string
 		var held RoleClaim
 		var pending bool
 		var task supervise.Delivery
@@ -3871,7 +3876,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// has no activity_next_reminder_at. The zero time left in each is what says so to the
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
-		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+		if err := rows.Scan(&token, &held.State, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &held.Session, &written, &finished, &held.TaskFinishedSession,
 			&ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
@@ -3880,6 +3885,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		held.TaskWritten, held.TaskFinished = uint64(written), uint64(finished)
+		held.FailureCause = supervise.DecodeCause(cause, heldFor)
 		if ready != nil {
 			held.LastReady = ready.UTC()
 		}

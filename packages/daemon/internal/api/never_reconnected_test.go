@@ -103,3 +103,58 @@ func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T)
 		t.Errorf("the strip wrote through to the state the source answered: %+v", source)
 	}
 }
+
+// The one failure-cause strip (shaping.go's withoutNeverReconnected) serves each word by its own
+// arrival: a caller stating a contract at or above TaskTakeContract and below the cyber-policy
+// entry admits `never_reconnected` and does not admit `cyber_policy`, so it is served
+// `never_reconnected` as it stands and `cyber_policy` as `provider_error`, while a caller below
+// both is served `never_registered` and `provider_error`, and a caller at the cyber-policy entry
+// is served both words.
+func TestFailureCauseStripServesEachWordByItsOwnContract(t *testing.T) {
+	state := stateCarryingEveryDeclaredValue(t)
+	issues := make(map[string]Issue, len(state.Issues)+1)
+	for k, v := range state.Issues {
+		issues[k] = v
+	}
+	issues["LEGION-214"] = neverReconnectedIssue()
+	state.Issues = issues
+
+	cyberAt := entryNumber(cyberPolicyContract)
+	takeAt := TaskTakeContract()
+	if !(takeAt < cyberAt) {
+		t.Fatalf("task-take (%d) must sit below cyber-policy (%d) for this test to prove the step between them", takeAt, cyberAt)
+	}
+	srv := shapedServer(t, state, nil, &bytes.Buffer{}, true)
+	whole := failureCausesServed(t, stateStating(t, srv, "192.0.2.1:41000", cyberAt))
+	between := failureCausesServed(t, stateStating(t, srv, "192.0.2.1:41000", takeAt))
+	below := failureCausesServed(t, stateStating(t, srv, "192.0.2.1:41000", takeAt-1))
+
+	var sawCyber, sawNever bool
+	for at, cause := range whole {
+		switch cause {
+		case string(supervise.CauseCyberPolicy):
+			sawCyber = true
+			if between[at] != string(supervise.CauseProviderError) {
+				t.Errorf("caller at %d (between task-take and cyber-policy): %s = %q, want %q", takeAt, at, between[at], supervise.CauseProviderError)
+			}
+			if below[at] != string(supervise.CauseProviderError) {
+				t.Errorf("caller at %d (below both): %s = %q, want %q", takeAt-1, at, below[at], supervise.CauseProviderError)
+			}
+		case string(supervise.CauseNeverReconnected):
+			sawNever = true
+			if between[at] != string(supervise.CauseNeverReconnected) {
+				t.Errorf("caller at %d (between task-take and cyber-policy): %s = %q, want %q", takeAt, at, between[at], supervise.CauseNeverReconnected)
+			}
+			if below[at] != string(supervise.CauseNeverRegistered) {
+				t.Errorf("caller at %d (below both): %s = %q, want %q", takeAt-1, at, below[at], supervise.CauseNeverRegistered)
+			}
+		default:
+			if between[at] != cause || below[at] != cause {
+				t.Errorf("%s = %q at %d / %q at %d, want %q unchanged", at, between[at], takeAt, below[at], takeAt-1, cause)
+			}
+		}
+	}
+	if !sawCyber || !sawNever {
+		t.Fatalf("the state carried cyber_policy=%v and never_reconnected=%v, want both", sawCyber, sawNever)
+	}
+}

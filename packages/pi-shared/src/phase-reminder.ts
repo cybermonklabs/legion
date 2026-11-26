@@ -511,12 +511,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // claim, which the record check the timer runs reads: the daemon judges a turn that ran
         // no task of its from that turn's turn-outcome report, a reminder's own among them, as it
         // judges a task's turn from the report that names the task (dispatch://INFRA-4508), so a
-        // refusal whose status cannot clear (a 4xx other than 401, 403, 408 and 429) fails the
-        // claim at once and holds the issue for its architect, and the next reminder is dropped. A
-        // refusal that can clear, or whose status cannot be read, fails nothing, so the reminders
-        // keep this pace for as long as the provider refuses — the whole of dispatch://INFRA-264
-        // — and the project's controller is told once when the worker's turns that ended in a
-        // provider error, reminders' and tasks' alike, reach six in a row.
+        // refusal whose status cannot clear (a 4xx other than 401, 403, 408 and 429), or whose
+        // report carries `code: "cyber_policy"` (Oh My Pi's own class for OpenAI's cyber-policy
+        // refusal, whatever the status), fails the claim at once and holds the issue for its
+        // architect, and the next reminder is dropped. Any other refusal, or one whose report
+        // carries no status and no code, fails nothing, so the reminders keep this pace for as
+        // long as the provider refuses — the whole of dispatch://INFRA-264 — and the project's
+        // controller is told once when the worker's turns that ended in a provider error,
+        // reminders' and tasks' alike, reach six in a row.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

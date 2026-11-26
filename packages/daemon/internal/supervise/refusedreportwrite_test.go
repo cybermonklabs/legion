@@ -515,7 +515,7 @@ func TestTurnOutcomeOfAProviderErrorWhoseTakeBackTheStoreRefusedTakesTheTaskToTh
 		}
 		h.restart()
 		h.connect()
-		if taken := h.wantPrompts(2)[1]; !strings.Contains(taken.Message, providerErrorCause(529)) {
+		if taken := h.wantPrompts(2)[1]; !strings.Contains(taken.Message, classifyProviderError(529, "").cause) {
 			t.Fatalf("the take after the restart was answered %q, want the provider error's note in front of the task", taken.Message)
 		}
 		if p := h.pending(); p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {

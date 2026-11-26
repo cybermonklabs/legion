@@ -489,6 +489,113 @@ func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBac
 	r.wantTold("after the confirmation of the news sent again", pathRoot, record.AudienceHolder, 4, false)
 }
 
+// The reviewer takes its news task and runs the take's turn to its end, but the reviewer's
+// machine is handed that turn's end before the turn-outcome report that names the task: the end
+// comes over the worker stream and the report over HTTP, in whatever order the two arrive. The
+// end finishes nothing, since only the report naming the task's number does (reportedTask), and
+// the report, read after the end or before it, says the turn ran, which makes the credit of the
+// news final: the reviewer took version 4 once, and the sweep queues no reconcile to tell it
+// again. A task finished at that end would have its credit made final with no report to say the
+// turn ran, and one taken back there would give the news back and tell the reviewer version 4
+// twice. A pause held over that turn waits for the report too (reportwait.go): a stop before it
+// would delete the delivery's only credit for version 4. The report folds the credit into the told
+// row before the pause stops the claim and the delivery is retired.
+func TestANewsTaskWhoseTurnEndsBeforeItsReportIsToldOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		reportFirst bool
+		pause       bool
+	}{
+		{name: "the turn's end, then the report"},
+		{name: "the report, then the turn's end", reportFirst: true},
+		{name: "a held pause, the turn's end, then the report", pause: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
+			// The worker's plugin names its task's number in its reports, so the report alone
+			// finishes the task; a plugin below the contract is finished by the end frame.
+			r.sup.deps.PluginContract = r.sup.deps.TaskTakeContract
+			flag := &orderPause{}
+			if tc.pause {
+				st := r.sup.deps.Store.(*store.Store)
+				pods, err := st.PodRecordsOf("LEGION")
+				if err != nil {
+					t.Fatal(err)
+				}
+				pauses := &projectPause{
+					store: st, records: projectRecords{Store: r.records, project: "LEGION"},
+					pods: pods, project: "LEGION", token: "legion", now: time.Now,
+					log: quietLogger(), workflow: &workflowRuntime{},
+				}
+				r.sup.deps.Paused = flag.Paused
+				r.sup.deps.PauseStopped = pauses.stopped
+			}
+			r.told(pathRoot, record.AudienceHolder, 3)
+			r.told(pathRoot, record.AudienceArchitect, 4)
+			reviewer, _, token := r.reviewerBetweenTurns(pathRoot)
+			r.queueNewsTask(pathRoot)
+			news := r.delivered(reviewer)
+			r.startTurn(reviewer)
+			if tc.pause {
+				id := openLegionPause(t, r.pool, time.Now())
+				flag.id.Store(id)
+				err := reviewer.Handle(r.ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByReleased, Pause: id})
+				if !errors.Is(err, supervise.ErrSuspendHeld) {
+					t.Fatalf("pause stop during the news task's turn = %v, want it held", err)
+				}
+			}
+			end := func() {
+				if err := reviewer.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+					t.Fatalf("the news task's turn ends: %v", err)
+				}
+			}
+			report := func() {
+				if err := reviewer.Handle(r.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: reviewer.Claim().Generation,
+					Sequence: turnSequence.Add(1), Task: news.Number}); err != nil {
+					t.Fatalf("the report of the news task's turn: %v", err)
+				}
+			}
+			if tc.reportFirst {
+				report()
+				end()
+			} else {
+				end()
+				if held := reviewer.Claim().Pending; held == nil || held.Number != news.Number || held.ConfirmedAt.IsZero() {
+					t.Fatalf("the reviewer holds %+v after the turn's end, want the news task %d still taken for its report", held, news.Number)
+				}
+				if tc.pause && reviewer.Claim().State != supervise.StateIdle {
+					t.Fatalf("reviewer state after turn end = %s, want idle until the report decides the task", reviewer.Claim().State)
+				}
+				report()
+			}
+			reviewer.Wait()
+			if held := reviewer.Claim().Pending; held != nil {
+				t.Fatalf("the reviewer holds %+v after its news task's turn and report, want nothing", held)
+			}
+			if tc.pause {
+				if state := reviewer.Claim().State; state != supervise.StateSuspended {
+					t.Fatalf("reviewer state after the report = %s, want suspended by the held pause stop", state)
+				}
+				var pending bool
+				if err := r.pool.QueryRow(r.ctx, `select exists (select 1 from pending_task_deliveries where claim_token = $1)`, token).Scan(&pending); err != nil {
+					t.Fatalf("read the reviewer's pending delivery: %v", err)
+				}
+				if pending {
+					t.Fatal("the store still holds the delivery, so the told version might only be its temporary credit")
+				}
+				endLegionPause(t, r.pool, flag.id.Load(), time.Now())
+				flag.id.Store(0)
+			}
+			r.wantTold("after the news task's turn and report", pathRoot, record.AudienceHolder, 4, false)
+			r.sweepNews()
+			if rows := r.held(ofKind(record.OutboxKindDesignChanges)); len(rows) != 0 {
+				t.Fatalf("the sweep queued %d reconciles of the tree's news, want none: the reviewer took version 4 once", len(rows))
+			}
+		})
+	}
+}
+
 // checksEvent applies a Dispatch event of the root's Verification document (pathChecks) through
 // the engine and then admission, as dispatchEvent applies one of its spec.
 func (r *newsPathRig) checksEvent(kind intake.DispatchArtifactKind, version int) {

@@ -488,7 +488,9 @@ func (c *newsConn) SetStreaming(streaming bool) {
 }
 
 // connectWorker is the worker of role on issue, under sup, coming up on the process its start
-// launched (newsPathRig.connect), its connection registered on sup's fake connections.
+// launched (newsPathRig.connect), its connection registered on sup's fake connections. Its plugin
+// declares the contract sup's dependencies state (Deps.PluginContract), which is none unless a
+// case sets one, as a worker whose plugin names its task's number does.
 func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue string, role claim.Role) (*supervise.Machine, *newsConn) {
 	t.Helper()
 	token := mustClaimToken(t, issue, role)
@@ -503,7 +505,7 @@ func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue str
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: "/tmp/" + session + ".jsonl",
-			CapabilityHash: []byte("capability-of-" + session)},
+			CapabilityHash: []byte("capability-of-" + session), PluginContract: sup.deps.PluginContract},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {

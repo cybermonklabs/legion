@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -278,5 +280,60 @@ func TestAnUnpromptedTurnsReportIsJudgedAndAnswersWhetherItFailedTheClaim(t *tes
 	}
 	if stored := h.stored(token); stored.State != supervise.StateFailed || stored.FailureCause != supervise.CauseProviderError {
 		t.Fatalf("after the 400 the claim is %s (%q), want it failed by a provider error", stored.State, stored.FailureCause)
+	}
+}
+
+// A report of a turn that ran no prompt of the daemon's can carry the class pi-legion gave the
+// refusal with Oh My Pi's own classifier: `code: "cyber_policy"`, OpenAI's refusal of the
+// session's content. It fails the claim under cause cyber_policy whatever the status says — here
+// none, and a gateway's 503 — and the answer's `failed` says so: without it, the daemon reads a
+// refusal with no status or a 503 as one that can clear and fails nothing, and the claim's next
+// prompt sends the refused content to OpenAI again.
+func TestAnUnpromptedTurnsCyberPolicyCodeFailsTheClaimUnderItsOwnCause(t *testing.T) {
+	for _, status := range []int{0, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
+			h := newHarness(t)
+			token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+			registered := h.registered(boot, "ses_architect")
+
+			recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+				ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+				Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "cyber_policy: synthetic refusal text",
+				HTTPStatus: status, Unprompted: true, Code: claim.TurnCodeCyberPolicy,
+			})
+
+			if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1, Failed: true}) {
+				t.Fatalf("the report = %d %+v, want 200 with a run of 1 and the claim failed", recorder.Code, answer)
+			}
+			if stored := h.stored(token); stored.State != supervise.StateFailed || stored.FailureCause != supervise.CauseCyberPolicy ||
+				!strings.Contains(stored.Failure, "cyber_policy") {
+				t.Fatalf("the claim is %s (%q, %q), want it failed under cause cyber_policy", stored.State, stored.FailureCause, stored.Failure)
+			}
+		})
+	}
+}
+
+// The daemon reads one class off a report, `cyber_policy`; a report naming another is taken as one
+// that names none, as a status outside the HTTP range is, and the route warns naming it rather
+// than refusing the report, so the turn is still counted.
+func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+		Unprompted: true, Code: "cost_cap",
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the report = %d %+v, want 200 with a run of 1 and no failure", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed {
+		t.Fatalf("the claim failed (%q) on a code the daemon reads none of", stored.FailureCause)
+	}
+	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != 1 {
+		t.Fatalf("the route warned %q, want one line naming the code it took as none", h.serverLog.lines("code="))
 	}
 }

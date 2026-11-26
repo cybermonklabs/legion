@@ -1746,10 +1746,13 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 // failureCauses, with the words entries add) and takes any word the table holds back from restore
 // (fieldArrivals.heldBack says which words and why): today the `never_reconnected` of the
 // task-take entry, a claim whose shim never said hello again within the reconnect deadline, after
-// a daemon start restored it or after its connection closed over a pending task, and tomorrow any
-// word the table gives a later arrival. It is named for the one word it takes today. The
-// architect's view and each worker's carry each of the two fields at a key path of its own, every
-// one of them holding the one list, so the architect's two rows answer for the workers' too.
+// a daemon start restored it or after its connection closed over a pending task, and the
+// `cyber_policy` of the cyber-policy entry, a claim OpenAI refused for cyber policy; and tomorrow
+// any word the table gives a later arrival. It is the one strip of the failure cause, registered
+// by the first entry that added a word to it (task-take), and named for that entry's word: a
+// second row would find nothing this one left. The architect's view and each worker's carry each
+// of the two fields at a key path of its own, every one of them holding the one list, so the
+// architect's two rows answer for the workers' too.
 //
 // The word is rewritten where every other strip drops what it takes. A plugin from
 // recordFieldsContract up to the word's arrival reads both fields through a strict enum
@@ -1787,12 +1790,17 @@ func withoutNeverReconnected(issue Issue, restore int) (Issue, bool) {
 
 // olderCause is the cause a reader that does not admit cause is served in its place.
 // `never_reconnected` is served as `never_registered`, a process that never said hello before
-// its deadline, the nearest cause such a reader knows. A word the table names no older cause for
-// is served as `unrecorded`, which every reader since the field's arrival reads as a failure
-// whose cause it is not told.
+// its deadline, the nearest cause such a reader knows. `cyber_policy` is served as
+// `provider_error`, since a cyber-policy refusal is a provider error that cannot clear and that
+// reader was told it under that word. A word the table names no older cause for is served as
+// `unrecorded`, which every reader since the field's arrival reads as a failure whose cause it is
+// not told.
 func olderCause(cause supervise.FailureCause) supervise.FailureCause {
-	if cause == supervise.CauseNeverReconnected {
+	switch cause {
+	case supervise.CauseNeverReconnected:
 		return supervise.CauseNeverRegistered
+	case supervise.CauseCyberPolicy:
+		return supervise.CauseProviderError
 	}
 	return supervise.CauseUnrecorded
 }
@@ -1846,13 +1854,11 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 // arrivalsAt is the arrivals of the state's enumerated field at keyPath, which a value strip
 // reads: read once, when the registry is built, from that field's row of EnumeratedFields, so
 // the values an entry adds to the field are held back as the frozen ones are (contracts.go).
-// The strips read `strandedClaims.*.state`, `answeredBy`, the waiting line's `kind`, a capability
-// row's `source`, an issue's `holdReason`, a held row's `reason` and a claim view's failure cause
-// (answers.go's strandedStates, waitAnswers, lineKinds, capabilitySources, holdReasons,
-// heldReasons and failureCauses). The state's row answers for the record's too: an issue's field
-// is one field at two key paths (answers.go's enumeratedFields), both rows take the one list, and
-// shapeIssue shapes the issue behind both answers. A key path no row of the state declares is a
-// strip reading nothing, and panics.
+// Each strip names the field it reads where it calls this, the frozen ones in this file and an
+// entry's in its entry file, so no list here goes stale when an entry adds a strip. The state's row
+// answers for the record's too: an issue's field is one field at two key paths (answers.go's
+// enumeratedFields), both rows take the one list, and shapeIssue shapes the issue behind both
+// answers. A key path no row of the state declares is a strip reading nothing, and panics.
 func arrivalsAt(keyPath string) fieldArrivals {
 	arrivals, declared := registry().arrivals[keyPath]
 	if !declared {

@@ -1585,6 +1585,15 @@ var ErrLeftPodRound = errors.New("the answer comes from a process in another pod
 // controller keeper retries instead (operatorRetry). The refusal adds who retries the claim.
 var ErrRetryNotTheController = errors.New("the operator's retry does not relaunch the daemon's controller")
 
+// ErrHeldForCyberPolicy is a retry the daemon makes by itself (RequestRetry with no decision behind
+// it) of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy): the next start
+// of its role, a re-admission of its tree, a production check's look, the controller keeper.
+// Launching its agent again would send the session's content to OpenAI again, so only a retry
+// someone decided launches it, in a new session (retry). It is a refusal and not a wait: nothing
+// the daemon does later lifts it. The refusal adds the operator's command that brings the agent
+// back (Claim.CyberPolicyRefusal).
+var ErrHeldForCyberPolicy = errors.New("the claim failed on OpenAI's cyber_policy refusal of its session's content, so no retry of the daemon's own launches its agent again")
+
 // ErrHeldByOperator is the daemon's start or task meeting an operator's suspension, which no rule
 // overrides (Claim.RuleHolds): a wait, ended only by the operator's resume. RuleHoldError wraps it
 // for the outbox log.
@@ -1659,16 +1668,16 @@ type Machine struct {
 	// (Claim.owedReport, NewMachine), since that report is applied and its worker's resend of it is
 	// a repeat that finishes nothing.
 	finishOwed bool
-	// ladderOwed is the provider error of a turn-outcome report that a daemon start found applied
-	// with nothing of what it does to the task written — the take still accepted, the ladder's
-	// step unrecorded (Claim.owedReport, NewMachine): the take-back and the ladder's step, or the
-	// claim's failure, that the daemon before this one decided and the store never took. It holds
-	// the error's status alone, which is all that decides between the two (takeToLadder). The
-	// claim's first decision makes them, in settle, and drops it, a write of them the store
-	// refuses leaving them in memory, owed, with the decision going on to its row; a claim not
-	// ready, idle or working by then has its take settled by its let-go instead (settle,
-	// interrupted). It is memory only, as finishOwed is.
-	ladderOwed *ProviderError
+	// ladderOwed is the turn-outcome report a daemon start found applied with a provider error and
+	// nothing of what it does to the task written — the take still accepted, the ladder's step
+	// unrecorded (Claim.owedReport, NewMachine): the take-back and the ladder's step, or the
+	// claim's failure, that the daemon before this one decided and the store never took. It is read
+	// for the error's status and class alone (TurnOutcome.ProviderErrorStatus, ProviderErrorCode),
+	// which are all that decide between the two (takeToLadder). The claim's first decision makes
+	// them, in settle, and drops it, a write of them the store refuses leaving them in memory, owed,
+	// with the decision going on to its row; a claim not ready, idle or working by then has its take
+	// settled by its let-go instead (settle, interrupted). It is memory only, as finishOwed is.
+	ladderOwed *TurnOutcome
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
 	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
@@ -2316,7 +2325,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 			m.unsaved = true
 		}
 		if owed.ProviderError {
-			m.ladderOwed = &ProviderError{Status: owed.ProviderErrorStatus}
+			m.ladderOwed = &owed
 		} else {
 			m.finishOwed = true
 			if c.State == StateReady || c.State == StateIdle {
@@ -2385,9 +2394,10 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 
 // TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
 // own lock (HandleTurnOutcome): the claim's run of refused turns (Claim.RefusedRun), and whether
-// this report failed the claim, which only a report whose provider error cannot clear does: the
-// end report of the take's turn (providerErrored) or the report of any other turn
-// (unpromptedTurnEnded), both through providerErrorTurnEnded.
+// this report failed the claim, which only a report whose provider error cannot clear does — a
+// status that cannot clear, or the class of OpenAI's cyber-policy refusal (RequestTurnOutcome.Code)
+// whatever its status (classifyProviderError): the end report of the take's turn (providerErrored)
+// or the report of any other turn (unpromptedTurnEnded), both through providerErrorTurnEnded.
 type TurnOutcomeAnswer struct {
 	RefusedRun int
 	Failed     bool

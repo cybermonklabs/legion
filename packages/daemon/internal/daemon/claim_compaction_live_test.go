@@ -851,7 +851,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateRetired), compactNamesFreshSession)
 
 	// A failed claim: an HTTP 400 is a client error that is none of 401, 403, 408 and 429, so the
-	// turn fails the claim rather than going again (supervise's holdsTheIssue).
+	// turn fails the claim rather than going again (supervise's classifyProviderError).
 	stand.failTurn()
 	r.deliver(tester, "Say the word FAILING-"+randomSuffix(t)+" and nothing else.")
 	r.await(string(tester)+" to fail", 4*time.Minute, func() bool {

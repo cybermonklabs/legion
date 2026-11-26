@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A turn that ends in OpenAI's cyber-policy refusal of the session's content (the class
+    `cyber_policy` Oh My Pi's own classifier gives it, which pi-legion's turn-outcome report
+    carries as `code`) holds the issue for its architect, whatever HTTP status came with it, and
+    the claim fails under the cause word `cyber_policy`; the report of a take's turn takes the task
+    back first. Before, a refusal a gateway relayed as a 503 climbed the provider-error ladder with
+    no attempt limit, and each take of the task again started a turn from outside the session,
+    which ended Oh My Pi's own hold and sent the refused content to OpenAI again.
+time: 2026-11-25T00:42:42Z
+custom:
+    Issue: cyber-policy-holds-the-issue

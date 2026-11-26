@@ -124,7 +124,7 @@ func TestThePromptRetryLadderStopsGrowingAtTenMinutes(t *testing.T) {
 // none costs the claim a prompt failure: chargePrompt retires and then fails a claim past
 // Limits.PromptFailures, which would fail every claim of a project at once in a provider outage
 // — and a credential is the fleet's, so a 401 or a 403 reaches every claim of the project at
-// once (holdsTheIssue).
+// once (classifyProviderError).
 func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.T) {
 	for _, status := range []int{401, 403, 408, 429, 529} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
@@ -242,6 +242,39 @@ func TestARefusalThenAMalformedRequestHoldsTheIssue(t *testing.T) {
 	h.wantPrompts(2)
 }
 
+// OpenAI's cyber-policy refusal of a take's turn holds the issue whatever status it came with,
+// under a cause word of its own, and takes the task back first, as a status that cannot clear does
+// (takeBackAndFail): the turn ran and is over, and the task is still owed, which the architect
+// decides. Nothing is given again, however long the claim waits: the ladder never starts, since
+// its next take would be a turn from outside the session, which ends Oh My Pi's own hold and sends
+// the refused content to OpenAI again. A gateway relays such a refusal as a 503, which on its
+// status alone would climb the ladder, and a request Oh My Pi held after one carries no status at
+// all.
+func TestACyberPolicyRefusalHoldsTheIssueWhateverItsStatus(t *testing.T) {
+	for _, status := range []int{0, 400, 503} {
+		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
+			h := workingClaim(t)
+			number := h.pending().Number
+
+			if err := h.cyberTakeTurn(status); err != nil {
+				t.Fatalf("report the take's turn: %v", err)
+			}
+
+			h.wantHeldForCyberPolicy()
+			p := h.claim().Pending
+			if p == nil || p.Number != number || p.taken() {
+				t.Fatalf("the failed claim holds %+v, want task %d kept for its architect with its take given back", p, number)
+			}
+			if p.ProviderErrorRetries != 0 {
+				t.Errorf("the failed claim's task counts %d sends on the ladder, want none", p.ProviderErrorRetries)
+			}
+			// Past the ladder's top step twice over: the take that ran the refused turn is the one take.
+			h.advance(2 * promptRetryMax)
+			h.wantPrompts(1)
+		})
+	}
+}
+
 // R2: a newer daemon task for the claim replaces the task a provider error took back, and is
 // taken at once. Nothing works the owed task, the ladder's next step can be ten minutes away and
 // a run of errors has no end of its own, so a task that waited behind it would wait that long.
@@ -298,7 +331,7 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 // that daemon took the ask back untaken, and its wait before the value was written again was
 // that daemon's timer, which went with it.
 func olderDaemonsLadderStep(d *Delivery) {
-	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
+	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(classifyProviderError(529, "").cause)
 }
 
 // A question an older daemon queued as a task and kept on the provider-error ladder is dropped
@@ -669,7 +702,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 // The same task at the other end of a claim's life. A failure keeps the pending delivery for
 // whoever decides what happens next, and the task the ladder kept is that delivery. The failure
 // here is the one every provider error can end in: the turn the ladder's own take started ended
-// in a malformed request, which holds the issue (holdsTheIssue).
+// in a malformed request, which holds the issue (classifyProviderError).
 func TestAFailureKeepsTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
 	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})

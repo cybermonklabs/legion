@@ -168,7 +168,7 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-1", ""), Origin: supervise.OriginNotice, Entry: 1}},
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Origin: supervise.OriginNotice, Entry: 1, Decided: true}},
 	})
 }
 

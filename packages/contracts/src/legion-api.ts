@@ -230,6 +230,7 @@ export const LEGION_FAILURE_CAUSES = [
   "stale_plugin",
   "prompt_retires_exhausted",
   "provider_error",
+  "cyber_policy",
   "unrecorded",
 ] as const;
 
@@ -1664,7 +1665,13 @@ const legionProviderError = z.strictObject({
  * says. The daemon judges every turn that was not the take's from its own report: a refusal whose
  * status cannot clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other
  * refusal counts in the claim's run of provider-error turns. A clean report ends that run when no
- * later turn's report has reached the daemon before it (`claim.TurnOutcomeRequest`). */
+ * later turn's report has reached the daemon before it (`claim.TurnOutcomeRequest`). `code` is
+ * the class the producer gave a refused turn with the host's own classifier (Oh My Pi's
+ * `isCyberPolicyRefusal`, the reading that sets a prompt result's `code`): `cyber_policy` alone,
+ * OpenAI's refusal of the session's content, which fails the claim at once under cause
+ * `cyber_policy`, whatever its status, on the report of the take's turn, which takes that task
+ * back first, and on the report of any other turn alike. A daemon before contract entry
+ * 20261125174608 (cyber-policy) refuses a body that carries it. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1675,6 +1682,7 @@ const turnOutcomeFields = {
   held: z.number().int().positive().optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   unprompted: z.boolean().optional(),
+  code: z.literal("cyber_policy").optional(),
 };
 
 /** `claim.AgentCaller` — the worker inside the agent's own session, which holds the secret its
@@ -1722,12 +1730,13 @@ export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequ
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
  * turns the claim's reports now end with, which the daemon answers each report with and which
  * decides nothing. `failed` is whether this report failed the claim: a run of refused turns fails
- * none (dispatch://INFRA-4508), and a report fails it only where the provider refused its turn with
- * a status that cannot clear, which holds the issue for its architect — the report naming the task
- * a take holds, with that status in `providerError`, and the report of any other turn, one naming
- * no task or marked `unprompted`. This and `claim.TurnOutcomeResponse` are where that rule is
- * stated; every other reader of `failed` points here. The producer acts on neither field — its
- * turn is over — and logs them, which is where an operator sees the count being made. */
+ * none (dispatch://INFRA-4508), and a report fails it only where the provider refused its turn in
+ * a way that cannot clear, which holds the issue for its architect: a status that cannot clear,
+ * or `code: "cyber_policy"` whatever its status — the report naming the task a take holds, with
+ * that status in `providerError`, and the report of any other turn, one naming no task or marked
+ * `unprompted`. This and `claim.TurnOutcomeResponse` are where that rule is stated; every other
+ * reader of `failed` points here. The producer acts on neither field — its turn is over — and
+ * logs them, which is where an operator sees the count being made. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),
