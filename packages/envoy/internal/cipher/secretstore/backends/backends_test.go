@@ -123,10 +123,11 @@ func TestEachRegistryFileIsBehindItsStoresTag(t *testing.T) {
 	}
 }
 
-// TestEachRegisteredStoreRunsTheContract: every store the registry holds has a test, among the test
-// files a default build compiles, that calls secretstoretest.StoreContract with the store's ID, so
-// no store joins the registry without running the contract against its fake. A call in a file
-// behind a tag such as gcplive does not count.
+// TestEachRegisteredStoreRunsTheContract: every store the registry holds has tests, among the test
+// files a default build compiles, that call secretstoretest.StoreContract and
+// secretstoretest.WriterContract with the store's ID, so no store joins the registry without
+// running both contracts against its fake. A call in a file behind a tag such as gcplive does not
+// count.
 func TestEachRegisteredStoreRunsTheContract(t *testing.T) {
 	modulePath, root := module(t)
 	for _, b := range backends.All() {
@@ -141,8 +142,10 @@ func TestEachRegisteredStoreRunsTheContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", b.ID(), err)
 		}
-		if !callsContract(t, dir, append(pkg.TestGoFiles, pkg.XTestGoFiles...), "StoreContract", b.ID()) {
-			t.Errorf("the %s store (%s) runs no secretstoretest.StoreContract(t, %q, …) in a test a default build compiles", b.ID(), pkgPath, b.ID())
+		for _, contract := range []string{"StoreContract", "WriterContract"} {
+			if !callsContract(t, dir, append(pkg.TestGoFiles, pkg.XTestGoFiles...), contract, b.ID()) {
+				t.Errorf("the %s store (%s) runs no secretstoretest.%s(t, %q, …) in a test a default build compiles", b.ID(), pkgPath, contract, b.ID())
+			}
 		}
 	}
 }
@@ -176,4 +179,84 @@ func callsContract(t *testing.T, dir string, files []string, contract, id string
 		})
 	}
 	return found
+}
+
+// under reports whether path is prefix or a package below it.
+func under(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// testSupport reports whether path is a test-support package: one whose last path element ends in
+// "test" (awstest, gcptest, policytest, secretstoretest, ciphertest, …).
+func testSupport(path string) bool {
+	return strings.HasSuffix(path[strings.LastIndex(path, "/")+1:], "test")
+}
+
+// goList runs go list with args from the module's root and answers its output's lines.
+func goList(t *testing.T, root string, args ...string) []string {
+	t.Helper()
+	cmd := exec.Command("go", append([]string{"list"}, args...)...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		if exit, ok := err.(*exec.ExitError); ok {
+			stderr = string(exit.Stderr)
+		}
+		t.Fatalf("go list %s: %v: %s", strings.Join(args, " "), err, stderr)
+	}
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+// TestEachStoreStaysInItsPackage (c-store-boundary): no package of the module but a store's own
+// package and those under it, the registry and the test-support packages imports that store's
+// package or one of its ServiceSDKs, so a store's code and its SDK enter a binary through the
+// registry alone, and a build tag that leaves the store out leaves them out.
+func TestEachStoreStaysInItsPackage(t *testing.T) {
+	modulePath, root := module(t)
+	all := backends.All()
+	if len(all) == 0 {
+		t.Fatal("the registry holds no store")
+	}
+	registry := modulePath + "/internal/cipher/secretstore/backends"
+	lines := goList(t, root, "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "./...")
+	if len(lines) < 10 {
+		t.Fatalf("go list listed %d packages of the module; the walk read nothing", len(lines))
+	}
+	for _, b := range all {
+		own := reflect.TypeOf(b).PkgPath()
+		forbidden := append([]string{own}, b.ServiceSDKs()...)
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			pkg := fields[0]
+			if under(pkg, own) || pkg == registry || testSupport(pkg) {
+				continue
+			}
+			for _, imp := range fields[1:] {
+				for _, f := range forbidden {
+					if under(imp, f) {
+						t.Errorf("%s imports %s, which only the %s store may import", pkg, imp, b.ID())
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNoBinaryLinksATestSupportPackage: neither binary that carries a store (cipherd, agent-secrets)
+// links a test-support package, whose fakes stand in for a store.
+func TestNoBinaryLinksATestSupportPackage(t *testing.T) {
+	modulePath, root := module(t)
+	deps := goList(t, root, "-deps", "./cmd/cipherd", "./cmd/cipher")
+	if len(deps) < 10 {
+		t.Fatalf("go list -deps listed %d packages; the walk read nothing", len(deps))
+	}
+	for _, dep := range deps {
+		if under(dep, modulePath) && testSupport(dep) {
+			t.Errorf("a binary links %s, a test-support package", dep)
+		}
+	}
 }

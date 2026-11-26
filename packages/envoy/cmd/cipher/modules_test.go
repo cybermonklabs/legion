@@ -12,6 +12,7 @@ package main
 //ci:builds packages/envoy ./cmd/cipherd CGO_ENABLED=0 GOOS=linux TestTheBrokerBinaryLinksItsListedModules requireModules' go list -deps . in ../cipherd CGO_ENABLED=0 GOOS=linux
 
 import (
+	"debug/buildinfo"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
@@ -50,6 +52,48 @@ var agentSecretsModules = []string{
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc",
 	"github.com/aws/aws-sdk-go-v2/service/sts",
 	"github.com/aws/smithy-go",
+	"github.com/cespare/xxhash/v2",
+	"github.com/coreos/go-oidc/v3",
+	"github.com/felixge/httpsnoop",
+	"github.com/go-jose/go-jose/v4",
+	"github.com/go-logr/logr",
+	"github.com/go-logr/stdr",
+	"github.com/google/s2a-go",
+	"github.com/google/uuid",
+	"github.com/googleapis/enterprise-certificate-proxy",
+	"github.com/googleapis/gax-go/v2",
+	"go.opentelemetry.io/auto/sdk",
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+	"go.opentelemetry.io/otel",
+	"go.opentelemetry.io/otel/log",
+	"go.opentelemetry.io/otel/metric",
+	"go.opentelemetry.io/otel/trace",
+	"golang.org/x/crypto",
+	"golang.org/x/net",
+	"golang.org/x/oauth2",
+	"golang.org/x/sync",
+	"golang.org/x/sys",
+	"golang.org/x/term",
+	"golang.org/x/text",
+	"golang.org/x/time",
+	"google.golang.org/api",
+	"google.golang.org/genproto",
+	"google.golang.org/genproto/googleapis/api",
+	"google.golang.org/genproto/googleapis/rpc",
+	"google.golang.org/grpc",
+	"google.golang.org/protobuf",
+}
+
+// agentSecretsModulesWithoutAWS is every module agent-secrets built with cipher_no_aws links,
+// read as agentSecretsModules is, for linux: agentSecretsModules less every github.com/aws module,
+// smithy-go among them.
+var agentSecretsModulesWithoutAWS = []string{
+	"cloud.google.com/go/auth",
+	"cloud.google.com/go/auth/oauth2adapt",
+	"cloud.google.com/go/compute/metadata",
+	"cloud.google.com/go/iam",
+	"cloud.google.com/go/secretmanager",
 	"github.com/cespare/xxhash/v2",
 	"github.com/coreos/go-oidc/v3",
 	"github.com/felixge/httpsnoop",
@@ -213,6 +257,51 @@ func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
 func TestTheBrokerBinaryLinksItsListedModules(t *testing.T) {
 	t.Parallel()
 	requireModules(t, "the broker for linux", filepath.Join("..", "cipherd"), brokerModules, "CGO_ENABLED=0", "GOOS=linux")
+}
+
+// TestABuildWithoutAStoreLinksNoneOfItsSDK builds agent-secrets for linux once per registered
+// store with that store's tag (cipher_no_<id>), which leaves its registry file out, and holds that
+// no module the binary links is or lies under one of the store's ServiceSDKs: a deployment that
+// leaves a store out ships none of its SDK. Control: the default build links each store's SDK.
+func TestABuildWithoutAStoreLinksNoneOfItsSDK(t *testing.T) {
+	defaultBuild := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")})
+	for _, b := range backends.All() {
+		t.Run(b.ID(), func(t *testing.T) {
+			if len(b.ServiceSDKs()) > 0 && len(sdkModules(t, defaultBuild, b.ServiceSDKs())) == 0 {
+				t.Fatalf("control: the default build links none of %s's SDK %v, so a build without it proves nothing", b.ID(), b.ServiceSDKs())
+			}
+			binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Flags: []string{"-tags=cipher_no_" + b.ID()}, Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")})
+			if linked := sdkModules(t, binary, b.ServiceSDKs()); len(linked) > 0 {
+				t.Fatalf("agent-secrets built with cipher_no_%s links %q, the %s store's SDK", b.ID(), linked, b.ID())
+			}
+		})
+	}
+}
+
+// sdkModules is each module the binary links that is or lies under one of sdks.
+func sdkModules(t *testing.T, binary string, sdks []string) []string {
+	t.Helper()
+	info, err := buildinfo.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("read the build info of %s: %v", binary, err)
+	}
+	var linked []string
+	for _, dep := range info.Deps {
+		for _, sdk := range sdks {
+			if dep.Path == sdk || strings.HasPrefix(dep.Path, sdk+"/") {
+				linked = append(linked, dep.Path)
+			}
+		}
+	}
+	return linked
+}
+
+// TestTheAgentSecretsBinaryWithoutAWSLinksItsListedModules holds the cipher_no_aws build of
+// agent-secrets for linux to agentSecretsModulesWithoutAWS. It reads the modules as every other
+// row here does, with go list -deps under the tag, and compiles nothing.
+func TestTheAgentSecretsBinaryWithoutAWSLinksItsListedModules(t *testing.T) {
+	t.Parallel()
+	requireModules(t, "agent-secrets for linux without AWS", ".", agentSecretsModulesWithoutAWS, "CGO_ENABLED=0", "GOOS=linux", "GOFLAGS=-tags=cipher_no_aws")
 }
 
 // requireModules fails t unless the command in dir, built with env, links exactly the modules
