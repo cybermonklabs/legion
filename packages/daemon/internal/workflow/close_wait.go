@@ -493,8 +493,7 @@ func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || check == nil {
 		return err
 	}
-	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA ||
-		fact.Seq <= check.RelookSeq {
+	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA {
 		return nil
 	}
 	read, err := e.store.NewestCheckRead(ctx, tx, issue.Key)
