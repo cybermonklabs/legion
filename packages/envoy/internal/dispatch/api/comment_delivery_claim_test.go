@@ -173,9 +173,11 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	}
 	first := make(chan deliveryResult, 1)
 	second := make(chan deliveryResult, 1)
+	// Each retry is a request's, whose gate put its reader in ctx; a direct call names the server's
+	// own, since a context with none resolves the pinned session as one nobody sees.
 	go func() {
 		attempt, held, err := direct.deliverResolvedCommentMention(
-			context.Background(), comment, event, stale, model.Actor{Kind: "user", ID: "alice"}, attemptClaim{}, direct.newTakeoverRetry(),
+			withReader(context.Background(), everyReader), comment, event, stale, model.Actor{Kind: "user", ID: "alice"}, attemptClaim{}, direct.newTakeoverRetry(),
 		)
 		first <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
@@ -185,7 +187,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	mu.Unlock()
 	go func() {
 		attempt, held, err := direct.deliverResolvedCommentMention(
-			context.Background(), comment, event, stale, model.Actor{Kind: "user", ID: "bob"}, attemptClaim{}, direct.newTakeoverRetry(),
+			withReader(context.Background(), everyReader), comment, event, stale, model.Actor{Kind: "user", ID: "bob"}, attemptClaim{}, direct.newTakeoverRetry(),
 		)
 		second <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()

@@ -26,7 +26,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1229,11 +1228,19 @@ func (s *server) answerDrainedRepeat(
 // that caller does not see now: a replayed answer, a recovery point or a landed write's notice is
 // the first request's, and a key belongs to a person whatever credential they write through
 // (requestKeyLogin), so a token whose list leaves the object's project out, or a person taken off
-// its project's list since, would read it. The object is the one the route's address names
-// (projectResolverFor), read as the server sees it and as the caller does; a route whose address
-// names none is judged by the project, or the issue, its stored answer names (answerProject). A
-// caller that sees every object reads no statement for it (R9), and nor does a repeat in any other
-// state, which answers nothing of the first request's object.
+// its project's list since, would read it. It decides from the route's own address, as the first
+// request's project check does (projectResolverFor): the object the address names, read as the
+// server sees it and as the caller does, is hidden when the server finds it and the caller does
+// not. A caller that sees every object reads no statement for it (R9), and nor does a repeat in any
+// other state, which answers nothing of the first request's object.
+//
+// A route whose address names no object the resolver knows - a create, a conversation's message, a
+// broadcast - gives no object to judge the stored answer by, and running its request again would
+// write a second time, so its repeat is refused to a caller that does not see every object, with
+// the refusal a write that landed and is not answered again is given (KEY_COMMITTED): what the
+// first request made is read through the routes that read it, each of which holds the caller to
+// what it sees. The refusal is the error, which every caller answers as the route answers the
+// keyed layer's own refusals (refuseKeyed).
 func (s *server) heldAnswerHidden(r *http.Request, pattern string, held heldRequestKey, state keyState) (bool, error) {
 	if state != keyAnswered && state != keyRecovered && state != keyCommitted {
 		return false, nil
@@ -1248,50 +1255,20 @@ func (s *server) heldAnswerHidden(r *http.Request, pattern string, held heldRequ
 	if seesEveryObject(reader) {
 		return false, nil
 	}
+	resolve, addressed := s.projectResolverFor(pattern)
+	if !addressed {
+		key, _, _ := requestKeyHeader(r)
+		return true, errorf(http.StatusConflict, contracts.IdempotencyKeyCommitted,
+			"the request under %s %q (%s %s) was made, and its address names no object Dispatch can hold to what this caller sees, so it is not run again and its answer is not replayed to this caller: read what it wrote",
+			contracts.IdempotencyKeyHeader, key, held.method, held.path)
+	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
-	if resolve, addressed := s.projectResolverFor(pattern); addressed {
-		held, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
-		if err != nil || held == "" {
-			return false, err
-		}
-		seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
-		return seen == "", err
+	found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
+	if err != nil || found == "" {
+		return false, err
 	}
-	project, issue := answerProject(held.response)
-	switch {
-	case issue != "":
-		var seen bool
-		err := pool.QueryRow(ctx, `select not exists (select 1 from issues where key = $1)
-			or exists (select 1 from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`)`,
-			issue, refs.VisibilityArg(reader)).Scan(&seen)
-		return !seen, err
-	case project != "":
-		var known bool
-		if err := pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)`, project).Scan(&known); err != nil || !known {
-			return false, err
-		}
-		seen, err := projectSeenBy(ctx, pool, reader, project)
-		return !seen, err
-	}
-	return false, nil
-}
-
-// answerProject is the project and the issue a stored answer's top-level object names: an issue's
-// `project`, any other object's `project_key`, and its `issue_key`; each "" where it names none or
-// the answer is no JSON object.
-func answerProject(response []byte) (project, issue string) {
-	var answer struct {
-		Project    string `json:"project"`
-		ProjectKey string `json:"project_key"`
-		Issue      string `json:"issue_key"`
-	}
-	if json.Unmarshal(response, &answer) != nil {
-		return "", ""
-	}
-	if answer.ProjectKey != "" {
-		return answer.ProjectKey, answer.Issue
-	}
-	return answer.Project, answer.Issue
+	seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+	return seen == "", err
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the

@@ -299,7 +299,7 @@ func suggestionsBehindLock(
 
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
-		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
+		answered <- srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: project, text: text, source: source})
 	}()
 	// The wait ends on one of two facts: the call's backend queued behind the lock, which takes
 	// milliseconds, or the call's answer arriving first, which fails the row; the call's allowance

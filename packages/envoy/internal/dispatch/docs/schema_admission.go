@@ -260,19 +260,20 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 	s.recheckAccess(ctx)
 }
 
-// RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. At
-// this slice only tests run it: slice S6a's API starts it on the document sockets' heartbeat, on
-// which the live socket and the Delivery views resolve their readers again too. An access change
-// made by SQL alone - a statement at a psql prompt - appends no event and announces nothing on
-// store.AccessChangedChannel, so no notification reaches room sync's access lane, and it moves
-// what a person sees all the same: this pass is what finds it, a heartbeat at most after it
-// committed, and closes each socket whose person lost its room with the code an announced change
-// closes it with (errAccessRevoked). Each beat moves the access epoch first (accessEpoch), so
-// every socket asks its rule again before its next data frame too (socketStillReads). The pass's
-// read of each person's rooms refreshes the stored listener answer first (readableRooms, through
-// refreshRosterForReader), as each socket's ask does. A pass while this process holds no socket
-// reads nothing. ctx is a process-lifetime context, outside any transaction of the pool: the
-// passes run on a hold mark of their own (store.ForConcurrentWorker), as each room-sync lane does.
+// RunAccessRecheck runs the access re-check (recheckAccess) once every every, until ctx ends. The
+// API starts it as it mounts the document socket (api.register), on the sockets' heartbeat
+// (api.Deps.StreamHeartbeat); the live socket and the Delivery views resolve their readers again
+// on that beat from S4 on. An access change made by SQL alone - a statement at a psql prompt -
+// appends no event and announces nothing on store.AccessChangedChannel, so no notification reaches
+// room sync's access lane, and it moves what a person sees all the same: this pass is what finds
+// it, a heartbeat at most after it committed, and closes each socket whose person lost its room
+// with the code an announced change closes it with (errAccessRevoked). Each beat moves the access
+// epoch first (accessEpoch), so every socket asks its rule again before its next data frame too
+// (socketStillReads). The pass's read of each person's rooms refreshes the stored listener answer
+// first where something set a refresh (readableRooms, through refreshRosterForReader), as each
+// socket's ask does. A pass while this process holds no socket reads nothing. ctx is a
+// process-lifetime context, outside any transaction of the pool: the passes run on a hold mark of
+// their own (store.ForConcurrentWorker), as each room-sync lane does.
 func (s *Service) RunAccessRecheck(ctx context.Context, every time.Duration) {
 	ctx = store.ForConcurrentWorker(ctx)
 	ticker := time.NewTicker(every)
@@ -386,10 +387,11 @@ func (s *Service) readableRooms(ctx context.Context, person string, admissions [
 // who's documents, unless who reads every document (readsEveryDocument): a session's file follows
 // the session content rule (access.DocumentClause through access.PartyClause), which reads a
 // listener list only from a stored answer that has not passed its expires_at and judges a listed
-// session of an expired one as a session with no list. It is the api's refresh on resolving a
-// reader (readerFor), made where this service resolves one: a socket's admission and each read of
-// which rooms a person still reads. An open reader of a deployment that holds no private project
-// reads nothing for it (R9).
+// session of an expired one as a session with no list. It is the refresh the api makes on resolving
+// a reader (readerFor) from S3c-issues on, made where this service resolves one: a socket's
+// admission and each read of which rooms a person still reads. Before that slice nothing sets it,
+// and this refreshes nothing. An open reader of a deployment that holds no private project reads
+// nothing for it (R9).
 func (s *Service) refreshRosterForReader(ctx context.Context, who model.Actor) {
 	if readsEveryDocument(who) {
 		return

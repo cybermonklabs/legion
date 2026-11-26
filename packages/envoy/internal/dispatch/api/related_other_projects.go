@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -20,9 +21,10 @@ import (
 // It reads the windows of embeddings of kind ask_part and joins asks as the same-project ask arm
 // joins them (meaning_ask_candidates in search.go), then issues and artifacts for the owner. A
 // row qualifies when the ask is a question, somebody answered it, the answer carries text, and
-// the ask belongs to another project than the one that asks. The project test has two parts, and
-// the `is not null` part is necessary: `null <> $2` is unknown, so an ask that belongs to no
-// project would drop out of the answer and nothing would say so.
+// the ask belongs to another project than the one that asks, one the reader whose check this is
+// sees (access.ProjectClause over its viewer). The project test has three parts, and the
+// `is not null` part is necessary: `null <> $2` is unknown, so an ask that belongs to no project
+// would drop out of the answer and nothing would say so.
 //
 // Those tests sit inside the candidate CTE, before its LIMIT. The transaction that runs the
 // statement sets hnsw.iterative_scan = relaxed_order (searchMeaningScan), which keeps the index
@@ -38,7 +40,7 @@ import (
 //
 // Parameters: $1 the question's embedding (a vector literal), $2 the project that asks, $3 the
 // embedder's identity (embed.Embedder.Identity), $4 searchMeaningFloor, $5
-// contracts.SearchKindDepth.
+// contracts.SearchKindDepth, $6 the reader's visibility argument (relatedViewer).
 //
 // Columns: the owner (an issue's key, title and status, or an owning project document's id, slug
 // and name), the project of the row, the document the ask stands on (its slug, its name and
@@ -64,6 +66,7 @@ var relatedOtherProjectsSQL = `with candidates as (
      and btrim(coalesce(k.answer->>'text', '')) <> ''
      and coalesce(i.project_key, a.project_key) is not null
      and coalesce(i.project_key, a.project_key) <> $2
+     and ` + access.ProjectClause("coalesce(i.project_key, a.project_key)", "$6") + `
    order by e.embedding <=> $1::vector
    ` + searchWindowLimit + `
 ),
@@ -99,13 +102,17 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // document owner alone, and the items of the asking project keep that shape. The row carries its
 // own state and answer, so this leg reads no ask state a second time (attachAskStates).
 //
+// who is the reader whose check this is (relatedInput.who): the leg offers the answered questions
+// of the projects its viewer sees alone (relatedViewer), so a project it does not see offers it
+// nothing, and a reader with no viewer is offered nothing at all.
+//
 // reader is the display tree reader each answer's text is registered with, which is the leg's
 // own and never the request's: this runs on a goroutine the check may abandon at its grace, and
 // the goroutine that made the reader resolves it before it hands these results over
 // (relatedMeaningStage). It is nil where the caller asked for no tree, which leaves every
 // answer's text_tree out, as a nil reader does on every other route.
 func (s *server) relatedOtherProjects(
-	ctx context.Context, vector []float32, project, identity string, reader *displayTreeReader,
+	ctx context.Context, vector []float32, project, identity string, who model.Actor, reader *displayTreeReader,
 ) ([]model.SearchResult, error) {
 	// The test seam: a case holds this leg past its grace, or makes it fail, here (server
 	// beforeCrossProjectRead). Nothing but a test sets it.
@@ -120,7 +127,7 @@ func (s *server) relatedOtherProjects(
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	rows, err := tx.Query(ctx, relatedOtherProjectsSQL,
-		embed.Literal(vector), project, identity, searchMeaningFloor, contracts.SearchKindDepth)
+		embed.Literal(vector), project, identity, searchMeaningFloor, contracts.SearchKindDepth, relatedViewer(who))
 	if err != nil {
 		return nil, fmt.Errorf("search the answered questions of other projects: %w", err)
 	}

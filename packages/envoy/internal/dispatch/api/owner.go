@@ -100,20 +100,6 @@ func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, ke
 	return project, nil
 }
 
-// projectSeenBy reports whether who sees project key (access.ProjectClause): a stored answer of a
-// request key replayed to a caller is held to it (request_keys.go). A reader that sees every
-// object, as every open viewer of a deployment with no private project does, sees every project and
-// reads no statement for it (R9).
-func projectSeenBy(ctx context.Context, q queryer, who model.Actor, key string) (bool, error) {
-	if seesEveryObject(who) {
-		return true, nil
-	}
-	var seen bool
-	err := q.QueryRow(ctx, "select exists (select 1 from projects where key = $1 and "+
-		access.ProjectClause("key", "$2")+")", key, refs.VisibilityArg(who)).Scan(&seen)
-	return seen, err
-}
-
 // requireOpenOwner locks the owner before its collaboration rows are changed, as who reads it.
 func (s *server) requireOpenOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner) error {
 	_, err := s.requireOpenOwnerStatus(ctx, tx, who, owner)

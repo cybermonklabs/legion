@@ -170,8 +170,9 @@ type Deps struct {
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves, how often the
+	// document service re-checks its sockets' access (docs.Service.RunAccessRecheck), and how
+	// often a live socket pings its page and sends it a heartbeat frame.
 	StreamHeartbeat time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
@@ -968,6 +969,19 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,
 		s.liveSocketHandler(s.serveLiveSocket))
+	// An access change made by SQL alone appends no event and announces nothing the document
+	// service hears, so it re-checks its sockets' access on their heartbeat too, until lifetime
+	// ends (docs.Service.RunAccessRecheck). The refresh of the stored listener answer it makes
+	// before each read of a person's rooms (docs.Service.SetRosterRefresh) is set from S3c-issues
+	// on, the slice that brings that refresh (refreshRosterForContent); until then nothing sets it,
+	// and the session content rule reads the stored answer as it stands.
+	if recheck, ok := deps.Docs.(interface {
+		RunAccessRecheck(context.Context, time.Duration)
+	}); ok {
+		// It runs until lifetime ends and waitBackground does not wait for it: shutdown may wait
+		// with lifetime still running, and a pass reads only for the sockets this process holds.
+		go recheck.RunAccessRecheck(lifetime, cmp.Or(deps.StreamHeartbeat, defaultStreamHeartbeat))
+	}
 	return s
 }
 

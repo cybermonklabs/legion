@@ -321,7 +321,7 @@ func recallNewSearch(ctx context.Context, srv *server, project string, picked re
 	if picked.NoLexemes || len(picked.Terms) == 0 {
 		return nil, nil
 	}
-	response, err := srv.relatedSearch(ctx, srv.deps.Store.Pool, relatedKeywordStatement, project, picked, nil)
+	response, err := srv.relatedSearch(ctx, srv.deps.Store.Pool, everyReader, relatedKeywordStatement, project, picked, nil)
 	return response.Results, err
 }
 
@@ -353,7 +353,7 @@ func (item recallItem) String() string { return item.owner + "(" + item.kind + "
 // done issue owns, and the best three of those.
 func recallListed(ctx context.Context, srv *server, project, query string, results []model.SearchResult) []recallItem {
 	suggestions := &model.Suggestions{}
-	srv.fillRelatedItems(ctx, relatedInput{project: project, source: suggestionSource{kind: "issue", issueKey: query}}, results, suggestions)
+	srv.fillRelatedItems(ctx, relatedInput{who: everyReader, project: project, source: suggestionSource{kind: "issue", issueKey: query}}, results, suggestions)
 	listed := make([]recallItem, 0, len(suggestions.Related))
 	for _, item := range suggestions.Related {
 		owner := item.Owner.ArtifactID
