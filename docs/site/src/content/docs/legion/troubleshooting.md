@@ -1672,11 +1672,12 @@ These arrive as messages on the Dispatch issue:
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
-  re-reads, fix in its merge of the base what the base's newer code breaks, send the issue back
-  only for a change to the change's own logic, or tell the architect what only a person can change. A pull
-  request a person already merged needs nothing: the daemon reads that merge and closes the
-  issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
-  parked.
+  re-reads, or fix in its forward merge what newer base code breaks. If a required check still
+  fails and a forward merge cannot fix it, the merger returns the issue to `implementing` so the
+  fix goes in the same pull request. The merger tells the architect about settings or permissions
+  only a person can change. If a person already merged the pull request, the daemon reads that
+  merge and closes the issue. It closes a root whose tree still runs once the last other issue of
+  that tree is done or parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
   branch, `legion/<KEY>`. The issue moves on only on an open pull request, or one the daemon

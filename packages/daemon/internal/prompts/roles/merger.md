@@ -92,7 +92,11 @@ You may ask the implementer, the tester or the reviewer what they know, with `en
 
 ### A check that failed
 
-Read its log, and the same check on the base branch, and decide its cause. A check that passes when re-run at the same head says nothing about this change: re-run it. A check that fails on the base too says nothing about this change either, and it still stops your merge: it is yours to fix as `skill://legion-worker/references/findings.md` says, and the base's fix is no reason to wait unless an issue that tracks it is claimed, `in_progress`, and its holder said on Envoy that it works on it now: then tell that holder what you need by when, and fix it yourself after that time. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
+Read its log, and the same check on the base branch, and decide its cause. If the failure may be transient, re-run the check once at the same head. If it passes, continue the merge. Never re-run a merge-group check. When newer base code breaks this change, fix the change in the forward merge as above.
+
+If the same failure occurs on the base and still blocks the merge, a forward merge cannot fix it. Move the issue back to implementation without changing the workspace. Wait only if the issue that tracks the failure is claimed and `in_progress`, and its holder said on Envoy that it works on it now. Tell the holder what you need and by when. Move the issue back when that time passes without a fix.
+
+If the fix needs changes outside a forward merge, call `request_backward_move` with `to: "implementing"`. In the reason, name the check and say why a forward merge cannot fix it. If the check fails on the base too, say so. The implementer fixes it in this same pull request, as `skill://legion-worker/references/findings.md` says.
 
 ## A closed design gate
 

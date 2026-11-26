@@ -185,10 +185,13 @@ Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status
 For a fold, name in the reason the issue that carries the work.
 Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
 Say why in a `dispatch comment`.
-A child that looks independent of the tree,
-capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
-child as a root. A problem outside the tree is never an issue you file outside it: a defect that
-stops this tree's work, and a clear defect in code this tree touches or depends on, are this tree's
+A child that looks independent of the tree, capacity, and a design or scope conflict with another
+tree go to the controller, which asks a person before it re-files a child as a root. Where this
+tree's change touches files that another tree's open pull request changes, tell that tree's
+architect in a comment and go on: wait for no answer, and do not send it to the controller
+(`skill://legion-worker/references/findings.md`, step 1). A problem outside the tree is never an
+issue you file outside it: a defect that stops this tree's work, and a clear defect in code this
+tree touches or depends on, are this tree's
 to fix, in whatever repository the fix belongs, in this tree's own pull request or in a child you
 file in that repository, and an open issue that tracks it is no reason to wait. Any other clear
 defect goes to the controller, and a problem that needs a decision is a `dispatch ask`

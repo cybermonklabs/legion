@@ -406,8 +406,8 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back only for a change to the
-// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// before it merges it, may ask the other workers, and sends the issue back when the fix is no merge
+// of the base. Its part says so, and no longer tells it to hand the conflict to the
 // implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
@@ -424,9 +424,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"so ask each of them, on their role topics, to record their results at the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
-		"A check that fails on the base too says nothing about this change either, and it still stops your merge",
-		"the base's fix is no reason to wait unless an issue that tracks it is claimed, `in_progress`, and its holder said on Envoy that it works on it now",
-		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
@@ -436,7 +433,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"the daemon asks the implementer to merge the base forward while the issue stays in `merging`",
 		"That is work to fix. Send the issue back with `request_backward_move`",
 		"You push nothing.",
-		"wait for the base's fix",
 	} {
 		if strings.Contains(merger, gone) {
 			t.Errorf("roles/merger.md still says %q", gone)

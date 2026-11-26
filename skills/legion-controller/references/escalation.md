@@ -1,10 +1,10 @@
 # Architect escalation
 
-Read this when an architect sends you a matter, on a `held` wake with `reason: "escalated"`, and on an `update-stalled` wake. Three matters are yours: a child that looks independent of its tree, capacity, and a conflict between trees. Send an issue-design decision back to its architect with `envoy_publish`: it is not yours to make.
+Read this when an architect sends you a matter, on a `held` wake with `reason: "escalated"`, and on an `update-stalled` wake. Three matters are yours: a child that looks independent of its tree, capacity, and a design or scope conflict between trees. Send an issue-design decision back to its architect with `envoy_publish`: it is not yours to make.
 
 **Capacity.** Order is your only lever: `admission.cap` is the operator's `legion.yaml` setting, and a tree's children compete for it with every other tree's. Tell the architect where its issues stand in `admission.waiting`, and open a finding ask when the deployment needs a larger cap.
 
-**A conflict between trees.** Read both roots, publish what you read to both architects, and open a finding ask when they need a person's decision.
+**A design or scope conflict between trees.** Read both roots, publish what you read to both architects, and open a finding ask when they need a person's decision. Overlapping files in another tree's open pull request are not this: the architect comments to that tree's architect (`skill://legion-worker/references/findings.md`, step 1) and goes on, with no answer awaited.
 
 ## An escalated hold
 
