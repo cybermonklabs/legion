@@ -2659,7 +2659,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
-// the person and this version holds the text it named (restoresVersionText: byte for byte,
+		// the person and this version holds the text it named (restoresVersionText: byte for byte,
 		// or, for a version another renderer version stored, as this build renders it), which
 		// keeps it with the person (MoveApprovalAsk). A move over versions written while the
 		// issue was closed names the editor a closed issue's settlement kept, where this version
