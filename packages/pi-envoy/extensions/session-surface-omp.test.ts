@@ -184,6 +184,10 @@ interface SurfaceSession {
   /** Ends this omp and starts another on the same session with `--continue`, as a pod's restart
    *  does, and resolves once the new one has registered the session with the listener. */
   restart(): Promise<void>;
+  /** Moves this omp off the session onto a fresh one and straight back onto it, as a person's
+   *  `/new` and `/resume` do, and resolves once it has taken this session up again: one process,
+   *  the same session, and whatever its ring still holds. */
+  moveAwayAndBack(): Promise<void>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
   /** The session file's lines, as raw JSON. */
@@ -397,6 +401,12 @@ async function startSession(
   // One stream for the whole case: every frame of it carries the sequence after the last.
   let streamSeq = 0;
   let taken = 0;
+  /** How many times this session has registered itself with the listener: once for each process
+   *  or pass that has taken it up. */
+  const registrations = () =>
+    requests.filter(
+      (request) => request.path === "/v1/interests/subscribe" && request.body.session_id === sid
+    ).length;
   const session: SurfaceSession = {
     home,
     workspace,
@@ -553,19 +563,30 @@ async function startSession(
       return response;
     },
     async restart() {
-      const registered = () =>
-        requests.filter(
-          (request) => request.path === "/v1/interests/subscribe" && request.body.session_id === sid
-        ).length;
       const ending = rpc;
       rpc = undefined;
       // omp exits once its stdin closes, as a pod's omp ends at its restart.
       await ending?.end();
-      const before = registered();
+      const before = registrations();
       rpc = start(["--continue"]);
       await until(
         "the resumed session's registration with the listener",
-        () => (registered() > before ? true : undefined),
+        () => (registrations() > before ? true : undefined),
+        closed
+      );
+    },
+    async moveAwayAndBack() {
+      // The file the live session writes, which is this life's own: a session resumed with
+      // `--continue` keeps its id and starts another file under it.
+      const state = RpcStateSchema.parse((await session.command({ type: "get_state" })).data);
+      const sessionPath = state.sessionFile;
+      if (sessionPath === undefined) throw new Error("get_state named no session file");
+      const before = registrations();
+      await session.command({ type: "new_session" });
+      await session.command({ type: "switch_session", sessionPath });
+      await until(
+        "this session's registration with the listener after the move back",
+        () => (registrations() > before ? true : undefined),
         closed
       );
     },
@@ -1565,6 +1586,57 @@ test.skipIf(skip)(
     await session.arm();
     const after = await conversationOf();
     // A card the new process shows as it starts comes after every turn before it.
+    expect(after.slice(0, before.length)).toEqual(before);
+  },
+  120_000
+);
+
+// A take-up of a session this process is already serving — a `/new` and a `/resume` back onto it
+// here, a rollback or a move the heartbeat's pass learns of late on a pod — happens with the ring
+// in hand: it holds the turns the fill brought back and the turns this process has recorded
+// since. What a viewer is replayed then holds each turn once, in the order the session said it,
+// and the newest turn is still its last word (`AgentStreamPublisher.restore`). The ring here
+// holds 6 messages — the four turns and each process's own start notice — against a bound of
+// 200, so nothing of it is near the bound, which is what the fill's order decides: that is what
+// agent-stream.test.ts's bound rows measure. This row is the real path through the host: one
+// omp, one session, taken up twice.
+test.skipIf(skip)(
+  "after omp moves off the session and back onto it, the replay holds each turn once, the newest last",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the first question?" });
+    (await session.nextTurn("the prompt's model request")).reply([text("The first answer.")]);
+    await session.settled();
+
+    // The restart fills the ring from the transcript; the turn after it is this process's own.
+    await session.restart();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the second question?" });
+    (await session.nextTurn("the resumed session's model request")).reply([
+      text("The second answer."),
+    ]);
+    await session.settled();
+
+    const conversationOf = async () =>
+      (await session.replay()).frames
+        .filter((frame) => frame.kind === "message")
+        .map((frame) => frameText((frame as SeenMessage).message));
+    const turns = [
+      "What is the first question?",
+      "The first answer.",
+      "What is the second question?",
+      "The second answer.",
+    ];
+    const before = await conversationOf();
+    expect(before.filter((said) => turns.includes(said))).toEqual(turns);
+
+    await session.moveAwayAndBack();
+    await session.arm();
+    const after = await conversationOf();
+    expect(after.filter((said) => turns.includes(said))).toEqual(turns);
+    // A card the take-up shows comes after every frame the view held before it: nothing the ring
+    // held was dropped, replaced or said twice.
     expect(after.slice(0, before.length)).toEqual(before);
   },
   120_000

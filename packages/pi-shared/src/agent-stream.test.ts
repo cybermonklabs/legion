@@ -1573,6 +1573,92 @@ describe("a session this process takes up with turns already in its transcript",
     expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
   });
 
+  // The ring a fill leaves is the running session's ring from then on, so a turn this process
+  // recorded before the fill — the session's newest — must outlive the turns the fill brought
+  // back. Filled behind them, it was the slot first taken, and the next turn past the bound
+  // dropped it: the live view lost the newest turn and showed the oldest instead.
+  test("keeps the turn this process recorded when a later turn takes the ring past its bound", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const newest = assistant(historyMessages, [{ text: `turn ${historyMessages}`, type: "text" }]);
+    const transcript = [
+      ...Array.from({ length: historyMessages - 1 }, (_, index) =>
+        assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+      ),
+      newest,
+    ];
+    const ran = harness();
+    for (const message of transcript) ran.publisher.record(SUBJECT, message, false);
+    // The process that takes the session up records the turn that ends under it, and the pass
+    // fills the turns before it in.
+    const resumed = harness();
+    resumed.publisher.record(SUBJECT, newest, false);
+    resumed.publisher.restore(transcript);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(
+      ran.publisher.replay("s1").frames.map(textOf)
+    );
+
+    const next = assistant(historyMessages + 1, [{ text: "the next turn", type: "text" }]);
+    for (const { publisher } of [ran, resumed]) publisher.record(SUBJECT, next, false);
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live[0]).toBe("turn 2");
+    expect(live.at(-1)).toBe("the next turn");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // The same turn, where the fill alone reaches the bound: the turn this process ran is past
+  // every turn the transcript holds, and a fill that put it behind them dropped it as its last
+  // message went in, leaving the view without the turn a person had just watched arrive.
+  test("keeps the turn this process recorded when the fill itself reaches the bound", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const transcript = Array.from({ length: historyMessages }, (_, index) =>
+      assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+    );
+    const own = assistant(historyMessages + 1, [
+      { text: "the turn this process ran", type: "text" },
+    ]);
+    const ran = harness();
+    for (const message of [...transcript, own]) ran.publisher.record(SUBJECT, message, false);
+    const resumed = harness();
+    resumed.publisher.record(SUBJECT, own, false);
+    resumed.publisher.restore(transcript);
+    for (const { publisher } of [ran, resumed]) publisher.noteViewer();
+
+    const live = ran.publisher.replay("s1").frames.map(textOf);
+    expect(live).toHaveLength(historyMessages);
+    expect(live[0]).toBe("turn 2");
+    expect(live.at(-1)).toBe("the turn this process ran");
+    expect(resumed.publisher.replay("s1").frames.map(textOf)).toEqual(live);
+  });
+
+  // A slot the ring already holds was taken by this process, after the ring was made, so the
+  // fill leaves it behind every slot it brings back, whatever place the transcript gives that
+  // slot. The turn this process recorded is the one a viewer is watching for, and the bound
+  // drops a filled turn before it.
+  test("leaves a slot the ring holds behind the slots the fill brings back", () => {
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const transcript = Array.from({ length: historyMessages }, (_, index) =>
+      assistant(index + 1, [{ text: `turn ${index + 1}`, type: "text" }])
+    );
+    const { publisher } = harness();
+    // The first turn's slot, recorded again under this process before the pass fills the ring.
+    publisher.record(SUBJECT, assistant(1, [{ text: "turn 1 again", type: "text" }]), false);
+    publisher.restore(transcript);
+    publisher.record(
+      SUBJECT,
+      assistant(historyMessages + 1, [{ text: "the next turn", type: "text" }]),
+      false
+    );
+    publisher.noteViewer();
+
+    const kept = publisher.replay("s1").frames.map(textOf);
+    expect(kept).toHaveLength(historyMessages);
+    // The bound dropped the oldest filled turn, the second, and kept both of this process's own.
+    expect(kept.slice(0, 3)).toEqual(["turn 1 again", "turn 3", "turn 4"]);
+    expect(kept.at(-1)).toBe("the next turn");
+  });
+
   test("of an empty transcript keeps nothing: the session replays as a fresh one does", () => {
     const fresh = harness();
     const resumed = harness();

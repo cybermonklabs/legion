@@ -718,13 +718,15 @@ export class AgentStreamPublisher {
    *
    * Which messages survive is decided as the ring itself decides it: the slots are walked in the
    * order the messages were recorded, a message of a slot the ring holds keeps that slot's place,
-   * and past the bound the slot first taken goes. The slots are then kept in that same order, each
-   * with its newest message, so the ring drops what the running session's ring would drop as later
-   * turns arrive. Only the slot each message takes is read here: no body, except the text of a
-   * card that names no id of its own, which is what its slot is (`keyFor`). A body is read where
-   * a frame is built, for the messages the bound kept. Nothing is published, since a viewer reads
-   * these from its replay. `dispatchMessageIdOf` names the Dispatch message a user message
-   * delivered, which only the caller can know (`record`'s `dispatchMessageId`).
+   * and past the bound the slot first taken goes. The slots the ring already held are this
+   * process's own, each recorded after the ring was made, so they are the session's newest: they
+   * are taken out while the older ones are filled in and put back after them, and the bound then
+   * drops the oldest filled slot rather than a turn this process ran. Only the slot each message
+   * takes is read here: no body, except the text of a card that names no id of its own, which is
+   * what its slot is (`keyFor`). A body is read where a frame is built, for the messages the bound
+   * kept. Nothing is published, since a viewer reads these from its replay. `dispatchMessageIdOf`
+   * names the Dispatch message a user message delivered, which only the caller can know
+   * (`record`'s `dispatchMessageId`).
    */
   restore(
     messages: readonly unknown[],
@@ -741,11 +743,15 @@ export class AgentStreamPublisher {
       const oldest = slots.keys().next();
       if (oldest.done !== true) slots.delete(oldest.value);
     }
+    const held = new Map(this.#history);
+    this.#history.clear();
     for (const [key, index] of slots) {
-      if (this.#history.has(key)) continue;
+      if (held.has(key)) continue;
       const raw = messages[index];
       this.#keep(raw, false, dispatchMessageIdOf(raw));
     }
+    for (const [key, entry] of held) this.#history.set(key, entry);
+    this.#evict();
   }
 
   /** Puts one message into the ring, dropping the oldest past the bound, and returns its entry;
@@ -774,6 +780,13 @@ export class AgentStreamPublisher {
     };
     this.#history.set(key, entry);
     if (!stillStreaming) this.#settled.add(key);
+    this.#evict();
+    return entry;
+  }
+
+  /** Drops the slot first taken, with what is held about it, until the ring is within its
+   *  bound. */
+  #evict(): void {
     while (this.#history.size > AGENT_STREAM_LIMITS.historyMessages) {
       const oldest = this.#history.keys().next();
       if (oldest.done === true) break;
@@ -781,7 +794,6 @@ export class AgentStreamPublisher {
       this.#settled.delete(oldest.value);
       this.#publishedAt.delete(oldest.value);
     }
-    return entry;
   }
 
   /**

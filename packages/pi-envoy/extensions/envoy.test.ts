@@ -23261,10 +23261,12 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, rolledBack);
   }, 30_000);
 
-  // A session is filled from its transcript once per ring. Filled again on a later move back to
-  // it, while a viewer still watches its ring, the fill would bring back a turn the ring had
-  // dropped past its bound, and drop one it still held.
-  test("a session taken up again while its ring is watched is not filled a second time", async () => {
+  // A move away and back leaves the view where it was: a viewer's watch keeps the ring, the
+  // session is filled once per ring (`restoredAgentStreams`), and a fill into a ring that already
+  // holds the session's turns keeps each of them where it is (`AgentStreamPublisher.restore`). So
+  // a turn the bound dropped stays dropped, and the turn this process recorded is still the
+  // newest.
+  test("a session taken up again while its ring is watched replays the turns the ring holds", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const { default: envoyExtension }: EnvoyModule = await import(
       "./envoy.ts?agent-stream-filled-once"
