@@ -3,7 +3,8 @@
 // template, and DatabaseURL names a database on such a server. It imports no testcontainers
 // package, so a test helper every Postgres-backed test links (the broker's storetest among them)
 // does not pay testcontainers' package init, which walks every process on the machine before any
-// test runs. internal/testpg keeps the container path and calls this.
+// test runs. internal/testpg keeps the container path and calls this. Every database made here
+// runs with JIT off, as production's databases do (WithoutJIT).
 package testdb
 
 import (
@@ -62,7 +63,24 @@ func DatabaseOn(t testing.TB, adminURL, template, prefix string, set ...string) 
 	// the role, which nothing in the database then holds (internal/dispatch/store's
 	// dropRoleAfterTestDatabase).
 	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
+	adminExec(t, adminURL, server.Host, WithoutJIT(name))
 	return DatabaseURL(*server, name, set...)
+}
+
+// WithoutJIT is the statement that turns JIT off for every session that connects to the database
+// name from then on. Dispatch runs on a Cloud SQL for PostgreSQL instance (packages/envoy/infra's
+// gcp:Dispatch), and Cloud SQL lists LLVM JIT compilation among the features it does not support
+// (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"); CI's Postgres
+// image runs with jit = on. Under jit = on a statement whose estimate passes jit_above_cost
+// compiles before it runs, which production never pays: main's closure statement, the oracle of
+// internal/dispatch/refs's comparisons, estimates past a million on a fixture of 200 issues and
+// spent 445-475 ms of each 453-564 ms run compiling 141 functions, 200 times, most of that
+// package's time. The setting is the database's, so it reaches every pool and process a test opens
+// there, and it goes with the database: no setting of the server changes. A clone does not copy
+// its template's settings, so every database takes it when it is made, a template included, so a
+// migration runs as production's does too (docs/testing.md, "A database a Go test creates").
+func WithoutJIT(name string) string {
+	return "alter database " + name + " set jit = off"
 }
 
 // NewDatabaseName is prefix, an underscore and eight random bytes in hex: the name of a database a

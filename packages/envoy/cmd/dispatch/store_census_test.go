@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -250,6 +251,9 @@ func censusDatabase(t *testing.T) string {
 		t.Fatalf("create the census database: %v", err)
 	}
 	t.Cleanup(func() { dropCensusDatabase(t, admin.String(), name) })
+	if _, err := conn.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the census database: %v", err)
+	}
 	own := *server
 	own.Path = "/" + name
 	return own.String()

@@ -169,6 +169,11 @@ func makeTemplate(raw string) (string, error) {
 	if _, err := conn.Exec(ctx, "create database "+build+" strategy file_copy"); err != nil {
 		return "", fmt.Errorf("create the template build: %w", err)
 	}
+	// The migrations run as production's do, with JIT off. The copies of the template take the
+	// setting themselves (testdb.DatabaseOn): a copy does not keep its template's settings.
+	if _, err := conn.Exec(ctx, testdb.WithoutJIT(build)); err != nil {
+		return "", fmt.Errorf("turn JIT off in the template build: %w", err)
+	}
 	if err := migrateTemplate(ctx, server, build); err != nil {
 		return "", err
 	}

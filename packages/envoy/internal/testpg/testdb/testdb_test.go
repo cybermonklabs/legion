@@ -138,3 +138,28 @@ func TestATestDatabaseOnAnOptionsURLConnectsWithTheOption(t *testing.T) {
 		t.Errorf("work_mem = %s, want 7MB: the options pair did not reach the connection", workMem)
 	}
 }
+
+// A database DatabaseOn makes runs with JIT off, set on the database itself (WithoutJIT): a session
+// of it reads jit = off from the source 'database', which no server default, role or client gives.
+func TestADatabaseOnRunsWithoutJIT(t *testing.T) {
+	admin := testServer(t)
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, DatabaseOn(t, admin, "", "testdb_jit_test"))
+	if err != nil {
+		t.Fatalf("connect to the test's database: %v", err)
+	}
+	defer conn.Close(ctx)
+	if setting, source := jitOn(t, conn); setting != "off" || source != "database" {
+		t.Errorf("DatabaseOn's database runs with jit = %s, from the %s; want off, set on the database (WithoutJIT)", setting, source)
+	}
+}
+
+// jitOn is the jit setting conn's session runs with and where it comes from (pg_settings), or two
+// empty strings, with t failed, when it cannot be read.
+func jitOn(t *testing.T, conn *pgx.Conn) (setting, source string) {
+	t.Helper()
+	if err := conn.QueryRow(context.Background(), `select setting, source from pg_settings where name = 'jit'`).Scan(&setting, &source); err != nil {
+		t.Errorf("read jit: %v", err)
+	}
+	return setting, source
+}

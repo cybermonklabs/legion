@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -933,6 +934,10 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	name := "loopseed_test_" + hex.EncodeToString(suffix[:])
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the test database: %v", err)
+	}
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		_, _ = admin.Exec(ctx, "drop database "+name+" with (force)")
+		t.Fatalf("turn JIT off on the test database: %v", err)
 	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {

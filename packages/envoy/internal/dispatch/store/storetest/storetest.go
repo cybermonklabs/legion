@@ -15,10 +15,11 @@
 // 12.7 MB template per clone, 16 GiB over one run of the api and docs packages. A file copy writes
 // a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
 //
-// The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
-// whole server DatabaseURLEnv names, which can hold other databases (the one
+// The harness changes no setting of the server: fsync, full_page_writes and max_wal_size belong
+// to the whole server DatabaseURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
-// outlives the run.
+// outlives the run. It sets one setting of each database it makes, which goes with the database:
+// JIT is off (testdb.WithoutJIT), as on production's database.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops. Dropping a database forces a checkpoint and waits for it, and every package testing
@@ -43,6 +44,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -113,6 +115,9 @@ func clone(t testing.TB, template string) *store.Store {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
+	if _, err := shared.admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	database, err := store.Open(ctx, databaseURL(shared.server, name))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
@@ -132,6 +137,9 @@ func Empty(t testing.TB) string {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
+	if _, err := shared.admin.Exec(context.Background(), testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 	return databaseURL(shared.server, name)
 }
 
@@ -184,6 +192,10 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 		}
 		// Named once it exists, so Run drops exactly the templates that were made.
 		entry.name = name
+		if _, err := shared.admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+			entry.err = fmt.Errorf("turn JIT off on the template database: %w", err)
+			return
+		}
 		if err := migrate(databaseURL(shared.server, entry.name)); err != nil {
 			entry.err = fmt.Errorf("migrate template database: %w", err)
 			return

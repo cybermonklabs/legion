@@ -784,6 +784,19 @@ hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
 
+The same test then runs `testdb.WithoutJIT(name)` on the database it made (`alter database … set
+jit = off`; `internal/testpg/testdb` in each module), so every session on it starts with JIT off,
+as production's database does: Dispatch runs on Cloud SQL, which does not support PostgreSQL's
+LLVM JIT (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and CI's
+Postgres image runs with `jit = on`. Under it a statement whose estimate passes `jit_above_cost`
+compiles before it runs: in `internal/dispatch/refs` one oracle statement spent 445-475 ms of each
+453-564 ms run compiling, 200 times a run. The setting is the database's, and a clone does not
+copy its template's, so each database takes it when it is made, a template included. Each
+module's `internal/textcheck` test `TestEveryCreatedDatabaseRunsWithoutJIT` fails on any function
+that opens a database's creation in a string and calls no `WithoutJIT`, and
+`TestEveryDatabaseRunsWithoutJIT` (Dispatch's `storetest`, the daemon's `testpg`) reads `jit = off`
+from the source `database` on each kind of database those harnesses hand out.
+
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
 testcontainers, whose package init walks every process on the machine before any test runs, and
