@@ -316,25 +316,18 @@ const (
 	mainKeyedWalkTiming       = priorityNewestEventTiming + ", main's text with the walk keyed"
 )
 
-// priorityNewestEventKeyedWalkQuery is the newest event alone, as #5316 read it in a statement of
-// its own, with every read of issues keyed: a candidate that TestStatementTimings measures beside
-// the priorities read's statement, on the seed and on production, and that the plan test
-// (TestPriorityNewestEventReadsOneEventOfEachMember) holds to one event of each member issue and
-// an index condition on every scan (requireOneEventOfEachMember, requireEveryScanKeyed). The walk
-// steps from each member to its children through issues_parent_key, and each member issue's own
-// issues row is read through issues_pkey, each written as a lateral probe that `offset 0` keeps
-// the planner from flattening into a join it may hash; the event of last_seq is read by a probe
-// like that of
-// priorityReadQuery (last_seq_event). The issues row and the event are read inside a materialized
-// CTE (member_event) for the distinct keys of `members` (member_issue), and the one time of each
-// issue is joined back to `members`. The event's probe names i alone, but i is itself a lateral
-// on member_issue, so the probe too runs only after the walk and its dedupe; the fence keeps the
-// join to `members` above both probes, so each runs once for each member issue. Its walk is the
-// one keyedMemberWalkQuery reads alone. It takes the relations as two arrays ($1 the issue keys,
-// $2 the priority ids) and the projects as $3. It is written out whole, with the depth cap
-// (parentDepthCapSQL) and the project filter as they stand at this commit, because a run on
-// production takes the text from the measurement's log and checks it by its sha256.
-const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
+// keyedMemberTerms is the walk over the members of each priority keyed through
+// issues_parent_key, in the place of priorityMemberTerms: the seed (members_seed), which reads the
+// relations from two arrays by their subscripts ($1 the issue keys, $2 the priority ids) where
+// priorityMemberTerms reads them from the tuple log for the live priorities ($1), the step from
+// each member to its children by a lateral probe of issues_parent_key that `offset 0` keeps the
+// planner from flattening into a join it may hash (members_spread), and the distinct members
+// (members). It is the one text of that walk, which priorityNewestEventKeyedWalkQuery,
+// keyedWalkOverMainsNewestEventQuery and keyedMemberWalkQuery are each built from, so the three
+// take the same walk by construction. It is written out whole, with the depth cap
+// (parentDepthCapSQL) as it stands at this commit, for the reason
+// priorityNewestEventKeyedWalkQuery is.
+const keyedMemberTerms = `members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
 	), members_spread as (
@@ -348,7 +341,27 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 		where m.depth < 32
 	), members as (
 		select distinct key, priority from members_spread
-	), member_event as materialized (
+	)`
+
+// priorityNewestEventKeyedWalkQuery is the newest event alone, as #5316 read it in a statement of
+// its own, with every read of issues keyed: a candidate that TestStatementTimings measures beside
+// the priorities read's statement, on the seed and on production, and that the plan test
+// (TestPriorityNewestEventReadsOneEventOfEachMember) holds to one event of each member issue and
+// an index condition on every scan (requireOneEventOfEachMember, requireEveryScanKeyed). The walk
+// steps from each member to its children through issues_parent_key, and each member issue's own
+// issues row is read through issues_pkey, each written as a lateral probe that `offset 0` keeps
+// the planner from flattening into a join it may hash; the event of last_seq is read by a probe
+// like that of priorityReadQuery (last_seq_event). The issues row and the event are read inside a
+// materialized CTE (member_event) for the distinct keys of `members` (member_issue), and the one
+// time of each issue is joined back to `members`. The event's probe names i alone, but i is
+// itself a lateral on member_issue, so the probe too runs only after the walk and its dedupe; the
+// fence keeps the join to `members` above both probes, so each runs once for each member issue.
+// Its walk is keyedMemberTerms, the walk keyedMemberWalkQuery reads alone. It takes the relations
+// as two arrays ($1 the issue keys, $2 the priority ids) and the projects as $3. The text and its
+// walk are written out rather than built from the server's constants, with the depth cap
+// (parentDepthCapSQL) and the project filter as they stand at this commit, because a run on
+// production takes the text from the measurement's log and checks it by its sha256.
+const priorityNewestEventKeyedWalkQuery = `with recursive ` + keyedMemberTerms + `, member_event as materialized (
 		select member_issue.key, last_seq_event.created_at
 		from (select distinct key from members) member_issue
 		cross join lateral (
@@ -368,29 +381,15 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 	group by m.priority`
 
 // keyedWalkOverMainsNewestEventQuery is main's text (mainPriorityNewestEventQuery) with its
-// walk keyed as priorityNewestEventKeyedWalkQuery keys it: the same steps through
-// issues_parent_key, written the same way, and each member row's own issues row read through
-// issues_pkey by a lateral probe that `offset 0` keeps from being flattened. What it reads of
-// events is main's own: a join of every event of each member row's issue, which the planner may
-// hash, and the newest created_at of them under each priority. Beside main's text it measures
-// what keying the walk alone saves, as priorityNewestEventKeyedWalkQuery beside the read's
-// statement measures it over the read of one event of each member issue. It is written out whole,
-// as that text is, for the same reason.
-const keyedWalkOverMainsNewestEventQuery = `with recursive members_seed as (
-		select ($1::text[])[i] as key, ($2::text[])[i] as priority
-		from generate_subscripts($1::text[], 1) as seed(i)
-	), members_spread as (
-		select s.key, s.priority, 0 as depth from members_seed s
-		union all
-		select c.key, m.priority, m.depth + 1
-		from members_spread m
-		cross join lateral (
-			select c.key from issues c where c.parent_key = m.key offset 0
-		) c
-		where m.depth < 32
-	), members as (
-		select distinct key, priority from members_spread
-	)
+// walk keyed as priorityNewestEventKeyedWalkQuery keys it: it is built from that text's walk,
+// keyedMemberTerms, and reads each member row's own issues row through issues_pkey by a lateral
+// probe that `offset 0` keeps from being flattened. What it reads of events is main's own: a
+// join of every event of each member row's issue, which the planner may hash, and the newest
+// created_at of them under each priority. Beside main's text it measures what keying the walk
+// alone saves, as priorityNewestEventKeyedWalkQuery beside the read's statement measures it over
+// the read of one event of each member issue. Its own text is written out, as that text's is, for
+// the same reason.
+const keyedWalkOverMainsNewestEventQuery = `with recursive ` + keyedMemberTerms + `
 	select m.priority, max(e.created_at)
 	from members m
 	cross join lateral (
@@ -537,29 +536,13 @@ const (
 var memberWalkQuery = `with recursive ` + priorityMemberTerms + `
 	select count(*) from members`
 
-// keyedMemberWalkQuery is the walk keyed through issues_parent_key alone: the walk of
-// priorityNewestEventKeyedWalkQuery, which steps from each member to its children by a lateral
-// probe of issues_parent_key that `offset 0` keeps the planner from flattening into a join it may
-// hash, with the count over the members that memberWalkQuery ends with. It takes the relations as
-// two arrays, which it reads by their subscripts, where memberWalkQuery reads them from the tuple
-// log, so the two readings differ in the step and in the read of the relations. It is written out
-// whole, with the depth cap (parentDepthCapSQL) as it stands at this commit, for the reason
-// priorityNewestEventKeyedWalkQuery is.
-const keyedMemberWalkQuery = `with recursive members_seed as (
-		select ($1::text[])[i] as key, ($2::text[])[i] as priority
-		from generate_subscripts($1::text[], 1) as seed(i)
-	), members_spread as (
-		select s.key, s.priority, 0 as depth from members_seed s
-		union all
-		select c.key, m.priority, m.depth + 1
-		from members_spread m
-		cross join lateral (
-			select c.key from issues c where c.parent_key = m.key offset 0
-		) c
-		where m.depth < 32
-	), members as (
-		select distinct key, priority from members_spread
-	)
+// keyedMemberWalkQuery is the walk keyed through issues_parent_key alone: keyedMemberTerms, the
+// walk of priorityNewestEventKeyedWalkQuery, with the count over the members that
+// memberWalkQuery ends with. Each of the two texts is its walk and that count. The keyed walk
+// takes the relations as two arrays, which it reads by their subscripts, where memberWalkQuery
+// reads them from the tuple log, and its `members` is not materialized, where memberWalkQuery's
+// is, so the two readings differ in the step, in the read of the relations and in that fence.
+const keyedMemberWalkQuery = `with recursive ` + keyedMemberTerms + `
 	select count(*) from members`
 
 // measureBacklogMoveAndMemberWalk measures, in the group backlogMoveTiming:

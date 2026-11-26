@@ -1,9 +1,12 @@
 // Package sessionanswers is the read model of what people wrote that Dispatch delivered to one
 // session: GET /api/v1/agents/{session_id}/answers' read, which the outbox's tests read back
-// through too, so the route reads what the publisher records. The read finds the session's events
-// in the window through the partial GIN index events_person_words_destinations, of
-// published_destinations and created_at, so it reads no event that only other sessions' topics
-// received, and no event that the session's topic received before the window (query).
+// through too, so the route reads what the publisher records. On a database of production's size
+// and shape, the read finds the session's events in the window through the partial GIN index
+// events_person_words_destinations, of published_destinations and created_at, so it reads no
+// event that only other sessions' topics received, and no event that the session's topic
+// received before the window. Where the window holds far fewer of a person's events, the planner
+// can read them all through events_person_words_with_declines and keep the session's, which costs
+// fewer buffers there and is still bounded by the window (query).
 package sessionanswers
 
 import (
@@ -41,15 +44,18 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 //     the session's topic: the outbox's own record of each topic it published the event to
 //     (outbox.publishDestination), so the list holds what the follower, author and session routes
 //     delivered, and never what an issue's role: route delivered to a role topic, which names no
-//     session. It finds them through the partial GIN index events_person_words_destinations: it
-//     holds a person's events of these five types by (published_destinations, created_at), so
-//     one index condition holds both the session's topic and the window's start, and the read
-//     reads only the session's events in the window. The test is published_destinations @>
-//     array[$3], because GIN's array_ops serves @> and not = any. published_destinations is not
-//     null (0020_outbox_retry), and for an array that is not null the two tests hold for the same
-//     rows. events_person_words_with_declines, which holds the same events by time alone, stays:
-//     a pod of the release before, whose text still tests = any, reads through it while the new
-//     release rolls out.
+//     session. On a database of production's size and shape it finds them through the partial
+//     GIN index events_person_words_destinations: it holds a person's events of these five types
+//     by (published_destinations, created_at), so one index condition holds both the session's
+//     topic and the window's start, and the read reads only the session's events in the window.
+//     Where the window holds far fewer of a person's events, the planner can instead read all of
+//     them through events_person_words_with_declines, by time alone, and keep the session's: that
+//     read costs fewer buffers there, and it too reads no event before the window. The test is
+//     published_destinations @> array[$3], because GIN's array_ops serves @> and not = any.
+//     published_destinations is not null (0020_outbox_retry), and for an array that is not null
+//     the two tests hold for the same rows. events_person_words_with_declines stays for two
+//     reasons: this read takes it on such a window, as above, and a pod of the release before,
+//     whose text still tests = any, reads through it while the new release rolls out.
 //   - S2 (message_ids' second arm): the session's message deliveries the listener took: targeted
 //     messages, direct or on an issue, and broadcast copies. `sent` is one it handed to the
 //     running session, `queued` one it stored for a session that is not running and hands over

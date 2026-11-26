@@ -16,9 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// destinationsIndex is the index the read finds a session's events in the window through: a GIN
-// index of published_destinations and created_at, partial on a person's events of the five
-// types.
+// destinationsIndex is the index the read finds a session's events in the window through where
+// the window holds many of a person's events, as production's does and as this file's fixture
+// makes the window it reads: a GIN index of published_destinations and created_at, partial on a
+// person's events of the five types.
 const destinationsIndex = "events_person_words_destinations"
 
 // askPayloadIndex is the index answer_events reads the listed asks' ask.answered events through,

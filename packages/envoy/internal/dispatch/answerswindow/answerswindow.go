@@ -18,15 +18,21 @@ import (
 )
 
 // personWordsEvent is the SQL predicate, on the event aliased e, that holds for a person's event
-// of the five types that the answers read lists (sessionanswers.query, reached_by_destination;
+// of the five types that the answers read reads (sessionanswers.query, reached_by_destination;
 // model.PersonWordsEventTypesSQL): an answer, a comment, a new message, a reply to a message, and
-// a decline (an ask.resolved whose resolution is of kind declined).
+// every ask.resolved. It tests the type alone, so it holds for every resolution of an ask, where
+// the read lists only the declines among them (an ask.resolved whose resolution is of kind
+// declined). The seed writes declines alone, so on a seeded database the two agree.
 const personWordsEvent = `e.actor->>'kind' = 'user' and e.type in ` + model.PersonWordsEventTypesSQL
 
 // DeliveredPersonEvent is the SQL predicate, on the event aliased e, that holds for a person's
 // event of the five types (personWordsEvent) whose published_destinations name at least one
-// session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, which
-// is what the answers read lists.
+// session's topic (contracts.AgentTopicPrefix): a delivery of a person's words to a session, the
+// events the answers read reads. It is no count of the list: the list holds one item for each
+// ask, comment and message at its current words and only where those are in the window, so an
+// ask answered twice is one item; it lists no resolution that is not a decline; and it adds the
+// session's message and comment deliveries, which this predicate never holds. The seed answers
+// each ask at most once and resolves one only by a decline.
 const DeliveredPersonEvent = personWordsEvent + `
 	  and exists (select 1 from unnest(e.published_destinations) reached (topic)
 	              where reached.topic like '` + contracts.AgentTopicPrefix + `%')`

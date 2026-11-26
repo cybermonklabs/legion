@@ -1,13 +1,17 @@
 -- pgmigrate:non-transactional
 -- GET /api/v1/agents/{session_id}/answers (sessionanswers.List) finds the events a person wrote to
--- one session within its window through this index. The index holds a person's events of the five
--- types the read names, the predicate of events_person_words_with_declines (20261111002444), by
--- (published_destinations, created_at). So one index condition holds both the session's topic
--- (published_destinations @> array[...]) and the window's start (created_at >= ...), and the read
--- reads no event that only other sessions' topics received and no event older than its window.
--- events_person_words_with_declines stays: a pod of the release before this one tests the topic
--- with = any, which GIN does not serve, and it reads through that index while this release rolls
--- out.
+-- one session within its window through this index on a database of production's size and shape.
+-- The index holds a person's events of the five types the read names, the predicate of
+-- events_person_words_with_declines (20261111002444), by (published_destinations, created_at). So
+-- one index condition holds both the session's topic (published_destinations @> array[...]) and
+-- the window's start (created_at >= ...), and through this index the read reads no event that
+-- only other sessions' topics received and no event older than its window. Where the window holds
+-- far fewer of a person's events, the planner can read them all through
+-- events_person_words_with_declines, by time alone, and keep the session's, because that read
+-- costs fewer buffers there; it too reads no event older than the window.
+-- events_person_words_with_declines stays for that read, and because a pod of the release before
+-- this one tests the topic with = any, which GIN does not serve, and reads through that index while
+-- this release rolls out.
 --
 -- GIN has no operator class of its own for timestamptz. The operator class of created_at here is
 -- btree_gin's, which 20261125125703 creates, and a deploy before the one that applies this

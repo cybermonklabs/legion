@@ -879,12 +879,16 @@ func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
 // declineIndex is the partial btree index of a person's events of the five types by time
 // (20261111002444). The read of the release before this one finds a session's events in its window
 // through it, by time alone, and tests the session's topic with = any on each row. This release
-// keeps it, so a pod of the release before still serves through it while this release rolls out.
+// keeps it for two reasons: its own read takes it where the window holds far fewer of a person's
+// events, reading them all by time and keeping the session's, and a pod of the release before
+// still serves through it while this release rolls out.
 const declineIndex = "events_person_words_with_declines"
 
 // destinationsIndex is the partial GIN index of the same events by (published_destinations,
 // created_at) (20261125131000), which this release's read finds a session's events in its window
-// through: its test of the topic is published_destinations @> array[...], which GIN serves.
+// through on a window that holds many of a person's events, as production's does and as
+// seedEvents makes this fixture's: its test of the topic is published_destinations @>
+// array[...], which GIN serves.
 const destinationsIndex = "events_person_words_destinations"
 
 // A person who declines an ask closes it with no answer, and every session the decline reached -
