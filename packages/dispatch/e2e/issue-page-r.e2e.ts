@@ -23,6 +23,7 @@ import {
   confirmDialog,
   confirmWords,
   countOf,
+  criterionEditorGate,
   deleteNode,
   deleteRouteGate,
   deleteState,
@@ -105,13 +106,16 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * alike. A `@phone` row reads 1440 px on `chromium` and 390 px on `iphone` (`rowSize`); every
  * other row reads 1440 by 900, the size `phase` opens at.
  *
- * Each row checks its gates first thing, each with `owedUnless` (`e2e/issue-page-t-tree.ts`), and
- * skips where a gate is not on this branch's base, with an `owed` annotation naming the gate: it
- * never passes then. The gates are `e2e/issue-page-r.ts`'s: `deleteRouteGate` for every row that
+ * Rows check prerequisites through `owedUnless` (`e2e/issue-page-t-tree.ts`). When one is absent
+ * the row skips with an `owed` annotation, not a pass. The gates are `e2e/issue-page-r.ts`'s:
+ * `deleteRouteGate` for every row that
  * drives the `DELETE` or its dry run, `roomWriteGate` for every row whose new row, retype or key
  * writes through the issue's one room (part Y's editor, stage B), and `proseRowGate` for every row
- * that reads the seeded prose block. The words a row reads are `page-words-r.ts`'s and the page's
- * shared tables', and no module of `graph-edit/` is imported, so this file loads before that code.
+ * that reads the seeded prose block. One gate stands later in its rows: `criterionEditorGate`
+ * (part Y's criterion row and its block editor) stands in c-move's first row and c-grey's first
+ * row right before the first assertion that needs part Y, so every assertion above it runs. The
+ * words a row reads are `page-words-r.ts`'s and the page's shared tables', and no module of
+ * `graph-edit/` is imported, so this file loads before that code.
  *
  * Each step a check's negative control names is an `expect` message of its row, word for word, so
  * a control fails its row on that step. Two readings depart from the checks' words, each where it
@@ -697,6 +701,8 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
       "Move down is grey on the last statement"
     );
     await closeRowMenu(page, "the third statement");
+    // Keep the grey-edge assertions above this gate. The zoom needs part Y's criterion row.
+    owedUnless(await criterionEditorGate(page, key));
     await landOn(page, key, ids.criterion, "the criterion");
     await page.keyboard.press(".");
     await focusOn(readRow(page, statement1).first(), "the first statement");
@@ -1323,6 +1329,9 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
         );
       }
       if (under) {
+        // New row under writes through part Y's room: owed from the question's offer, every grey
+        // above asserted, until the base draws Y's criterion row and its block editor (gate G3).
+        if (id === ids.questionRow) owedUnless(await criterionEditorGate(page, key));
         await expectOffered(
           page,
           EDIT_LABELS.edit_new_under,

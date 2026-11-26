@@ -53,8 +53,9 @@ import { settledState, settledValue } from "./settled";
  *   each node by the id the server's tree read gives it, never one this file builds.
  * - **The gates**, each a `Gate` read by `owedUnless` (`e2e/issue-page-t-tree.ts`), built as
  *   `convertedGate` is there: `deleteRouteGate` (INFRA-1253's `DELETE` of a node, in
- *   `GET /api/v1`), `roomWriteGate` (part Y's editor writing through the issue's one room) and
- *   `proseRowGate` (part T's prose draft step drawing the seeded prose block as a row).
+ *   `GET /api/v1`), `roomWriteGate` (part Y's editor writing through the issue's one room),
+ *   `proseRowGate` (part T's prose draft step drawing the seeded prose block as a row) and
+ *   `criterionEditorGate` (part Y's criterion row and its block editor).
  * - **The readers**: a row by its tree read id (`data-node-read-id`), the landing on it by
  *   `?node=`, the menu's control (`button[data-row-menu]`, `RowMenu.tsx`'s `ROW_MENU_ATTRIBUTE`,
  *   named `EDIT_LABELS.edit_menu`), the menu (`role="menu"`, its entries `role="menuitem"`, a grey
@@ -764,6 +765,66 @@ export async function proseRowGate(page: Page, key: string): Promise<Gate> {
       "owed until part T's prose draft step is on this branch's base (proseRowGate): Graph " +
       `draws no row for the seeded prose block here; ${OWED_BY}`,
   };
+}
+
+/**
+ * Gate G3: Graph draws the seeded criterion and opens its block editor. The probe uses a
+ * separate signed-in page so the test's menu and request watches stay untouched.
+ * At desktop width the third statement and criterion come from the same committed tree read.
+ * On a converted issue, a socket to the criterion's document reaches the issue's shared room
+ * for that document's fragment. A criterion with no document uses the tree artifact instead.
+ * If the row takes a caret, a failed editor open is a test failure, not an owed skip.
+ */
+export async function criterionEditorGate(page: Page, key: string): Promise<Gate> {
+  const answer = await requestedTreeRead(page, key);
+  const criterion = ownBlock(answer, "k1", "criterion");
+  const statement = ownBlock(answer, "s3", "requirement");
+  const artifact = criterion.document?.artifact_id ?? answer.tree;
+  expect(artifact, "the seeded criterion has a room fragment").toBeTruthy();
+  const room = `/ws/doc/${artifact}`;
+  const owed = (gate: string, here: string): Gate => ({
+    met: false,
+    owed: `owed until ${gate} is on this branch's base (criterionEditorGate): ${here}; ${OWED_BY}`,
+  });
+  const probe = await page.context().newPage();
+  try {
+    const sockets: string[] = [];
+    probe.on("websocket", (socket) => {
+      sockets.push(new URL(socket.url()).pathname);
+    });
+    await probe.setViewportSize(DESKTOP);
+    await gotoIssue(probe, presetPath(key, "graph"));
+    await expect(
+      readRow(probe, statement.id).first(),
+      "Graph drew no third statement row"
+    ).toBeVisible();
+    const criterionRow = readRow(probe, criterion.id);
+    // The visible third statement and the criterion come from the same committed tree read.
+    const editable = await criterionRow.evaluateAll(
+      ([row]) => row?.hasAttribute("data-editable") ?? null
+    );
+    if (editable === null) {
+      return owed("part Y's criterion row", "Graph draws no row for the seeded criterion here");
+    }
+    if (!editable) {
+      return owed("part Y's block editor", "Graph draws the seeded criterion without its edit cue");
+    }
+    await focusOn(criterionRow.first(), "the seeded criterion");
+    await probe.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(probe), {
+        message: "Enter does not put the caret in the seeded criterion",
+      })
+      .toBe(criterion.id);
+    await expect
+      .poll(() => sockets, {
+        message: `the criterion's editor opens no socket on ${room}, its fragment in the issue room`,
+      })
+      .toContain(room);
+    return { met: true, owed: "" };
+  } finally {
+    await probe.close();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
