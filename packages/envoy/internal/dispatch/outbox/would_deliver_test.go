@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -169,7 +168,7 @@ func TestWouldDeliverAgreesWithEventDestinations(t *testing.T) {
 		ids[index] = appendEvent(t, database, broker, row.event).ID
 	}
 	stop := run(t, database, &recordingPublisher{}, broker)
-	waitFor(t, 30*time.Second, "the outbox to publish every event", func() bool {
+	waitFor(t, "the outbox to publish every event", func() bool {
 		for _, id := range ids {
 			if publishedAt(t, database, id) == nil {
 				return false

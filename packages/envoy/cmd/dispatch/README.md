@@ -6270,7 +6270,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
-  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting), and `opened`, true only where this request opened the ask it answers, false where it renewed one already open or the documents stood approved.
+  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting), and `opened`, true only where this request opened the ask it answers.
   Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
   it is empty for a document that is not a spec.
 
