@@ -139,13 +139,39 @@ func credentialWaitEnded(bound time.Duration, refusal error) error {
 // than by a refusal, or of a try that ended the start at once (endsStart), naming refusal, the last
 // refusal of the credential before it, when there was one. It wraps both, err first: errors.Is
 // still finds the refusal (AuthorizationRefused), and a judge of the start's last try reads err
-// alone (FinalTryRefused, which follows only the first error of an error that wraps several), so
-// cmd/listener's later connects try err again by the start rule rather than end on the refusal.
+// alone (FinalTryRefused, which follows only the first error of an error that wraps several;
+// LastTryError, which answers err), so cmd/listener's later connects try err again by the start
+// rule rather than end on the refusal, and its main connect does not try again as a grant's
+// refusal an error that a setting alone decides.
 func withLastRefusal(err, refusal error) error {
 	if refusal == nil {
 		return err
 	}
-	return fmt.Errorf("%w (last refusal of the credential: %w)", err, refusal)
+	return lastRefusalError{err: err, refusal: refusal}
+}
+
+// lastRefusalError is the error withLastRefusal makes: err, the error the start's last try ended
+// with, and refusal, the last refusal of the credential before it, which the words after err name.
+type lastRefusalError struct{ err, refusal error }
+
+func (e lastRefusalError) Error() string {
+	return e.err.Error() + " (last refusal of the credential: " + e.refusal.Error() + ")"
+}
+
+func (e lastRefusalError) Unwrap() []error { return []error{e.err, e.refusal} }
+
+// LastTryError is err, the error a connect ended with, without the earlier refusal it names beside
+// the error its last try failed with (withLastRefusal): that error alone. A start that waited out
+// a refusal and then failed by another error is judged by that error, which says what the
+// listener does next (cmd/listener's connectListener), and the refusal stays in the error the
+// listener logs, for the operator who reads why the start waited. An error that names no earlier
+// refusal is returned as it is.
+func LastTryError(err error) error {
+	var named lastRefusalError
+	if errors.As(err, &named) {
+		return named.err
+	}
+	return err
 }
 
 // CredentialName names the NATS user the environment names its credential as (credential), for

@@ -1254,7 +1254,11 @@ var errAuthenticationTimeout = errors.New("nats: authentication timeout")
 // connectListener connects to NATS and reconciles the stream the listener owns
 // (bus.ConnectOwningStream), as instance, at the deployment's replica count and byte limit and
 // with the buckets it keeps (listenerStreamOptions), by the start rule (cmd/listener/README.md,
-// "Start"). Each try that fails is judged by its own error, in this order:
+// "Start"). Each try that fails is judged by its own error, in this order: a connect that waited
+// out refusals of its credential and then ended on another error is judged by that error alone
+// (bus.LastTryError), and the earlier refusal it names beside it stays in the error the lines
+// log, so a setting alone that decides the last error ends the start though the grant refused
+// the read before it.
 //   - a credential the server still refuses at the try's end (startCredentialRefused) ends the
 //     start. It is the listener's own configuration, and a restarted pod reads its credential
 //     again, but each try's connect has first waited it out under start's bound
@@ -1309,34 +1313,35 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 		if startCredentialRefused(err) {
 			endStartOnNATS(err, start)
 		}
-		if code, ok := bus.ClusterStateAnswer(err); ok {
+		last := bus.LastTryError(err)
+		if code, ok := bus.ClusterStateAnswer(last); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("stream", bus.Stream), cfg.NATSReplicas, code, err)
 			continue
 		}
-		if errors.Is(err, errEdgeStreamMissing) {
+		if errors.Is(last, errEdgeStreamMissing) {
 			start.admitted()
 			logger.Error(edgeStreamMissingLine, slog.String("stream", bus.Stream), slog.String("error", err.Error()), slog.String("retry_in", missingWait.String()))
 			time.Sleep(missingWait)
 			missingWait = nextRefusedWait(missingWait)
 			continue
 		}
-		if errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, nats.ErrPermissionViolation) {
+		if errors.Is(last, bus.ErrPublishDenied) || errors.Is(last, nats.ErrPermissionViolation) {
 			start.admitted()
 			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", grantName(edge)))
 			continue
 		}
-		if connectionLimitRefusal(err) {
+		if connectionLimitRefusal(last) {
 			logger.Error(connectionLimitLine, slog.String("error", err.Error()), slog.String("retry_in", refusedWait.String()))
 			time.Sleep(refusedWait)
 			refusedWait = nextRefusedWait(refusedWait)
 			continue
 		}
-		if natsConnectionError(err) {
+		if natsConnectionError(last) {
 			logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 			time.Sleep(startRetry)
 			continue
 		}
-		if code, ok := bus.AccountStateAnswer(err, false); ok {
+		if code, ok := bus.AccountStateAnswer(last, false); ok {
 			start.admitted()
 			waitOutAccountState(logger, &stateWait, streamAccountStateLine, code, err, slog.String("stream", bus.Stream))
 			continue

@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -38,5 +39,42 @@ func TestFinalTryRefusedJudgesTheErrorTheConnectEndedOn(t *testing.T) {
 	}
 	if !AuthorizationRefused(lastOther) {
 		t.Fatalf("AuthorizationRefused(%v) = false, want the earlier refusal found in the chain", lastOther)
+	}
+}
+
+// LastTryError answers the error a start's last try ended with, so cmd/listener's connectListener
+// judges that error alone: a start whose last tries failed otherwise names its earlier refusal
+// after that error (withLastRefusal), and the refusal, which errors.Is still finds in the whole
+// error, decides nothing there. An error that names no earlier refusal is the one it is, a wrapper
+// around the one that names it is judged by the error it carries, and the text keeps the refusal
+// for the line that logs it.
+func TestLastTryErrorIsTheErrorTheLastTryEndedWith(t *testing.T) {
+	refusal := fmt.Errorf("read: %w: %w", ErrPublishDenied, nats.ErrPermissionViolation)
+	last := fmt.Errorf("dial: %w", nats.ErrNkeysNotSupported)
+	named := withLastRefusal(last, refusal)
+	atBound := credentialWaitEnded(time.Minute, refusal)
+	for _, row := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "no error", err: nil, want: nil},
+		{name: "an error that names no refusal", err: last, want: last},
+		{name: "a refusal alone", err: refusal, want: refusal},
+		{name: "the end at the bound", err: atBound, want: atBound},
+		{name: "the last error after a refusal", err: named, want: last},
+		{name: "a wrapper around it", err: fmt.Errorf("bus: %w", named), want: last},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := LastTryError(row.err); got != row.want {
+				t.Fatalf("LastTryError(%v) = %v, want %v", row.err, got, row.want)
+			}
+		})
+	}
+	if !errors.Is(named, ErrPublishDenied) || errors.Is(LastTryError(named), ErrPublishDenied) {
+		t.Fatalf("the earlier refusal must be found in %v and not in %v", named, LastTryError(named))
+	}
+	if text := named.Error(); text != last.Error()+" (last refusal of the credential: "+refusal.Error()+")" {
+		t.Fatalf("text = %q, want the last error and the refusal named after it", text)
 	}
 }
