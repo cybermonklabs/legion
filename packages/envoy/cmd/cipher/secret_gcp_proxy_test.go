@@ -153,7 +153,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := proxy.NewAuthority(certFile, keyFile)
+	ca, err := proxy.NewAuthority(certFile, keyFile, proxy.AuthorityOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

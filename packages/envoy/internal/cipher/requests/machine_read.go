@@ -576,17 +576,31 @@ func sourceMoved(name string) error {
 // be, where it is the source's tag and not the profile's own proxy string that puts the profile
 // behind its kind, since the kind it is behind is in the fingerprint; so can the judge tag of a
 // profile behind the proxy, whose judge seconds are in it, where the source carries one now or the
-// model judge decided the grant (decidedBy), so it carried one then. A stored secret served by its
-// own name behind the proxy has its own proxy tag in its fingerprint, and no judge seconds. The
-// proxy-narrowed tag, which a fingerprint behind the proxy holds too, is never named: a change of
-// it refuses the name (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed)
-// rather than serve it with another fingerprint.
+// model judge decided the grant (decidedBy), so it carried one then; and so can the scopes tag of a
+// google-service-account source whose profile has no google block of its own, whose scopes it
+// mints at and holds in its fingerprint. A stored secret served by its own name behind the proxy
+// has its own proxy tag in its fingerprint, and no judge seconds; a google-service-account one has
+// its own scopes tag in it, behind the proxy or not. The proxy-narrowed tag, which a fingerprint
+// behind the proxy holds too, is never named: a change of it refuses the name
+// (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed) rather than serve it
+// with another fingerprint.
 func profileChanged(set *policy.Set, name, decidedBy string) error {
 	served := set.Secrets[name]
 	const changed = "%w: %s's profile changed since this grant was decided"
+	scoped := served.Type() == policy.TypeGoogleServiceAccount
 	if served.Profile == nil {
+		var own []string
 		if served.Proxy != "" {
-			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, policy.TagProxy)
+			own = append(own, policy.TagProxy)
+		}
+		if scoped {
+			own = append(own, policy.TagScopes)
+		}
+		switch {
+		case served.Proxy != "":
+			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, strings.Join(own, " or "))
+		case scoped:
+			return fmt.Errorf(changed+": its own %s tag", ErrGrantNotLive, name, policy.TagScopes)
 		}
 		return fmt.Errorf(changed, ErrGrantNotLive, name)
 	}
@@ -596,6 +610,9 @@ func profileChanged(set *policy.Set, name, decidedBy string) error {
 	}
 	if _, judged := record.JudgeLogin(decidedBy); served.Proxy != "" && (served.Judge != 0 || judged) {
 		tags = append(tags, policy.TagJudge)
+	}
+	if scoped && served.Profile.Google == nil {
+		tags = append(tags, policy.TagScopes)
 	}
 	if len(tags) == 0 {
 		return fmt.Errorf(changed, ErrGrantNotLive, name)
@@ -1567,8 +1584,8 @@ candidates:
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
-// "launcher_credential") — the one column api.decideRecord needs before it knows which service's
-// ApplyDecision a record id belongs to. pgx.ErrNoRows means no such record.
+// "launcher_credential") — the one column api.decideRecord needs before it knows which service
+// decides a record id. pgx.ErrNoRows means no such record.
 func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, error) {
 	var kind string
 	err := m.Store.Pool.QueryRow(ctx, `select kind from credential_requests where id=$1`, recordID).Scan(&kind)
@@ -1820,9 +1837,9 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // still, which no person holds as their own, so a restricted member it names has it on no list.
 // Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
-// (store.EndPendingRequests, ApplyDecision), but a request an ended enrollment cancelled before
-// endEnrollment wrote that event carries none, so the request row is the truth. A machine login
-// has no request row and is pending while it carries no terminal decision event, matching
+// (store.EndPendingRequests, applyDecisionAttempt), but a request an ended enrollment cancelled
+// before endEnrollment wrote that event carries none, so the request row is the truth. A machine
+// login has no request row and is pending while it carries no terminal decision event, matching
 // credential_request_decision's own partial index — see pendingForApproverQuery's own comment for
 // why that match requires a literal predicate, not record.TerminalEventNames() bound as a
 // parameter. The approver scan itself is credential_requests_approver
@@ -2196,7 +2213,7 @@ type RecordDecision struct {
 	// decided a record reads it beside Login (record.JudgeLogin).
 	Actor string
 	// Detail is what the decision records beside its event, empty when it records nothing. An
-	// agent_secret approval carries one exactly when ApplyDecision recorded the request denied
+	// agent_secret approval carries one exactly when its decision recorded the request denied
 	// rather than granted: because its requesting enrollment was no longer live, or because the
 	// secret's requesters tag no longer listed the session, which the broker denies in the
 	// approver's place (requests.PolicyDeniedActor).

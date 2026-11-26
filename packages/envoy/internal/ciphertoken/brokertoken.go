@@ -187,7 +187,8 @@ var proofAlgorithmNames = func() []string {
 
 // Caller is who a verified token names, whether that token only reads, whether it is an
 // approve-only token (ApproveOnly), and whether it holds the scope legion-status: what a writer
-// is recorded under, and nothing else the broker's answer carries. It never carries the token.
+// is recorded under, and whether Dispatch holds its person, and nothing else the broker's answer
+// carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -204,14 +205,15 @@ type Caller struct {
 	// promises is that one of the two is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
-	// token's one project, or none for an account entry naming none (the shared public-session
-	// account's, and an account entry naming no person), and exactly one for a job's token; the
-	// projects a ProjectScopePerson token's trade asked for, each one its person could see then,
-	// nil for none, and none for a token that names a service; and a ProjectScopePublic token's
-	// private projects, its job entry's whole list of 0 to oauthwire.MaxProjects, beside which it
-	// reaches every public project, which no list names. A read-only caller (ReadOnly) names what
-	// its base word names: a token narrowed to reading names the projects the same trade would
-	// have named without read, and a ProjectScopeNone token names none. Sorted, each once.
+	// token's one project (an operator's entry's, or a restricted member's machine login's), or
+	// none for an account entry naming none (the shared public-session account's, and an account
+	// entry naming no person), and exactly one for a job's token; the projects a
+	// ProjectScopePerson token's trade asked for, each one its person could see then, nil for
+	// none, and none for a token that names a service; and a ProjectScopePublic token's private
+	// projects, its job entry's whole list of 0 to oauthwire.MaxProjects, beside which it reaches
+	// every public project, which no list names. A read-only caller (ReadOnly) names what its base
+	// word names: a token narrowed to reading names the projects the same trade would have named
+	// without read, and a ProjectScopeNone token names none. Sorted, each once.
 	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim read as its base word
 	// (oauthwire.BaseProjectScope), and not down to a flag: a reader deciding what a token may do
@@ -231,6 +233,19 @@ type Caller struct {
 	// and the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
+	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
+	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
+	// the answer and keeps it as long as it keeps any affirmative answer
+	// (AffirmativeCacheTTL). The Envoy listener reads it after its own checks and refuses a held
+	// caller 401 MEMBERSHIP_HELD; Dispatch does not read it yet.
+	Held bool
+	// NotHeldUntil is the broker's introspection answer's `not_held_until`
+	// (Introspection.NotHeldUntil): when its answer that Person is not held stops being good, the
+	// deadline an IAP deployment's Dispatch put on it. The zero time for an answer naming none, a
+	// held one and every answer outside IAP. The Verifier keeps a not-held answer no later than
+	// it, and the Envoy listener refuses a not-held caller as unavailable once it is not after the
+	// Verifier's clock (Verifier.Lapsed); Dispatch does not read it yet.
+	NotHeldUntil time.Time
 	// ApproveOnly is true exactly when the verifier accepted an approve-only token: the project
 	// scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no service, no
 	// project and no cut (approveShapeOf) - the token the secrets broker mints for a person's
@@ -467,6 +482,16 @@ func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
 	return caller, err
 }
 
+// Lapsed reports whether caller, a Caller this verifier answered, is not held and its NotHeldUntil
+// is set and not after this verifier's clock: the deadline an IAP deployment's Dispatch put on its
+// answer that the person is not held has passed, so whether they may still act cannot be read,
+// and each reader refuses the caller as unavailable rather than serving it. A held caller is never
+// lapsed: it is refused as held. The verifier's clock is the one its cache keeps the answer by, so
+// a kept answer and a fresh one are judged alike.
+func (v *Verifier) Lapsed(caller Caller) bool {
+	return !caller.Held && !caller.NotHeldUntil.IsZero() && !caller.NotHeldUntil.After(v.now())
+}
+
 // LiveUntil is Live and the instant the broker's answer says the token stops being live: its
 // 'exp', or the zero time when the broker named none. A connection that outlives its request reads
 // it to tell a token whose life ended from one the broker ended early, since both answer
@@ -542,24 +567,25 @@ func sessionCaller(answer Introspection, servesReadOnly, servesApproveOnly bool)
 	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
 	// here rather than taken as a token that names no project at all (ErrNotASession). A
 	// read-only token passes only a verifier whose service serves one, and a public token only
-	// beside a service and no person (shapeOf). A named token is an operator's entry's, which
-	// names one project, or none for an account entry that names none: such an entry names a
-	// person, or names no person and acts as its account, which is the token's service and is
-	// always a whole Kubernetes account subject (oauthwire.AccountSubject), so a named answer
-	// naming no person, no project and any other service, a fleet's name or a string that only
-	// opens like an account among them, is no token the broker mints. A job's named token names
-	// no person, exactly one project and its job entry's identity, which may be an account, a
-	// workflow or a Google account, and holds no OAuth scope; it is the one named shape that names
-	// a project and no person, and a token narrowed from a named one is not it, since the
-	// exchange narrows no job's token. A named answer naming two or more projects, which a reader
-	// holding a write to one project would take as no limit at all, is the same case. A token
-	// narrowed from a named one is held to the same rules, since its projects mean what a named
-	// token's do (oauthwire.BaseProjectScope). A service's token under the scope person names no
-	// project, since the exchange refuses a machine's trade naming one; under named and public a
-	// service's token may name its entry's list. A list no exchange mints (oauthwire.ValidProjects:
-	// more than oauthwire.MaxProjects, a key that is none, or keys not sorted and named once) is
-	// refused under every scope for the same reason. So is a cut that is not an RFC 3339 time
-	// (cutOf); shapeOf has already refused a cut on a token that is not narrowed to reading.
+	// beside a service and no person (shapeOf). A named token is held to one project, an
+	// operator's entry's or a restricted member's machine login's, or names none for an account
+	// entry that names none: such an entry names a person, or names no person and acts as its
+	// account, which is the token's service and is always a whole Kubernetes account subject
+	// (oauthwire.AccountSubject), so a named answer naming no person, no project and any other
+	// service, a fleet's name or a string that only opens like an account among them, is no token
+	// the broker mints. A job's named token names no person, exactly one project and its job
+	// entry's identity, which may be an account, a workflow or a Google account, and holds no
+	// OAuth scope; it is the one named shape that names a project and no person, and a token
+	// narrowed from a named one is not it, since the exchange narrows no job's token. A named
+	// answer naming two or more projects, which a reader holding a write to one project would take
+	// as no limit at all, is the same case. A token narrowed from a named one is held to the same
+	// rules, since its projects mean what a named token's do (oauthwire.BaseProjectScope). A
+	// service's token under the scope person names no project, since the exchange refuses a
+	// machine's trade naming one; under named and public a service's token may name its entry's
+	// list. A list no exchange mints (oauthwire.ValidProjects: more than oauthwire.MaxProjects, a
+	// key that is none, or keys not sorted and named once) is refused under every scope for the
+	// same reason. So is a cut that is not an RFC 3339 time (cutOf); shapeOf has already refused a
+	// cut on a token that is not narrowed to reading.
 	shape := shapeOf(answer)
 	named := oauthwire.BaseProjectScope(answer.ProjectScope) == ProjectScopeNamed
 	// jobScope is whether the answer's project scope is a job's token's, compared as the word the

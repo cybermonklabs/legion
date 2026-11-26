@@ -8,11 +8,11 @@
 // at; a stand-in AWS service that verifies Signature Version 4 with the real test key and
 // the real session token; the three the broker's model judge calls - a model endpoint, a
 // Dispatch holding a few issues, and the Compute Engine metadata server the broker mints its
-// own identity token at; and the three of the anthropic kind - Anthropic's Admin API, a
-// recording HTTPS service like S, and the two an anthropic-federation secret is minted at,
-// IAM's generateIdToken and Anthropic's token exchange (anthropic.go). Every one of them but the
-// last two is internal/cipher/proxyrules/proxyrulestest's, which is why one implementation
-// answers both.
+// own identity token at; the stand-in of Certificate Authority Service a broker pod asks for its
+// proxy's intermediate; and the three of the anthropic kind - Anthropic's Admin API, a recording
+// HTTPS service like S, and the two an anthropic-federation secret is minted at, IAM's
+// generateIdToken and Anthropic's token exchange (anthropic.go). Every one of them but the last two
+// is internal/cipher/proxyrules/proxyrulestest's, which is why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
 //	                   [--installation <owner>=<installation id> ...]
@@ -20,6 +20,7 @@
 //	                   [--google-lifetime <duration>]
 //	                   [--aws-key <key id>=<secret key>] [--aws-session-token <token>]
 //	                   [--records-address <host:port>]
+//	                   [--clock-offset-file <path>]
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
 //	dev-airlock-stands enroll-pod --url <broker> --token-file <path> --pod-token-file <path>
 //	                   --pod-uid <uid> --thumbprint <thumbprint> [--service <name>] [--session <id>]
@@ -36,21 +37,30 @@
 // subcommand it serves the stands, which is what the rest of this comment is about.
 //
 // A stand is named s, t, github, github-tls, google, microsoft, aws, model, dispatch, metadata,
-// anthropic, anthropic-token or iam. Each binds 127.0.0.1 on a port the operating system picks
+// ca, anthropic, anthropic-token or iam. Each binds 127.0.0.1 on a port the operating system picks
 // unless --address names one, and each HTTPS stand's certificate names 127.0.0.1 and localhost
-// unless --host adds names of its own - the host a kind binds a credential to, which the
-// command's own TLS verification reads out of the certificate.
+// unless --host adds names of its own - the host a kind binds a credential to, which the command's
+// own TLS verification reads out of the certificate.
 //
 // The anthropic-token stand is Anthropic's token exchange, POST /v1/oauth/token: it answers an
 // sk-ant-oat01- token of its own for an assertion the iam stand minted, with the expires_in a
 // check sets while it runs at POST <records URL>/answers/anthropic, whose body is
 // {"expires_in": <seconds>} (anthropic_answer_url; 3600 until a check calls it). The iam stand is
-// generateIdToken, POST /v1/projects/-/serviceAccounts/{account}:generateIdToken, which takes
-// this run's metadata access token as its bearer, the one the metadata stand answers on its
+// generateIdToken, POST /v1/projects/-/serviceAccounts/{account}:generateIdToken, which takes this
+// run's metadata access token as its bearer, the one the metadata stand answers on its
 // access-token path, and answers an identity token for that account and the audience its body
 // names. Each keeps what it minted: GET <records URL>/tokens/iam answers each identity token with
 // its account and audience (iam_tokens_url), and GET <records URL>/tokens/anthropic each token
 // with its expires_in (anthropic_tokens_url).
+//
+// The ca stand answers POST /v1/projects/{project}/locations/{location}/caPools/{pool}/certificates,
+// the request BROKER_PROXY_TEST_CA_URL points a broker pod at, with an intermediate for the
+// CSR's key signed by a test root of its own, under a policy: 7 days at most, starting 5 minutes
+// before its issue, an authority of path length 0 for servers alone (serverAuth its one extended
+// key usage), and the policy's names, the request's own until POST <ca URL>/policy, whose
+// body is {"names": [...]}, gives it names, as an apply of the pool's issuance policy does. It
+// dates each certificate by the clock --clock-offset-file moves, the file the brokers' clock
+// reads. POST <ca URL>/fail makes it fail every request 503 until POST <ca URL>/answer.
 //
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
@@ -101,14 +111,14 @@
 //
 // It writes one JSON object to standard output naming every address, every recording route and
 // every file it wrote - the authority's certificate and key, which
-// BROKER_AIRLOCK_CA_CERT_FILE, BROKER_AIRLOCK_CA_KEY_FILE and
-// BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE name, and each HTTPS stand's own certificate - the AWS
-// key pair the AWS stand verifies against, which the script signs its calls with, the GitHub
-// App key the GitHub stand mints for, which the local stack's fake secret store holds as that
-// App's stored value, and the two Dispatch issues the dispatch stand holds, one open and one
-// done. It then logs "stands listening records=<records URL>" and serves until it is
-// interrupted. Every key here is made at each start and is a stand-in's: nothing it prints
-// opens anything.
+// BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE and a mounted BROKER_AIRLOCK_CA_CERT_FILE and
+// BROKER_AIRLOCK_CA_KEY_FILE name, the ca stand's test root (proxy_root_file), and each HTTPS
+// stand's own certificate - the AWS key pair the AWS stand verifies against, which the script
+// signs its calls with, the GitHub App key the GitHub stand mints for, which the local stack's
+// fake secret store holds as that App's stored value, and the two Dispatch issues the dispatch
+// stand holds, one open and one done. It then logs "stands listening records=<records URL>" and
+// serves until it is interrupted. Every key here is made at each start and is a stand-in's:
+// nothing it prints opens anything.
 package main
 
 import (
@@ -134,6 +144,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
@@ -141,7 +152,7 @@ const exitUsageError = 2
 
 // The stands this command serves. s, t and anthropic are the services a call behind the airlock
 // reaches; github-tls is the GitHub stand as a call behind the airlock reaches it, over TLS
-// under a bound host's name; the other nine stand in for the endpoints the broker itself calls.
+// under a bound host's name; the other ten stand in for the endpoints the broker itself calls.
 const (
 	standS              = "s"
 	standT              = "t"
@@ -153,6 +164,7 @@ const (
 	standModel          = "model"
 	standDispatch       = "dispatch"
 	standMetadata       = "metadata"
+	standCA             = "ca"
 	standAnthropic      = "anthropic"
 	standAnthropicToken = "anthropic-token"
 	standIAM            = "iam"
@@ -161,13 +173,14 @@ const (
 // stands is every stand's name, in the order the JSON lists them.
 var stands = []string{
 	standS, standT, standGitHub, standGitHubTLS, standGoogle, standMicrosoft, standAWS,
-	standModel, standDispatch, standMetadata, standAnthropic, standAnthropicToken, standIAM,
+	standModel, standDispatch, standMetadata, standCA, standAnthropic, standAnthropicToken, standIAM,
 }
 
-// plainStands are the seven served over http rather than https. The broker mints a type's value
+// plainStands are the eight served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
 // behind TLS would need a root in the pod's trust store - the GitHub, Google, Anthropic and IAM
-// stands are four such endpoints - and the three the model judge calls are reached by that same
+// stands are four such endpoints - and the three the model judge calls and the certificate
+// authority the proxy asks for its intermediate are reached by that same
 // sort of client; the metadata server could be nothing else, since internal/googleidentity asks
 // it over http and no other scheme. Every other stand is reached through the proxy, whose extra
 // roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names. That is why the GitHub stand is two: github,
@@ -177,7 +190,7 @@ var stands = []string{
 // plain, where the broker mints, and anthropic, the Admin API a command reaches through the proxy.
 var plainStands = map[string]bool{
 	standGitHub: true, standGoogle: true,
-	standModel: true, standDispatch: true, standMetadata: true,
+	standModel: true, standDispatch: true, standMetadata: true, standCA: true,
 	standAnthropicToken: true, standIAM: true,
 }
 
@@ -295,6 +308,8 @@ type options struct {
 	awsSessionToken string
 	recordsAddress  string
 	askAnsweredBy   string
+	// clockOffsetFile is the file the ca stand's certificates are dated by, --clock-offset-file.
+	clockOffsetFile string
 }
 
 // run reads the subcommand, if there is one, and otherwise serves the stands. The subcommands
@@ -328,6 +343,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
 	fs.StringVar(&o.awsSessionToken, "aws-session-token", "", "the AWS stand requires `<token>` as the X-Amz-Security-Token of each call; with none it refuses a call that carries any, which is the pair that has no session token")
 	fs.StringVar(&o.askAnsweredBy, "ask-answered-by", defaultAskAnsweredBy, "the dispatch stand's one answered ask reads `<login>` as the person who answered it")
+	fs.StringVar(&o.clockOffsetFile, "clock-offset-file", "", "date the ca stand's certificates by the system's clock moved by the Go duration `<path>` holds, read again for each one: the file the brokers' BROKER_PROXY_TEST_CLOCK_OFFSET_FILE names")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -451,11 +467,14 @@ type standReport struct {
 type report struct {
 	// Dir is where every file below was written.
 	Dir string `json:"dir"`
-	// CACertFile and CAKeyFile are the authority behind every stand's certificate: the pair
-	// BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE name, and the certificate
-	// BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names.
+	// CACertFile and CAKeyFile are the authority behind every stand's certificate: the
+	// certificate BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names, and a self-signed pair the mounted
+	// BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE can name.
 	CACertFile string `json:"ca_cert_file"`
 	CAKeyFile  string `json:"ca_key_file"`
+	// ProxyRootFile is the test root the ca stand signs every intermediate under, the one root a
+	// client trusts the proxy by when the brokers take their intermediates from that stand.
+	ProxyRootFile string `json:"proxy_root_file"`
 	// RecordsURL is where every stand's recording route is served.
 	RecordsURL string `json:"records_url"`
 	// ModelAnswerURL is where a check sets what the model stand answers next, POST
@@ -624,6 +643,30 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	exchange := &anthropicExchangeStand{iam: iam, expiresIn: defaultAnthropicLifetime}
 	services[standIAM].AnswerWith(iam.Answer)
 	services[standAnthropicToken].AnswerWith(exchange.Answer)
+	// The ca stand: the certificate request a broker pod sends for its intermediate, answered
+	// under a test root of its own and the policy's names, dated by the brokers' moved clock, and
+	// told to fail and answer again at POST /fail and POST /answer and given other names at POST
+	// /policy (proxyrulestest.CAStand).
+	now := time.Now
+	if o.clockOffsetFile != "" {
+		clock, err := proxy.NewOffsetFileClock(o.clockOffsetFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "dev-airlock-stands: --clock-offset-file: %v\n", err)
+			return 1
+		}
+		now = clock.Now
+	}
+	ca, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{Now: now})
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands: the ca stand: %v\n", err)
+		return 1
+	}
+	services[standCA].AnswerWith(ca.Answer)
+	out.ProxyRootFile = filepath.Join(dir, "proxy-root.crt")
+	if err := os.WriteFile(out.ProxyRootFile, ca.Root().CertificatePEM(), 0o644); err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands: write the proxy test root: %v\n", err)
+		return 1
+	}
 
 	records := &http.Server{Handler: recordsHandler(services, model, github, aws, iam, exchange), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)

@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: pr4682
+body: |-
+  The bundled `dispatch` command gains `dispatch proxy --socket <path> -- <command>`, which lets a
+  tool that makes many Dispatch reads send them, and its comment posts that carry an
+  `Idempotency-Key`, over a unix socket with the session's own broker token.
