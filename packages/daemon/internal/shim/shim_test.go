@@ -220,6 +220,23 @@ func fakeOMP() int {
 			if !holds.hold(frame.ID) {
 				emit(stateAnswer(frame.ID, os.Getenv("FAKE_OMP_MODEL"), stateBytes)...)
 			}
+		// fake_orphan runs, as a tool call's bash does, a shell that starts a sleep of Message
+		// seconds in the background and exits, so the sleep is orphaned while it runs, and reports
+		// its pid. fake_exit exits with the status Message names, and fake_die is killed by
+		// SIGKILL: the agent's own end, as its shim must report it.
+		case "fake_orphan":
+			out, err := exec.Command("/bin/sh", "-c", "/bin/sleep "+frame.Message+" </dev/null >/dev/null 2>&1 & echo $!").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fake omp: leave an orphan: %v\n", err)
+				return 3
+			}
+			emit(fmt.Sprintf(`{"type":"fake_orphan","pid":%s}`, strings.TrimSpace(string(out))))
+		case "fake_exit":
+			code := 0
+			_, _ = fmt.Sscan(frame.Message, &code)
+			return code
+		case "fake_die":
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 		}
 	}
 	return 0
@@ -1199,7 +1216,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		return slices.Clone(warmed)
 	}
 	cfg := config(t, path, child)
-	cfg.WarmCodegraph = func(_ context.Context, dir string, _ time.Time) {
+	cfg.WarmCodegraph = func(_ context.Context, _ procgroup.Starter, dir string, _ time.Time) {
 		mu.Lock()
 		defer mu.Unlock()
 		warmed = append(warmed, dir)
@@ -1274,7 +1291,7 @@ func TestTheShimEndsOnlyOnceAnInFlightWarmUpHasReturned(t *testing.T) {
 	var returned time.Time
 	ended := make(chan struct{})
 	cfg := config(t, path, child)
-	cfg.WarmCodegraph = func(ctx context.Context, _ string, _ time.Time) {
+	cfg.WarmCodegraph = func(ctx context.Context, _ procgroup.Starter, _ string, _ time.Time) {
 		<-ctx.Done()
 		close(ended)
 		// What a real warm-up does here: its codegraph child ends on the same context, it logs the
@@ -1322,7 +1339,7 @@ func TestTheWaitForTheWarmUpIsBoundedByTheStopGrace(t *testing.T) {
 	// floor exercised by hand, not a stop any launcher runs.
 	cfg.StopGrace = grace + 500*time.Millisecond
 	never := make(chan struct{})
-	cfg.WarmCodegraph = func(ctx context.Context, _ string, _ time.Time) { <-never }
+	cfg.WarmCodegraph = func(ctx context.Context, _ procgroup.Starter, _ string, _ time.Time) { <-never }
 	defer close(never)
 	clock := newClock()
 	sh := run(t, cfg, clock)
