@@ -341,11 +341,11 @@ We invented these examples. Each one shows a shape that passes.
   large." with options `Include them` / `Leave them out`. The link reaches
   the person's words, and the cost bears on the choice: passes, 10, 12 and
   13 included.
-- "Please give the code owner's review of the pull request that adds the
-  retry button, at head 7c1e0b2… The merge adds the retry button to the
-  export page. Approve it on the pull request's review page." with
-  `Done`/`Can't` and no recommendation, and the transcript shows the
-  agent's read of CODEOWNERS, which gives the path to the person and to no
+- "Please give your review of the pull request that adds the retry
+  button, at head 7c1e0b2… The merge adds the retry button to the export
+  page. Approve it on the pull request's review page." with `Done`/`Can't`
+  and no recommendation, and the transcript shows the agent's read of the
+  base branch's CODEOWNERS, which gives the path to the person and to no
   agent identity. An act only the person can do, asked as that one act:
   passes authority 1 and needs no recommendation.
 
