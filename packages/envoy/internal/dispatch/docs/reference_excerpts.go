@@ -170,7 +170,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
 		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: blockPointers(artifactID, markdown, blocks, tree),
-		ServerURL: s.serverURL,
+		ServerURL: s.origins.Canonical(),
 	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -178,7 +178,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := write(ctx, tx, indexBlocks); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), won)
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.origins.Canonical()), won)
 	return changes, stated, err
 }
 
@@ -335,7 +335,7 @@ func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version
 			return record, nil
 		}
 	}
-	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+	writer, err := versionWriterOf(ctx, tx, artifactID, version)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
@@ -545,7 +545,7 @@ func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, qu
 // which each of the ask's edges shows, cut against r's deployment (refs.EditedTargets).
 func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, error) {
 	found := text.Refs(r.Mentions(question))
-	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.ServerURL(), found))
+	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.Origins().Canonical(), found))
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an
@@ -740,7 +740,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 				continue
 			}
 			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.origins)
-			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.origins)
+			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.origins.Canonical())
 		}
 		// The reconciliation appends no event, so what it moved is named nowhere: until it stores
 		// an excerpt, the route answers a mention owed one with the document's name.
