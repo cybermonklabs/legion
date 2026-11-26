@@ -1204,6 +1204,46 @@ test("a landing the view moved away from under the reader is shown whole again b
 // again from the rows the list holds now: the nearest row before it that the reader can see takes
 // the focus, shown whole by the least scroll. Here the window ends at 150 px, which leaves
 // CORE-14's mark below it and cuts CORE-11's.
+// INFRA-3135, round 28 (the tester's red row `4d4d86f3`): the project List takes its rows and its
+// bar away in the one commit whose going hands the focus on, and no commit of its own follows it,
+// so the reading is taken in the frame that commit paints. Measured in Chromium and WebKit at
+// 390x664 (builds Jobs `infra-3135-infra-3135-r29b-rows-zx7ds` and `-r29c-rows-dh84p`, where the
+// landing stood 6 px below the box's own edge after the bar had gone).
+test("a landing with no commit after it is finished in the frame that commit paints", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
+    // The one commit: the bar goes with the marks, the rows go with the write, and the box's own
+    // edges move in with what the page draws where the bar stood.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 150 });
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    const painted = Promise.withResolvers<void>();
+    requestAnimationFrame(() => painted.resolve());
+    await act(async () => {
+      await painted.promise;
+    });
+    // CORE-14's mark stands at 200 to 300 under a window that ends at 150; CORE-11's, at 100 to
+    // 200, is the nearest before it that the reader can see.
+    expect(focusedName()).toBe("Select CORE-11");
+  } finally {
+    answered();
+    disarm();
+    if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", height);
+    scroll.mockRestore();
+    view.unmount();
+    laidOut();
+  }
+});
+
 test("a landing the box's own edges left out of sight is passed over, and the place is handed off again", () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(

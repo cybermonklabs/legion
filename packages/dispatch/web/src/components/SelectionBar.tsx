@@ -129,6 +129,10 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
   // marked last in the list read them.
   const before = useRef<readonly string[]>([]);
+  // The list as this render was given it, for the frame after a landing to read: the hand-off's
+  // own closure holds the render's `shown`, which the bar's going has moved on from.
+  const latest = useRef(list);
+  latest.current = list;
   // The landing the hand-off last made, until the commit that takes the press's rows and the bar
   // away has run: the mark's row, the row marked last that chose it, and how far the view the
   // reader saw it through was scrolled once it landed (`viewScrollOf`). Null while no landing is
@@ -162,12 +166,12 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   });
   // The landing is read again once the press's rows and the bar itself have gone. A press's rows
   // are drawn until its write's optimistic apply lands, and the bar stands over the list until the
-  // marks clear, so the landing was measured against a list and a box that the commits after it
-  // change: the rows above the mark move up by the space they took, the box's own edges move with
+  // marks clear, so the landing was measured against a list and a box that the going of either
+  // changes: the rows above the mark move up by the space they took, the box's own edges move with
   // what the page draws where the bar stood, and the row the mark is in is drawn again, which an
-  // engine can answer by dropping the focus to the page's body. So in the first commit after a
-  // landing in which the bar is gone and the list names no row as leaving, that landing is
-  // finished, against the list and the box as they now stand:
+  // engine can answer by dropping the focus to the page's body. So the landing is finished once
+  // the bar is gone and the list names no row as leaving, against the list and the box as they
+  // then stand:
   //  - the mark takes the focus again where the focus fell to the body;
   //  - a mark out of the reader's sight that the view moved away from under them - an engine's own
   //    anchoring holding the box where the rows went from, which `ViewportAnchor` reads as the
@@ -182,9 +186,15 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // and nothing here takes the focus back from it. The reading is owed only until the reader's own
   // next action (`READER_ACTS`): a press, a key or a wheel of theirs means they have moved on, and
   // nothing of this follows them.
-  useLayoutEffect(() => {
+  //
+  // It is read in the frame after the landing and after every commit until it is taken, because
+  // the two hosts take their rows and their bar away differently: the Inbox's write lets its rows
+  // go in a commit after the bar's, and the project List takes both away in the one commit the
+  // bar's going hands the focus in, which no commit of its own follows.
+  const finish = useCallback((): void => {
     const landing = landed.current;
     if (landing === null) return;
+    const list = latest.current;
     if (list.shown) return;
     const { leaving } = list;
     const order = list.order();
@@ -229,7 +239,8 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
       return;
     }
     focusListStop(list.list());
-  });
+  }, [forget]);
+  useLayoutEffect(finish);
   return () => {
     const last = list.lastMarked();
     const order = list.order();
@@ -259,6 +270,11 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
           document.removeEventListener(kind, acted, { capture: true });
         }
       };
+      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+      frame.current = window.requestAnimationFrame(() => {
+        frame.current = null;
+        finish();
+      });
       return true;
     }
     if (listed) return false;
