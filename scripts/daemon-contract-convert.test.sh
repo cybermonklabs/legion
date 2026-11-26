@@ -597,7 +597,7 @@ base_crossed=$(git commit-tree "$(tree_with "$branch" "${side_file[@]}")" -p "$b
 git checkout -q "$branch_crossed"
 refused "the conversion of the crossed branch with two merge bases with its base branch" \
   "2 merge bases" "${entry_commit:0:10}" "${side:0:10}" \
-  "git rebase -i" "drop each commit that came into the branch through a merge" \
+  "git rebase -i" "drop each commit that $base_crossed holds" \
   "cherry-pick the branch's own commits onto a branch made at that commit" -- --base "$base_crossed"
 
 step "the way out of two merge bases that the refusal names leads to one"
