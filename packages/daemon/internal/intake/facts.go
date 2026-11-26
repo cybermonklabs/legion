@@ -546,11 +546,11 @@ func (ControllerTick) namedIssue() (string, bool) { return "", false }
 // (admit.Admission.convergeEntries).
 //
 // It carries nothing, because the difference it closes is one the record already holds and the
-// handler reads the whole project. What it is for is the running: an admission pass runs on a
-// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
-// the outbox fenced out — would otherwise leave a role behind its entry until something else
-// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
-// record a transition is in the middle of writing.
+// handler reads the whole project. What it is for is the running: an admission pass runs on the
+// facts its rule names (admit.Admission.Apply), and a daemon with none arriving — a quiet
+// project, a transition whose own start row the outbox fenced out — would otherwise leave a role
+// behind its entry until something else happened. Going through ApplyFact takes the one lock
+// every fact takes, so the sweep reads no record a transition is in the middle of writing.
 type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
@@ -558,14 +558,14 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
-// pass: the pause held every promotion, and the pass runs now rather than at the next fact or
-// tick. Admission promotes on it as on every fact that is not a Dispatch issue
-// (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
-// release leaves free wakes the controller as any fact's pass does
-// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
-// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
-// of that capacity.
+// pass: the pause held every promotion, and the pass runs now rather than at the next pass the
+// rule of admit.Admission.Apply runs, which names this fact among those that run it whatever they
+// wrote; the workflow engine and the blockers mirror do nothing for it. Unlike the controller's
+// tick, which queues a tick notice, it queues none: a slot its pass's own release leaves free
+// wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and nothing
+// else. The rows a re-admission freed while the pause held (admit's releaseTreeSlots) wake
+// nothing; the resume's notice tells the controller of that capacity. Where the pass fails, the
+// next pass the rule runs promotes the line, and any other fact that writes nothing runs none.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -595,8 +595,9 @@ type PullRequestOpened struct {
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - a reopen when recorded is the same pull
-// request - and the event id, under source "github", it is applied under: the project, the
+// stands for, as its webhook would have carried it - its base, which the reads of the merge state
+// follow on before any of them has answered, and a reopen when recorded is the same pull request -
+// and the event id, under source "github", it is applied under: the project, the
 // repository and number, what the read observed, the head and GitHub's updated_at, and what the
 // workflow decides an opened by beside it, the issue's generation and its pull request record as
 // the read found it (nil for none: its number, state and clock). The id holds no read time and no
@@ -606,7 +607,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA, Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
@@ -834,12 +835,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // GitHub is still computing it, record.MergeabilityMergeable or record.MergeabilityConflicting
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
-// an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
-// (accepting, in the default steps); any other state leaves the
-// approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
-// one GitHub would merge now, which Mergeable cannot.
+// an approval standing on the head waits for; what each state comes to for the round is
+// classify.MergeOutcomeOf, the one place the rule is written. It tells a head GitHub holds on a
+// check that is still running, a review, or a rule about the reader from one GitHub would merge
+// now, which Mergeable cannot.
+//
+// ReviewsRequested and HeadChecks are the rest of the answer MergeOutcomeOf reads for a `blocked`
+// head, written beside MergeState (record.PullRequest.ReviewsRequested and HeadChecks): how many
+// review requests GitHub holds open, people, Apps and teams alike, and whether a check or a
+// commit status of the head was still running. A REST read counts `requested_reviewers` and
+// `requested_teams` and reads the head's `statusCheckRollup` from GitHub's GraphQL API when it
+// answers `blocked` and MERGEABLE; a base's GraphQL batch reads `reviewRequests { totalCount }`
+// and the same rollup in its one query. A nil count and record.HeadChecksUnread are an answer that
+// gave neither, which the round does not end on. A fact minted by anything that did not read
+// GitHub states them as it states MergeState.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
 // read fills it, and the engine records the answer only while the record still stands at that
@@ -873,11 +882,41 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
-	ReadAt     time.Time
-	Rules      *record.BaseRules
+	// ReviewsRequested and HeadChecks are the rest of a `blocked` answer (above).
+	ReviewsRequested *int
+	HeadChecks       record.HeadChecks
+	ReadAt           time.Time
+	Rules            *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
+
+// PullRequestMergeStateUnread is the daemon's own fact that a read of GitHub's merge state for the
+// pull request at head HeadSHA failed - GitHub refused it, timed out or answered nothing - while
+// the record holds a `blocked` answer of that head with `mergeable` null. It carries no answer:
+// it asks the review round again at the moment it is applied (workflow's mergeStateUnread), since
+// a persistent null is told once classify.NullMergeableTellAfter has passed since its first read,
+// whatever the count of reads, and when every read fails no answer comes to ask the round.
+type PullRequestMergeStateUnread struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestMergeStateUnread) namedIssue() (string, bool) { return "", false }
+
+// PullRequestReviewRequests is GitHub's pull_request action `review_requested` or
+// `review_request_removed`: the review requests GitHub holds open on the pull request changed, at
+// head HeadSHA. It carries no count: the read it asks for counts them (workflow's askMergeState),
+// since a request opened or withdrawn is what moves a `blocked` head's round between waiting for
+// a review and ending (classify.MergeOutcomeOf), and GitHub sends no other event of it.
+type PullRequestReviewRequests struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestReviewRequests) namedIssue() (string, bool) { return "", false }
 
 // PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
 // the head the pull request merged at, "" when the observation names none.
@@ -1524,9 +1563,11 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
-// takes it as every other fact, so a root whose wait was held because its architect had not yet
-// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission's
+// pass rule (admit.Admission.Apply) runs the pass on it whatever it wrote, since it stands for the
+// confirmation the supervisor wrote outside the fact, so a root whose wait was held because its
+// architect had not yet taken its task is decided here rather than at the next tick (workflow's
+// ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role

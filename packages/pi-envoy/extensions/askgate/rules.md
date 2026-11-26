@@ -43,22 +43,18 @@ it is access 7.) These shapes fail it:
    your approval and nothing more", or `Done`/`Can't` under "Merge the two
    open pull requests". Agents approve and merge pull requests.
    The person is not a step in a merge.
+   Fix: for a review with no read of the base branch's CODEOWNERS file in
+   the transcript, read that file, and resend the ask unchanged when the
+   review meets the code-owner case below.
    `blocker` when `kind` is `action`. (Not this: a real risk question about
    *whether* to merge on the evidence in hand — "merge now on the test
    results, or wait a week in staging" — that is their risk appetite and passes. Not
    this: an ask whose main action is their own — rotate their keys, log in, tap
    the key — with a PR to look at mentioned alongside; that passes whole. Not
-   this: a review that the repository's CODEOWNERS file requires from the
+   this: a review that the base branch's CODEOWNERS file requires from the
    person on a path the pull request changes, where that file names no agent
    identity as a code owner of the path, and the transcript shows the agent's
-   read of it. That ask passes. It need not say why it needs the person, and
-   it does not tell them that they own the path: the CODEOWNERS read belongs
-   in the transcript, not in the ask. A rewrite you send adds no such sentence
-   either. For an ask for such a review whose transcript shows no CODEOWNERS
-   read, the fix you give is to read the file before the ask, and to resend
-   the ask unchanged when the read meets this case; it never adds to the ask a
-   sentence about who owns the path. A merge is never this case. Every other
-   click on a pull request stays under this rule.)
+   read of it; that passes. A merge is never this case.)
 2. **A chore the agent could run with a credential it already holds**: the
    ask hands the person a command that runs under a credential the ask itself
    names as the agent's — an `aws …` command under a named profile (the
@@ -142,7 +138,8 @@ it is access 7.) These shapes fail it:
    the person. But the transcript shows no check of the access this session
    holds, and no check of the access a peer holds. This session or a peer
    may already hold the access. Fix: check what access this session and its
-   peers hold before the ask goes to the person. `blocker` when `kind` is
+   peers hold before the ask goes to the person. The check goes in the
+   transcript; the ask need not report it. `blocker` when `kind` is
    `action`. (Not this: the transcript
    already shows the check and the capability genuinely absent. Not this:
    anything that needs the person's own hardware, browser session, or
@@ -249,7 +246,9 @@ An ask is short and self-contained: the person answers it with no other reading.
    for; a hypothesis labelled as one.)
 
 12. **A fact the reader does not need.** The write holds a fact that the
-   reader does not need to decide, build or check. Name each such fact by its
+   reader does not need to decide, build or check. A fact about the reader's
+   own role is one, such as that they are a code owner of a path: they know
+   it. Name each such fact by its
    words. Give the write without them. (Not this: a fact that changes which
    option is right. Not this: a cost. Not this: a count that the decision
    turns on. Not this: a link. Not this: the concrete case the write is
@@ -308,8 +307,7 @@ We invented these examples. Each one shows a shape that passes.
   out… Pages already online stay up." `Done`/`Can't`. Dense, and it needs
   the person's own YubiKey: passes.
 - "Both finalists for the support job finished their trial task… Who gets
-  the offer? This is your hiring call." with one option per finalist. A
-  hiring decision: passes.
+  the offer?" with one option per finalist. A hiring decision: passes.
 - "Should we tell customers about the price change a month ahead or a week
   ahead? … I recommend a month." Customer-facing timing with a
   recommendation: passes.
@@ -341,6 +339,13 @@ We invented these examples. Each one shows a shape that passes.
   large." with options `Include them` / `Leave them out`. The link reaches
   the person's words, and the cost bears on the choice: passes, 10, 12 and
   13 included.
+- "Will you approve the pull request that rewords the release checklist,
+  at head 4f2a91c? It changes three steps of `docs/release.md`… If you do
+  not approve, the old steps stay." with options `Approved on GitHub` /
+  `Not approved`, and the transcript shows the agent's read of the base
+  branch's CODEOWNERS, which gives `docs/` to the person and to no agent
+  identity. A review that file requires of them: passes authority 1, and
+  the ask need not say that they own `docs/`.
 - "Please give your review of the pull request that adds the retry
   button, at head 7c1e0b2… The merge adds the retry button to the export
   page. Approve it on the pull request's review page." with `Done`/`Can't`
@@ -355,8 +360,10 @@ We invented these examples. Each one shows a shape that fails, and the
 failure it shows.
 
 - "Approve the pull request that adds the retry button… The only step left
-  is your approval." `Done`/`Can't` → authority 1, `blocker`. Agents
-  approve and merge pull requests, and the person is not a step in that.
+  is your approval." `Done`/`Can't`, and the transcript's read of the base
+  branch's CODEOWNERS gives the path to an agent identity → authority 1,
+  `blocker`. Agents approve and merge pull requests, and the person is not
+  a step in that.
 - "Your approval is needed to turn on versioning for the test bucket…
   Command: `AWS_PROFILE=test aws s3api put-bucket-versioning …`" →
   authority 2, `blocker`. The command runs under a profile the ask names
@@ -390,6 +397,13 @@ failure it shows.
   font and was built in March." with options `20` / `50` → content 12. The
   reason names both facts, "uses the Inter font" and "was built in March",
   and gives the ask without them.
+- "This needs you: CODEOWNERS gives `docs/` to you, your own login, and no
+  agent identity owns it. Will you approve the pull request that rewords
+  the release checklist?…", and the transcript shows the agent's read of
+  the base branch's CODEOWNERS → content 12. The reason names "CODEOWNERS
+  gives `docs/` to you, your own login, and no agent identity owns it", a
+  fact about the person's own role that they know, and gives the ask
+  without it.
 - "Hope your week is going well! I spent the morning reading the build
   logs and wanted to loop you in. The nightly build timed out in 9 of its
   last 14 runs, all on the 2-CPU runners. Should it move to the 4-CPU
