@@ -25,13 +25,6 @@ func (h *harness) withSessionAge(maxAge time.Duration) {
 func (h *harness) upOn(id string) {
 	h.t.Helper()
 	h.launch()
-	h.againOn(id)
-}
-
-// againOn walks h's launching claim to ready on the session id given, as relaunched does on the
-// harness's own session.
-func (h *harness) againOn(id string) {
-	h.t.Helper()
 	h.wantState(StateLaunching)
 	h.connect()
 	h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: id, SessionFile: sessionFile,
@@ -52,15 +45,10 @@ func TestTheAgeRuleIsTheControllersAndSaysOnceItCannotReadAnAge(t *testing.T) {
 		h.withSessionAge(72 * time.Hour)
 		old := agedSession(h.clock.Now(), 73*time.Hour)
 		h.upOn(old)
-		resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
+		resumes, spawns := h.startsSoFar()
 		h.dies()
 
-		if got, gotSpawns := len(h.calls("Resume")), len(h.calls("Spawn")); got != resumes+1 || gotSpawns != spawns {
-			t.Fatalf("the worker's relaunch made %d resumes and %d spawns, want the one resume of its session", got-resumes, gotSpawns-spawns)
-		}
-		if c := h.claim(); c.Session != old || c.Abandoned.Session != "" {
-			t.Fatalf("the worker records %q with %q abandoned, want %s kept", c.Session, c.Abandoned.Session, old)
-		}
+		h.wantResumedSince(resumes, spawns, old)
 		if lines := h.records.of(sessionAgedOutLine); len(lines) != 0 {
 			t.Fatalf("the worker's relaunch wrote %d R3 lines, want none", len(lines))
 		}
@@ -69,18 +57,19 @@ func TestTheAgeRuleIsTheControllersAndSaysOnceItCannotReadAnAge(t *testing.T) {
 	t.Run("a controller session id that is no UUIDv7 is named once across two relaunches", func(t *testing.T) {
 		h := controllerUp(t)
 		h.withSessionAge(72 * time.Hour)
+		resumes, spawns := h.startsSoFar()
 		h.dies()
+		h.wantResumedSince(resumes, spawns, session)
 		h.relaunched()
 		// A finished turn, so the second end is not R1's second in a row, which would replace the
 		// session and ask R3 nothing.
 		h.must(StreamTurnStart{Claim: h.token})
 		h.must(StreamTurnEnd{Claim: h.token})
+		resumes, spawns = h.startsSoFar()
 		h.dies()
+		h.wantResumedSince(resumes, spawns, session)
 		h.relaunched()
 
-		if c := h.claim(); c.Session != session {
-			t.Fatalf("the controller records %q after its relaunches, want %s resumed", c.Session, session)
-		}
 		if lines := h.records.of(sessionUnagedLine); len(lines) != 1 {
 			t.Fatalf("the lines for an id the rule reads no age off are %d over two relaunches, want one", len(lines))
 		}

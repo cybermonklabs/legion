@@ -735,6 +735,15 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// ResumesNothing marks the daemon's own task that carries no ID and is no operator's: the
+	// controller keeper's start message (internal/daemon's controllerKeeper.ready). A suspended
+	// claim refuses it with a *RefusedError, queuing nothing and launching nothing (deliverResuming),
+	// since the next launch's ready sends it again; and it is no operator's delivery to the pacing
+	// (operatorDelivery). Without it an operator's suspension that landed between the controller's
+	// ready and this message would be undone by the message, which reads as an operator's delivery
+	// and resumes the claim whoever suspended it, keeping a session older than its age
+	// (replaceAgedSession, dispatch://INFRA-2045 R3).
+	ResumesNothing bool
 }
 
 // RequestExit is the agent reporting its own end.
@@ -3180,6 +3189,9 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 // (dropsWaitingWake, dropWakeFor).
 func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	d := ev.(RequestDeliver)
+	if d.ResumesNothing {
+		return &RefusedError{State: m.claim.State, Request: "deliver", Reason: "the claim is suspended, and the daemon's own task resumes nothing: the next launch's ready sends it again"}
+	}
 	if d.ID != "" && !m.claim.RuleMayResume() {
 		return fmt.Errorf("deliver %s to %s: %w", d.ID, m.claim.Token, m.current().RuleHoldError())
 	}

@@ -3320,7 +3320,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// The launch that follows the controller session's second end in a row starts a fresh
 	// session, and so does a daemon-driven relaunch of a session older than its age, once the
 	// process it replaces is let go and what that process ended recorded (replaceEndedSession,
-	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
+	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3). R3 is not asked where R1 applied,
+	// forgotten or refused, so one launch asks mayForget once: a refused R1 resumes the session.
 	if !m.replaceEndedSession(ctx) {
 		m.replaceAgedSession(ctx, exempt)
 	}

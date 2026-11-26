@@ -328,6 +328,33 @@ func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn", lines)
 		}
 	})
+
+	t.Run("an operator's suspension between the controller's ready and its start message is not undone by the message", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		c := idle(old)
+		c.State = supervise.StateReady
+		k, sup, rt, logs := keptController(t, c)
+		m, _ := sup.Machine(claim.ControllerToken("legion"))
+		// The operator suspends the ready controller before the ready route hands it the start
+		// message.
+		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: m.Claim().Token, Reason: "an operator stops the controller", By: supervise.SuspendedByOperator}); err != nil {
+			t.Fatalf("the operator's suspension: %v", err)
+		}
+		k.ready(m.Claim())
+		m.Wait()
+
+		after := controllerOf(t, sup)
+		if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != old || after.Pending != nil {
+			t.Fatalf("after the start message the controller is %s, suspended by %q, on %q, holding %+v; want it suspended by the operator on %s, holding nothing",
+				after.State, after.SuspendedBy, after.Session, after.Pending, old)
+		}
+		if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 0 || len(spawns) != 0 {
+			t.Fatalf("the start message launched %d resumes and %d spawns, want none", len(resumes), len(spawns))
+		}
+		if lines := linesOf(t, logs, "controller: the start message is not sent: the controller left its ready before it"); len(lines) != 1 {
+			t.Fatalf("the keeper's lines for a start message the suspension refused are %+v, want one", lines)
+		}
+	})
 }
 
 // dispatch://INFRA-2045 R4 for a replacement under R3: one Warn line names the claim, the old

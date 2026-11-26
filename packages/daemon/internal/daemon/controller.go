@@ -236,7 +236,9 @@ func (k *controllerKeeper) leaveHeld() { k.heldLogged, k.heldReason = "", "" }
 // ready hands the controller the start message once its agent says it is ready, at every launch, so
 // each one runs the skill's start procedure before any wake. A start message still pending from an
 // earlier launch — its turn interrupted by the death this launch replaced — is sent on this ready
-// instead, so none is queued behind it.
+// instead, so none is queued behind it. The message is the daemon's own and resumes nothing
+// (RequestDeliver.ResumesNothing): a claim an operator suspended after this ready and before the
+// message refuses it and stays suspended, and the next launch's ready sends it again.
 func (k *controllerKeeper) ready(c supervise.Claim) {
 	m, ok := k.supervisor.Machine(c.Token)
 	if !ok {
@@ -244,11 +246,14 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	}
 	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
 	// takes a fresh hold mark at the call.
-	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage, ResumesNothing: true})
+	var refused *supervise.RefusedError
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):
 		k.log.Info("controller: the start message waits behind the controller's pending delivery", "claim", c.Token)
+	case errors.As(err, &refused):
+		k.log.Info("controller: the start message is not sent: the controller left its ready before it", "claim", c.Token, "reason", err)
 	default:
 		k.log.Error("controller: hand the daemon's controller its start message", "claim", c.Token, "error", err)
 	}

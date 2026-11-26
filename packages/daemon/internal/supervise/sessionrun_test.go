@@ -244,9 +244,9 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 // Warn line names the claim, the old session, the reason and how each of the two launches ended;
 // one line at the fresh session's ready names the old and the new session; and the fresh
 // session's first prompt names the old session and the reason, and says that messages sent to the
-// old session may be lost, before the start message. The replacement under R3 is the keeper's,
-// and internal/daemon's test of the same name reads it. The control: on main no replacement of
-// this kind exists, so none of the three is written.
+// old session may be lost, before the start message. The replacement under R3 is
+// replaceAgedSession's; agedsession_test.go and internal/daemon's test of the same name read it.
+// The control: on main no replacement of this kind exists, so none of the three is written.
 func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	h := controllerUp(t)
 	// The first launch dies after the controller said ready, and its relaunch dies before the

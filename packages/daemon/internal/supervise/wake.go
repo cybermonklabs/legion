@@ -919,10 +919,12 @@ func dropsWaitingWake(ev Event) bool {
 
 // operatorDelivery is a task a person gave a claim through the daemon's API: that route sends it
 // with no id of an outbox row (api.operator's deliver, RequestDeliver.ID), where every task the
-// workflow queues names the row it came from. The pacing makes no such task wait (dropsWaitingWake).
+// workflow queues names the row it came from. The daemon's own task of no row, the controller
+// keeper's start message, says it is no operator's (RequestDeliver.ResumesNothing). The pacing
+// makes no operator's task wait (dropsWaitingWake).
 func operatorDelivery(ev Event) bool {
 	deliver, ok := ev.(RequestDeliver)
-	return ok && deliver.ID == ""
+	return ok && deliver.ID == "" && !deliver.ResumesNothing
 }
 
 // exemptWake is whether the launch a request raises is one the wake pacing lets through: the two

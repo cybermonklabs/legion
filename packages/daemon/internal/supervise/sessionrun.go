@@ -157,21 +157,23 @@ func (m *Machine) replaceEndedSession(ctx context.Context) (applied bool) {
 
 // replaceAgedSession forgets the project controller's recorded session where its id says it began
 // more than Deps.ControllerSessionMaxAge ago, so the relaunch running it spawns a fresh agent
-// (dispatch://INFRA-2045 R3). It runs in every launch, after replaceEndedSession and after the
-// launch let the old process go (launchNow, letGo), and is skipped where replaceEndedSession
-// applied, which is what makes it a rule of relaunches alone: the daemon stops no live controller
-// for its session's age, and an old session is replaced at the next launch the daemon makes
-// anyway — every launch of the controller that no operator's request raised, a death's, a launch
-// failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its
-// bound, the keeper's spawn, retry or resume by rule, and the boot relaunch of an unfinished launch
-// among them. A launch an operator's own request raises keeps its session, because the operator
-// asked for that session: an operator's resume (RequestResume), and a task an operator delivers to
-// a suspended controller (deliverResuming). Those are the controller's two exempt launches
-// (exemptWake; an operator's retry is refused for the controller, and the operator's spawn route
-// names an issue), and the wake gate lets every launch of the controller through by identity, so
-// for the controller exempt is read for this rule alone. The fresh agent is told in its first
-// prompt which session it replaces and why (abandonedTask), and one Warn line names the old
-// session, the reason and when it started (R4). The old session's transcript stays in its store.
+// (dispatch://INFRA-2045 R3). It runs in every launch, after the launch let the old process go
+// (launchNow, letGo), which is what makes it a rule of relaunches alone: the daemon stops no live
+// controller for its session's age, and an old session is replaced at the next launch the daemon
+// makes anyway — every launch of the controller that no operator's request raised, a death's, a
+// launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past
+// its bound, the keeper's spawn, retry or resume by rule, and the boot relaunch of an unfinished
+// launch among them. It is not asked where replaceEndedSession applied, forgotten or refused, so
+// one launch asks mayForget once. A launch an operator's own request raises keeps its session,
+// because the operator asked for that session: an operator's resume (RequestResume), and a task an
+// operator delivers to a suspended controller (deliverResuming). Those are the controller's two
+// exempt launches (exemptWake; an operator's retry is refused for the controller, the operator's
+// spawn route names an issue, and the keeper's start message, the daemon's own task of no row,
+// resumes nothing: RequestDeliver.ResumesNothing), and the wake gate lets every launch of the
+// controller through by identity, so for the controller exempt is read for this rule alone. The
+// fresh agent is told in its first prompt which session it replaces and why (abandonedTask), and
+// one Warn line names the old session, the reason and when it started (R4). The old session's
+// transcript stays in its store.
 //
 // The age is the time the session id records, a UUIDv7, so it survives a daemon restart and a new
 // pod. An id of another form says nothing of its age: the session is resumed, and one Warn line,
