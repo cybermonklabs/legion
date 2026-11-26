@@ -1289,17 +1289,17 @@ async function tapsLostAcrossBand(
       });
     const pillBox = () =>
       document.querySelector('[data-testid="jump-to-latest"]')?.getBoundingClientRect();
-    // The pill is drawn where the reader is away from the place the page settled and the newest
-    // card's head is off the screen, the band the docked composer covers being no part of it;
-    // while that head is on the screen there is nothing to jump to, and the pill would cover the
-    // card it points at (dispatch://INFRA-5200). `undefined` while that head is within 8 px of an
-    // edge of that screen: there the page's own reading - an IntersectionObserver on a marker at
-    // the head, reported a frame after the scroll - and this one can disagree by a pixel and a
-    // frame, so either answer is taken there. Whether the pill covers anything is read at every
-    // step, that one included.
+    // The pill is drawn where the reader is away from the place the page settled and no part of
+    // the newest card is on the screen, the band the docked composer covers being no part of it;
+    // while any of that card is on the screen there is nothing to jump to, and the pill would
+    // cover the card it points at (dispatch://INFRA-5200). `undefined` while an edge of the card
+    // is within 8 px of an edge of that screen: there the page's own reading - an
+    // IntersectionObserver on the card, reported a frame after the scroll - and this one can
+    // disagree by a pixel and a frame, so either answer is taken there. Whether the pill covers
+    // anything is read at every step, that one included.
     const belongs = (top: number): boolean | undefined => {
-      const head = document.querySelector("[data-turn]")?.getBoundingClientRect().top;
-      if (head === undefined || Math.abs(top - settled) <= 1) return false;
+      const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
+      if (card === undefined || Math.abs(top - settled) <= 1) return false;
       const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
       const docked = composer === null ? "" : getComputedStyle(composer).position;
       const screenTop =
@@ -1308,8 +1308,10 @@ async function tapsLostAcrossBand(
         composer !== null && docked === "fixed"
           ? composer.getBoundingClientRect().top
           : window.innerHeight;
-      if (Math.abs(head - screenTop) <= 8 || Math.abs(head - screenBottom) <= 8) return undefined;
-      return !(head > screenTop && head < screenBottom);
+      if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
+        return undefined;
+      }
+      return !(card.bottom > screenTop && card.top < screenBottom);
     };
     const lost: string[] = [];
     for (let top = 1; top <= end; top += 4) {
@@ -1372,14 +1374,14 @@ async function tapsLostAcrossBand(
 }
 
 /** The pill where the page stands now: drawn where the reader is away from the place the page
- *  settled and the newest card's head is off the screen less the docked composer's band, absent
- *  everywhere else. A head within 8 px of an edge of that screen is read either way, as in the
- *  sweep. */
+ *  settled and no part of the newest card is on the screen less the docked composer's band,
+ *  absent everywhere else. A card whose edge is within 8 px of an edge of that screen is read
+ *  either way, as in the sweep. */
 async function expectPill(page: Page, pill: Locator, settled: number): Promise<void> {
-  // The page settled at this scroll before the call, so one reading of the head decides it here.
+  // The page settled at this scroll before the call, so one reading of the card decides it here.
   const belongs = await page.evaluate((restingY) => {
-    const head = document.querySelector("[data-turn]")?.getBoundingClientRect().top;
-    if (head === undefined || Math.abs(window.scrollY - restingY) <= 1) return false;
+    const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
+    if (card === undefined || Math.abs(window.scrollY - restingY) <= 1) return false;
     const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
     const docked = composer === null ? "" : getComputedStyle(composer).position;
     const screenTop =
@@ -1388,8 +1390,10 @@ async function expectPill(page: Page, pill: Locator, settled: number): Promise<v
       composer !== null && docked === "fixed"
         ? composer.getBoundingClientRect().top
         : window.innerHeight;
-    if (Math.abs(head - screenTop) <= 8 || Math.abs(head - screenBottom) <= 8) return undefined;
-    return !(head > screenTop && head < screenBottom);
+    if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
+      return undefined;
+    }
+    return !(card.bottom > screenTop && card.top < screenBottom);
   }, settled);
   if (belongs === undefined) return;
   if (belongs) {

@@ -1372,9 +1372,10 @@ for (const fixture of [
     try {
       // The issue's pull requests are a row of Details.
       await openIssueDetails(userEvent.setup());
-      await screen.findByText("Merge native Dispatch");
-      expect(screen.getByText("merged")).toBeDefined();
-      expect(await screen.findByText(`checks: ${fixture.checks}`)).toBeDefined();
+      const pullRequests = await screen.findByTestId("issue-details-pull-requests");
+      await within(pullRequests).findByText("Merge native Dispatch");
+      expect(within(pullRequests).getByText("merged")).toBeDefined();
+      expect(await within(pullRequests).findByText(`checks: ${fixture.checks}`)).toBeDefined();
     } finally {
       view.unmount();
       githubRest.mockRestore();
@@ -1518,8 +1519,9 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
 
   try {
     await openIssueDetails(userEvent.setup());
-    await screen.findByText("Issue remains an issue");
-    expect(screen.getByText("open")).toBeDefined();
+    const links = await screen.findByTestId("issue-details-links");
+    await within(links).findByText("Issue remains an issue");
+    expect(within(links).getByText("open")).toBeDefined();
     expect(githubRest).toHaveBeenCalledWith("repos/owner/repository/issues/9");
   } finally {
     view.unmount();
@@ -1806,6 +1808,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   const originalGetInbox = api.getInbox;
   const originalGetMyState = api.getMyState;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
+  const originalListIssueAsks = api.listIssueAsks;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1813,6 +1816,8 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   // pending/loading transition — the scenario where a stale-state leak would
   // otherwise go unnoticed by a naive loading-gate remount.
   queryClient.setQueryData(["issue", "CORE-2"], secondIssue);
+  // The signed-in reader, as `renderIssuePage` caches it: Details keeps its open state per login.
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
 
   try {
     api.getIssue = async (key: string) => (key === "CORE-2" ? secondIssue : issue);
@@ -1823,6 +1828,8 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     });
     api.getIssueEvents = async () => [];
     api.getIssueSubscribers = async () => [];
+    // A signed-in reader's page reads the issue's asks, for whose turn it is.
+    api.listIssueAsks = async () => [];
 
     const view = render(
       <MemoryRouter initialEntries={["/issues/CORE-1"]}>
@@ -1873,6 +1880,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     api.getInbox = originalGetInbox;
     api.getMyState = originalGetMyState;
     api.getIssueSubscribers = originalGetIssueSubscribers;
+    api.listIssueAsks = originalListIssueAsks;
   }
 });
 

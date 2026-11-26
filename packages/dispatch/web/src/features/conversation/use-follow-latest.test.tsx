@@ -69,14 +69,14 @@ function Harness({
   onFirstPlacement?: () => void;
   ownSendCount: number;
 }): ReactNode {
-  // The marker the Conversation draws at the head of its list, which the hook watches with an
+  // The list of turns the Conversation draws, whose newest card the hook watches with an
   // IntersectionObserver; happy-dom reports no intersection, so these rows read the placement
   // and the follow state alone.
-  const [listHead, setListHead] = useState<HTMLElement | null>(null);
+  const [turnList, setTurnList] = useState<HTMLElement | null>(null);
   useFollowLatest({
     enabled,
     latestItemSeq: itemSeqs.at(0),
-    listHead,
+    turnList,
     onFirstPlacement,
     ownSendCount,
   });
@@ -86,10 +86,11 @@ function Harness({
         aria-label="Comment composer"
         style={composerAtFoot ? { bottom: 64, position: "fixed" } : undefined}
       />
-      <div ref={setListHead} />
-      {itemSeqs.map((seq) => (
-        <div data-turn={`message:${seq}`} key={seq} />
-      ))}
+      <div ref={setTurnList}>
+        {itemSeqs.map((seq) => (
+          <div data-turn={`message:${seq}`} key={seq} />
+        ))}
+      </div>
     </div>
   );
 }

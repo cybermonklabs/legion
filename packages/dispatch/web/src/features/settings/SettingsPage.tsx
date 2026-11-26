@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
@@ -48,16 +48,46 @@ export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
-  // The app routes in the page, so the browser's own scroll to a `#` part never runs. The scroll
-  // runs again once the broker's read has settled: on a Dispatch with a broker, Live grants and
-  // Sign-ins are then drawn above the later sections, which moves the one the address names.
+  // The app routes in the page, so the browser's own scroll to a `#` part never runs: the page
+  // scrolls to the section once the address names it. On a Dispatch with a broker, Live grants
+  // and Sign-ins are drawn above the later sections once the broker's read settles, which moves
+  // the section the address names, so the page scrolls to it once more then - unless the reader
+  // has scrolled since, by wheel, touch or keys or by the scroll position moving from where the
+  // first scroll left it: where the reader has gone is theirs.
   const { hash } = useLocation();
   const brokerSettled = !credentialsAvailable.isPending;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the broker's read settling moves the section the address names, so it is when the scroll runs again, though the scroll reads nothing of it.
+  const correction = useRef<{ id: string; readerMoved: boolean; scrollY: number } | null>(null);
   useEffect(() => {
+    correction.current = null;
     const id = fragmentId(hash);
-    if (id !== undefined) document.getElementById(id)?.scrollIntoView();
-  }, [hash, brokerSettled]);
+    const target = id === undefined ? null : document.getElementById(id);
+    if (id === undefined || target === null) return;
+    target.scrollIntoView();
+    const pending = { id, readerMoved: false, scrollY: window.scrollY };
+    correction.current = pending;
+    const moved = () => {
+      pending.readerMoved = true;
+    };
+    const scrolled = () => {
+      if (Math.abs(window.scrollY - pending.scrollY) > 1) pending.readerMoved = true;
+    };
+    window.addEventListener("wheel", moved, { passive: true });
+    window.addEventListener("touchmove", moved, { passive: true });
+    window.addEventListener("keydown", moved);
+    window.addEventListener("scroll", scrolled, { passive: true });
+    return () => {
+      window.removeEventListener("wheel", moved);
+      window.removeEventListener("touchmove", moved);
+      window.removeEventListener("keydown", moved);
+      window.removeEventListener("scroll", scrolled);
+    };
+  }, [hash]);
+  useEffect(() => {
+    const pending = correction.current;
+    if (!brokerSettled || pending === null) return;
+    correction.current = null;
+    if (!pending.readerMoved) document.getElementById(pending.id)?.scrollIntoView();
+  }, [brokerSettled]);
 
   return (
     <section className="max-w-4xl">

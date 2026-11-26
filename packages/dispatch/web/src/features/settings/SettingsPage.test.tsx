@@ -146,6 +146,66 @@ test("Settings scrolls to the section again once the broker's read has drawn the
   }
 });
 
+// A reader who scrolls before the broker's read settles has gone where they meant to: the page
+// does not scroll them back to the section when that read draws Live grants and Sign-ins above it
+// (dispatch://INFRA-5200). Each of the reader's ways cancels it: a wheel turn, and the scroll
+// position moving from where the page's first scroll left it.
+test.each([
+  ["a wheel turn", () => window.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }))],
+  [
+    "the scroll position moving",
+    () => {
+      Object.defineProperty(window, "scrollY", { configurable: true, value: 400, writable: true });
+      window.dispatchEvent(new Event("scroll"));
+    },
+  ],
+])("a reader's own scroll (%s) before the broker's read settles keeps Settings from scrolling them back", async (_way, readerScrolls) => {
+  const unrelated = stubUnrelatedQueries();
+  const pending = Promise.withResolvers<CredentialPendingResponse>();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
+    () => pending.promise
+  );
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+  const scrolled: string[] = [];
+  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this.id);
+  });
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]));
+    readerScrolls();
+
+    pending.resolve({ pending: [] });
+    expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
+    // The settled read's render has run its effects by the time its heading is drawn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]);
+  } finally {
+    cleanup();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+    scrollIntoView.mockRestore();
+    getCredentialGrants.mockRestore();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
 // A `#` part that is no valid percent-encoding names no section: Settings opens at its top and
 // stays usable, rather than the decode throwing from the page's effect (dispatch://INFRA-5200).
 test("an address whose # part cannot be decoded opens Settings at its top", async () => {

@@ -3096,6 +3096,20 @@ test("an issue's header names the priorities it advances and links to each", asy
       expect(right).toBeLessThanOrEqual((rowBox?.x ?? Number.NaN) + (rowBox?.width ?? 0));
       expect(right).toBeLessThanOrEqual(size.width);
       await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
+      if (size === PHONE) {
+        // On a phone the picker's square stands 8 px after the last chip's edge, though the
+        // chips sit inside their capped group's element (`PRIORITY_TRIGGER_AFTER_CHIP`).
+        const gap = await line.evaluate((element) => {
+          const chips = element.querySelectorAll('[data-layout-group="advances"] > a > span');
+          const chip = chips.item(chips.length - 1)?.getBoundingClientRect();
+          const square = element
+            .querySelector('button[aria-label="Edit priorities"] > span')
+            ?.getBoundingClientRect();
+          return chip === undefined || square === undefined ? null : square.left - chip.right;
+        });
+        expect(gap).not.toBeNull();
+        expect(Math.abs((gap ?? Number.NaN) - 8)).toBeLessThanOrEqual(1);
+      }
     }
     await priorityPage(page);
     await link.click();

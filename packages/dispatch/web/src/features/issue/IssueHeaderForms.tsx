@@ -93,16 +93,19 @@ export function IssueRouteForm({
         ref={input}
         value={drafts.route}
       />
-      <button
-        className={saveButton}
-        disabled={isClosed || !drafts.routeIsValid || saving}
-        type="submit"
-      >
-        Save route
-      </button>
-      <button className={cancelButton} onClick={onCancel} type="button">
-        Cancel
-      </button>
+      {/* Save and Cancel are one group: the form wraps it whole onto the next line. */}
+      <span className="inline-flex shrink-0 items-center gap-2">
+        <button
+          className={saveButton}
+          disabled={isClosed || !drafts.routeIsValid || saving}
+          type="submit"
+        >
+          Save route
+        </button>
+        <button className={cancelButton} onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </span>
       <span
         className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
         id="issue-route-help"
@@ -150,12 +153,14 @@ export function IssueParentForm({
         ref={input}
         value={drafts.parent}
       />
-      <button className={saveButton} disabled={isClosed || saving} type="submit">
-        Save parent
-      </button>
-      <button className={cancelButton} onClick={onCancel} type="button">
-        Cancel
-      </button>
+      <span className="inline-flex shrink-0 items-center gap-2">
+        <button className={saveButton} disabled={isClosed || saving} type="submit">
+          Save parent
+        </button>
+        <button className={cancelButton} onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </span>
       <span className="sr-only" id="issue-parent-help">
         Parent issue key, in {project} or another project; leave empty to clear the parent.
       </span>

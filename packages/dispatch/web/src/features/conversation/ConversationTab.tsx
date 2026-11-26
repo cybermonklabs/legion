@@ -1241,13 +1241,13 @@ export function ConversationTab({
   const failed = asks.isError || comments.isError || messages.isError || handoffs.isError;
   const newestShown = loading || failed ? undefined : shown.at(0);
   const latestItemSeq = newestShown === undefined ? undefined : Date.parse(newestShown.at);
-  // The marker drawn at the head of the list below, held in state so the hook watches the node
-  // the list has now: the list is unmounted while the reads are out or failed.
-  const [listHead, setListHead] = useState<HTMLElement | null>(null);
+  // The list of turns, held in state so the hook watches the node the list has now: the list is
+  // unmounted while the reads are out or failed.
+  const [turnList, setTurnList] = useState<HTMLElement | null>(null);
   const follow = useFollowLatest({
     enabled: visible,
     latestItemSeq,
-    listHead,
+    turnList,
     onFirstPlacement,
     ownSendCount,
   });
@@ -1258,15 +1258,16 @@ export function ConversationTab({
   const scrolledToFocus = useRef<string | undefined>(undefined);
   // `Jump to latest` is a float of the foot's top layer (`hooks/useFootInset.ts` lists the foot's
   // layers and the elements in each) while it shows, which is only once the reads have loaded and
-  // while the newest card's head is off the screen: a reader who sees the card the pill carries
-  // them to has nothing to jump to, and the pill would cover that card (dispatch://INFRA-5200).
+  // while no part of the newest card is in the visible band: a reader who sees the card the pill
+  // carries them to has nothing to jump to, and the pill would cover that card
+  // (dispatch://INFRA-5200).
   const jumpShown =
     !loading &&
     !failed &&
     visible &&
     phoneThread === undefined &&
     !follow.atTop &&
-    !follow.newestHeadOnScreen &&
+    !follow.newestCardOnScreen &&
     shown.length > 0;
   const jumpRef = useRef<HTMLButtonElement>(null);
   useFootInset(jumpRef, jumpShown, "top");
@@ -1462,11 +1463,11 @@ export function ConversationTab({
           under it: while the card is there the pill covers its Reply and Pin. That cover lasts no
           longer than the passage - scrolling the card on clears it, and so does the pill's own
           tap, which jumps to the latest and takes the pill off the screen. The newest card is
-          never one of them: the pill is gone while that card's head is on screen
-          (`newestHeadOnScreen`), because a reader who can see the card the pill carries them to
+          never one of them: the pill is gone while any part of that card is in the visible band
+          (`newestCardOnScreen`), because a reader who can see the card the pill carries them to
           has nothing to jump to, and a pill over it would cover the one card whose Accept and
-          Reject the reader is looking at - which today's issue header, tall at a phone's width,
-          puts in the band at the top of the page (dispatch://INFRA-5200). A thread opened
+          Reject, or whose Reply and Pin, the reader is looking at - however tall the card is
+          (dispatch://INFRA-5200). A thread opened
           full-screen covers the Conversation the pill acts on, and its own composer sits at the
           foot, so the pill waits for Back. */}
       {jumpShown ? (
@@ -1480,14 +1481,9 @@ export function ConversationTab({
           Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
         </button>
       ) : null}
-      {/* The head of the list, where the newest card starts: an IntersectionObserver on this
-          marker tells the pill above whether that card's head is on screen, and costs no layout
-          read while the reader scrolls (`use-follow-latest.ts`). One pixel tall, because a box
-          of no height at the edge of the screen is a case the observers disagree on; `-mb-[13px]`
-          takes back that pixel and the column's 12 px gap, so the list starts where it did and no
-          card moves for it. */}
-      <div aria-hidden="true" className="-mb-[13px] h-px" ref={setListHead} />
       <ol
+        // The hook watches this list's newest card for the pill (`use-follow-latest.ts`).
+        ref={setTurnList}
         aria-hidden={phoneThread === undefined ? undefined : true}
         aria-label="Conversation turns"
         className="flex flex-col gap-1"
