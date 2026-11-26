@@ -41,12 +41,18 @@
 #      conflict; where it can, each file whose result differs from step 1's, the labels of
 #      conflict markers aside. Either way the change's edits reach something P changes: inside one
 #      of P's conflicts with the base, beside one, at text the base and P each added alike, or
-#      anywhere else. A conflict with no markers (a binary file's, modify/delete, file/directory)
-#      is the change's too where step 1 lists other stages for its path than step 2 does, each
-#      with its mode and blob.
+#      anywhere else. A conflict git writes no markers for (a binary file's, modify/delete,
+#      file/directory, by git's own messages) is the change's too where step 1 lists other stages
+#      for it, each with its mode and blob, than step 2 lists for the same file (the one the change
+#      renamed it from, where it did).
 # A conflict the change adds fails the check, naming P and the files; where git names no file, it
 # fails all the same. Every path is merged, so file/directory, rename and delete conflicts count as
-# content ones do.
+# content ones do. Where P is stale, step 3 errs toward failing in two known cases, and the remedy
+# is the same as for a real conflict, to wait for P: a change that resolves one of P's conflicts
+# with the base by taking P's text (git cannot apply that edit to the conflict markers), and a
+# change that renames a small file P renamed to the same name (the markers in step 2's copy leave
+# too little alike for git to find the rename). A path that really ends with `~change`,
+# `~priority` or `~landed` is reported without that end.
 #
 # What it fetches: one fetch, of this public repository and with no credential, of the change's
 # commit and the head of each priority pull request left after the label read, with every commit
@@ -256,13 +262,14 @@ names() {
 
 # merge <out> <argument>...: `git merge-tree --write-tree -z <argument>...`, with its conflicted
 # file info in full. Writes <out>.tree, the tree of the result (a line); <out>.entries, each entry
-# of that info as `<path>\037<stage> <mode> <oid>`; and <out>.paths, every path that info and the
-# CONFLICT messages name, once; NUL-separated and sorted. Returns 0 for a clean merge, 1 for a
-# conflicted one and 2 when git could not merge or its answer could not be read, with git's words
-# on stderr. It is called where `set -e` does not reach inside it, so every step returns 2 on its
-# own failure.
+# of that info as `<path>\037<stage> <mode> <oid>`; <out>.paths, every path that info and the
+# CONFLICT messages name, once; and <out>.marked, the paths git wrote conflict markers into (those
+# of its `CONFLICT (contents)` and `CONFLICT (add/add)` messages but its `CONFLICT (binary)` ones);
+# NUL-separated and sorted. Returns 0 for a clean merge, 1 for a conflicted one and 2 when git
+# could not merge or its answer could not be read, with git's words on stderr. It is called where
+# `set -e` does not reach inside it, so every step returns 2 on its own failure.
 merge() {
-  local out=$1 status=0 fields=() i count
+  local out=$1 status=0 fields=() i count kind
   local entry_shape=$'^([0-7]+) ([0-9a-f]{40}) ([123])\t(.*)$'
   shift
   git -C "$repo" merge-tree --write-tree -z "$@" > "$out" 2> "$out.err" || status=$?
@@ -274,7 +281,8 @@ merge() {
     return 2
   fi
   printf '%s\n' "${fields[0]}" > "$out.tree" || return 2
-  : > "$out.entries" && : > "$out.paths" && : > "$out.raw" || return 2
+  : > "$out.entries" && : > "$out.paths" && : > "$out.marked" && : > "$out.raw" &&
+    : > "$out.text" && : > "$out.binary" || return 2
   [ "$status" -eq 1 ] || return 0
   # The conflicted file info, `<mode> <oid> <stage>\t<path>` each, up to the empty field that ends
   # it; then the messages, `<count> <path>... <type> <text>` each.
@@ -287,11 +295,17 @@ merge() {
   for ((i++; i < ${#fields[@]}; i += count + 3)); do
     count=${fields[i]}
     [[ $count =~ ^[0-9]+$ ]] || return 2
-    if [[ ${fields[i + count + 1]:-} == CONFLICT* ]] && [ "$count" -gt 0 ]; then
-      printf '%s\0' "${fields[@]:i+1:count}" >> "$out.raw" || return 2
-    fi
+    kind=${fields[i + count + 1]:-}
+    [[ $kind == CONFLICT* ]] && [ "$count" -gt 0 ] || continue
+    printf '%s\0' "${fields[@]:i+1:count}" >> "$out.raw" || return 2
+    case $kind in
+      "CONFLICT (contents)" | "CONFLICT (add/add)") printf '%s\0' "${fields[@]:i+1:count}" >> "$out.text" ;;
+      "CONFLICT (binary)") printf '%s\0' "${fields[@]:i+1:count}" >> "$out.binary" ;;
+    esac || return 2
   done
-  sort -z -o "$out.entries" "$out.entries" && sort -z -u "$out.raw" > "$out.paths" || return 2
+  sort -z -o "$out.entries" "$out.entries" && sort -z -u "$out.raw" > "$out.paths" &&
+    sort -z -u -o "$out.binary" "$out.binary" &&
+    sort -z -u "$out.text" | comm -z -23 - "$out.binary" > "$out.marked" || return 2
   return 1
 }
 
@@ -303,14 +317,45 @@ entries_of() {
   done < "$1"
 }
 
+# listed <file> <path>: whether <path> is a record of the NUL-separated <file>; fails the check
+# when grep cannot read it.
+listed() {
+  local found=0
+  grep -qzxF -- "$2" "$1" || found=$?
+  [ "$found" -le 1 ] || fail "could not read $1, $unread"
+  return "$found"
+}
+
 # unlabelled <tree> <path>: the file at <path> in <tree> with the label taken off each conflict
 # marker line, which names a ref or a path and differs between merges that hold the same conflict;
-# nothing for a path that is no file in <tree>. Fails when git cannot read it.
+# nothing for a path that is no file in <tree>. Fails when git cannot read the tree or the file.
 unlabelled() {
-  local kind
-  kind=$(git -C "$repo" cat-file -t "$1:$2" 2> /dev/null) || return 0
-  [ "$kind" = blob ] || return 0
+  local entry
+  entry=$(git -C "$repo" --literal-pathspecs ls-tree "$1" -- "$2") || return 1
+  [[ $entry == *" blob "* ]] || return 0
   git -C "$repo" cat-file blob "$1:$2" | sed -E 's/^(<<<<<<<|>>>>>>>|[|]{7}) .*$/\1/'
+}
+
+# The change's own renames, so that a conflict with no markers at a path the change renamed is
+# compared with the same file's stages in the base's merge.
+declare -A renamed_from=()
+renames_read=''
+read_renames() {
+  local fields=() i
+  git -C "$repo" diff --find-renames --name-status -z "$base" "$head" > "$work/renames" ||
+    fail "git could not list the renames of $change, $unread"
+  mapfile -d '' -t fields < "$work/renames"
+  for ((i = 0; i < ${#fields[@]}; )); do
+    if [[ ${fields[i]} == R* ]]; then
+      renamed_from[${fields[i + 2]}]=${fields[i + 1]}
+      i=$((i + 3))
+    elif [[ ${fields[i]} == C* ]]; then
+      i=$((i + 3))
+    else
+      i=$((i + 2))
+    fi
+  done
+  renames_read=yes
 }
 
 # In a merge group, the priority pull requests of the groups in front of this one, which land
@@ -413,11 +458,15 @@ for candidate in "${candidates[@]}"; do
           esac
         done < "$work/differ"
         # A conflict with no markers (a binary file's, modify/delete, file/directory) leaves the
-        # file of one side in the tree; it is the change's too where the change's merge lists
-        # stages for a path that the base's merge lists otherwise, each with its mode and blob.
+        # file of one side in the tree; it is the change's too where the change's merge lists other
+        # stages for it, each with its mode and blob, than the base's merge lists for the same
+        # file (the one the change renamed it from, where it did). Which conflicts have markers is
+        # git's own word, from its messages, never the file's text.
+        [ -n "$renames_read" ] || read_renames
         while IFS= read -r -d '' path; do
-          if [ "$(entries_of "$work/ours.entries" "$path")" != "$(entries_of "$work/before.entries" "$path")" ] &&
-            ! grep -qE '^<<<<<<<( |$)' <(unlabelled "$(cat "$work/ours.tree")" "$path"); then
+          ! listed "$work/ours.marked" "$path" || continue
+          from=${renamed_from[$path]:-$path}
+          if [ "$(entries_of "$work/ours.entries" "$path")" != "$(entries_of "$work/before.entries" "$from")" ]; then
             printf '%s\0' "$path" >> "$work/caused"
           fi
         done < "$work/ours.paths"
