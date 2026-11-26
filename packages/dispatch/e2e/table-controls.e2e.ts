@@ -13314,7 +13314,11 @@ test("a j while the selection bar's landing is owed leaves the focus on a contro
         await trigger.focus();
         await page.keyboard.press("Enter");
         await page.keyboard.type("tom");
-        await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+        // The Snooze list draws each choice's key digit inside an `aria-hidden` span
+        // (dispatch://INFRA-2160, D5), so the sole option is checked by its accessible name.
+        const options = listOf(trigger).getByRole("option");
+        await expect(options).toHaveCount(1);
+        await expect(options.first()).toHaveAccessibleName("Tomorrow");
         await page.keyboard.press("Enter");
       }
       await expect(bar).toHaveCount(0, { timeout: 15_000 });
@@ -13432,7 +13436,7 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
     }, 40);
   });
   // Every frame from the pick on, the page records the box's scroll and the two rows' tops at the
-  // first frame the focus stands on the landed checkbox with the bar gone, and again at the last.
+  // first frame the focus stands on the landed row with the bar gone, and again at the last.
   await list.evaluate(
     (box, rows) => {
       const w = window as unknown as {
@@ -13444,12 +13448,10 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
         box.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect().top ?? Number.NaN;
       const step = () => {
         if (!record.on) return;
-        const landedMark = box.querySelector(
-          `[data-inbox-row="${rows.after}"] input[type="checkbox"]`
-        );
+        const landedRow = box.querySelector(`li[data-inbox-row="${rows.after}"]`);
         const barGone =
           document.querySelector('[role="toolbar"][aria-label="Selected rows"]') === null;
-        if (barGone && landedMark !== null && document.activeElement === landedMark) {
+        if (barGone && landedRow !== null && document.activeElement === landedRow) {
           const now = [box.scrollTop, top(rows.after), top(rows.reader)];
           if (record.first === null) record.first = now;
           record.last = now;
@@ -13464,7 +13466,11 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
-  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  // The Snooze list draws each choice's key digit inside an `aria-hidden` span
+  // (dispatch://INFRA-2160, D5), so the sole option is checked by its accessible name.
+  const options = listOf(trigger).getByRole("option");
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).toHaveAccessibleName("Tomorrow");
   await page.keyboard.press("Enter");
   await expect(bar).toHaveCount(0, { timeout: 15_000 });
   // The pointer goes on travelling for a second and a half after the bar has gone, as a reader's
@@ -13481,7 +13487,7 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
   await page.waitForTimeout(1000);
   await settledScrollTop(list);
   // One read is the answer: the rows have gone, the pointer rests and the box holds still, so the
-  // record's first and last frames on the landed checkbox are final.
+  // record's first and last frames on the landed row are final.
   const seen = await page.evaluate(() => {
     const w = window as unknown as {
       __afterLanding?: { first: number[] | null; last: number[] | null; on: boolean };
@@ -13494,7 +13500,7 @@ test("after the Inbox bar's Snooze lands with the pointer travelling over the li
   const [scrollNow, landedNow, readerNow] = seen.last ?? [Number.NaN, Number.NaN, Number.NaN];
   const text =
     seen.first === null
-      ? "the focus never stood on the checkbox of the row now at the place once the bar had gone"
+      ? "the focus never stood on the row now at the place once the bar had gone"
       : `from the landing on, the box scrolled ${Math.round(scrollNow - scrollAt)} px, the landed row moved ` +
         `${Math.round(landedNow - landedAt)} px and the reader's row ${Math.round(readerNow - readerAt)} px`;
   expect(
