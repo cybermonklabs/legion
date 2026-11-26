@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
+
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // An issue's role holders are the sessions that hold its Legion roles, one session for each role
 // (issue_role_holders, migration 20261116163813_issue_role_holders). The Legion daemon is the one

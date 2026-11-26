@@ -104,10 +104,11 @@ type sessionIssue struct{ issue, session string }
 // readSessionIssues read.
 const sessionWrote = `issue_key is not null and actor->>'kind' = 'session' and actor->>'id' is not null`
 
-// readSessionIssues is every (issue, session) pair an event names, once each, with the sessions as
-// a sorted list for the title read: of issues alone where it names any, and of the whole log where
+// readSessionIssues is every (issue, session) pair an event names, once each, except the Legion
+// daemon's session, whose title can never make it a Legion role. It returns those sessions as a
+// sorted list for the title read: of issues alone where it names any, and of the whole log where
 // it is nil. One row per pair is all the rule needs: whether a session the title rule makes a
-// Legion role of wrote on the issue at all.
+// Legion role wrote on the issue at all.
 //
 // The narrowed read takes those issues' rows by events' unique (issue_key, seq) first and keeps
 // the sessions' among them after. Written as one condition beside sessionWrote, the planner, which
@@ -134,8 +135,7 @@ func readSessionIssues(ctx context.Context, pool *store.Pool, issues []string) (
 		if err := rows.Scan(&one.issue, &one.session); err != nil {
 			return nil, nil, fmt.Errorf("scan a session that wrote on an issue: %w", err)
 		}
-		// The daemon's own session stamps no title, so it is no Legion role and its title read
-		// would walk every event it wrote (DaemonSession).
+		// The daemon's own session has no title and cannot be a Legion role.
 		if DaemonSession(one.session) {
 			continue
 		}

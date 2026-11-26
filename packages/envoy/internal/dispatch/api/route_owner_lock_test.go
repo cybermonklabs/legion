@@ -509,11 +509,9 @@ func readyDesignGates(t *testing.T, base routeFixture) lockedItemWrite {
 		})
 }
 
-// readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders, which replaces the issue's
-// issue_role_holders rows under the issue's owner lock it takes, with its read of the set the
-// write replaces, before the delete (putIssueRoleHolders, store.LockOwnerAndRead). The issue holds
-// the tester ses-a, which the request moves to ses-b, so the request deletes the stored pair,
-// inserts the new one and appends issue.role_holders_changed.
+// readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders. The route takes the issue's owner
+// lock with its read of the issue, reads the set it replaces under that lock, then deletes the
+// stored pair, inserts the new one and appends issue.role_holders_changed.
 func readyRoleHolders(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Role holders")

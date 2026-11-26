@@ -96,10 +96,8 @@ func RoleSessionWorks(title, issue string) bool {
 }
 
 // DaemonSession is whether session is the one the Legion daemon of a project writes as,
-// `legion-daemon:<PROJECT>` (ciphertoken.LegionDaemonSessionPrefix). That session stamps no title,
-// so its title is never a WorkerTitle, and a title read handed it would read it to the end of its
-// own events (delivery.ResolveSessionTitles): both reads of the sessions that wrote on the issues
-// (readSessionIssues, metrics.readRoleEvents) leave it out before their title read.
+// `legion-daemon:<PROJECT>` (ciphertoken.LegionDaemonSessionPrefix). It has no title and can never
+// be a WorkerTitle, so title reads leave it out.
 func DaemonSession(session string) bool {
 	return strings.HasPrefix(session, ciphertoken.LegionDaemonSessionPrefix)
 }

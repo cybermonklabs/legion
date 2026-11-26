@@ -235,12 +235,13 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 
 // PutRoleHolders publishes the session of each Legion role of the issue through PUT
 // /api/v1/issues/{key}/role-holders, as the daemon's own session, which is the one caller that
-// route takes. The write replaces the issue's whole set, appends no event and notifies nobody.
-// The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
-// body that names no list, and the empty list is the publication that removes every holder.
-// Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
-// which the outbox's row waits on until the server release that has it.
+// route takes. The write replaces the issue's whole set. A change to its (role, session) pairs
+// appends quiet issue.role_holders_changed; a publication of the same pairs appends no event and
+// notifies nobody. The list is always sent, empty for an issue where no session holds a role:
+// Dispatch refuses a body that names no list, and the empty list is the publication that removes
+// every holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
+// ISSUE_NOT_FOUND for an issue it does not know; a Dispatch older than the route answers its
+// router's 404 (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}

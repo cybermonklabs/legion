@@ -149,10 +149,9 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 // TestTheTitleReadsSkipTheLegionDaemonsSession: the Legion daemon writes on its issues as
 // `legion-daemon:<PROJECT>` (its role-holder publications among them), a session that stamps no
 // title, so delivery.ResolveSessionTitles would read it to the end of its own events for nothing:
-// its title can never be a WorkerTitle. Neither title read of the metrics' population, the role
-// events' (readRoleEvents) nor the phase work's (legion.readSessionIssues), hands it that session.
-// The read is made on a store that records each statement it sends, and the control is that the
-// title statement is sent at all, naming a session that does stamp a title.
+// its title can never be a WorkerTitle. The test holds that no title read names it. Its control is
+// the corpus's merger, which only readRoleEvents and phase work hold: exactly their two title
+// reads name it.
 func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 	database := corpus(t)
 	for seq, kind := range []string{"issue.role_holders_changed", "issue.updated"} {
@@ -170,22 +169,23 @@ func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 	if blind := sent.Blind(); len(blind) != 0 {
 		t.Fatalf("the recorder could not read %v, so a title read may be unseen", blind)
 	}
-	titleReads := 0
+	mergerTitleReads := 0
+	const merger = "s-Legion merger · INFRA-2"
 	for _, statement := range sent.Statements() {
 		if !strings.Contains(statement.SQL, "from unnest($1::text[]) s(id)") {
 			continue
 		}
-		titleReads++
 		ids, _ := statement.Text(0)
 		if strings.Contains(ids, "legion-daemon:") {
 			t.Errorf("a title read names the daemon's session: %q", ids)
 		}
-		if !strings.Contains(ids, "s-Legion implementer · INFRA-2") {
-			t.Errorf("a title read names %q, without the implementer whose title the rules read", ids)
+		if strings.Contains(ids, merger) {
+			mergerTitleReads++
 		}
 	}
-	if titleReads < 2 {
-		t.Fatalf("the read sent %d title reads, want at least the role events' and the phase work's", titleReads)
+	if mergerTitleReads != 2 {
+		t.Fatalf("the read sent %d title reads that name %q, want readRoleEvents' and phase work's two",
+			mergerTitleReads, merger)
 	}
 }
 

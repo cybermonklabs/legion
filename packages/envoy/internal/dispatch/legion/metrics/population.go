@@ -388,8 +388,7 @@ func (p *Population) readRoleEvents(ctx context.Context, pool *store.Pool, keys 
 		if err := rows.Scan(&one.issue, &one.session, &one.at); err != nil {
 			return fmt.Errorf("scan a session event: %w", err)
 		}
-		// The daemon's own session is no Legion role, and its title read would walk every event
-		// it wrote (legion.DaemonSession).
+		// The daemon's own session has no title and cannot be a Legion role.
 		if legion.DaemonSession(one.session) {
 			continue
 		}
