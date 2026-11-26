@@ -1845,6 +1845,39 @@ function readRoutes(traffic: ApiRequests, from: number): string[] {
   ];
 }
 
+/** The reads of the reader's own state that a read mark of the page brings: the page marks a
+ *  thread, a document or the issue read as the focus reaches a row (`PUT /api/v1/me/…`, the issue's
+ *  by `IssueReadMark.tsx`), and the `user_state.updated` and `user_thread_state.updated` events
+ *  each mark sends read these again (`api/event-refresh.ts`). No write of Graph editing makes a
+ *  mark. */
+const READ_MARK_READS: Readonly<Record<string, true>> = {
+  "/api/v1/me/replies": true,
+  "/api/v1/me/state": true,
+};
+
+/** `readRoutes` of the window a write of Graph editing is counted in, but for a read of the
+ *  reader's own state that a read mark's `PUT /api/v1/me/…` before it in that window brings (the
+ *  focus the row moves to the act starts those marks). Such a read with no mark before it, and
+ *  every other read, stay counted. */
+function readRoutesOfWrite(traffic: ApiRequests, from: number): string[] {
+  const window = traffic.requests.slice(from);
+  const marked = window.findIndex(
+    (request) => request.method === "PUT" && request.route.startsWith("/api/v1/me/")
+  );
+  return [
+    ...new Set(
+      window
+        .filter(
+          (request, at) =>
+            request.method === "GET" &&
+            SHELL_TIMED_READS[request.route] !== true &&
+            !(marked !== -1 && at > marked && READ_MARK_READS[request.route] === true)
+        )
+        .map((request) => request.route)
+    ),
+  ];
+}
+
 /** Each HTTP write among `traffic`'s requests from `from` on to a route of issue `key` or of a
  *  document, as its method and path: a write of a block would be one. */
 function blockWrites(traffic: ApiRequests, from: number, key: string): string[] {
@@ -1933,7 +1966,8 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
     expect(sent, "a menu on a comment sends a dry run").toHaveLength(1);
 
     // A move sends one PATCH, and a delete one DELETE; neither is followed by a read beside the
-    // outline's, the approval's and those a version event causes.
+    // outline's, the approval's and those a version event causes. The focus on the row starts the
+    // page's read marks, whose reads of the reader's own state are no write's (`readRoutesOfWrite`).
     for (const { entry, id, method, what } of [
       { entry: EDIT_LABELS.edit_move_up, id: statement3, method: "PATCH", what: "a move" },
       { entry: EDIT_LABELS.edit_delete, id: ids.checkAgent, method: "DELETE", what: "a delete" },
@@ -1952,7 +1986,7 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
         `${what} sends one ${method}`
       ).toEqual([method]);
       expect(
-        readRoutes(traffic, from).filter((route) => ownReads[route] !== true),
+        readRoutesOfWrite(traffic, from).filter((route) => ownReads[route] !== true),
         `${what} is followed by a read beside the outline's and the approval's`
       ).toEqual([]);
     }
@@ -1973,7 +2007,7 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
       "a new node sends an HTTP write of its block"
     ).toEqual([]);
     expect(
-      readRoutes(traffic, from).filter((route) => ownReads[route] !== true),
+      readRoutesOfWrite(traffic, from).filter((route) => ownReads[route] !== true),
       "a new node is followed by a read beside the outline's and the approval's"
     ).toEqual([]);
     from = traffic.requests.length;
@@ -1992,7 +2026,7 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
     expect(nodeWrites(sent.slice(count)), "a retype sends a write to the node routes").toEqual([]);
     expect(blockWrites(traffic, from, key), "a retype sends an HTTP write").toEqual([]);
     expect(
-      readRoutes(traffic, from).filter((route) => ownReads[route] !== true),
+      readRoutesOfWrite(traffic, from).filter((route) => ownReads[route] !== true),
       "a retype is followed by a read beside the outline's and the approval's"
     ).toEqual([]);
   });
