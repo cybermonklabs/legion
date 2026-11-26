@@ -56,6 +56,10 @@ export function AskThreadDisclosure({
       <button
         aria-expanded="false"
         className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        // While the replies cannot be read, no "Write a reply" is drawn in its place: the mark
+        // says so, by the ask's thread, and the reading view's `r` lands at its scroller rather
+        // than waiting for one (`noReplyBoxSelector` in `ReadingView.tsx`).
+        data-inbox-no-reply-box={ask.id}
         onClick={() => {
           void thread.refetch();
         }}

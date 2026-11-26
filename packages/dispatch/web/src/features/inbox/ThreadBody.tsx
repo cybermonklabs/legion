@@ -171,8 +171,8 @@ function ThreadTurnView({
  */
 function ThreadTurns({
   composer,
-  composerSettled = false,
   markNewest,
+  noReplyBox = false,
   openAtFirstUnread,
   replies,
   root,
@@ -180,14 +180,14 @@ function ThreadTurns({
   unread,
 }: {
   composer: ReactNode;
-  /** Whether every read the composer waits on has answered, so that a thread drawn with no
-   *  composer will draw none while those reads stand, and carries the mark that says so
-   *  (`NO_REPLY_BOX`). Set by a body whose composer waits on a read its turns do not: an Agent
-   *  row's, on the live list. Unset, a thread with no composer carries no mark. */
-  composerSettled?: boolean;
   /** The read mark's watch, placed on the thread's newest message: once that message has been
    *  on screen long enough (`useDwell`), the thread is read. */
   markNewest: DwellRef;
+  /** Whether the thread is drawn with no reply box, and will draw none while what it read stands:
+   *  the composer's own branches that leave the box out, as the body that draws it decides them.
+   *  The thread then carries the mark that says so, by its id (`noReplyBoxSelector` in
+   *  `ReadingView.tsx`). */
+  noReplyBox?: boolean;
   /** Whether the thread scrolls its first unread message into view when it opens, which the
    *  reading pane's own thread body and its fall-backs do under **Oldest first**, and which a
    *  thread drawn inside a document the pane has placed and a card never do. */
@@ -251,7 +251,7 @@ function ThreadTurns({
   return (
     <div
       className="mt-2 space-y-2"
-      data-inbox-no-reply-box={composerSettled && composer === null ? "" : undefined}
+      data-inbox-no-reply-box={noReplyBox ? threadId : undefined}
       data-inbox-thread={threadId}
     >
       {root === undefined ? null : turnView(root)}
@@ -273,13 +273,6 @@ type ThreadOwner = Extract<ComposerOwner, { kind: "issue" } | { kind: "artifact"
 export function threadSendKey(threadId: string): readonly unknown[] {
   return ["inbox-thread-reply", threadId];
 }
-
-/** A thread drawn with no reply box in it, and none to come while what it read stands: an Agent
- *  row's whose session the live list does not hold, whose conversation the session's read does
- *  not hold, or whose read failed (`AgentThreadBody`). Below 1280 px `r` lands at the reading
- *  view's scroller there rather than waiting for a box (`ReadingView.tsx`'s `landingIn`); a
- *  thread whose reads are still out carries neither the box nor this mark. */
-export const NO_REPLY_BOX = "[data-inbox-no-reply-box]";
 
 /**
  * The read mark a Reply row's thread carries: the dwell rule the thread's own pages already use
@@ -358,7 +351,11 @@ function CommentThreadBody({
   });
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   const byId = new Map(comments.data.map((comment) => [comment.id, comment]));
   const root = byId.get(thread.thread_id);
@@ -413,6 +410,9 @@ function CommentThreadBody({
         )
       }
       markNewest={markNewest}
+      // The composer's own branches above that draw no box: a root the read does not hold, and a
+      // root its author deleted.
+      noReplyBox={root === undefined || postDeletion(root) !== null}
       openAtFirstUnread={openAtFirstUnread}
       replies={replies}
       root={rootTurn}
@@ -488,7 +488,11 @@ function MessageThreadBody({
   });
   if (messages.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (messages.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   const read = messages.data.find((candidate) => candidate.message.id === thread.thread_id);
   const root = read?.message;
@@ -539,6 +543,8 @@ function MessageThreadBody({
         )
       }
       markNewest={markNewest}
+      // The composer's own branches above that draw no box, as a comment thread's are.
+      noReplyBox={root === undefined || postDeletion(root) !== null}
       openAtFirstUnread={openAtFirstUnread}
       replies={replies}
       root={rootTurn}
@@ -573,7 +579,11 @@ function AskThreadBody({
   const read = useQuery(askThreadQuery(thread.thread_id));
   if (read.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (read.isError) {
-    return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
+    return (
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
+        Could not load this thread.
+      </p>
+    );
   }
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
@@ -639,7 +649,7 @@ function AgentThreadBody({
   if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
   if (messages.isError) {
     return (
-      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box="">
+      <p className={`mt-2 text-sm ${dangerText}`} data-inbox-no-reply-box={thread.thread_id}>
         Could not load this conversation.
       </p>
     );
@@ -690,10 +700,12 @@ function AgentThreadBody({
             </div>
           )
         }
-        // The live list's read can still be out once the conversation is drawn, and until it has
-        // answered no box is no answer yet: only then does a thread drawn with none say so.
-        composerSettled={!live.isPending}
         markNewest={markNewest}
+        // The composer's own branch above that draws none, once the live list has answered: until
+        // it has, no box is no answer yet.
+        noReplyBox={
+          !live.isPending && (agent === undefined || read === undefined || newest === undefined)
+        }
         openAtFirstUnread={openAtFirstUnread}
         replies={turns.slice(1)}
         root={turns[0]}
@@ -781,14 +793,18 @@ export function ThreadBody({
       />
     );
   };
+  // The two branches above that draw nothing - a message thread whose row names no issue, and a
+  // thread of a project document whose read answered with no document - leave no box either.
+  const drawn = body();
   return (
     <div
       className={`border-t pt-2 ${borderDefault}`}
+      data-inbox-no-reply-box={drawn === null ? thread.thread_id : undefined}
       data-inbox-thread-body={thread.kind}
       data-testid={`inbox-thread-${thread.kind}`}
     >
       {quote ? <ThreadQuote thread={thread} /> : null}
-      {body()}
+      {drawn}
     </div>
   );
 }

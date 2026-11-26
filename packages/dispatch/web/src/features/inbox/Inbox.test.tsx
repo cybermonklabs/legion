@@ -8568,6 +8568,113 @@ test("below the column's width r on an Agent row whose session is not live opens
   }
 });
 
+// R18 on a thread that takes no reply: a comment its author deleted takes none (`409
+// POST_DELETED`), so its thread draws no box under it (`KeptReplyToDeleted`). `r` opens the row's
+// view at its scroller, where any pick lands, rather than leaving the reader on the page's body
+// waiting for a box that never comes.
+test("below the column's width r on the short row of a comment thread whose root its author deleted opens its reading view at its scroller", async () => {
+  const user = userEvent.setup();
+  const deleted = { deleted_at: "2026-10-12T00:40:00Z", deleted_by: { id: "alice", kind: "user" } };
+  const comment = (id: string, overrides: Partial<Comment>): Comment => ({
+    anchor: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: "",
+    created_at: "2026-10-12T00:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+    ...commentDeliveryFields(),
+    ...overrides,
+  });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    mockIssueReads(),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T02:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [replyRow("c1", { ...deleted, subject: "" })],
+      total: 1,
+    }),
+    spyOn(api, "listComments").mockResolvedValue([
+      comment("c1", deleted),
+      comment("c1-reply", {
+        author: { id: "s1", kind: "session" },
+        body: "Done.",
+        created_at: "2026-10-12T01:00:00Z",
+        reply_to: "c1",
+      }),
+    ]),
+  ];
+  const { unmount } = renderInbox();
+  try {
+    const row = await waitFor(() => shortRow("reply:c1"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await within(view).findByText("Done.");
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+    expect(view.querySelector("[data-reply-box]")).toBeNull();
+  } finally {
+    unmount();
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
+// R18 on the thread of a question still open: it waits on its answer, and an open ask takes no
+// reply (`takesReply`), so its card draws no reply box and no "Write a reply". The thread is the
+// reader's row because they wrote in it while the question waits on somebody else. `r` opens
+// the row's view at its scroller, where any pick lands.
+test("below the column's width r on the thread row of a question still open opens its reading view at its scroller", async () => {
+  const user = userEvent.setup();
+  const open = issueAsk({
+    asked_of: "bob",
+    id: "ask-open",
+    issue: { assignee: "bob", key: "CORE-2", title: "Build question" },
+    issue_key: "CORE-2",
+    question: "Which build?",
+  });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    mockAskReads([open]),
+    mockIssueReads(),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T02:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [
+        replyRow("ask-open", {
+          issue: { key: "CORE-2", title: "Build question" },
+          kind: "ask",
+          ref: "/issues/CORE-2/asks/ask-open",
+          subject: "Which build?",
+        }),
+      ],
+      total: 1,
+    }),
+  ];
+  const { unmount } = renderInbox();
+  try {
+    const row = await waitFor(() => shortRow("reply:ask-open"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await within(view).findByTestId("ask-ask-open");
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+    expect(view.querySelector("[data-reply-box], [data-reply-opener]")).toBeNull();
+  } finally {
+    unmount();
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
 // R20: Shift+O is `o` in a new tab, and this one keeps its address.
 test("Shift+O opens what o opens in a new tab and leaves the Inbox where it is", async () => {
   const user = userEvent.setup();
@@ -9118,6 +9225,72 @@ test("r on the thread of a decision block presses its Write a reply and puts the
   } finally {
     unmount();
     narrow();
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
+// R18 below the column's width, in a decision document that holds another question still open:
+// that question's card draws no reply box and says so, and the mark names its own thread. So `r`
+// on the answered question's thread waits for that thread's own "Write a reply", even where the
+// open question's block is drawn first, and puts the caret in the box it opens, never at the
+// view's scroller as though this thread had no box.
+test("below the column's width r on a decision block's thread lands in its own reply box, past another open question's card drawn first", async () => {
+  const user = userEvent.setup();
+  const done: InboxRow = {
+    ...decisionRow("ask-done", "block-a", "Ship behind a flag?"),
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    state: "answered",
+  };
+  const open: InboxRow = {
+    ...decisionRow("ask-open", "block-b", "Rename the flag?"),
+    asked_of: "bob",
+  };
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const threadRow = (ask: InboxRow) =>
+    replyRow(ask.id, { kind: "ask", ref: `/issues/CORE-1/asks/${ask.id}`, subject: ask.question });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    mockAskReads([done, open]),
+    mockIssueReads(),
+    spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue(
+      [done, open].map((row) => ({ ...row, last_reply: null }))
+    ),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [threadRow(done), threadRow(open)],
+      total: 2,
+    }),
+  ];
+  const { unmount } = renderInbox("/", { runtime: fake.runtime });
+
+  try {
+    const row = await waitFor(() => shortRow("reply:ask-done"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the view mounted no editor");
+    // The open question's block first: its card draws no box, and the view lands nowhere yet.
+    drawAskBlock(editor, "block-b", open.question);
+    await within(view).findByTestId("ask-ask-open");
+    await afterFrameAndTasks();
+    expect(screen.getByTestId("inbox-pane-scroller")).not.toHaveFocus();
+
+    drawAskBlock(editor, "block-a", done.question);
+    const opener = await within(view).findByRole("button", { name: "Write a reply" });
+    await waitFor(() => expect(opener).toHaveAttribute("aria-expanded", "true"));
+    const box = document.getElementById(opener.getAttribute("aria-controls") ?? "");
+    await waitFor(() => expect(box?.querySelector("[data-reply-box]")).toHaveFocus());
+  } finally {
+    unmount();
     for (const spy of spies) spy.mockRestore();
   }
 });

@@ -85,7 +85,7 @@ import {
 import { AskHandOn } from "./AskHandOn";
 import { type AskApprovalAction, AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread, UnsentBox } from "./AskThread";
+import { AskThread, takesReply, UnsentBox } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
@@ -853,6 +853,11 @@ export function AskCard({
       // answer keys find the selected question's own card by its value (`answerHand` in
       // `useInboxKeymap.ts`). Neither asks for a test id.
       data-ask-card={displayedAsk.id}
+      // A question still open takes no reply, so its thread draws no reply box and no "Write a
+      // reply" (`takesReply`, `AskThread`, `AskThreadDisclosure`): the mark says so, by the
+      // ask's thread, and the reading view's `r` lands at its scroller rather than waiting for a
+      // box (`noReplyBoxSelector` in `ReadingView.tsx`).
+      data-inbox-no-reply-box={takesReply(currentAsk) ? undefined : currentAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
       {questionReads}

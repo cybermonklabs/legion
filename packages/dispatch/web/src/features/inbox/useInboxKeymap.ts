@@ -781,9 +781,10 @@ export function useInboxKeymap({
     {
       // The thread in hand's reply box (R18), from where Enter would start. Below 1280 px with
       // no row open the focused thread row's view opens, with the caret in its reply box once
-      // the thread has drawn it. An Agent row's box is drawn only while its session is live,
-      // which the thread knows only once its reads have answered, so where it draws none the
-      // view opens at its scroller, where any pick lands (`landingIn`, `NO_REPLY_BOX`).
+      // the thread has drawn it. A thread that takes no reply - an Agent row's whose session is
+      // not live, a root its author deleted, a question still open - draws none, which it knows
+      // only once its reads have answered, so the view then opens at its scroller, where any
+      // pick lands (`landingIn`, `noReplyBoxSelector`).
       action: "inbox.reply",
       run: () => {
         if (mode === "list") {

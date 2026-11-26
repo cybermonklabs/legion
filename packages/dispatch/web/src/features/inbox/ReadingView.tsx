@@ -12,7 +12,6 @@ import { type InboxListRow, rowId } from "./list-row";
 import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
 import { PANE_SCROLLER_SELECTOR } from "./pane-placement";
 import { ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
-import { NO_REPLY_BOX } from "./ThreadBody";
 import { useControlName } from "./useControlName";
 
 /** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
@@ -20,6 +19,21 @@ import { useControlName } from "./useControlName";
  *  column shows for a question written as one - while it is still shut. The card carries the
  *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
 export const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
+
+/** A thread drawn with no reply box in it and none to come while what it read stands, by the
+ *  thread's own id (`data-inbox-no-reply-box`): a decision document draws several asks at once,
+ *  so only the thread's own mark speaks for it. Each part that leaves the box out writes it, from
+ *  the fact it leaves the box out by (`ThreadBody.tsx`): a comment or message thread whose root
+ *  the read does not hold or its author deleted; an Agent row's whose session the live list does
+ *  not hold or whose conversation the session's read does not hold; any thread whose read
+ *  failed, and one that draws nothing at all. So does an ask's card while the question is still
+ *  open, which takes no reply (`AskCard`, by `takesReply`), and a decision block's replies whose
+ *  read failed (`AskThreadDisclosure`). Below 1280 px `r` lands at the reading view's scroller
+ *  there rather than waiting for a box (`landingIn`); a thread whose reads are still out carries
+ *  neither the box nor the mark. */
+function noReplyBoxSelector(threadId: string): string {
+  return `[data-inbox-no-reply-box="${CSS.escape(threadId)}"]`;
+}
 
 /** The head's Approve or Request changes (`ApprovalChip`'s `data-approval-action`) while it takes
  *  a press: the head draws the button from its first draw and holds it (`aria-disabled`) until
@@ -34,10 +48,11 @@ export function headApprovalSelector(action: AskApprovalAction): string {
  *  its scroller, the focus stop `l` moves to beside the list; the question's answer box, or the
  *  note box its decision block folds it behind, with the caret in it (Enter, R18); the thread's
  *  reply box, or the "Write a reply" it is folded behind, and the scroller where the thread is
- *  drawn with no box (`r`, `NO_REPLY_BOX`); its head's Snooze or priority menu, open (`b` or `h`,
- *  `p`; R4); its head's Approve or Request changes, pressed once the document's read has enabled
- *  it (`a`, Shift+R; R7); its head's Copy reference (`y`); or the question's option at `index`
- *  (the digits), which is pressed, and the scroller where the question has no such option. */
+ *  drawn with no box (`r`, `noReplyBoxSelector`); its head's Snooze or priority menu, open (`b`
+ *  or `h`, `p`; R4); its head's Approve or Request changes, pressed once the document's read has
+ *  enabled it (`a`, Shift+R; R7); its head's Copy reference (`y`); or the question's option at
+ *  `index` (the digits), which is pressed, and the scroller where the question has no such
+ *  option. */
 export type ReadingViewTarget =
   | { readonly kind: "answer" }
   | { readonly kind: "approve" }
@@ -63,8 +78,8 @@ type Landing =
   | { readonly reply: HTMLElement };
 
 /** The landing `target` names in `view` for the row `askId`, or null while the view has not drawn
- *  it yet: a decision block or an approval draws a skeleton first, and an Agent row's thread
- *  draws its box, or the mark that it has none, only once the session's reads have answered. */
+ *  it yet: a decision block or an approval draws a skeleton first, and a thread draws its box, or
+ *  the mark that it has none (`noReplyBoxSelector`), only once its reads have answered. */
 function landingIn(view: HTMLElement, askId: string, target: ReadingViewTarget): Landing | null {
   const scroller = (): Landing | null => {
     const element = view.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR);
@@ -88,9 +103,10 @@ function landingIn(view: HTMLElement, askId: string, target: ReadingViewTarget):
         `[data-reply-opener="${CSS.escape(target.threadId)}"]`
       );
       if (opener !== null) return { reply: opener };
-      // A thread drawn whole with no box, an Agent row's whose session is not live among them,
-      // lands where any pick does; one whose reads are still out is waited for.
-      return view.querySelector(NO_REPLY_BOX) === null ? null : scroller();
+      // A thread drawn whole with no box lands where any pick does: its own mark, never another
+      // thread's, which a decision document draws beside it. One whose reads are still out is
+      // waited for.
+      return view.querySelector(noReplyBoxSelector(target.threadId)) === null ? null : scroller();
     }
     case "approve":
     case "request-changes": {
