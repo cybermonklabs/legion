@@ -3278,19 +3278,22 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// Each case serves a state the daemon serves: every issue its admission block names has its
 	// record in `issues` and stands in the list the daemon puts it in (projection's Project,
-	// record.HeldList). LEGION-208 runs its tree from a slot. LEGION-209 is a child of that tree
-	// the workflow holds at `admitted` for its Dispatch link, so it stands in `held` under
-	// dispatch_blocker. LEGION-211 is a root that has not started, so it waits in the line, and
-	// admission passes over it for its links (blockers.Blocked). The line reads `blocked` alone.
+	// record.HeldList), every record carries its own `priority`, null for none, and its `workers`,
+	// and each issue `active` names carries the slot it holds. LEGION-208 runs its tree from a
+	// slot. LEGION-209 is a child of that tree the workflow holds at `admitted` for its Dispatch
+	// link, so it stands in `held` under dispatch_blocker. LEGION-211 is a root that has not
+	// started, so it waits in the line, and admission passes over it for its links
+	// (blockers.Blocked). The line reads `blocked` alone.
 	admission := func(active, waiting, trees, blocked, held string) string {
 		return `"admission":{"cap":2,"active":` + active + `,"waiting":` + waiting + `,"trees":` + trees +
 			`,"blocked":` + blocked + `,"held":` + held + `}`
 	}
-	running := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-208"}`
-	heldChild := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-208"}`
+	running := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress","tree":"LEGION-208",` +
+		`"priority":null,"workers":{},"slot":{"index":0,"admittedAt":"2026-09-23T00:00:00Z"}}`
+	heldChild := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-208","priority":null,"workers":{}}`
 	// The waiting member carries its place in the line as the daemon writes it for a root that has
 	// not started.
-	queuedRoot := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-211",` +
+	queuedRoot := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"admitted","status":"todo","tree":"LEGION-211","priority":null,"workers":{},` +
 		`"waitingLine":{"place":1,"length":1,"part":"starting","kind":"queued_root","partPlace":1,"partLength":1,"holdsSlot":false,` +
 		`"rootRank":"00011","ownRank":"00011","rootKey":"LEGION-211","priority":null,"reason":"It has not started. ` +
 		`It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."}}`
@@ -3355,18 +3358,27 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// Each case serves a state the daemon serves: every issue its admission block names, and every
 	// issue that holds one of them, has its record in `issues` and stands in the list the daemon
-	// puts it in (projection's Project, record.HeldList). Each record stands at the phase and status
-	// internal/projection's TestEveryIssueInTheWorkflowHasAPlace gives an issue of the same word.
-	// The line reads `held` alone.
+	// puts it in (projection's Project, record.HeldList). Every record carries its own `priority`,
+	// null for none, and its `workers`, and each issue `active` names carries the slot it holds.
+	// Each record stands at the phase and status internal/projection's
+	// TestEveryIssueInTheWorkflowHasAPlace gives an issue of the same word. The line reads `held`
+	// alone.
 	admission := func(active, trees, held string) string {
 		return `"admission":{"cap":2,"active":` + active + `,"waiting":[],"trees":` + trees + `,"blocked":[],"held":` + held + `}`
 	}
 	issue := func(key, tree, at, status string) string {
-		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + at + `","status":"` + status + `","tree":"` + tree + `"}`
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + at + `","status":"` + status + `","tree":"` + tree +
+			`","priority":null,"workers":{}}`
+	}
+	// An issue `active` names, in the slot it holds.
+	slotted := func(key, tree, at, status string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + at + `","status":"` + status + `","tree":"` + tree +
+			`","priority":null,"workers":{},"slot":{"index":0,"admittedAt":"2026-09-23T00:00:00Z"}}`
 	}
 	// A root held from its retro, by the stop of its task or for the issues beneath it.
 	heldFromRetro := func(key string) string {
-		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"held","status":"needs_review","tree":"` + key + `","heldFrom":"retro"}`
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"held","status":"needs_review","tree":"` + key +
+			`","priority":null,"workers":{},"heldFrom":"retro"}`
 	}
 	records := func(issues ...string) string {
 		return `{` + strings.Join(issues, ",") + `}`
@@ -3385,7 +3397,7 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
 				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
 				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
-			issues: records(issue("LEGION-208", "LEGION-208", "admitted", "in_progress"), issue("LEGION-209", "LEGION-208", "admitted", "todo"),
+			issues: records(slotted("LEGION-208", "LEGION-208", "admitted", "in_progress"), issue("LEGION-209", "LEGION-208", "admitted", "todo"),
 				issue("LEGION-210", "LEGION-212", "admitted", "todo"), issue("LEGION-212", "LEGION-212", "admitted", "backlog"),
 				issue("LEGION-213", "LEGION-208", "admitted", "todo")),
 			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
@@ -3415,7 +3427,7 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 				`{"issue":"LEGION-216","reason":"children_before_retro","heldBy":["LEGION-217"]},` +
 				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-215"]}]`,
 			issues: records(issue("LEGION-214", "LEGION-214", "implementing", "in_progress"), heldFromRetro("LEGION-215"),
-				heldFromRetro("LEGION-216"), issue("LEGION-217", "LEGION-216", "implementing", "in_progress"),
+				heldFromRetro("LEGION-216"), slotted("LEGION-217", "LEGION-216", "implementing", "in_progress"),
 				issue("LEGION-218", "LEGION-215", "admitted", "todo")),
 			want: "admission.held: 4 issues — accepted_ancestor 1, children_before_retro 1, task_stopped 1, unclassified 1\n",
 		},

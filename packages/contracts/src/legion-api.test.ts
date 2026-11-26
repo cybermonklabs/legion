@@ -147,8 +147,8 @@ const schemas: Record<string, z.ZodType> = {
   // state route's body for a caller at this contract, over the daemon's own state source of a
   // seeded database.
   "state.json": LegionStateResponse,
-  // The four states below are that composition's too, each over a seed of its own and before the
-  // route marks the shape it served: a project at Stage 3, an operator's spawn on an issue the
+  // The four states below are that composition's too, each over a seed of its own and with the
+  // route's marks taken off what it served: a project at Stage 3, an operator's spawn on an issue the
   // workflow keeps no record of, the populated record ten seconds into a pause, which carries
   // `paused` (contract 178), and a project that runs after a pause has ended, which carries
   // `lastPause` and no `paused`.
@@ -2574,8 +2574,8 @@ test("the state golden carries each issue's repository and the repositories its 
 // contract 25: it was codegraph's until LEGION-629, and no row has carried it since. Each
 // deployment row carries `source` (contract 25): `configuration` (what legion.yaml alone
 // decides) or `boot` (what boot measured), or, on `repository-cache-room`, `caches`
-// (contract 213), what the repository caches' last health reads said of their room: the
-// golden's one cache ran out of room, so that row is open too. A live row carries none.
+// (contract 213), what the repository caches' last health reads said of their room: one of the
+// golden's three caches, acme/widgets', ran out of room, so that row is open too. A live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 

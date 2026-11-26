@@ -21,8 +21,9 @@ import {
  * `state-operator-claim.json`, `state-last-pause.json` and `state-controller-claim.json`) from
  * the daemon's own state source over a seeded database. internal/api's
  * `TestStateNarrowedRepositoriesGolden` and `TestIssueRecordGolden` write
- * `state-narrowed-repositories.json` and `issue-record.json` from `state.json`, and internal/api's
- * other goldens write the rest. `apifixture.StateFixturesRewrite` is the two commands that rewrite
+ * `state-narrowed-repositories.json` and `issue-record.json` from `state.json`, internal/config's
+ * golden writes `stall-defaults.json`, and internal/api's other goldens write the rest.
+ * `apifixture.StateFixturesRewrite` is the two commands that rewrite
  * the state fixtures and every fixture internal/api writes from `state.json`, in the order they
  * must run. No generator runs in either direction, so a Go field added without its line below
  * fails that test.
