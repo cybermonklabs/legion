@@ -52,8 +52,8 @@ func makesP0WithoutScope(credential *model.Credential, named, stored *int) bool 
 // versions and asks. Where the write names 0 from a credential without p0, it reads the issue's
 // own priority on the pool, with no lock held, and answers the 403 itself where that priority is
 // not 0, so such a close settles nothing. The check under the owner lock decides each write this
-// read lets through: a close whose own priority moves away from 0 between the two reads settles
-// the documents and is then refused there, as a close judgeSpecWriter refuses can be. An issue that
+// read lets through: a close whose own priority moves away from 0 between the two reads can
+// settle the documents and is then refused there, as a close judgeSpecWriter refuses can be. An issue that
 // is not there is left to the lock step's own answer.
 func (s *server) refuseP0BeforeSettlement(ctx context.Context, credential *model.Credential, key string, named *int) error {
 	if !makesP0WithoutScope(credential, named, nil) {

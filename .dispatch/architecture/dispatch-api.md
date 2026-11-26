@@ -45,7 +45,7 @@ Keeping P0, lowering it, clearing it and priorities 1 to 3 need no scope, and a 
 `refuseP0WithoutScope` (`p0_scope.go`) is the one rule, because the route table names a route and not what a request writes.
 The create asks it after it parses the priority and before the near-copy gate.
 `writeIssue` asks it right after it loads the issue under the owner's lock, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and for a close that names priority 0 it asks it first on a read of the issue's own priority before the close settles the issue's documents (`refuseP0BeforeSettlement`), so such a close refused there writes no document version and no ask.
-A close whose own priority moves away from 0 between that read and the owner's lock settles the documents and is then refused under the lock, as a close `judgeSpecWriter` refuses can be.
+A close whose own priority moves away from 0 between that read and the owner's lock can settle the documents and is then refused under the lock, as a close `judgeSpecWriter` refuses can be.
 A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"` (`missingScopeError`), and the write writes nothing.
 A browser sign-in holds `p0` with `person` and `approve` (`model.Scopes`), and a personal token holds it only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds but `p0` (`callerScopes`).

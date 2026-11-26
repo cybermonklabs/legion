@@ -231,7 +231,7 @@ A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `
 The OAuth scope `p0` opens no route: it gates one value of one field.
 A priority of `0` on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs `p0` when the write makes the issue's own priority `0`, from none or from another value.
 Keeping P0, lowering it, clearing it and priorities `1` to `3` need no scope.
-A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the stored issue, such as `409 ISSUE_CLOSED`, and the write writes nothing.
+A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the stored issue, such as `409 ISSUE_CLOSED`, and the write writes no field and no event; a close that races a write lowering the priority from `0` can settle the issue's documents and is then refused (`PATCH /api/v1/issues/{key}`, below).
 A person's browser sign-in holds `person`, `approve` and `p0`.
 A personal token holds `p0` only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds except `p0`, for a browser and for a token alike.
@@ -5347,10 +5347,10 @@ Each item below names a path with its method and identity, then its purpose.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
 
   - A priority of `0` needs the `p0` scope when the write makes the issue's own priority `0`, from none or from another value.
-    A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and the write writes nothing.
+    A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and the write writes no field of the issue and no event of it.
     A write that keeps priority `0` on an issue that holds it, lowers it, clears it or sets `1` to `3` needs no scope, and a priority that an issue above the issue has is none of its own.
     For a close (`status: done`) that names priority `0` from a credential without `p0`, the `PATCH` reads the issue's own priority before it settles the documents, and refuses the close there, with no document version and no ask, where that priority is not `0`.
-    A close whose own priority moves away from `0` between that read and the owner's lock settles the documents and is then refused, as a close the spec-writer check refuses can be.
+    A close whose own priority moves away from `0` between that read and the owner's lock can settle the documents and is then refused, as a close the spec-writer check refuses can be.
 
   - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
     A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it, and Dispatch judges the issue before the call and after it.
