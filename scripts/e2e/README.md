@@ -7629,8 +7629,9 @@ The handoff checks read the daemon's phase record (the `phases` table joined to 
 A role's completion of a file-backed phase (planning, implementing, testing, reviewing) names the Dispatch handoff record it wrote with `dispatch handoff-write` (`handoffRecord`:
 its id and version) and the head that record's body names under `head` (`handoff_commit`:
 the head the work it reports was done against, which for the implementer in implementing the `legion` tool holds to be the commit the workspace stands on, pushed to `legion/<issue>@origin`, and for retro and the merger the commit the workspace stands on).
-The daemon empties both when a transition starts that role on a new phase (`clearHandoff`, `packages/daemon/internal/workflow/effects.go`);
-the task's `rounds` (`plan_tasks.rounds`; on an issue with no plan rows, the implementer's `phases` row) counts its returns to implementing.
+The daemon empties both when a transition starts that role on a new phase (`clearHandoff`, `packages/daemon/internal/workflow/effects.go`).
+On an issue with no plan rows, the implementer's `rounds` counts the review rounds that requested changes.
+An issue with plan rows counts them on its task (`plan_tasks.rounds`), and each failed review-type step but the owner's acceptance too (`Walk.reviewFails`).
 Read right after the transition a completion caused, a role's handoff is that phase's own:
 `assert_round_handoff ISSUE ROUND` (testing reached on the implementer's completion of that round;
 in the default steps, implementing moves to testing only on it), `assert_handoff_record ISSUE ROLE PHASE ROUND` (Dispatch's `GET /api/v1/handoffs/<id>` holds the record as the issue's handoff of the role's word
