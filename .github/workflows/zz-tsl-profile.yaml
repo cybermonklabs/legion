@@ -1,0 +1,93 @@
+name: zz changes-job TS listing profile (throwaway, not for merge)
+on:
+  push:
+    branches: [scratch/changes-tsl-profile]
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+      - name: Install dependencies (timed)
+        run: |
+          s=$(date +%s.%N); bun install --frozen-lockfile; echo "TIME bun-install $(echo "$(date +%s.%N) - $s" | bc) s"
+          du -sm node_modules; find node_modules -type f | wc -l
+      - name: Profile
+        env:
+          OUT: ${{ runner.temp }}/out
+        run: |
+          set -u
+          mkdir -p "$OUT"
+          nproc
+          t() { local name=$1; shift; local s; s=$(date +%s.%N); "$@" > "$OUT/$name.out" 2> "$OUT/$name.err"; local rc=$?; echo "TIME $name $(echo "$(date +%s.%N) - $s" | bc) s exit $rc lines $(wc -l < "$OUT/$name.out")"; }
+          for i in 1 2 3; do
+            t gen$i env PROF_LOG="$OUT/prof$i.json" .github/scripts/ci-filters-generate.sh "$OUT/gen$i.yaml"
+          done
+          for p in packages/dispatch packages/proof-editor/tsconfig.check.json; do
+            n=$(echo "$p" | tr '/.' '__')
+            t "tsc-$n" bunx tsc -p "$p" --noEmit --listFilesOnly
+            t "tsc-$n-again" bunx tsc -p "$p" --noEmit --listFilesOnly
+            t "tsc-$n-nolib" bunx tsc -p "$p" --noEmit --listFilesOnly --noLib
+            t "tsc-$n-notypes" bunx tsc -p "$p" --noEmit --listFilesOnly --types ""
+            t "tsc-$n-diag" bunx tsc -p "$p" --noEmit --extendedDiagnostics --skipLibCheck
+            t "tsgo-$n" bunx --package @typescript/native-preview tsgo -p "$p" --noEmit --listFilesOnly
+          done
+          t bun-build bun build packages/envoy-client/bin/dispatch.ts --target bun --outdir "$OUT/bb" --metafile="$OUT/bb/meta.json"
+          t node-tsc-version bunx tsc --version
+          # The three listings at once, as start() runs them
+          s=$(date +%s.%N)
+          bunx tsc -p packages/dispatch --noEmit --listFilesOnly > /dev/null &
+          bunx tsc -p packages/proof-editor/tsconfig.check.json --noEmit --listFilesOnly > /dev/null &
+          bun build packages/envoy-client/bin/dispatch.ts --target bun --outdir "$OUT/bb2" --metafile="$OUT/bb2/meta.json" > /dev/null &
+          wait
+          echo "TIME three-together $(echo "$(date +%s.%N) - $s" | bc) s"
+          python3 - "$OUT" <<'PY'
+          import json, os, sys, collections
+          out = sys.argv[1]
+          root = os.getcwd()
+          for name in sorted(os.listdir(out)):
+              if not (name.startswith("tsc-") or name.startswith("tsgo-")) or not name.endswith(".out") or "diag" in name:
+                  continue
+              lines = [l.strip() for l in open(os.path.join(out, name)) if l.strip()]
+              cats = collections.Counter(); size = collections.Counter(); kept = set()
+              for l in lines:
+                  p = os.path.realpath(l if os.path.isabs(l) else os.path.join(root, l))
+                  c = "lib" if not p.startswith(root + "/") else ("node_modules" if "/node_modules/" in p[len(root):] else "repo")
+                  cats[c] += 1
+                  try: size[c] += os.path.getsize(p)
+                  except OSError: pass
+                  if c == "repo": kept.add(os.path.relpath(p, root))
+              open(os.path.join(out, name + ".kept"), "w").write("\n".join(sorted(kept)) + "\n")
+              print(f"{name}: {dict(cats)} bytes {dict(size)}")
+          PY
+          for p in packages_dispatch packages_proof-editor_tsconfig_check_json; do
+            for v in again nolib notypes; do
+              cmp -s "$OUT/tsc-$p.out.kept" "$OUT/tsc-$p-$v.out.kept" && echo "SAME kept $p $v" || echo "DIFFER kept $p $v"
+            done
+            cmp -s "$OUT/tsc-$p.out.kept" "$OUT/tsgo-$p.out.kept" && echo "SAME kept $p tsgo" || echo "DIFFER kept $p tsgo"
+          done
+          grep -E "Files:|Lines|Identifiers|Memory|I/O read|Parse time|ResolveModule|ResolveTypeReference|Program time|Bind time|Check time|Total time" "$OUT"/tsc-*-diag.out || true
+          for i in 1 2 3; do sha256sum "$OUT/gen$i.yaml" "$OUT/gen$i.computed.yaml" | cut -c1-16; done
+          python3 - "$OUT" <<'PY'
+          import json, sys
+          for i in (1, 2, 3):
+              d = json.load(open(f"{sys.argv[1]}/prof{i}.json"))
+              recs = sorted(d["recs"], key=lambda r: r["t0"])
+              print(f"gen{i}: total {d['total']} s, {len(recs)} subprocesses, cpu {sum(r['cpu'] for r in recs):.1f} s")
+              for r in recs:
+                  if r["wall"] >= 0.4:
+                      print(f"   {r['t0']:6.2f} +{r['wall']:5.2f} cpu {r['cpu']:5.2f}  {' '.join(r['args'])[:110]}")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: tsl-profile
+          path: ${{ runner.temp }}/out
+          retention-days: 3
