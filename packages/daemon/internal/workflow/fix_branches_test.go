@@ -549,8 +549,8 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 			}
 			return err
 		})
-		if got, want := r.besideMarks(2), "0 "+besideFix1(t, claim.RoleTester); got != want {
-			t.Fatalf("the tester's start names %q, want %q: started before fix 1, bound to its branch beside fix 1 until it ends", got, want)
+		if got, want := r.besideMarks(2), "1 "+besideFix1(t, claim.RoleTester); got != want {
+			t.Fatalf("the tester's start names %q, want %q: started before fix 1, marked beside it and bound to its branch beside fix 1 until it ends", got, want)
 		}
 
 		// The tester's end and the fix rule at its tail, in one transaction, as applyAndFix runs a

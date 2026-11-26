@@ -794,17 +794,19 @@ func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullReq
 	return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
 }
 
-// ReviewBesideFix is the commit the running review step of issue's task started at, where a fix
-// of that task started after that step's start or ran at it, and "" otherwise: an issue with no
-// record or no plan rows, one that stands in no step of type review, a run of that step that has
-// ended or names no start commit, and a task whose latest fix (record.Store.LatestFix) has not
-// started or ended before the step started. While a fix runs only the fix pushes to the task's
-// branch (fixPushSentence, tellStepsOfFix), so a head that moved since that start is the fix's:
-// the review of that commit decides the step (refusesRound, settleRound), the commit the
-// reviewer read moves to it (record.PhaseRow.ReviewedHead), and the fix's push re-asks no round
-// (reaskRound). The daemon's read of a pull request's reviews reads it in the transaction that
-// reads the reviewer's session, before it judges one (RefusesRound), so both judge a review
-// beside a fix alike.
+// ReviewBesideFix is the commit the running review step of issue's task started at, where the
+// task's latest fix (record.Store.LatestFix) has started and ran beside that step's run: the step
+// started while the fix read its job or ran (bindBesideFix), or the fix started while the step ran
+// (tellStepsOfFix). Both are marked on the step's start (record.StepStart.BesideFix), so no clock
+// decides it. It is "" otherwise: an issue with no record or no plan rows, one that stands in no
+// step of type review, a run of that step that has ended or names no start commit, a task whose
+// latest fix has not started, and a step that started after that fix ended. While a fix runs only
+// the fix pushes to the task's branch (fixPushSentence, tellStepsOfFix), so a head that moved since
+// that start is the fix's: the review of that commit decides the step (refusesRound, settleRound),
+// the commit the reviewer read moves to it (record.PhaseRow.ReviewedHead), and the fix's push
+// re-asks no round (reaskRound). The daemon's read of a pull request's reviews reads it in the
+// transaction that reads the reviewer's session, before it judges one (RefusesRound), so both
+// judge a review beside a fix alike.
 func (e *Engine) ReviewBesideFix(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
 	recorded, err := e.store.Issue(ctx, tx, issue)
 	if err != nil || recorded == nil {
@@ -828,7 +830,7 @@ func (e *Engine) reviewBesideFix(ctx context.Context, tx pgx.Tx, issue record.Is
 		return "", err
 	}
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.StartedAt == nil || (fix.EndedAt != nil && fix.EndedAt.Before(start.StartedAt)) {
+	if err != nil || fix == nil || fix.StartedAt == nil || start.BesideFix != fix.Fix {
 		return "", err
 	}
 	return start.StartCommit, nil

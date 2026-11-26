@@ -20,8 +20,9 @@
 -- once (record.CIFailure): whom it went to, the fix that took it and whether the owner was told.
 --
 -- step_starts.start_commit, end_commit and fix_check are the commits a step's record names at its
--- start and at its end, and the check a fix's record names. step_starts.beside_fix is the open fix
--- the step's start named, 0 for none, and push_branch the branch beside a fix the step pushes to,
+-- start and at its end, and the check a fix's record names. step_starts.beside_fix is the latest
+-- fix that ran beside the step's start: the open fix the start named, or a fix that started while
+-- the start's run was open; 0 for none. push_branch is the branch beside a fix the step pushes to,
 -- '' for none; each later start of the place writes both again. pending_task_deliveries.fix is the
 -- fix a delivery's task is of, 0 for none, fix_from the head the fix's working copy is made at,
 -- move_to the head the task's working copy moves to before the task, and fix_branch the fix's own

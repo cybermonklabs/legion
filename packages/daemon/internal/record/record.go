@@ -2289,8 +2289,8 @@ type Store interface {
 	RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error
 	// FixAt is fix number fix of task, in any state, nil for none.
 	FixAt(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int) (*TaskFix, error)
-	// MarkStepBesideFix writes the open fix a start of place named (StepStart.BesideFix), in the
-	// transaction that counted that start; ErrStepStartMismatch where that start is not open.
+	// MarkStepBesideFix writes that a fix ran beside a start of place (StepStart.BesideFix): at
+	// that start, or at the fix's start; ErrStepStartMismatch where that start is not open.
 	MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error
 	// SetStepPushBranch binds a branch beside a fix to that exact open start of place, keeping a
 	// binding it holds; ErrStepStartMismatch where that start is not open.

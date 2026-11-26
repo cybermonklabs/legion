@@ -3069,7 +3069,7 @@ The earlier release names none of the three tables and not the column, so this s
 
 This release starts a task's first implementation step again as a fix, in a working copy of its own, when a check that a CI job runs fails at the task's head, while the other steps of the task go on.
 Its migration `20261123134547_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit`, `fix_check`, `beside_fix` and `push_branch`, the columns `pending_task_deliveries.fix`, `fix_from`, `move_to` and `fix_branch`, and the column `workspace_bundles.fix_head`, the commit the fix's working copy stood on when a release saved the workspace's work.
-`task_fixes.pushed` holds, for each role, the head of that role's branch beside the fix that a push showed, and `step_starts.beside_fix` and `push_branch` the fix a step's start named and the branch beside it that step pushes to.
+`task_fixes.pushed` holds, for each role, the head of that role's branch beside the fix that a push showed, and `step_starts.beside_fix` and `push_branch` the latest fix that ran beside a step's start and the branch beside a fix that step pushes to.
 It also writes the outbox's kind check (`outbox_kind_check`) again, with `fix_job_read`, `ci_news` and `beside_branches_delete` added to the list of `20261119203047_design_news`.
 An earlier release names none of the two tables and none of the twelve columns in a statement.
 It decodes a `notice`, a `controller_notice`, a `supervise` row, an `update_ask` row and a `step_record` row strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and fails at every attempt a row that carries what it does not know.

@@ -864,6 +864,11 @@ func jobOf(fix record.TaskFix) string {
 // The tester's testing step still judges each check a CI job runs, this one among them, so its
 // report can fail for it, and a step that fails beside a fix moves nothing until the way after the
 // fix (besideFix); no other step's report fails for it.
+//
+// Each other step's open start is marked as one the fix runs beside (record.StepStart.BesideFix),
+// whether or not its step is told: what ReviewBesideFix reads of a review step that started before
+// the fix, never the clock. toldByStart judges the start as it was read before the mark, as its own
+// start left it.
 func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix) error {
 	news, err := e.fixStartedOf(ctx, tx, issue, w, fix)
 	if err != nil {
@@ -888,6 +893,11 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 		start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 		if err != nil {
 			return err
+		}
+		if start.Run == record.RunOpen && start.BesideFix != fix.Fix {
+			if err := e.store.MarkStepBesideFix(ctx, tx, issue.Key, place, start.Starts, fix.Fix); err != nil {
+				return err
+			}
 		}
 		to := roleRecipient{issue: issue.Key, role: role, row: issue.Key}
 		var reader *record.CIReader

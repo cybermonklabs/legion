@@ -44,9 +44,11 @@ const (
 // is unknown: an end of such a step whose role's entry recorded none. StartCommit and FixCheck are
 // the commit the latest start named and, for a fix's start, the check the fix is of, and
 // EndCommit the commit the end of that start's run named: "" for none, and EndCommit "" until the
-// run ends. BesideFix is the open fix of the task the latest start named (MarkStepBesideFix), 0
-// for none, and PushBranch the branch beside a fix that start's step pushes to (SetStepPushBranch),
-// "" for none: each start writes both again, so neither outlives the start that took it.
+// run ends. BesideFix is the latest fix of the task that ran beside the latest start's run
+// (MarkStepBesideFix): the open fix that start named, or a fix that started while the run was open,
+// 0 for none; and PushBranch the branch beside a fix that start's step pushes to
+// (SetStepPushBranch), "" for none: each start writes both again, so neither outlives the start
+// that took it.
 type StepStart struct {
 	Starts      int64
 	Agent       string
@@ -218,10 +220,11 @@ func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue strin
 	return true, nil
 }
 
-// MarkStepBesideFix writes that start number starts of place on issue named fix, an open fix of
-// its task (StepStart.BesideFix), in the transaction that counted that start (RaiseStepStarts),
-// which writes 0 for every start. A start that is not the place's open run is refused with
-// ErrStepStartMismatch, and nothing is written.
+// MarkStepBesideFix writes that fix, a fix of its task, ran beside start number starts of place on
+// issue (StepStart.BesideFix): in the transaction that counted that start (RaiseStepStarts), which
+// writes 0 for every start, where the start named the fix open, and in the transaction that starts
+// the fix, where the start's run was open then. A start that is not the place's open run is
+// refused with ErrStepStartMismatch, and nothing is written.
 func (s *Postgres) MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error {
 	describe := fmt.Sprintf("mark start %d of %s %s/%s/%d beside fix %d", starts, issue, place.Task, place.Kind, place.Place, fix)
 	if fix < 0 {

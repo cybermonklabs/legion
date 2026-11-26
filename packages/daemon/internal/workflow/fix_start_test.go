@@ -222,8 +222,9 @@ func (r *fixRig) testerCompletesBeforeItsStates() {
 // A step whose start named the fix is told by that start alone: a reviewer that starts while fix 1
 // reads its job, and an owner that moves into accepting then, get no row at the fix's start, and
 // their start records keep BesideFix 1. A step that started before the fix opened, in the same
-// fact that opened it, keeps zero and gets its one row at the fix's start, under the engine's fixed
-// clock, where the start and the fix's opening share one microsecond.
+// fact that opened it, names no fix at its start and gets its one row at the fix's start, under the
+// engine's fixed clock, where the start and the fix's opening share one microsecond. The fix's start
+// then marks each open start beside the fix (BesideFix 1), after it has judged whom to tell.
 //
 // The controls, kept: with the seam toldByClock, which takes a start no earlier than the fix's
 // opening as told, the step started in the fact that opened the fix gets no row; and with the seam
@@ -245,8 +246,8 @@ func TestTheReviewerIsToldOfTheFix(t *testing.T) {
 		r.fails(fixHead, "k-ci")
 		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
 		assertStrings(t, "the fix-started rows", r.fixStartedRows(), []string{toldOfFix1(t, claim.RoleTester, r.stepReader(claim.RoleTester, phase.Testing), true)})
-		if got, want := r.besideMarks(2), "0 "+besideFix1(t, claim.RoleTester); got != want {
-			t.Fatalf("the tester's start names %q, want %q: started before the fix, bound at the fix's start", got, want)
+		if got, want := r.besideMarks(2), "1 "+besideFix1(t, claim.RoleTester); got != want {
+			t.Fatalf("the tester's start names %q, want %q: started before the fix, marked beside it and bound at the fix's start", got, want)
 		}
 	})
 
@@ -259,8 +260,8 @@ func TestTheReviewerIsToldOfTheFix(t *testing.T) {
 			toldOfFix1(t, claim.RoleReviewer, "-", false),
 			toldOfFix1(t, claim.RoleArchitect, "accepting@0", true),
 		})
-		if got, want := r.besideMarks(3), "0 "+besideFix1(t, claim.RoleArchitect); got != want {
-			t.Fatalf("the owner's acceptance start names %q, want %q", got, want)
+		if got, want := r.besideMarks(3), "1 "+besideFix1(t, claim.RoleArchitect); got != want {
+			t.Fatalf("the owner's acceptance start names %q, want %q: marked beside the fix and bound at its start", got, want)
 		}
 	})
 
