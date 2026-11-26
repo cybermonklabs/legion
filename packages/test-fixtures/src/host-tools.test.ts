@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
+import { captureEnvironment } from "./environment";
+import {
+  type HostGateNeeds,
+  hostTool,
+  requireHostTools,
+  requireOrSkip,
+  skipWithout,
+} from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -9,6 +16,8 @@ const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
 /** Names no host carries a program under. */
 const ABSENT = "legion-test-fixtures-no-such-program";
 const ABSENT_TOO = "legion-test-fixtures-no-such-program-either";
+/** A prerequisite no run has, named as a caller names one. */
+const WHAT = "LEGION_TEST_FIXTURES_NO_SUCH_VARIABLE, naming nothing";
 
 /** Runs `body` with `console.warn` collected rather than printed, and returns what it printed. */
 function warningsFrom(body: () => void): string[] {
@@ -25,6 +34,50 @@ function warningsFrom(body: () => void): string[] {
   return collected;
 }
 
+/** Runs `body` with `GITHUB_ACTIONS=true`, as every step of a GitHub Actions job runs, and puts
+ *  back what the name held before. */
+function onActions<T>(body: () => T): T {
+  const restore = captureEnvironment(["GITHUB_ACTIONS"]);
+  process.env["GITHUB_ACTIONS"] = "true";
+  try {
+    return body();
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Runs `source` as the file `caller`, with the gates imported, in a process of its own whose
+ * environment has no `GITHUB_ACTIONS`, as a developer's run and a pod's have none. The skip is
+ * shown there rather than in this process: the test-fixtures job runs this file under
+ * `GITHUB_ACTIONS=true`, where the gates throw instead, and a row that skipped only off GitHub
+ * Actions would show nothing in the one run CI makes of it.
+ */
+function offActions(
+  source: string,
+  caller = join(makeDirectory("caller"), "a.test.ts")
+): {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly caller: string;
+} {
+  writeFileSync(
+    caller,
+    `import { requireOrSkip, skipWithout } from ${JSON.stringify(join(import.meta.dir, "host-tools.ts"))};\n` +
+      source
+  );
+  const env = { ...process.env };
+  delete env["GITHUB_ACTIONS"];
+  const run = Bun.spawnSync([process.execPath, caller], { env, stdout: "pipe", stderr: "pipe" });
+  return {
+    code: run.exitCode,
+    stdout: run.stdout.toString(),
+    stderr: run.stderr.toString(),
+    caller,
+  };
+}
+
 test("hostTool returns the path of a program this host has", () => {
   const sh = hostTool("sh");
   if (sh === null) throw new Error("this host has no sh on PATH");
@@ -35,51 +88,85 @@ test("hostTool returns null for a program this host does not have", () => {
   expect(hostTool(ABSENT)).toBeNull();
 });
 
-test("skipWithout is false and prints nothing when the host has every program", () => {
+test("skipWithout is false and prints nothing when the host has every program, on GitHub Actions too", () => {
+  const skipped: boolean[] = [];
+  const warnings = warningsFrom(() => {
+    skipped.push(skipWithout("sh"));
+    skipped.push(onActions(() => skipWithout("sh")));
+  });
+  expect(skipped).toEqual([false, false]);
+  expect(warnings).toEqual([]);
+});
+
+test("skipWithout with no names is false and prints nothing, on GitHub Actions too", () => {
   let skipped: boolean | undefined;
   const warnings = warningsFrom(() => {
-    skipped = skipWithout("sh");
+    skipped = onActions(() => skipWithout());
   });
   expect(skipped).toBe(false);
   expect(warnings).toEqual([]);
 });
 
-test("skipWithout with no names is false and prints nothing", () => {
-  let skipped: boolean | undefined;
-  const warnings = warningsFrom(() => {
-    skipped = skipWithout();
-  });
-  expect(skipped).toBe(false);
-  expect(warnings).toEqual([]);
-});
-
-test("skipWithout is true and prints one warning, of the missing programs and this file", () => {
-  let skipped: boolean | undefined;
-  const warnings = warningsFrom(() => {
-    skipped = skipWithout(ABSENT, "sh", ABSENT_TOO);
-  });
-  expect(skipped).toBe(true);
-  expect(warnings).toHaveLength(1);
-  const warning = warnings[0] ?? "";
-  expect(warning).toContain(`does not have: ${ABSENT}, ${ABSENT_TOO}.`);
-  expect(warning).toContain(import.meta.path);
+test("off GitHub Actions, skipWithout is true and prints one warning, of the missing programs and the calling file", () => {
+  const run = offActions(
+    `console.log(skipWithout(${JSON.stringify(ABSENT)}, "sh", ${JSON.stringify(ABSENT_TOO)}));\n`
+  );
+  expect(run.code).toBe(0);
+  expect(run.stdout).toBe("true\n");
+  expect(run.stderr).toBe(
+    `Skipped the tests in ${run.caller}. This host does not have: ${ABSENT}, ${ABSENT_TOO}. ` +
+      "Install the missing programs and run the tests again.\n"
+  );
 });
 
 test("the warning names the calling file under a path that holds a space", () => {
   // The caller is read from the stack, and a frame's path is not quoted there: a checkout under
-  // `…/my repo/…` must still be named whole. It is measured in a process of its own, since the
-  // path of this file is the one this process's stack carries.
+  // `…/my repo/…` must still be named whole.
   const root = join(makeDirectory("spaced"), "my repo");
   mkdirSync(root);
-  const caller = join(root, "a.test.ts");
-  writeFileSync(
-    caller,
-    `import { skipWithout } from ${JSON.stringify(join(import.meta.dir, "host-tools.ts"))};\n` +
-      `skipWithout(${JSON.stringify(ABSENT)});\n`
+  const run = offActions(`skipWithout(${JSON.stringify(ABSENT)});\n`, join(root, "a.test.ts"));
+  expect(run.code).toBe(0);
+  expect(run.stderr).toContain(`Skipped the tests in ${run.caller}.`);
+});
+
+test("on GitHub Actions, skipWithout throws, naming the missing programs and the calling file", () => {
+  const warnings = warningsFrom(() => {
+    expect(() => onActions(() => skipWithout(ABSENT, "sh", ABSENT_TOO))).toThrow(
+      `a prerequisite that the ci.yaml job running the tests in ${import.meta.path} must give on GitHub ` +
+        `Actions is missing: ${ABSENT}, ${ABSENT_TOO} on this host's PATH`
+    );
+  });
+  expect(warnings).toEqual([]);
+});
+
+test("requireOrSkip is false and prints nothing when the prerequisite is present, on GitHub Actions too", () => {
+  const skipped: boolean[] = [];
+  const warnings = warningsFrom(() => {
+    skipped.push(requireOrSkip(WHAT, true));
+    skipped.push(onActions(() => requireOrSkip(WHAT, true)));
+  });
+  expect(skipped).toEqual([false, false]);
+  expect(warnings).toEqual([]);
+});
+
+test("off GitHub Actions, requireOrSkip is true and prints one warning, of what is missing and the calling file", () => {
+  const run = offActions(`console.log(requireOrSkip(${JSON.stringify(WHAT)}, false));\n`);
+  expect(run.code).toBe(0);
+  expect(run.stdout).toBe("true\n");
+  expect(run.stderr).toBe(
+    `Skipped the tests in ${run.caller}. This run does not have: ${WHAT}. ` +
+      "Supply what is missing and run the tests again.\n"
   );
-  const run = Bun.spawnSync([process.execPath, caller], { stdout: "pipe", stderr: "pipe" });
-  expect(run.exitCode).toBe(0);
-  expect(run.stderr.toString()).toContain(`Skipped the tests in ${caller}.`);
+});
+
+test("on GitHub Actions, requireOrSkip throws, naming what is missing and the calling file", () => {
+  const warnings = warningsFrom(() => {
+    expect(() => onActions(() => requireOrSkip(WHAT, false))).toThrow(
+      `a prerequisite that the ci.yaml job running the tests in ${import.meta.path} must give on GitHub ` +
+        `Actions is missing: ${WHAT}`
+    );
+  });
+  expect(warnings).toEqual([]);
 });
 
 /**

@@ -1,0 +1,114 @@
+# The variables a test of this repository gates on, one row each, with the class that says why
+# the gate does not keep the test out of the jobs ci-ok needs. .github/scripts/check-test-reach.sh
+# finds every gate (a Go function, or a Bun or Playwright `skip`/`skipIf`/`if` condition, that
+# reads an environment variable and on its value skips the test or guards an assertion), fails on
+# a gate whose variable no row here names, and checks the row's class against each gate:
+#
+#   set           `jobs` names the jobs of ci.yaml that give the test the variable. Each named job
+#                 must set it (a workflow, job or step `env:`, an inline `NAME=value command`, an
+#                 `export`, or an action that writes it into $GITHUB_ENV, as install-omp writes
+#                 LEGION_TEST_OMP), and for each gate some named job must run the gate's test in a
+#                 step whose environment holds it. `set_by_script` may name the script a named job
+#                 runs that sets it instead (packages/dispatch/e2e/visual-run.sh hands its
+#                 container DISPATCH_E2E_VISUAL_SEED): the search then checks that the script
+#                 assigns the variable and that a step of a named job runs the script.
+#   selector      the same check as `set`, for a variable that chooses which tests run (a flag a
+#                 job sets so that its own suites run) rather than one that hands a test an input.
+#   prerequisite  each gate calls testprereq.Require (Go) or requireOrSkip or skipWithout
+#                 (@legion/test-fixtures/host-tools), or reads GITHUB_ACTIONS and fails there:
+#                 off GitHub Actions the test skips naming what it lacks, and on GitHub Actions it
+#                 fails.
+#   tool          each gate is in a `Benchmark…` function or in a file whose first 15 lines carry
+#                 the tool line, `legion: tool - …`: a tool reads what the person running it hands
+#                 it, and no job runs it.
+#   opt-out       the gate skips only where the variable is set, a person's opt-out on a machine
+#                 that lacks what the test needs: some job ci-ok needs runs the test, and none of
+#                 them sets the variable in the step that runs it.
+#
+# A gate in a tool holds under any row, since the tool reads what its runner hands it, and so does
+# a gate that never skips on GitHub Actions (it fails there, or its condition cannot hold there);
+# the row says what the variable is to the tests that read it. A row whose variable no gate reads
+# is a finding too, so a row leaves with the last gate on its variable.
+#
+# A gate of a test that dispatch://INFRA-3411 has not given its home yet is not a row here: the
+# search names it, and .github/test-reach-unhomed.yaml lists it until the pull request that gives
+# it its home.
+#
+# Each row also says why, in a sentence a reviewer can check against the gate.
+variables:
+  AIRLOCK_MODEL:
+    class: set
+    jobs: [airlock-lean]
+    why: The Lean model's binary, which airlock-lean builds and hands the corpus comparison and the fuzz.
+  BROKER_TEST_DATABASE_URL:
+    class: set
+    jobs: [broker-multiprocess, envoy-go, envoy-go-race, envoy-go-race-api]
+    why: The Postgres server the broker's store tests make their databases on, a service of each job that runs them.
+  CI:
+    class: set
+    jobs: [envoy-go, envoy-go-build]
+    why: GitHub sets it in every job; pmdoc's engine readings skip without bun only where it is unset, and fail where it is set.
+  DISPATCH_E2E_VISUAL_SEED:
+    class: set
+    jobs: [dispatch-browser]
+    set_by_script: packages/dispatch/e2e/visual-run.sh
+    why: The seed file visual-run.sh writes and hands its container, which dispatch-browser's visual leg runs through .github/scripts/dispatch-browser-visual-suite.sh.
+  DISPATCH_FIRST_ROLLOUT_BUILD:
+    class: set
+    jobs: [dispatch-two-builds]
+    why: The first-rollout build, the newest release before the fleet's schema numbers, that the twobuild suite's transition row runs beside this tree's, which dispatch-two-builds builds.
+  DISPATCH_PREVIOUS_BUILD:
+    class: set
+    jobs: [dispatch-two-builds]
+    why: The older build the twobuild suite runs beside this tree's, which dispatch-two-builds builds.
+  DISPATCH_TEST_DATABASE_URL:
+    class: set
+    jobs: [dispatch-memory, dispatch-multiprocess, dispatch-two-builds, envoy-go, envoy-go-claim-model, envoy-go-race, envoy-go-race-api, envoy-go-race-docs]
+    why: The Postgres server the Dispatch store tests make their databases on, a service of each job that runs them.
+  DISPATCH_TEST_NO_CONTAINERS:
+    class: opt-out
+    why: A box that runs no test containers sets it to skip the S3-compatible server test; no job sets it, and envoy-go runs the test.
+  DISPATCH_TOKEN_CORPUS:
+    class: tool
+    why: The corpus of real specs BenchmarkTokenCorpusLargest reads, which the person running it hands it.
+  DISPATCH_XID_REQUIRE_GAP_JUDGMENT:
+    class: set
+    jobs: [envoy-go]
+    why: Makes the xid window tests fail, naming why, on a runner whose kernel hides a thread's scheduler clocks, where they would pass on the window's shape alone (storetest.XidRequireGapsEnv); envoy-go's steps that run them set it.
+  GITHUB_ACTIONS:
+    class: prerequisite
+    why: testprereq.Require, requireOrSkip, skipWithout and the gates written `skipIf(<missing> && !onActions)` skip off GitHub Actions and fail on it.
+  LEGION_E2E:
+    class: selector
+    jobs: [claude-envoy, envoy-client, pi-envoy]
+    why: Selects the tests against a real NATS container, which envoy-client, pi-envoy and claude-envoy run.
+  LEGION_E2E_DISPATCH_STACK:
+    class: selector
+    jobs: [envoy-session-stall]
+    why: Selects the envoy-client tests that start a Dispatch stack, which envoy-session-stall runs.
+  LEGION_E2E_ENVOY_STACK:
+    class: selector
+    jobs: [envoy-session-stall]
+    why: Selects the envoy-client tests that build and start natsd and the listener, which envoy-session-stall runs.
+  LEGION_TEST_CLAUDE:
+    class: set
+    jobs: [claude-envoy]
+    why: The Claude Code binary install-claude-code puts in claude-envoy's environment.
+  LEGION_TEST_NATS_URL:
+    class: set
+    jobs: [pi-envoy, pi-legion, pi-legion-build]
+    why: The NATS service of the jobs that run the Oh My Pi extension tests.
+  LEGION_TEST_OMP:
+    class: set
+    jobs: [pi-envoy, pi-legion, pi-legion-build]
+    why: The Oh My Pi binary install-omp puts in the environment of the jobs that run the Oh My Pi extension tests.
+  LEGION_TEST_PG_DSN:
+    class: set
+    jobs: [daemon-go]
+    why: The Postgres server the daemon's tests make their databases on, a service of daemon-go.
+  LEGION_TEST_ZSH:
+    class: prerequisite
+    why: The zsh the resend row of claude-envoy's send-arguments test runs under; the row skips without one only off GitHub Actions, and claude-envoy installs zsh.
+  PLAYWRIGHT_BASE_URL:
+    class: opt-out
+    why: A run against a deployed https Dispatch sets it, and the plain-HTTP rows skip there; no job sets it, and dispatch-browser runs those rows.
