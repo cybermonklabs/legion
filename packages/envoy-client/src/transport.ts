@@ -487,8 +487,11 @@ function namedProcess(id: string | undefined): string | undefined {
  * always is — and the fresh claim clears the mark. A holder that really did hand the role back
  * does not re-take it, because it no longer asks for a role it has ended.
  *
- * Every client reads a role lookup's answer through this, never by its `holder` alone, and a
- * persisted role record through {@link mayActOnRoleRecord}: the two are one rule in every client.
+ * Every client decides whether this session and this process hold a role through this, never by
+ * the `holder` of a lookup alone, and acts on a persisted role record through
+ * {@link mayActOnRoleRecord}: the two are one rule in every client. A read of `holder` that only
+ * says which session holds a role now, or whether another session's hold still stands, decides
+ * nothing about this caller's own hold.
  */
 export function roleHeldBy(
   info: RoleInfo | undefined,

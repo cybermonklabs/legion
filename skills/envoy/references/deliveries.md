@@ -11,7 +11,8 @@ Read this when a delivery field is unclear, or when a message did not reach a se
 - `waited`: present when `delivered` is 15 minutes or more after `at`, less any difference `clocks` states: how long the delivery waited. An old `at` on a late delivery says it waited, not that a clock is wrong.
 - `clocks`: present when this machine's clock runs 15 minutes or more ahead of or behind the Envoy listener's: which way, and by how much.
 - `urgency`: `low`, `med`, `high` or `blocking`, for you to read.
-  Under Oh My Pi, a `low` card of the Legion daemon, or of a Dispatch event other than an ask's or a message or mention to you, starts no turn: you read it at your next turn.
+  A `low` message of a session that names itself as sender starts a turn like any other card.
+  Under Oh My Pi, a `low` card starts no turn, and you read it at your next turn, only when an agent sent it and it names no sending session (the Legion daemon's, or a subagent's with an empty `session_id`), or it is a Dispatch event other than an ask's, a message to you or a mention of you.
   No other card's urgency changes its delivery.
 - `expects_reply`: `false` (do not reply or acknowledge), `optional` (welcome, nothing waits on it) or `required` (the sender waits on your answer).
 - `re`: the delivery this one answers. On a Dispatch frame it names the ask or the message, and `dispatch.question` holds the start of an ask's text; `dispatch read` gives the whole.

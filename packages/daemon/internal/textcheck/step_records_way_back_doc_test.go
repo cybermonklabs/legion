@@ -2,7 +2,7 @@ package textcheck
 
 // This test reads the roll forward's header through migrations.WayBack, whose embed is in the
 // go list closure of the text-check run, as the row above says, so the guide is its one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheStepRecordsMigrationsEntriesLinkTheirWayBack (shippedText) and TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide (wayBackBlockOfTheGuide, way_back_doc_test.go:140)
+//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:494 reads it under ../../../.. for TestTheStepRecordsMigrationsEntriesLinkTheirWayBack (shippedText) and TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide (wayBackBlockOfTheGuide, way_back_doc_test.go:140)
 
 import (
 	"fmt"
