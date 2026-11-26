@@ -69,6 +69,16 @@ const agent: Actor = { id: "session-1", kind: "agent" };
 /** A page that has published no name. */
 const NO_NAMES = lineNamesOf(KEY);
 
+/** A query client that already holds the reader, alice, as the page's who-am-I read answers her,
+ *  and asks for nothing again. */
+function readerClient(): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  return client;
+}
+
 /** Each entry as its id, with the entries under it after a colon. */
 function shape(entries: readonly ContentsEntry[]): string[] {
   return entries.map((entry) =>
@@ -219,10 +229,7 @@ function FocusOn({ id }: { id: string }): null {
 // would skip the list for.
 test("folding the entry above the one the reader is in leaves the tab stop on the folded entry", () => {
   const root = node("CORE-1", "issue", [node("ask-1", "ask", [node("ask-2", "ask")])]);
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const client = readerClient();
   const view = render(
     createElement(
       QueryClientProvider,
@@ -280,10 +287,7 @@ function Hands({ held }: { held: PageHands }): ReactNode {
 // holds the node the focus was last on, rather than the entry the sheet last chose, and Focus
 // branch draws that thread's branch.
 test("a list drawn again after the focus left the outline marks the entry holding the node it was last on, not the last choice", () => {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const client = readerClient();
   const held: PageHands = {};
   const branches: (string | undefined)[] = [];
   const page = (open: boolean) =>
@@ -425,10 +429,7 @@ function drawMeasured(
     box.mockRestore();
   };
   try {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-    });
-    client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+    const client = readerClient();
     const view = render(createElement(QueryClientProvider, { client }, element));
     return {
       container: view.container,

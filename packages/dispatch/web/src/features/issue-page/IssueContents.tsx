@@ -211,18 +211,19 @@ export function ContentsList({
   const lastFocused = useLastFocusedNodeId();
   const requested = useOutlineRequest()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
-  const retained = focused ?? lastFocused;
-  const retainedEntry = useMemo(
-    () => nearestAtOrAbove(root, retained, (id) => entryIds.has(id)),
-    [entryIds, retained, root]
+  const lastFocusedEntry = useMemo(
+    () => nearestAtOrAbove(root, lastFocused, (id) => entryIds.has(id)),
+    [entryIds, lastFocused, root]
   );
-  const inEntry = focused === undefined ? undefined : retainedEntry;
+  // The provider sets the last focused node with the focused one, so while the focus is on a
+  // node, that node's entry is the last focused one's.
+  const inEntry = focused === undefined ? undefined : lastFocusedEntry;
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
   const current =
     inEntry ??
-    [lastIn, retainedEntry, requested].find((id) => id !== undefined && entryIds.has(id));
+    [lastIn, lastFocusedEntry, requested].find((id) => id !== undefined && entryIds.has(id));
 
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => {
