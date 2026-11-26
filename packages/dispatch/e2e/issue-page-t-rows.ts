@@ -450,14 +450,20 @@ const PLACE = ["parentKey", "level"] as const satisfies readonly (keyof KeyedRow
  * its face, whatever the focus (R11), and its reading takes each row's body from that face
  * (`drawnRowFaces`). So a row's words are the words its body drew wherever the reading holds a
  * body, and its body is what that body drew beside them: its author line, its other lines, and an
- * ask's options and answer. A child issue's row is its key, its title and its status (R14), so
- * its face draws no author line where the old page's body drew "Author unknown": a child's body
- * is compared without it.
+ * ask's options and answer. An answer's white space is the page's to lay out: the old page drew
+ * the stored text as it stands and the page draws each paragraph as a block of its own, so its
+ * words are compared with each run of white space read as one space. A child issue's row is its
+ * key, its title and its status (R14), so its face draws no author line where the old page's body
+ * drew "Author unknown": a child's body is compared without it.
  */
 function compared(row: KeyedRow, field: keyof KeyedRow): unknown {
   if (field === "words") return row.body?.words ?? row.words;
   if (field !== "body" || row.body === null) return row[field];
-  const { answer, author, lines, options } = row.body;
+  const { author, lines, options } = row.body;
+  const answer =
+    row.body.answer === null
+      ? null
+      : { ...row.body.answer, text: row.body.answer.text?.replace(/\s+/g, " ").trim() ?? null };
   return row.kind.type === "child_issue"
     ? { answer, lines, options }
     : { answer, author, lines, options };
