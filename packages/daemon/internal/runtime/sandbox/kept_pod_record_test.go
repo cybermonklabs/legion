@@ -78,7 +78,7 @@ func keptPodRows(t *testing.T, st *store.Store) []string {
 func TestAKeptPodsStartRecordsThePodAndMarksTheNextPodOfItsVolume(t *testing.T) {
 	t.Parallel()
 	st := keptPodStore(t)
-	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withWaitsToTheDeadline(), withOptions(func(o *Options) {
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
 		o.KeptPodStart = keptPodStart(st)
 	}))
 	spec := workerSpec(t)
@@ -126,14 +126,9 @@ func TestAKeptPodTheStoreCannotRecordStartsNoRoleUntilItCan(t *testing.T) {
 	t.Parallel()
 	st := keptPodStore(t)
 	faulted, fault := faultedStore(t, st)
-	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withWaitsToTheDeadline(), withOptions(func(o *Options) {
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
 		o.KeptPodStart = keptPodStart(faulted)
 	}))
-	// The product's keptPodRecordBound remains the record's two-minute limit. The fault's closed
-	// connection fails its first attempt at once; the recovery launch after it answers is bounded by
-	// the test binary's deadline, not the rig's former 2 s BootTimeout. Make the start bound follow
-	// BootTimeout rather than the kept-volume attachment bound, which this test does not exercise.
-	g.r.keptVolumeBound = 0
 	fault.Refuse(true)
 
 	spec := workerSpec(t)

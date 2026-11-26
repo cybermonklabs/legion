@@ -101,7 +101,7 @@ func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
 // replaces the pod.
 func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
+	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(testTransitionToken))
 	next := resumeTester(t, g, r2, loc)
@@ -135,7 +135,7 @@ func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) 
 // it.
 func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)), withWaitsToTheDeadline())
+	g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 	loc := g.spawn(workerSpec(t))
 	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) != 1 {
 		t.Fatalf("the fresh pod projects %+v for the exchange, want its one token", found)
@@ -167,7 +167,7 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 // records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
+	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
 	starts := func() int {
@@ -232,7 +232,7 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 // DISPATCH_TOKEN_BROKER=1 (dispatch://INFRA-4425 R4).
 func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
+	g := newRig(t, nil, withOptions(dispatchBearer))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
 	spec := workerSpec(t)
@@ -271,12 +271,12 @@ func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(
 func TestTheControllerLaunchCarriesNoDispatchToken(t *testing.T) {
 	t.Parallel()
 	t.Run("a pod the launch builds", func(t *testing.T) {
-		g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)), withWaitsToTheDeadline())
+		g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 		g.spawn(controllerSpec(t))
 		wantNoDispatchToken(t, "the controller's launch", lastStart(t, g, controllerToken))
 	})
 	t.Run("a pod built before the setting", func(t *testing.T) {
-		g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
+		g := newRig(t, nil, withOptions(dispatchBearer))
 		spec := controllerSpec(t)
 		loc := g.spawn(spec)
 		r2 := secondRuntime(t, g, dispatchBroker(""))()

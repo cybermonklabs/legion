@@ -24,7 +24,7 @@ import (
 // up, so their waits are bounded by the test binary's deadline (withWaitsToTheDeadline).
 func beforeTheBroker(t *testing.T) (*rig, runtime.Locator, runtime.Locator) {
 	t.Helper()
-	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
+	g := newRig(t, nil, withOptions(dispatchBearer))
 	return g, g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 }
 
