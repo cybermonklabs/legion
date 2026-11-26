@@ -39,3 +39,14 @@ func BesideTakeCommands(dir, prefix, own, taskBranch string) []string {
 		shellprefix.Command([]string{"jj", "-R", dir, "duplicate", taken, "--insert-before", "@"}),
 	}
 }
+
+// KeptTakeCommands are the commands with which a step that a way runs again takes, in its
+// workspace, the commits of its kept branch beside the fix, branch, that the task's branch
+// taskBranch does not hold: a fetch of both, then a copy under the working copy of each such commit.
+func KeptTakeCommands(branch, taskBranch string) []string {
+	taken := `::remote_bookmarks(exact:"` + branch + `", exact:"origin") ~ ::remote_bookmarks(exact:"` + taskBranch + `", exact:"origin")`
+	return []string{
+		besideJJ + shellprefix.Command([]string{"git", "fetch", "--remote", "origin", "--branch", taskBranch, "--branch", branch}),
+		besideJJ + shellprefix.Command([]string{"duplicate", taken, "--insert-before", "@"}),
+	}
+}
