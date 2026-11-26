@@ -5488,10 +5488,122 @@ test("build-tasks fails (exit 1) on a --context-session whose rebuilt context do
   );
   expect(code).toBe(EXIT.failed);
   expect(lines.join("\n")).toContain(
-    `--context-session store_a:${unlisted}: its rebuilt context (subagent:task) does not list alpha`
+    `--context-session store_a:${unlisted}: its rebuilt context (subagent:task) does not list alpha, so a written task in it would test nothing; give a session whose context lists it`
   );
   expect(recorder.requests.length).toBe(from);
   expect(existsSync(out)).toBe(false);
+}, 60_000);
+
+// Catches: setup replacing part of the rebuilt context, or a task or summary that reads as use
+// observed in the store. The control rebuilds the same session via a listed placeholder name.
+test("build-tasks adds only the inventory copy to the planned context and labels every task", async () => {
+  const dir = path.join(scratch, "test-setup");
+  const session = `${DEV_SESSIONS}/task-1.jsonl`;
+  const named = `store_a:${fileHash(session)}`;
+  const cfg = changedStore("test-setup", (files) => {
+    const store = files.store_a ?? {};
+    store[session] = unlistedSubagentText().replace(
+      "<skills>\\n",
+      "<skills>\\n- placeholder: A control line.\\n"
+    );
+  });
+  const from = path.join(setupDir, "test-setup-control.jsonl");
+  writeFileSync(
+    from,
+    `${JSON.stringify({ id: "control", label: "need", source: "written", text: "A control task." })}\n`
+  );
+  writeFileSync(
+    `${from}.summary.json`,
+    JSON.stringify({ command: "build-tasks", skill: "placeholder" })
+  );
+  const baselineDir = path.join(dir, "baseline");
+  expect(
+    await main(reprofileArgs(cfg, from, baselineDir, "--context-session", named), io([]))
+  ).toBe(EXIT.ok);
+  const baseline = JSON.parse(readFileSync(path.join(baselineDir, "control.json"), "utf8"));
+  const skill = path.join(dir, "input");
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(
+    path.join(skill, "SKILL.md"),
+    "---\nname: checklist\ndescription: Use for checklists.\n---\n"
+  );
+  const copy = {
+    repo: "acme/inventory",
+    commit: "1".repeat(40),
+    path: "skills/inventory-check",
+    name: "checklist",
+  };
+  const setup = { label: "test setup, not observed use", copy };
+  const spec = `${copy.repo}@${copy.commit}:${copy.path}`;
+  const out = path.join(dir, "tasks.jsonl");
+  const args = tasksArgs(out, ...profileFlags(path.join(dir, "profiles"))).map((arg) =>
+    arg === config ? cfg : arg === old ? skill : arg.startsWith("store_b:") ? named : arg
+  );
+  const requests = recorder.requests.length;
+  const refused: string[] = [];
+  expect(await main(args, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("\n")).toContain(
+    `--context-session ${named}: its rebuilt context (subagent:task) does not list checklist, so a written task in it would test nothing; give a session whose context lists it`
+  );
+  expect(recorder.requests.length).toBe(requests);
+  const world = io([]);
+  expect(
+    await main([...args, "--test-setup", spec], {
+      ...world,
+      gh: (argv) => {
+        if (!argv.includes("repos/acme/inventory/contents/skills/inventory-check/SKILL.md"))
+          return world.gh(argv);
+        expect(argv).toContain(`ref=${copy.commit}`);
+        return Promise.resolve({
+          code: 0,
+          stderr: "",
+          stdout: "\uFEFF---\nname: ' checklist '\ndescription: Use it for the checklist.\n---\n",
+        });
+      },
+    })
+  ).toBe(EXIT.ok);
+  const tasks = tasksOf(out);
+  expect(tasks.length).toBeGreaterThan(0);
+  expect(tasks.map((task) => task.testSetup)).toEqual(tasks.map(() => setup));
+  const written = tasks.filter((task) => task.source === "written");
+  expect(written.length).toBeGreaterThan(0);
+  for (const task of written) {
+    expect(JSON.parse(readFileSync(String(task.profile), "utf8"))).toEqual({
+      ...baseline,
+      skills: [...baseline.skills, copy],
+    });
+  }
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.testSetup).toEqual(setup);
+  expect(summary.tasks).toEqual(tasks.map(() => expect.objectContaining({ testSetup: setup })));
+}, 120_000);
+
+// Catches: build-tasks proceeding to the reader with a duplicate or missing inventory copy.
+test("build-tasks names an already installed or unreadable setup copy before reader calls", async () => {
+  const before = recorder.requests.length;
+  for (const [repoPath, fault] of [
+    [`acme/skills@${SHA}:skills/alpha`, "already installs that copy"],
+    [`acme/missing@${SHA}:skills/alpha`, "cannot read the copy"],
+  ]) {
+    const lines: string[] = [];
+    const dir = path.join(scratch, "test-setup-refused");
+    const out = path.join(dir, "tasks.jsonl");
+    expect(
+      await main(
+        tasksArgs(
+          out,
+          ...profileFlags(path.join(dir, "profiles")),
+          "--test-setup",
+          String(repoPath)
+        ),
+        io(lines)
+      )
+    ).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(`--test-setup ${repoPath}:`);
+    expect(lines.join("\n")).toContain(String(fault));
+    expect(existsSync(out)).toBe(false);
+  }
+  expect(recorder.requests.length).toBe(before);
 }, 60_000);
 
 test("build-tasks --first-read --profiles-out gives each control task build-cases' profile of its session, less the tested skill", async () => {

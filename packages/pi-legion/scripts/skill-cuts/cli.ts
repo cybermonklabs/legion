@@ -7,8 +7,8 @@
  * `behaviour` and `load` read skill texts from directories, cases or tasks from a file, and the
  * key from a file; the repositories a context needs come from `--repos <dir>` (a tree of
  * `<owner>/<name>/<commit>/` directories, context.ts's `localSource`), or else from GitHub
- * through `gh` (context.ts's `ghSource`). So they read GitHub, with its token, only to make a
- * capture with no `--repos`: a command whose captures are all saved reads no repository.
+ * through `gh` (context.ts's `ghSource`). A load with `--test-setup` reads its inventory copy
+ * even when all its captures are saved.
  *
  *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
  *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
@@ -44,7 +44,8 @@
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
  *       [--hint-draw <n>] [--omp-config <file>]... [--claude <binary>]
- *       [--context-session <store>:<path hash>] [--route-seed <text>]
+ *       [--context-session <store>:<path hash>] [--test-setup <owner/repo>@<commit>:<path>]
+ *       [--route-seed <text>]
  *   bun scripts/skill-cuts/cli.ts load audit-mixed --out <dir> --skill <dir> [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
@@ -59,7 +60,8 @@
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
  *       --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir>
- *       --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>]
+ *       --copies <dir> --count <dir> --context-session <store>:<hash>
+ *       [--test-setup <owner/repo>@<commit>:<path>]] [--max-candidates <n>]
  *       [--max-search-minutes <m>]
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --copies <dir> --count <dir>
  *       --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]
@@ -475,6 +477,8 @@ import {
   LOAD_THINKING,
   runLoad,
   type TaskAudit,
+  TEST_SETUP_LABEL,
+  testSetupOption,
 } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
@@ -5139,6 +5143,7 @@ const LOAD_USAGE = [
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
   "  [--context-session <store>:<path hash>] (the session a written task stands for: the one its profile was rebuilt from)",
+  `  [--test-setup <owner/repo>@<commit>:<path>] (add the inventory copy; ${TEST_SETUP_LABEL})`,
   "  [--route-seed <text>] (empty by default: each run's routing id is derived from it, the task and the run number, so two loads of one seed send the same id for run n of a task)",
   "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] [--omp-config <file>]...",
   "  claude: [--claude <binary>]",
@@ -5179,6 +5184,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
       "context-session": { type: "string" },
+      "test-setup": { type: "string" },
       "route-seed": { type: "string" },
     },
     LOAD_USAGE
@@ -5221,6 +5227,8 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     }
     contextSession = { store: match[1], pathHash: match[2] };
   }
+  const testSetup =
+    values["test-setup"] === undefined ? undefined : testSetupOption(values["test-setup"]);
   const gateway = openGateway({
     config,
     keyFile: given["key-file"],
@@ -5260,6 +5268,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       ? {}
       : { devboxClaudeConfigDir: config.devboxClaudeConfigDir }),
     ...(contextSession === undefined ? {} : { contextSession }),
+    ...(testSetup === undefined ? {} : { testSetup }),
     routeSeed: values["route-seed"] ?? "",
   });
   io.out(
@@ -5335,13 +5344,13 @@ const USAGE = [
   "  count-sql --config <skill-cuts.json> --store <db> --query roots|hashes",
   "  count-sql --config <skill-cuts.json> --query transcript --day <YYYY-MM-DD> [--hour <0-23>] [--run]",
   "  count-sql --config <skill-cuts.json> --query transcript-coverage [--run]",
-  "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
+  "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] [--test-setup <owner/repo>@<commit>:<path>] --out <dir> ...",
   "  load audit-mixed --out <dir> --skill <dir> [--cache-dir <dir>]",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
   "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--store-only <file>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
-  "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
+  "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash> [--test-setup <owner/repo>@<commit>:<path>]] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",
   "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]",
 ].join("\n");

@@ -688,7 +688,7 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>] \
   [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] \
   [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>] \
-  [--route-seed <text, empty by default>]
+  [--test-setup <owner/repo>@<commit>:<path>] [--route-seed <text, empty by default>]
 bun scripts/skill-cuts/cli.ts load audit-mixed --out <dir> --skill <skill dir> [--cache-dir <dir>]
 ```
 
@@ -714,6 +714,15 @@ task that names none; a task with neither is refused. `--name` tests the skill u
 name: its frontmatter `name` and its directory's name change in a scratch copy, a subagent's
 recorded prompt lists it under that name (its listing line's name changes, its text and every
 other line stay), and nothing else that names the skill changes.
+
+`--test-setup <owner/repo>@<commit>:<path>` installs only the tested copy from the inventory
+commit (the full 40 hex characters). The copy supplies the test text, not `--skill`. `--name`
+still changes its name in scratch. The other skills, plugins, and context files stay as they
+are. A labelled task from `build-tasks` can already have that entry in its profile. Otherwise
+`load` refuses a profile that already installs the copy. It also refuses an unreadable copy,
+a different copy than the task names, or a labelled task without the flag. Each run,
+`summary.json`, and each verdict record `test setup, not observed use` and the copy. The report
+prints the label on the skill's verdict line.
 
 Per task, the host's first request is captured once against a recorder, in the context of the
 task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
@@ -763,6 +772,11 @@ Pi's key for that name and description (a recorded preview is listed as the prev
 key from the cached hint of draw 1, else from `<cache-dir>/hint-keys/<key>.json`, else from the
 row Oh My Pi stores when the hint run answers its hint request with the line itself; no model is
 asked for a recorded line. `behaviour` passes no recorded line.
+
+With `--test-setup`, Oh My Pi draws the tested name's line on both `--hint-draw 1` and `2`.
+The other lines follow the same rules as without the flag. A recorded prompt gets the tested
+line if it did not have one. The listing measure still describes the rebuilt session without
+the extra copy. Claude Code still lists descriptions, not hints.
 
 `--hint-draw <n>` (a whole number, default 1) is the draw of every hint no recorded line gives.
 Draw n > 1 asks the hint model again for each skill text and caches the hint apart. A draw's hint
@@ -1206,7 +1220,8 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skil
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --store <db>... --out <tasks.jsonl> [--model <model>] \
-  [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>] \
+  [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash> \
+    [--test-setup <owner/repo>@<commit>:<path>]] \
   [--max-candidates <n>] [--max-search-minutes <m>]
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --copies <copies out dir> \
   --count <count dir> --reprofile <tasks.jsonl> --profiles-out <new dir> \
@@ -2022,6 +2037,15 @@ store read) when its rebuilt context does not list the skill. The summary's `pro
 the context session, each task's profile with its evidence, and why a task has none. A build
 that has already finished gets no profiles from `--profiles-out` afterwards; `--reprofile` builds
 them again.
+
+`--test-setup <owner/repo>@<commit>:<path>` (the runner's architect, 2026-11-26T08:52Z)
+allows a load test when the planned context session did not install the tested copy.
+Use it with `--profiles-out` and `--context-session` in the reader's mode.
+`build-tasks` adds only that copy to the context profile, with the name Oh My Pi reads at the
+inventory commit. It refuses a copy the context already installs or whose SKILL.md it cannot
+read. The listing measure and recorded lines still describe the original session.
+Each task line and the summary record the copy and `test setup, not observed use`.
+Give `load` the same flag. This option does not apply to `--first-read` or `--reprofile`.
 
 `--reprofile <tasks.jsonl> --profiles-out <new dir>` builds the profile of each task of a tasks
 file again, as `--profiles-out` builds one now, with no candidate search and no reader call, so the

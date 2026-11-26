@@ -3627,6 +3627,42 @@ function hostInputs(
   return { out, common };
 }
 
+// Catches: an observed copy treated as setup, a labelled task treated as observed, or a load of
+// another inventory copy under the task's setup label.
+test("load refuses to use setup tasks without the matching flag or to add an observed copy twice", async () => {
+  const dir = path.join(scratch, "test-setup-refusals");
+  const task = { id: "need-1", text: NEED, label: "need", source: "written" };
+  const copy = { repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" };
+  const { common } = hostInputs(dir, [task]);
+  const tasks = path.join(dir, "tasks.jsonl");
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(
+    profile,
+    JSON.stringify({ ...BETA_PROFILE, skills: [...BETA_PROFILE.skills, copy] })
+  );
+  const args = ["load", ...common, "--host", "omp", "--profile", profile];
+  const before = recorder.requests.length;
+  const spec = `${copy.repo}@${copy.commit}:${copy.path}`;
+  const duplicate = await cli([...args, "--test-setup", spec]);
+  expect(duplicate.code).toBe(2);
+  expect(duplicate.stderr).toContain(`${spec}: ${profile} already installs that copy`);
+  const missingSpec = `${copy.repo}@${copy.commit}:skills/missing`;
+  const missing = await cli([...args, "--test-setup", missingSpec]);
+  expect(missing.code).toBe(2);
+  expect(missing.stderr).toContain(`${missingSpec}: cannot read the copy`);
+  const label = "test setup, not observed use";
+  writeFileSync(tasks, `${JSON.stringify({ ...task, testSetup: { label, copy } })}\n`);
+  const without = await cli(args);
+  expect(without.code).toBe(2);
+  expect(without.stderr).toContain(
+    `tasks need-1 record "${label}"; give the matching --test-setup`
+  );
+  const other = await cli([...args, "--test-setup", missingSpec]);
+  expect(other.code).toBe(2);
+  expect(other.stderr).toContain(`with ${spec}, not --test-setup ${missingSpec}`);
+  expect(recorder.requests.length).toBe(before);
+});
+
 /** Builds the Envoy plugin of this checkout into the made-up acme/legion at COMMIT under `repos`,
  *  as the worker image ships it: its bundle in `dist/`, and a manifest that names the bundle and
  *  `dist/skills`, where it reads dispatch-first as it loads. */
@@ -3703,6 +3739,135 @@ const daemonFiles = (part: string): Record<string, string> => ({
 });
 
 describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () => {
+  // Catches: a setup run reading --skill instead of the inventory commit, installing the staged
+  // copy twice, changing a companion's listing, borrowing a recorded hint on either draw, or
+  // printing a verdict that reads as observed use.
+  test(
+    "load of a staged or unstaged profile installs the same inventory copy and draws its tested name on both draws",
+    async () => {
+      const dir = path.join(scratch, "omp-test-setup");
+      const task = { id: "need-1", text: NEED, label: "need", source: "written" };
+      const copy = { repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" };
+      const setup = { label: "test setup, not observed use", copy };
+      const { out, common } = hostInputs(dir, [task], {
+        "SKILL.md": ALPHA_SKILL.replace("the made-up project.", "a different local project."),
+      });
+      writeTasksSummary(path.join(dir, "tasks.jsonl"), {}, measureItem(2));
+      const spec = `${copy.repo}@${copy.commit}:${copy.path}`;
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const betaLine = "Use for the recorded beta greeting.";
+      const baseline = {
+        ...BETA_PROFILE,
+        recordedListing: {
+          source: { kind: "session" },
+          // Even a nonempty, matching description for a pre-existing line must not be reused.
+          tested: copy,
+          lines: [
+            { name: "alpha", text: "Do not reuse this alpha line." },
+            { name: "beta", text: betaLine },
+          ],
+        },
+      };
+      answer = () => READ_ALPHA;
+      const cache = path.join(dir, "cache");
+      const description = "Use when a task asks for the alpha checklist of the made-up project.";
+      for (const draw of [1, 2]) {
+        const before = recorder.requests.length;
+        const hint = draw === 1 ? "Use for the alpha work, stand-in hint." : "Alpha draw two.";
+        if (draw === 2) {
+          // Seed a distinct draw-2 hint under the key the normal second draw uses.
+          const version = Bun.spawnSync([String(omp), "--version"])
+            .stdout.toString()
+            .trim();
+          const draw1 = cacheKey(version, copy.name, description);
+          const draw2 = cacheKey(version, copy.name, description, "draw 2");
+          const first = JSON.parse(
+            readFileSync(path.join(cache, "hints", `${draw1}.json`), "utf8")
+          );
+          writeFileSync(
+            path.join(cache, "hints", `${draw2}.json`),
+            JSON.stringify({ ...first, hint, draw })
+          );
+        }
+        for (const staged of [false, true]) {
+          const at = `${out}-${draw}-${staged}`;
+          const file = path.join(dir, `profile-${draw}-${staged}.json`);
+          const profile = {
+            ...baseline,
+            ...(staged ? { skills: [...baseline.skills, copy] } : {}),
+            ...(draw === 2
+              ? {
+                  context: "subagent:task",
+                  systemPrompt: [
+                    "A recorded project prompt.",
+                    `<skills>\n- beta: ${betaLine}\n</skills>`,
+                  ],
+                  tools: ["read"],
+                }
+              : {}),
+          };
+          const raw = JSON.stringify(profile);
+          writeFileSync(file, raw);
+          writeFileSync(
+            path.join(dir, "tasks.jsonl"),
+            `${JSON.stringify(staged ? { ...task, testSetup: setup } : task)}\n`
+          );
+          const ran = await cli([
+            "load",
+            // hostInputs asks for one run. Use the registered count so the report gives a verdict.
+            ...common.map((arg) => (arg === out ? at : arg === "1" ? "3" : arg)),
+            ...["--host", "omp", "--profile", file, "--omp", String(omp), "--models", models],
+            ...["--test-setup", spec, "--hint-draw", String(draw)],
+          ]);
+          expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+          const capture = loadCapturePaths(at, "omp", task.id);
+          const body = JSON.parse(readFileSync(capture.body, "utf8"));
+          expect(Object.fromEntries(skillListing(body))).toEqual({
+            alpha: hint,
+            beta: betaLine,
+          });
+          if (draw === 2) {
+            expect(body.system.map((block: { text: string }) => block.text)).toEqual([
+              "A recorded project prompt.",
+              `<skills>\n- beta: ${betaLine}\n- alpha: ${hint}\n</skills>`,
+            ]);
+          }
+          const record = JSON.parse(readFileSync(capture.record, "utf8"));
+          expect(record.context.skills).toEqual(profileContext(BETA_PROFILE, cache).skills);
+          expect(record.hints).toContainEqual(
+            expect.objectContaining({
+              skill: "alpha",
+              hint,
+              source: `drawn (draw ${draw})`,
+            })
+          );
+          expect(savedRuns(at, task.id)).toMatchObject(
+            Array.from({ length: 3 }, () => ({ testSetup: setup, outcome: "loaded" }))
+          );
+          const summary = JSON.parse(readFileSync(path.join(at, "summary.json"), "utf8"));
+          expect(summary).toMatchObject({
+            testSetup: setup,
+            verdict: { descriptionFault: false, testSetup: setup },
+            tasks: [
+              { testSetup: setup, listedUnder: { source: `drawn (draw ${draw})`, line: hint } },
+            ],
+          });
+          expect(ran.stdout).toMatch(
+            /^load: the skill alpha: no description fault in 1 tasks \(test setup, not observed use\)/m
+          );
+          expect(readFileSync(file, "utf8")).toBe(raw);
+        }
+        const hints = recorder.requests
+          .slice(before)
+          .filter((request) => request.body.includes("\\nSkill: alpha\\nDescription: "));
+        expect(hints).toHaveLength(draw === 1 ? 1 : 0);
+        if (draw === 1) expect(hints[0]?.body).toContain(description);
+      }
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
   test(
     "captures the first request of a one-message history, lists the renamed skill under its hint, and counts a read of skill://<name> as a load",
     async () => {

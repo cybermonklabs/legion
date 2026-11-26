@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `skill-cuts build-tasks` and `load` take `--test-setup <owner/repo>@<commit>:<path>`.
+  The option adds only the tested copy at its inventory commit to a rebuilt context that did not
+  install it. Oh My Pi draws the tested name's hint on both draws. The tasks, load runs, summary
+  and verdict record `test setup, not observed use`. The report prints the label on the verdict
+  line. `load` refuses labelled tasks without the matching option.
+time: 2026-11-26T10:54:29Z
+custom:
+    Issue: INFRA-4676
