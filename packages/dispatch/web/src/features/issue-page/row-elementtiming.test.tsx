@@ -8,8 +8,8 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
-import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { DisplayTree, IssueChild, IssueDetails, RequirementCoverage } from "../../api/types";
+import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import type { DisplayTree, IssueChild, IssueCoverage, IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
@@ -70,7 +70,6 @@ import {
 import { blockNodeId } from "./tree-drafts";
 import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery } from "./tree-read/tree-read";
-import { issueAskThreadsQuery } from "./useIssueTree";
 import { VerificationFilterBody } from "./verification-filter/VerificationFilterBody";
 import {
   check,
@@ -883,26 +882,42 @@ async function specRows(): Promise<void> {
 // The Verification view's rows (`verification-filter/VerificationFilterBody.drawn.test.tsx`).
 // ---------------------------------------------------------------------------------------------
 
-/** The coverage read's rows for `statements`, one for each with the checks drawn under it. */
-function coverageOf(statements: readonly TreeNode[]): RequirementCoverage[] {
-  return statements.flatMap((one) =>
-    one.statement === true && one.reference !== undefined
-      ? [
-          {
-            block_id: one.reference.slice(one.reference.lastIndexOf("#b-") + "#b-".length),
-            checks: one.children.filter((child) => child.type === "check").length,
-            gaps: [],
-            plan_tasks: 0,
-            ref: one.reference,
-            text: one.text,
-          },
-        ]
-      : []
-  );
+/** The coverage read for `statements`, as the server answers it: one row for each statement,
+ *  with the checks drawn under it, and `gaps`, the lines that say a document of the issue is
+ *  still being indexed, which the summary draws in place of its covered count. */
+function coverageOf(statements: readonly TreeNode[], gaps: readonly string[] = []): IssueCoverage {
+  return {
+    gaps: [...gaps],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: statements.flatMap((one) =>
+      one.statement === true && one.reference !== undefined
+        ? [
+            {
+              block_id: one.reference.slice(one.reference.lastIndexOf("#b-") + "#b-".length),
+              checks: one.children.filter((child) => child.type === "check").length,
+              gaps: [],
+              plan_tasks: 0,
+              ref: one.reference,
+              text: one.text,
+            },
+          ]
+        : []
+    ),
+    spec_artifact_id: "",
+  };
 }
 
+/** Two lines of the coverage read for documents still being indexed, in the server's words. */
+const OWED_LINES = [
+  "spec.md version 12 is still being indexed; its coverage shows once that ends.",
+  "verification.md version 4 is still being indexed; its coverage shows once that ends.",
+] as const;
+
 /** The Verification view's rows: the issue's row, a statement with a check under it and one with
- *  none, a check that serves no statement, and a comment an address named. */
+ *  none, a check that serves no statement, and a comment an address named; and the issue's row
+ *  again while the coverage read says documents are still being indexed, where its first line is
+ *  the first of those lines in place of the covered count. */
 async function verificationRows(): Promise<void> {
   const met = check({
     block_id: "c-one",
@@ -924,32 +939,46 @@ async function verificationRows(): Promise<void> {
   const issue = node({ children: under, id: ISSUE_KEY, text: "An issue", type: "issue" });
   const shown = presetView(issue, "verification", "", new Set([named.id]));
   const published = publishedTree(issue);
-  const view = render(
-    <QueryClientProvider client={testClient()}>
-      <ReferenceNamesProvider>
-        <MemoryRouter>
-          <NoTooltips>
-            <Publisher published={published} />
-            <VerificationFilterBody
-              checks={[met, loose]}
-              context={shown.context}
-              namesLine={NO_FAILED_READS}
-              published={published}
-              reads={{ state: "answered" }}
-              requirements={coverageOf(under)}
-              view={shown.root}
-              whole={undefined}
-            />
-          </NoTooltips>
-        </MemoryRouter>
-      </ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
+  const draw = (gaps: readonly string[]): RenderResult =>
+    render(
+      <QueryClientProvider client={testClient()}>
+        <ReferenceNamesProvider>
+          <MemoryRouter>
+            <NoTooltips>
+              <Publisher published={published} />
+              <VerificationFilterBody
+                checks={[met, loose]}
+                context={shown.context}
+                coverage={coverageOf(under, gaps)}
+                namesLine={NO_FAILED_READS}
+                published={published}
+                reads={{ state: "answered" }}
+                view={shown.root}
+                whole={undefined}
+              />
+            </NoTooltips>
+          </MemoryRouter>
+        </ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+  const owed = draw(OWED_LINES);
+  try {
+    await expectTimedOnceDrawn(
+      rowIn(owed, "[data-verification-issue]"),
+      OWED_LINES[0],
+      "Verification: the issue's row while documents are still being indexed",
+      "[data-verification-covered] > p:first-child"
+    );
+  } finally {
+    owed.unmount();
+  }
+  const view = draw([]);
   try {
     await expectTimedOnceDrawn(
       rowIn(view, "[data-verification-issue]"),
       "1",
-      "Verification: the issue's row"
+      "Verification: the issue's row",
+      "p[data-verification-covered]"
     );
     for (const id of ["r1", "r2"]) {
       const card = rowIn(
