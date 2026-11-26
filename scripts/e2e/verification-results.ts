@@ -296,6 +296,12 @@ const betaInstallation = 258;
  *  checks: the release before's timeline rows need settings, and its intake, before main's #5525,
  *  takes no event without them. */
 const olderRowsDeployRepo = "acme/attribution-deploy";
+/** older-rows' probe of the release before's settings, on the installation of the seven checks:
+ *  a repository no check reads, whose merged pull requests #1 to #olderRowsProbes, by the
+ *  settings' population and naming no issue, get a timeline row only where the intake holds the
+ *  delivery settings. */
+const olderRowsProbeRepo = "acme/settings-probe";
+const olderRowsProbes = 60;
 /** The repositories whose reads of pull requests a case of the seven checks counts. */
 const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOldName];
 
@@ -3005,6 +3011,36 @@ function olderRowsEvent(number: number, under: string): Record<string, string> {
   };
 }
 
+/** older-rows' settings probe `number` of acme/settings-probe as GitHub answers it: merged, by the
+ *  settings' population, as #7001 is, and naming no issue in its branch, title, body or commits. */
+function olderRowsProbe(number: number): FakePullRequest {
+  return {
+    ...olderRowsPull(7001),
+    body: "A probe of the delivery settings.",
+    commit_messages: ["A probe of the delivery settings."],
+    head_ref: `probe/settings-${number}`,
+    head_repo: olderRowsProbeRepo,
+    head_sha: attributionSha(number, "c"),
+    merge_commit_sha: attributionSha(number, "b"),
+    title: `Settings probe ${number}`,
+  };
+}
+
+/** The merged event of older-rows' settings probe `number`, as olderRowsEvent makes one. */
+function olderRowsProbeEvent(number: number): Record<string, string> {
+  const pull = olderRowsProbe(number);
+  return {
+    ...olderRowsEvent(7001, olderRowsProbeRepo),
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_sha: pull.head_sha,
+    merge_commit_sha: pull.merge_commit_sha ?? "",
+    number: String(number),
+    title: pull.title,
+    url: `https://github.com/${olderRowsProbeRepo}/pull/${number}`,
+  };
+}
+
 /** Answers whether `probe` answered true within `ms`, asking it every pollMs. */
 async function awaitTrue(probe: () => Promise<boolean>, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -3078,6 +3114,17 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
         default_branch: "main",
         installation_id: attributionInstallation,
       },
+      [olderRowsProbeRepo]: {
+        ...permissions,
+        default_branch: "main",
+        installation_id: attributionInstallation,
+        pulls: Object.fromEntries(
+          Array.from({ length: olderRowsProbes }, (_, at) => [
+            String(at + 1),
+            olderRowsProbe(at + 1),
+          ])
+        ),
+      },
     }
   );
   await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(olderRowsDeployRepo));
@@ -3087,8 +3134,23 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
   if (!(await awaitTrue(async () => (await eventsDurable())?.push_bound === true, 60_000))) {
     return `the release before's intake had bound no durable of pull request events 60 s after its delivery settings: ${durableText(await eventsDurable())}`;
   }
+  // The intake reads the settings from its cache, which a NOTIFY reloads after the PUT, so the bind
+  // alone does not show the settings read, and #7001 to #7060 get their timeline rows only through
+  // them. A probe's timeline row shows it: the driver sends one merged probe a second, each once,
+  // until one has its row. The cache holds the settings from then on.
+  const probed = () =>
+    countOf(`select count(*) from delivery_pull_requests where repo = '${olderRowsProbeRepo}'`);
+  let probes = 0;
+  while ((await probed()) === 0) {
+    if (probes === olderRowsProbes) {
+      return `the release before's intake wrote no timeline row of the ${olderRowsProbes} merged probes of ${olderRowsProbeRepo}, one a second after its delivery settings`;
+    }
+    probes++;
+    await publishEnvelope(olderRowsProbeEvent(probes));
+    await awaitTrue(async () => (await probed()) > 0, 1_000);
+  }
   note(
-    `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable`
+    `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable, and holds the settings: ${await probed()} of the ${probes} merged probe(s) of ${olderRowsProbeRepo} sent has its timeline row`
   );
   const publish = async (first: number, last: number, under: string) => {
     for (let number = first; number <= last; number++) {
@@ -4600,6 +4662,7 @@ async function tipRows(): Promise<string[]> {
 /** One call the fake took, as its log keeps it (fake-github.ts's `Call`). */
 interface FakeCall {
   readonly asks?: string;
+  readonly installation?: number;
   readonly repo?: string;
   readonly route: string;
 }
@@ -4623,7 +4686,9 @@ async function fakeCalls(): Promise<readonly FakeCall[]> {
 /** One call in the words a half prints. */
 function callText(call: FakeCall): string {
   const repository = call.repo === undefined ? "" : ` (${call.repo})`;
-  return `${call.route}${repository}${call.asks === undefined ? "" : ` asking ${call.asks}`}`;
+  const installation =
+    call.installation === undefined ? "" : ` (installation ${call.installation})`;
+  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}`;
 }
 
 /** Whether `call` reads a pull request by the REST routes the intake reads one with: the pull
@@ -4644,16 +4709,29 @@ function readsATipPull(call: FakeCall): boolean {
 
 /** Whether `call` is one of the reconcile pass's read of #22's facts, the facts line's read of a
  *  pull request whose commit messages no read stored (Reconcile.readFactsLine): the installation
- *  lookup of acme/first-start and the token it mints, and the one GraphQL query that asks for #22
- *  alone. The intake's read of #22's push read its title, its body and its branch, and, its body
- *  naming the case's issue, not its commit messages (storePullRequestFacts), and every pass reads
- *  the messages a read did not store, so a later change of how Dispatch reads a key needs no read
- *  of GitHub. */
+ *  lookup of acme/first-start, the token it mints for the case's installation, and the one GraphQL
+ *  query that asks for #22 alone. T3 counts each: one lookup and one mint at most. The intake's
+ *  read of #22's push read its title, its body and its branch, and, its body naming the case's
+ *  issue, not its commit messages (storePullRequestFacts), and every pass reads the messages a
+ *  read did not store, so a later change of how Dispatch reads a key needs no read of GitHub. */
 function tipCallOfTheFactsLine(call: FakeCall): boolean {
   return (
-    (call.route === "GET /repos/{owner}/{repo}/installation" && call.repo === tipRepo) ||
-    call.route === "POST /app/installations/{n}/access_tokens" ||
+    tipLookup(call) ||
+    tipMint(call) ||
     (call.route === "POST /graphql" && call.asks === `${tipRepo}#22`)
+  );
+}
+
+/** Whether `call` is the installation lookup of acme/first-start. */
+function tipLookup(call: FakeCall): boolean {
+  return call.route === "GET /repos/{owner}/{repo}/installation" && call.repo === tipRepo;
+}
+
+/** Whether `call` mints a token for the case's installation. */
+function tipMint(call: FakeCall): boolean {
+  return (
+    call.route === "POST /app/installations/{n}/access_tokens" &&
+    call.installation === tipInstallation
   );
 }
 
@@ -4936,6 +5014,13 @@ async function tipSecondStart(
     if (messagesAfter !== "read") {
       failures.push(
         `T3: after the second start's pass #22's commit messages are ${messagesAfter}, want read: its query read no messages the push's read left unread`
+      );
+    }
+    const lookups = counted.filter(tipLookup).length;
+    const mints = counted.filter(tipMint).length;
+    if (lookups > 1 || mints > 1) {
+      failures.push(
+        `T3: the second start looked up ${tipRepo}'s installation ${lookups} time(s) and minted ${mints} token(s) for installation ${tipInstallation}, want one each at most: the one query's lookup and token`
       );
     }
   }

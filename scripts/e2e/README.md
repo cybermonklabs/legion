@@ -4493,7 +4493,7 @@ each pass also reads again the open pull requests the earlier cases left in `acm
 
 - `older-rows` — 300 merged pull requests `#7001` to `#7300` (i = n − 7000, j = i % 6), each on `legion/N(j)` with the body `Follows D(j). Closes L(j).` (`#7051` to `#7060`: `Follows D(j).`), as GitHub answers them from the start.
   The release before's build stores them, under delivery settings (deploy repository `acme/attribution-deploy`), which its timeline rows need, and which its intake, in a release before main's #5525, needs to take any event.
-  The driver publishes the events once that intake's durable is push-bound: such a release binds it after the settings, and a later one as it starts.
+  The driver publishes the events once that intake's durable is push-bound (such a release binds it after the settings, and a later one as it starts) and its settings cache holds the settings: the driver sends merged probes of `acme/settings-probe`, by the settings' population and naming no issue, one a second, until one has its timeline row, which only the settings give it.
   First the issues `L(j)` are made, with `acme/old-name` the project's default repository (through the route its build serves, as the setup above writes a default), and the merged events of `#7221` to `#7240` are published under that name.
   Then `acme/attribution-live`, the name the repository has after its rename, becomes the project's default repository, and the events of `#7001` to `#7220` and `#7241` to `#7260` are published under it.
   Its intake stores 260 results rows with no texts, as `L(j)` by `title_body` and `#7051` to `#7060` as no issue, and the timeline rows of `#7001` to `#7060`, whose author is of the settings' population.
@@ -4561,7 +4561,7 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   after the first start: no head row of `#21` or `#22`, the intake bound at the stream's next sequence, and no read of either pull request from GitHub.
   Within 5 seconds of the push, `#22` is stored open at its new head, `#21` has no row, and `dispatch results` compares the check with `#22` at that head.
   After the second start: the intake bound right after the ack floor the first start left, the durable redelivered nothing, `#21` has no row, and no pull request is read by the REST routes the intake reads with.
-  The start's reconcile pass calls GitHub only to read the commit messages that the read of the push did not store, which the case reads from `#22`'s stored texts before the second start and after its pass: not stored before (the body named the issue), so exactly one GraphQL query asking for `#22` alone, with the installation lookup and the token it needs, and nothing else, and the messages stored after; stored before, no call at all.
+  The start's reconcile pass calls GitHub only to read the commit messages that the read of the push did not store, which the case reads from `#22`'s stored texts before the second start and after its pass: not stored before (the body named the issue), so exactly one GraphQL query asking for `#22` alone, with at most one installation lookup of `acme/first-start` and one token minted for its installation, and nothing else, and the messages stored after; stored before, no call at all.
   The webhook redelivery sweep's read, the App's own duty, is left out.
   The last start binds at or below that ack floor and reads a pull request from GitHub, so the readings of the second start can see a start that reads an event again
 

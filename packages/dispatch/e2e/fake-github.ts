@@ -454,12 +454,14 @@ function countCheckRunRead(repo: string, sha: string): void {
 
 /** One call the server made, as the fake log keeps it: the method and the path with each
  *  repository, number and commit written as a name (`GET /repos/{owner}/{repo}/pulls/{n}`), the
- *  repository the path names, and, for a GraphQL query, what it asks for: each pull request it
- *  asks by number (`acme/tools#22`), with `(absence)` where it asks the count of the repository's
- *  pull requests too, or `search` for a query that asks for no pull request by number. */
+ *  repository the path names, the installation a token is minted for, and, for a GraphQL query,
+ *  what it asks for: each pull request it asks by number (`acme/tools#22`), with `(absence)` where
+ *  it asks the count of the repository's pull requests too, or `search` for a query that asks for
+ *  no pull request by number. */
 interface Call {
   readonly route: string;
   readonly repo?: string;
+  readonly installation?: number;
   readonly asks?: string;
 }
 
@@ -478,14 +480,15 @@ function logCall(call: Call): void {
   else callsDropped++;
 }
 
-/** The call of `method` at `pathname`, its repository, numbers and commits written as names. */
+/** The call of `method` at `pathname`, its repository, numbers and commits written as names, and
+ *  the installation of a token's mint. */
 function callOf(method: string, pathname: string): Call {
   const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
   const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
-  const route = path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}");
-  return named === null
-    ? { route: `${method} ${route}` }
-    : { repo: `${named[1]}/${named[2]}`, route: `${method} ${route}` };
+  const route = `${method} ${path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}")}`;
+  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route };
+  const minted = pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
+  return minted === null ? { route } : { installation: Number(minted[1]), route };
 }
 
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
