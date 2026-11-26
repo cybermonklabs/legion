@@ -751,8 +751,10 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 			}
 		case command.Timeout == budget:
 			budgeted++
+		case command.Timeout <= workspace.FetchTimeout && command.Timeout >= workspace.FetchTimeout-elapsed:
+			// The fill's GitHub ref read and delta each have their own network bound.
 		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
-			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
+			t.Errorf("%q ran under %s, want the runner's budget %s, FetchTimeout, or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
 		}
 	}
 	if checkouts != 1 || budgeted == 0 {
