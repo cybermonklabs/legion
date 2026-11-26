@@ -33,20 +33,21 @@
 #
 # Where a check needs a secret the stack does not hold, this script extends the stack's own
 # fake Secrets Manager (the file AIRLOCK_FAKE_SECRETS_FILE names) at run time and makes every
-# broker reread it. It writes no rules file of its own and never edits dev-airlock.sh's: a
-# control that needs other rules or other proxy settings is a second broker process this
-# script starts on the stack's own database, with the stack's rules, certificate authority and
-# stand-ins, and that one setting changed.
+# broker reread it; a plain stored value no profile names is served by its own name. It never
+# edits the stack's profiles file (AIRLOCK_PROFILES_FILE, which dev-airlock.sh writes and each
+# broker reads once, at boot): a control that needs other profiles or other proxy settings is a
+# second broker process this script starts on the stack's own database, certificate authority
+# and stand-ins, with a profiles file of its own or that one setting changed.
 #
 # Usage: packages/envoy/scripts/airlock-check.sh <id> [--keep-stack]
 #        <id> is k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15. --keep-stack leaves the stack and
 #        the work directory up for a person to look at a failure with. --help prints this usage.
 #        A usage error exits 2.
 #
-# Needs bash, curl, jq, go, python3, openssl, node and psql; k2, k6 and k7 also need gh (k2's
+# Needs bash, curl, jq, go, python3, openssl, node and psql; k2 and k7 also need gh (k2's
 # own step and the negative controls of k2 and k7 run the agent-secrets of the pinned release
-# before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k6's
-# and k7's consumers come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
+# before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k7's
+# consumer files come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
 # clients scripts/airlock-clients.sh
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
@@ -55,7 +56,7 @@
 # missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
 # broker names of the operator's own gcloud login and Google Workspace read and administrator
 # logins, which the consumers k7 runs read by those names; and AIRLOCK_GWS_TIER_KEY, the account
-# key in gws/accounts.json whose tiers.read.command k7 runs. No broker name or account key is
+# key in gws/accounts.json whose tiers.read.command k7 reports. No broker name or account key is
 # supplied by default.
 #
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
@@ -66,6 +67,13 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
+# psql is given a database URL without its password, and the password in PGPASSWORD.
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+source "$SCRIPT_DIR/lib/pg-url.sh"
+# A broker this script starts gets the stack broker's environment through its own environment,
+# never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+source "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
 	cat <<'EOF'
@@ -80,7 +88,7 @@ property the check's outcome sentence names, what it expected beside what it got
 
 k7 needs AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET (the broker
 names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER_KEY (the account
-key in gws/accounts.json whose read tier it runs) in its environment, and refuses to start
+key in gws/accounts.json whose read tier it reports) in its environment, and refuses to start
 without them.
 
 It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. k9 takes
@@ -305,23 +313,21 @@ stop_stack() {
 	STACK_PID=""
 }
 
-# broker_env answers, in BROKER_ENV, the command prefix that runs a program with the environment
-# of a broker like the stack's own and the caller's overrides on top. It is read out of the first
-# stack broker's /proc/<pid>/environ rather than spelled here, so that a broker this script
-# starts can never lack a setting dev-airlock.sh gave the stack's. That script's own launcher is
-# the one that has to spell the environment: it starts the first broker and has nothing to copy
-# from. The entries are NUL-separated, and each becomes one argument of env, so a value holding
-# a space or a quote reaches the broker unchanged; env applies its assignments in order, so an
-# override the caller names replaces the copy.
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. That
+# script's own launcher is the one that has to spell the environment: it starts the first broker
+# and has nothing to copy from. A broker is started with it through lib/exec-env.sh's
+# with_broker_env, in its own environment and in no process's arguments, since the stack broker's
+# environment holds its database URL, password and all.
 broker_env() { # <VAR=value>...
 	local pid
 	pid="$(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG" | head -n 1)"
-	local entries=()
-	mapfile -d '' -t entries <"/proc/$pid/environ"
-	BROKER_ENV=(env -i "${entries[@]}" "$@")
+	broker_env_of "$pid" "$@"
 }
 
-# start_extra_broker starts one more broker process beside the stack's, on its database, rules
+# start_extra_broker starts one more broker process beside the stack's, on its database, profiles
 # file, certificate authority and stand-ins, with the environment the caller adds on top, and
 # answers its proxy address in EXTRA_PROXY_ADDR. It is how a control that turns one proxy setting
 # off is run: the stack's own brokers keep the setting, and the command's HTTPS_PROXY is pointed
@@ -333,7 +339,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
@@ -443,8 +449,8 @@ reread_all() { # <name>
 }
 
 # add_fake_secret appends one secret to the stack's fake Secrets Manager and makes every broker
-# read it. It is how a check gets a name the rules file does not hold without writing a rules
-# file of its own.
+# read it. It is how a check gets a name the profiles file does not hold without writing a
+# profiles file of its own: a plain stored value no profile names is served by its own name.
 add_fake_secret() { # <store name> <tags json> <value>
 	local tmp="$WORK_DIR/fake-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
@@ -477,17 +483,34 @@ record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] /
 # github_revokes is how many revokes of an installation token GitHub's stand-in has received.
 github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
 
-psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
+psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 ###############################################################################################
 # k1
 ###############################################################################################
 
+# k1_python prints the interpreter python3 names, asked in this script's environment, for k1's
+# scanner to run on by that path. The scanner starts agent-secrets by name, and the one that must
+# answer is the stack's own build, first on this script's PATH once start_stack has evaluated the
+# banner's `export PATH`. The first python3 on PATH can be a version manager's shim that starts the
+# interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
+# environment, put that environment's PATH in front of the entries put first, so the scanner would
+# run an installed agent-secrets and not this checkout's.
+k1_python() {
+	local python
+	python="$(python3 -I -c 'import sys; print(sys.executable)')" || return 1
+	[[ "$python" == /* && -x "$python" ]] || {
+		echo "airlock-check: python3 did not report an absolute executable path: $python" >&2
+		return 1
+	}
+	printf '%s\n' "$python"
+}
+
 # k1_case runs one of k1's two commands under the scanner and judges the five places.
-# bound is true when the name has a rules entry, which is the check itself; false is its
-# negative control, where the same run must find the value in env.txt and in the environment.
+# bound is true when the name's profile has a proxy block, which is the check itself; false is
+# its negative control, where the same run must find the value in env.txt and in the environment.
 k1_case() { # <name> <label> <value> <bound true|false>
-	local name="$1" label="$2" value="$3" bound="$4"
+	local name="$1" label="$2" value="$3" bound="$4" python
 	local dir="$WORK_DIR/k1-$label"
 	mkdir -p "$dir"
 	printf '%s' "$value" | od -An -tx1 -v | tr -d ' \n' >"$dir/needles"
@@ -499,7 +522,8 @@ env > env.txt
 : > ready
 sleep 5
 EOF
-	python3 "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
+	python="$(k1_python)"
+	"$python" "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
 		agent-secrets "$name" -- sh "$dir/command.sh" 2>"$dir/cli.err" || true
 	K1_EXIT="$(jq -r '.exit' "$dir/scan.json")"
 	K1_MEM="$(jq -r '.memory_hits[0]' "$dir/scan.json")"
@@ -545,10 +569,10 @@ EOF
 		observe "$label: hits for the value — memory $K1_MEM, /proc/<pid>/environ $K1_ENVIRON, the broker's answer $K1_ANSWER_HITS, S's record outside Authorization $K1_RECORD_HITS, env.txt $K1_ENV_FILE_HITS, files under the working directory: ${K1_FILES:-none}"
 		observe "$label: what each place held — S's record $K1_RECORD_BYTES bytes outside its Authorization header, the broker's answer $K1_ANSWER_BYTES bytes, /proc/<pid>/environ $K1_ENVIRON_BYTES bytes, env.txt $K1_ENV_FILE_BYTES bytes, and $K1_DIR_FILES files of $K1_DIR_BYTES bytes under the working directory"
 	else
-		# No record of S's is read here: a name with no rules entry has no proxy, so the
+		# No record of S's is read here: a name with no proxy block has no proxy, so the
 		# command's call to a .test name no resolver answers never arrives, and S's last
 		# record would be the previous case's.
-		control "$label with no rules entry: the command exited $K1_EXIT; the value's hits are $K1_ENV_FILE_HITS in env.txt and $K1_ENVIRON in /proc/<pid>/environ, against $(shape "$value") (compared by SHA-256 and length)"
+		control "$label with no proxy block: the command exited $K1_EXIT; the value's hits are $K1_ENV_FILE_HITS in env.txt and $K1_ENVIRON in /proc/<pid>/environ, against $(shape "$value") (compared by SHA-256 and length)"
 	fi
 }
 
@@ -568,7 +592,7 @@ check_k1() {
 	expect "S gets the stored secret's real value, and the github-app secret's minted token, in the Authorization header"
 	expect "each command exits 0"
 	expect "neither value is found in S's record aside: not in the broker's answer to the CLI, not in /proc/<pid>/environ, not in a scan of the command's readable memory, and not in any file under its working directory"
-	expect "the negative control, the same runs with the secret's entry removed, finds both in env.txt and in the command's environment"
+	expect "the negative control, the same runs for names no profile has a proxy block for, finds both in env.txt and in the command's environment"
 	expect "the session's own release of the github-app secret gives back to GitHub the token it minted for the slots, and the token the proxy sent S is still live at GitHub afterwards"
 
 	start_stack
@@ -600,8 +624,9 @@ check_k1() {
 	# one string for every request would make it, would end the token the proxy holds for the
 	# grant the session is still running.
 	local proxy_token revokes_before revokes_after proxy_status
-	# The rule names no kind and k1 asks for no --github-token, so the proxy sent S the whole
-	# released value, the JSON object of installations; the token is its one installation's.
+	# The profile's proxy block names no kind and its github block takes the default value,
+	# installations, so the proxy sent S the whole released value, the JSON object of
+	# installations; the token is its one installation's.
 	proxy_token="$(printf '%s' "${K1_HEADER#Bearer }" | jq -Rr '(fromjson? | .installations[]?.token) // empty' | head -n 1)"
 	revokes_before="$K1_GITHUB_REVOKES"
 	revokes_after="$revokes_before"
@@ -617,24 +642,24 @@ check_k1() {
 		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
 		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
 
-	# The negative control: the same two runs for names the rules file does not hold. The stack
-	# takes its shape from its own rules file, so the control adds the two secrets to the
-	# stack's fake store rather than removing an entry from its rules.
-	local plain_value github_app
+	# The negative control: the same two runs for names no profile has a proxy block for. A
+	# plain stored value no profile names is served by its own name, so the control adds one to
+	# the stack's fake store. A github-app secret no profile names is refused
+	# (github-app-no-profile), and a broker reads its profiles only at boot, so the github-app
+	# half is the stack's own AIRLOCK_PLAIN_GITHUB: a profile of the stack's github-app secret
+	# with no proxy block, whose value, the JSON object of installations, is released to the
+	# command.
+	local plain_value
 	plain_value="the-control-airlock-plain-token-$RANDOM$RANDOM"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-token" \
 		'{"owner":"legion-daemon","tier":"agent"}' "$plain_value"
-	github_app="$(stored_value "${STACK_SECRETS_PREFIX}airlock-github-app")"
-	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-github" \
-		'{"owner":"legion-daemon","tier":"agent","type":"github-app","github-owners":"acme-org"}' "$github_app"
 	reread_all AIRLOCK_PLAIN_TOKEN || return
-	reread_all AIRLOCK_PLAIN_GITHUB || return
 
 	k1_case AIRLOCK_PLAIN_TOKEN plain-stored "$plain_value" false
 	local plain_env="$K1_ENV_FILE_HITS" plain_environ="$K1_ENVIRON"
 	k1_case AIRLOCK_PLAIN_GITHUB plain-github "$github_token" false
 	judge "$([ "$plain_env" -gt 0 ] && [ "$plain_environ" -gt 0 ] && [ "$K1_ENV_FILE_HITS" -gt 0 ] && [ "$K1_ENVIRON" -gt 0 ] && echo 0 || echo 1)" \
-		"negative control: with no rules entry both values are in env.txt and in the command's environment" \
+		"negative control: with no proxy block both values are in env.txt and in the command's environment" \
 		"stored: env.txt $plain_env, environ $plain_environ; github-app: env.txt $K1_ENV_FILE_HITS, environ $K1_ENVIRON"
 
 	stop_stack
@@ -691,9 +716,9 @@ fetch_old_cli() {
 }
 
 check_k2() {
-	expect "POST /v1/grants/{id}/values for a grant of a secret the rules name answers the placeholder and the proxy's certificate in their new fields and leaves the name out of values"
+	expect "POST /v1/grants/{id}/values for a grant of a name whose profile has a proxy block answers the placeholder and the proxy's certificate in their new fields and leaves the name out of values"
 	expect "the agent-secrets of the release before the airlock exits without running the command and says that no value was released"
-	expect "the negative control, the same call for a grant of a secret the rules do not name, answers the value under the name, and the old CLI runs its command"
+	expect "the negative control, the same call for a grant of a stored secret no profile names, answers the value under the name, and the old CLI runs its command"
 
 	start_stack
 	stack_facts
@@ -732,7 +757,7 @@ check_k2() {
 	judge "$(contains "no value" "$old_out" && echo 0 || echo 1)" \
 		"the old CLI says that no value was released" "it said: $(printf '%s' "$old_out" | tail -n 1)"
 
-	# The negative control: a secret the rules do not name.
+	# The negative control: a stored secret no profile names, which is served by its own name.
 	local plain_value
 	plain_value="the-control-airlock-plain-token-$RANDOM$RANDOM"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-token" \
@@ -743,7 +768,7 @@ check_k2() {
 	plain_values="$(printf '%s' "$RELEASE_JSON" | jq -c '.values // {} | keys')"
 	plain_airlock="$(printf '%s' "$RELEASE_JSON" | jq -r '.airlock // "null"')"
 	released="$(printf '%s' "$RELEASE_JSON" | jq -r '.values.AIRLOCK_PLAIN_TOKEN // ""')"
-	control "for a secret the rules do not name the answer's values keys are $plain_values, its airlock field is ${plain_airlock:0:4}, and values.AIRLOCK_PLAIN_TOKEN is $(shape "$released") against the stored $(shape "$plain_value") (compared by SHA-256 and length)"
+	control "for a stored secret no profile names the answer's values keys are $plain_values, its airlock field is ${plain_airlock:0:4}, and values.AIRLOCK_PLAIN_TOKEN is $(shape "$released") against the stored $(shape "$plain_value") (compared by SHA-256 and length)"
 	old_out="$("$OLD_CLI" AIRLOCK_PLAIN_TOKEN -- sh -c 'echo THE-COMMAND-RAN' 2>&1)"
 	old_status=$?
 	control "the old CLI for that name exited $old_status and its output holds the command's own line: $(contains "THE-COMMAND-RAN" "$old_out" && echo yes || echo no)"
@@ -766,7 +791,7 @@ check_k3() {
 	expect "the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value"
 	expect "the request that already carries the value is refused with an error that names it, and S records nothing"
 	expect "the broker's log has a line for each call to S, allowed or refused with its reason"
-	expect "the negative control, with the entry's allow removed, lets the POST and the GET of /other reach S with the real value in Authorization"
+	expect "the negative control, with the proxy block's allow removed, lets the POST and the GET of /other reach S with the real value in Authorization"
 
 	start_stack
 	stack_facts
@@ -827,7 +852,7 @@ EOF
 	observe "S recorded $(printf '%s' "$recs" | jq length) requests: the real value (by SHA-256 and length, $(shape "$scoped_value")) in $auth_hits Authorization and $key_hits X-Key of GET /read, and in $other_hits X-Other, $query_hits queries and $body_hits bodies"
 	observe "what X-Other, the query and the body actually carried: $(shape "$xother_ph"), $(shape "$query_ph"), $(shape "$body_ph") — the placeholder, not the value"
 	observe "S recorded $post_records POST and $other_records /other requests"
-	observe "how the body step is read: the entry's allow is GET /read alone, and the same check requires POST /read to be refused, so the body carrying the placeholder is read off the GET of /read that carries one; the POST of /read with a placeholder body is refused with the other POST"
+	observe "how the body step is read: the proxy block's allow is GET /read alone, and the same check requires POST /read to be refused, so the body carrying the placeholder is read off the GET of /read that carries one; the POST of /read with a placeholder body is refused with the other POST"
 	observe "how the mismatch step is read: the proxy answers the CONNECT to S with a leaf for S, so a client whose TLS name is T fails the handshake and nothing is sent; the same request with the Host header alone changed reaches the proxy and is refused 'airlock: host header mismatch'"
 	observe "the refusals: POST /read said ${K3[post_error]}; GET /other said ${K3[other_error]}; the TLS-name and Host mismatch said ${K3[mismatch_sni]}; a Host-only mismatch said ${K3[mismatch_host]}; a request already carrying the value said ${K3[carries]}"
 	observe "T recorded $(printf '%s' "$t_recs" | jq length) requests and its Authorization was $(shape "$t_ph")"
@@ -869,8 +894,8 @@ EOF
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
 		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
-	# The negative control. The stack's AIRLOCK_DEMO_TOKEN entry is the scoped entry with its
-	# allow removed: the same host and the authorization header, and no allow list.
+	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
+	# block with its allow removed: the same host and the authorization header, and no allow list.
 	local demo_value s_mark
 	demo_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-demo-token")"
 	s_mark="$(records_count s)"
@@ -886,10 +911,10 @@ EOF
 	crecs="$(records s | jq --argjson n "$s_mark" '.[$n:]')"
 	cpost="$(printf '%s' "$crecs" | jq --arg v "$demo_value" '[.[] | select(.method == "POST" and .path == "/read") | .header.Authorization // [] | .[] | select(contains($v))] | length')"
 	cother="$(printf '%s' "$crecs" | jq --arg v "$demo_value" '[.[] | select(.path == "/other") | .header.Authorization // [] | .[] | select(contains($v))] | length')"
-	control "with an entry that has no allow (the stack's AIRLOCK_DEMO_TOKEN, the same host and header as the scoped entry), $(cat "$WORK_DIR/k3-control-out" | tr '\n' ' ')"
+	control "with a proxy block that has no allow (the stack's AIRLOCK_DEMO_TOKEN, the same host and header as the scoped profile's), $(cat "$WORK_DIR/k3-control-out" | tr '\n' ' ')"
 	control "S recorded the real value (by SHA-256 and length) in $cpost POST /read and $cother GET /other"
 	judge "$([ "$cpost" = 1 ] && [ "$cother" = 1 ] && echo 0 || echo 1)" \
-		"negative control: with the entry's allow removed, the POST and the GET of /other reach S with the real value in Authorization" \
+		"negative control: with the proxy block's allow removed, the POST and the GET of /other reach S with the real value in Authorization" \
 		"POST /read $cpost, GET /other $cother, both carrying the stored value by SHA-256 and length"
 
 	stop_stack
@@ -1021,14 +1046,14 @@ EOF
 		"both bad proxy passwords, the call after the grant ends and the call after the withholding get 407, and nothing is tunnelled" \
 		"no password and a made-up one were refused 407; the call after the grant ended was '$short_later' and the one after the withholding '$withheld_after'; S recorded only the $tunnelled calls that were meant to succeed"
 
-	# The negative control: one more broker, on the stack's own database and rules, whose
+	# The negative control: one more broker, on the stack's own database and profiles, whose
 	# refusal of loopback is turned off for the first broker's API port alone.
 	start_extra_broker loopback-allowed \
 		BROKER_AIRLOCK_TEST_DIAL_ALLOW="$STACK_DIAL_ALLOW ${BROKER_API_ADDRS[0]}"
 	release AIRLOCK_DEMO_TOKEN 30m
 	local control_answer
 	control_answer="$(curl -sS --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
-	control "a second broker on the same database and rules, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered the same request: $control_answer"
+	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered the same request: $control_answer"
 	judge "$(! contains "loopback" "$control_answer" && echo 0 || echo 1)" \
 		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled" \
 		"the same request through that broker answered '$control_answer', where the stack's own brokers answer '${K4[broker_port]}'"
@@ -1093,9 +1118,10 @@ check_k5() {
 		"the stored secret's second call carries the new value, and every call succeeds" \
 		"the first call carried the old value and the second the new one, by SHA-256 and length; the two answered $K5_FIRST_STATUS and $K5_SECOND_STATUS"
 
-	# The google-login half. The stack's Google stand answers one fixed access token and a
-	# lifetime of an hour, so nothing here can make the proxy mint again after three minutes,
-	# and two mints could not be told apart if it did.
+	# The google-login half. The stack's Google stand answers a new numbered access token at
+	# each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's
+	# five-minute margin falls due before the second call three minutes on, which must carry a
+	# fresh mint.
 	local google_before google_after first_status second_status s_mark got_first got_second recs
 	google_before="$(records_count google)"
 	s_mark="$(records_count s)"
@@ -1109,7 +1135,7 @@ check_k5() {
 	got_second="$(printf '%s' "$recs" | jq -r '[.[] | .header.Authorization // [] | .[]] | .[1] // ""')"
 	observe "the google-login secret: the call at once answered $first_status carrying $(shape "$got_first"), and the one three minutes later $second_status carrying $(shape "$got_second"); the stand-in minter was asked $((google_after - google_before)) times"
 	if [ "$got_first" = "$got_second" ]; then
-		fail "the google-login secret's second call carries the new value — this step cannot run on this stack. dev-airlock.sh's Google stand answers one fixed access token ('the-stand-in-google-access-token') with a lifetime of an hour, so the proxy's five-minute margin never falls due within three minutes, and two mints could not be told apart if it did. It needs dev-airlock.sh to pass --google-lifetime 7m to dev-airlock-stands and airlocktest.GoogleStand to answer a different token for each mint. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
+		fail "the google-login secret's second call carries the new value — it carried the first call's. The stand answers a new numbered access token at each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's five-minute margin falls due two minutes after the first mint and the call three minutes on should have carried a fresh one. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
 	else
 		judge "$([ "$first_status" = 200 ] && [ "$second_status" = 200 ] && echo 0 || echo 1)" \
 			"the google-login secret's second call carries the new value, and every call succeeds" \
@@ -1135,8 +1161,9 @@ check_k5() {
 # k6
 ###############################################################################################
 #
-# k6 drives real clients: the Azure CLI through sjawhar/dotfiles' scripts/az-broker, and the AWS
-# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
+# k6 drives real clients: the Azure CLI, signed in as an admin az command signs in under its
+# grant (az login --service-principal with the grant's federated token), and the AWS CLI and
+# boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
 # pod on an older worker image has no az, so the check installs both with
 # scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of it
 # runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
@@ -1167,7 +1194,9 @@ k6_clients() {
 # page sends a browser to the stack's issuer, which signs the approver in with no form to fill,
 # and the decision is posted back with an Origin header, which the page requires. curl's own
 # cookie jar cannot be used - both cookies are Secure and this broker is on http - so each
-# Set-Cookie is read out of the headers and sent back by hand.
+# Set-Cookie is read out of the headers and sent back by hand. The decision carries every
+# profile_digest field the page printed, one per profile the request names: the broker refuses an
+# approval whose form lacks a profile's fingerprint as one whose profile changed since the page.
 approve_record() { # <record id>
 	local rec="$1" d="$WORK_DIR/approve"
 	mkdir -p "$d"
@@ -1182,14 +1211,18 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field
+	local digest
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
+	local -a digests=()
+	while IFS= read -r digest; do
+		digests+=(--data-urlencode "profile_digest=$digest")
+	done < <(grep -o 'name="profile_digest" value="[^"]*"' "$d/page.html" | sed 's/.*value="\([^"]*\)"/\1/')
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
 		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
-		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
+		--data-urlencode "expires=$(field expires)" ${digests[@]+"${digests[@]}"} "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
 
@@ -1212,21 +1245,35 @@ approve_watch() { # <the file the CLI's stderr goes to>
 # k6_azure_wrapper writes the `az` this check puts first on PATH. The stand-in Microsoft
 # endpoint and the stand-in Resource Manager are .test names of this stack's own, and az reaches
 # the endpoints of a cloud, so az has to be told a cloud whose endpoints are those two names.
-# az-broker makes its own AZURE_CONFIG_DIR and logs in at once, leaving no moment to register a
-# cloud in it, so the registration is here: this wrapper registers the cloud in whatever
-# directory az-broker made and then runs the real az with the arguments it was given.
+# The login steps (k6_azure) make their own AZURE_CONFIG_DIR and log in at once, as an admin az
+# command's steps do, and they are kept exactly as those run, so the registration is here: this
+# wrapper registers the cloud in whatever directory the login steps made and then runs the real
+# az with the arguments it was given.
 #
 # It also turns MSAL's instance discovery off, which is what an Azure Stack deployment does
 # (az's own core.instance_discovery, as AZURE_CORE_INSTANCE_DISCOVERY): that discovery asks
 # login.microsoftonline.com whether this cloud's authority is a Microsoft one, and the answer
 # for a stand-in authority is and must be no. It is the one call of az's a stand cannot answer,
 # since it is made to Microsoft's own host and about the stand rather than to it.
+#
+# It records the az it wraps, REAL_AZ, as `command -v az` names it, and the PATH it was found on,
+# K6_AZ_PATH, which k6_azure puts the wrapper's directory in front of. Every call the wrapper makes
+# to REAL_AZ runs on K6_AZ_PATH again, not on the PATH the wrapper was handed. On a box whose az
+# on PATH is a shim (a version manager's, which looks az up on PATH again once its own directory
+# is out of the way), REAL_AZ is that shim, and on the wrapper's PATH the next az the shim finds
+# is this wrapper: the two would hand each call to each other for good, and the cloud register
+# below would start a new pair at each turn. On K6_AZ_PATH the shim finds the az it stands for.
 k6_azure_wrapper() {
+	REAL_AZ="$(command -v az)"
+	K6_AZ_PATH="$PATH"
+	local real_path
+	printf -v real_path %q "$K6_AZ_PATH"
 	mkdir -p "$WORK_DIR/k6/bin"
 	cat >"$WORK_DIR/k6/bin/az" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export AZURE_CORE_INSTANCE_DISCOVERY=false
+export PATH=$real_path
 if [ -n "\${AZURE_CONFIG_DIR:-}" ] && [ ! -f "\$AZURE_CONFIG_DIR/clouds.config" ]; then
   "$REAL_AZ" cloud register -n airlock --skip-endpoint-discovery \\
     --endpoint-active-directory "$AIRLOCK_MICROSOFT_URL" \\
@@ -1243,17 +1290,30 @@ EOF
 	chmod +x "$WORK_DIR/k6/bin/az"
 }
 
-# k6_azure runs the five az-broker runs and then the exchange and the five Resource Manager
+# k6_azure_login_steps prints the script each k6 run hands `sh -c` under its grant of
+# AIRLOCK_AZURE_LOGIN, an azure-login value ({"tenant_id","client_id","federated_token",
+# "expires_at"}): the steps an admin az command runs under its grant. The federated token goes
+# into a 0600 file in a throwaway directory, beside the AZURE_CONFIG_DIR made in it, and az logs in
+# as the service principal with `--federated-token @FILE`, so the token is in no command line;
+# then the script runs its arguments. The EXIT trap removes the directory and keeps the command's
+# status, and the HUP, INT and TERM traps turn a signal into an exit, so that trap still runs.
+k6_azure_login_steps() {
+	cat <<'EOF'
+d=$(mktemp -d) || exit 1; umask 077
+trap "rm -rf \"\$d\"" EXIT; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM
+printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .federated_token >"$d/token" &&
+tenant=$(printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .tenant_id) && client=$(printf %s "$AIRLOCK_AZURE_LOGIN" | jq -er .client_id) &&
+mkdir "$d/config" && export AZURE_CONFIG_DIR="$d/config" && unset AIRLOCK_AZURE_LOGIN &&
+az login --service-principal --username "$client" --tenant "$tenant" --federated-token "@$d/token" --allow-no-subscriptions --output none &&
+"$@"
+EOF
+}
+
+# k6_azure runs the five signed-in az runs and then the exchange and the five Resource Manager
 # calls, and leaves what it saw in K6_AZ_*.
 k6_azure() {
 	local d="$WORK_DIR/k6"
 	mkdir -p "$d"
-	gh api repos/sjawhar/dotfiles/contents/scripts/az-broker -H 'Accept: application/vnd.github.raw' >"$d/az-broker" || {
-		echo "airlock-check: sjawhar/dotfiles scripts/az-broker could not be fetched" >&2
-		return 1
-	}
-	chmod +x "$d/az-broker"
-	REAL_AZ="$(command -v az)"
 	k6_azure_wrapper
 
 	local microsoft_before
@@ -1263,12 +1323,10 @@ k6_azure() {
 	local watcher=$!
 	HELPER_PIDS+=("$watcher")
 
-	# The five runs. AZ_BROKER_INNER=1 and AZURE_ADMIN are what az-broker's own first hop
-	# produces: that hop is `secret-run AZURE_ADMIN -- az-broker`, and secret-run is check k7's
-	# subject and needs a dotfiles checkout this pod has not got, so the check runs the half of
-	# az-broker that drives az, under the release that hop would have made.
+	# The five runs. Each is one grant of AIRLOCK_AZURE_LOGIN, under which az logs in with
+	# k6_azure_login_steps.
 	#
-	# What each run does once az-broker has logged it in: `az group list`, the admin command,
+	# What each run does once it is logged in: `az group list`, the admin command,
 	# and then `az account get-access-token`, which prints the access token az itself holds -
 	# the one the broker's exchange handed it, which has to be a placeholder and never the real
 	# token the Resource Manager is sent.
@@ -1281,10 +1339,9 @@ EOF
 	: >"$d/runs.log"
 	for run in 1 2 3 4 5; do
 		echo "=== run $run ===" >>"$d/runs.log"
-		PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
-			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
-			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
-			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
+		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
+			--reason "airlock check k6 run $run: az logs in and calls the Resource Manager" -- \
+			sh -c "$(k6_azure_login_steps)" sh bash "$d/az-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
@@ -1363,7 +1420,7 @@ check_k6() {
 	local federated access_shape
 	federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
 	access_shape="$(shape "$K6_AZ_ACCESS")"
-	observe "the five az-broker runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
+	observe "the five az runs: $K6_AZ_RUNS runs, $K6_AZ_FAILED of them non-zero ($K6_AZ_ARM_STATUS); what they reached on the Microsoft stand-in was $K6_AZ_REACHED, and the first ERROR line az wrote, if any, was: ${K6_AZ_ERROR:-none}"
 	observe "the exchange: the token endpoint was asked $K6_AZ_EXCHANGES times and its client_assertion was $(shape "$K6_AZ_ASSERTION") against the stack's own federated token $(shape "$federated") (compared by SHA-256 and length)"
 	observe "the access token az itself holds after its login (az account get-access-token) is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
 	observe "the Resource Manager calls az made, one per run, and their Authorization headers: $(for h in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do printf '%s; ' "$(shape "$h")"; done)"
@@ -1375,7 +1432,7 @@ check_k6() {
 
 	judge "$([ "$K6_AZ_RUNS" = 5 ] && [ "$K6_AZ_FAILED" = 0 ] && contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo 0 || echo 1)" \
 		"az gets a placeholder access token" \
-		"all five az-broker runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
+		"all five az runs logged in against the stand-in cloud and listed resource groups ($K6_AZ_FAILED of $K6_AZ_RUNS exited non-zero), and the token az holds is $access_shape, which opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ACCESS" && echo yes || echo no)"
 
 	local arm_calls=0 arm_real=0 header
 	for header in "${K6_AZ_ARM_HEADERS[@]+"${K6_AZ_ARM_HEADERS[@]}"}"; do
@@ -1416,7 +1473,7 @@ check_k6() {
 
 	stop_stack
 
-	# The negative control: a stack whose every rules entry reads as having no kind, so the azure
+	# The negative control: a stack whose every proxy block reads as having no kind, so the azure
 	# exchange and the AWS signing are both off.
 	start_stack --no-kind
 	stack_facts
@@ -1438,49 +1495,51 @@ check_k6() {
 ###############################################################################################
 #
 # k7 drives the consumers as they run, against real services, with fake values: the refusal each
-# real service answers is the evidence, not a failure. The consumers come from sjawhar/dotfiles
-# at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
-# of its own holding the files they read of each other (scripts/secret-run-reason and
-# agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# real service answers is the evidence, not a failure. The consumer files come from
+# sjawhar/dotfiles at main and nothing of them is rewritten (k7_dotfiles). The GitHub admin,
+# gcloud and Google Workspace calls are the commands an agent runs for them, written into the
+# steps here: each runs under agent-secrets itself, and gcloud with its login in a throwaway
+# CLOUDSDK_CONFIG, as an admin gcloud command runs under its grant.
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, and the operator's gcloud and Google
 # Workspace logins, which k7's inputs name - and the hosts are the real ones, so this check needs
-# a rules file the stack's does not hold. That is one broker process of this check's own, on the
-# stack's own database, store, certificate authority and stand-ins, with its rules file, its own
-# two ports and its own public URL changed - the same device k4's control uses for one setting,
-# with the public URL changed too because this broker must serve the release as well as the proxy,
-# and a session's proof is verified against the public URL it was signed for. Its whole
-# environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing of the
-# stack's settings is left out.
+# a profiles file the stack's does not hold. That is one broker process of this check's own, on
+# the stack's own database, store, certificate authority and stand-ins, with its profiles file,
+# its own two ports and its own public URL changed - the same device k4's control uses for one
+# setting, with the public URL changed too because this broker must serve the release as well as
+# the proxy, and a session's proof is verified against the public URL it was signed for. Its
+# whole environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing
+# of the stack's settings is left out.
 #
-# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
+# The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=9 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
 # proves. The git credential settings are cleared for the git step alone, which brings its own
 # helper - the one that answers the placeholder - and the proxy in git's own configuration.
 
-# k7_dotfiles fetches the consumers from sjawhar/dotfiles at main and lays them out as a
-# dotfiles checkout, which is how secret-run finds its reason builder and its broker URL file.
+# k7_dotfiles fetches the consumer files from sjawhar/dotfiles at main and lays them out as a
+# dotfiles checkout, which is how shims/gh finds the two scripts it runs (scripts/gh-agent-config
+# and scripts/public-text-gate). gws/accounts.json holds the read tier the Google Workspace step
+# reports.
 k7_dotfiles() {
 	local d="$WORK_DIR/k7/dotfiles" path
-	mkdir -p "$d/scripts" "$d/agent-secrets" "$d/shims" "$d/gws"
-	for path in scripts/secret-run scripts/secret-run-reason scripts/gcloud-broker scripts/gh-agent-config scripts/public-text-gate shims/gh gws/accounts.json agent-secrets/broker-url.sh; do
+	mkdir -p "$d/scripts" "$d/shims" "$d/gws"
+	for path in scripts/gh-agent-config scripts/public-text-gate shims/gh gws/accounts.json; do
 		gh api "repos/sjawhar/dotfiles/contents/$path" -H 'Accept: application/vnd.github.raw' >"$d/$path" || {
 			echo "airlock-check: sjawhar/dotfiles $path could not be fetched" >&2
 			return 1
 		}
 	done
-	chmod +x "$d/scripts/secret-run" "$d/scripts/secret-run-reason" "$d/scripts/gcloud-broker" \
-		"$d/scripts/gh-agent-config" "$d/scripts/public-text-gate" "$d/shims/gh"
+	chmod +x "$d/scripts/gh-agent-config" "$d/scripts/public-text-gate" "$d/shims/gh"
 	K7_DOTFILES="$d"
 	K7_FETCHED="$(cd "$d" && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
 }
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
-# whose environment comes from the running one, with the rules file, the three listening addresses
-# and the public URL replaced; the metrics port is one the system picks, since nothing here
-# scrapes it and the stack's own brokers hold theirs.
+# whose environment comes from the running one, with the profiles file, the three listening
+# addresses and the public URL replaced; the metrics port is one the system picks, since nothing
+# here scrapes it and the stack's own brokers hold theirs.
 k7_broker() {
 	local d="$WORK_DIR/k7" api proxy
 	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -1488,14 +1547,14 @@ k7_broker() {
 	K7_API_URL="http://127.0.0.1:$api"
 	K7_PROXY_URL="http://127.0.0.1:$proxy"
 	broker_env \
-		BROKER_AIRLOCK_RULES_FILE="$d/rules.json" \
+		BROKER_PROFILES_FILE="$d/profiles.json" \
 		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
 		BROKER_PUBLIC_URL="$K7_API_URL" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
+	( with_broker_env "$BROKER_BIN" ) >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
@@ -1520,13 +1579,9 @@ say "https_proxy=\$(printf '%s' "\$HTTPS_PROXY" | sed 's/:[^:@]*@/:***@/')"
 # and auth.test.
 say "slack=\$(bun run $SCRIPT_DIR/airlock/slack.ts 2>&1 | tail -n 1 | tr -d '\r')"
 
-# gh api under secret-run for GITHUB_ADMIN_PAT: the admin line of shims/gh itself, with the
-# directory of the real GitHub CLI first on PATH for this one step. That line sets GH_TOKEN,
-# and the only other gh in this pod is Legion's wrapper, which refuses a call whose GH_TOKEN
-# is set and refuses to run at all when another gh is ahead of it on PATH; \$LEGION_GH_PATH is
-# the real CLI the wrapper itself runs. Nothing else of the step changes, so what GitHub is
-# sent is the consumer's own command with the consumer's own fake value.
-say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GITHUB_ADMIN_PAT -- sh -c 'PATH=$K7_GH_DIR:\$PATH GH_TOKEN=\$GITHUB_ADMIN_PAT GITHUB_TOKEN=\$GITHUB_ADMIN_PAT exec gh api user' 2>&1 | tail -n 1 | tr -d '\r')"
+# gh api under agent-secrets for GITHUB_ADMIN_PAT, with the real GitHub CLI first on PATH for this
+# one step (k7_consumer_github_step, in the callable boundary).
+k7_consumer_github_step
 
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
@@ -1610,7 +1665,7 @@ check_k7() {
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_add_fixtures
 	k7_broker
-	observe "this check's own broker is the stack's first broker's environment with its rules file, its two ports and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL, names $(jq -c '[.secrets[].name]' "$WORK_DIR/k7/rules.json")"
+	observe "this check's own broker is the stack's first broker's environment with its profiles file, its two ports and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL, names $(jq -c '[.profiles[].name]' "$WORK_DIR/k7/profiles.json")"
 
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_write_pulumi
@@ -1618,7 +1673,7 @@ check_k7() {
 
 	local s_before
 	s_before="$(records_count s)"
-	# AGENT_SECRETS_URL is this check's own broker, the one whose rules name the real hosts.
+	# AGENT_SECRETS_URL is this check's own broker, the one whose profiles name the real hosts.
 	AGENT_SECRETS_URL="$K7_API_URL" agent-secrets \
 		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY "$AIRLOCK_GCLOUD_SECRET" \
 		"$AIRLOCK_GWS_READ_SECRET" "$AIRLOCK_GWS_ADMIN_SECRET" AIRLOCK_DEMO_TOKEN \
@@ -1639,10 +1694,10 @@ check_k7() {
 
 	observe "the command's inherited NO_PROXY was ${K7[no_proxy]-} — the pod's own NO_PROXY is '*', which the CLI had to drop — and its proxy was ${K7[https_proxy]-}"
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
-	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
+	observe "gh api user under agent-secrets for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
 	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
-	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
+	observe "gcloud projects list with the operator's gcloud login as its access token file, in a throwaway CLOUDSDK_CONFIG: ${K7[gcloud]-}"
 	observe "the gws operator read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
 	observe "git push --dry-run through a credential helper answering the placeholder: ${K7[git]-}"
@@ -1693,7 +1748,7 @@ check_k7() {
 		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
 		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
-		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
+		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. The step's command is \`agent-secrets GITHUB_ADMIN_PAT --reason … -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else
 		judge "$(printf '%s' "${K7[gh]-}" | grep -qiE '401|403|Bad credentials|unauthor' && echo 0 || echo 1)" \
 			"the gh consumer's own call is refused the fake value by GitHub" \
@@ -1715,10 +1770,10 @@ check_k7() {
 		"it exited $three_status and said '$three_err'"
 
 	# The negative control: the agent-secrets of the release before the airlock, which is the
-	# CLI without this change. It is released no value for a name the rules name, so nothing it
-	# runs reaches the proxy port. A control that counts zero calls proves that only once the
-	# binary it counted them for is the one it asked for: a missing or wrong binary makes no
-	# call either, so fetch_old_cli's answer is part of the verdict.
+	# CLI without this change. It is released no value for a name whose profile has a proxy
+	# block, so nothing it runs reaches the proxy port. A control that counts zero calls proves
+	# that only once the binary it counted them for is the one it asked for: a missing or wrong
+	# binary makes no call either, so fetch_old_cli's answer is part of the verdict.
 	local old_cli_ok=0
 	fetch_old_cli || old_cli_ok=1
 	local before_control after_control old_out old_status
@@ -1739,29 +1794,29 @@ check_k7() {
 # k8a
 ###############################################################################################
 
-# k8a_start_broker starts a broker on one rules file and answers 0 when it refused to start for
-# that file, leaving why in K8A_WHY. Its environment is the running stack broker's own, with the
-# rules file and the three addresses replaced, so that what it refuses on is the rules file and
-# not a setting this function left out. It runs in the foreground under timeout, because what it
-# is here to see is a broker that never comes up.
-k8a_start_broker() { # <rules file> <label>
+# k8a_start_broker starts a broker on one profiles file and answers 0 when it refused to start
+# for that file, leaving why in K8A_WHY. Its environment is the running stack broker's own, with
+# the profiles file and the three addresses replaced, so that what it refuses on is the profiles
+# file and not a setting this function left out. It runs in the foreground under timeout,
+# because what it is here to see is a broker that never comes up.
+k8a_start_broker() { # <profiles file> <label>
 	local log="$WORK_DIR/k8a-broker-$2.log"
 	broker_env \
 		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
 		BROKER_LISTEN_ADDR="127.0.0.1:0" \
-		BROKER_AIRLOCK_RULES_FILE="$1" \
+		BROKER_PROFILES_FILE="$1" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
-	"${BROKER_ENV[@]}" timeout 25 "$BROKER_BIN" >"$log" 2>&1
+	( with_broker_env timeout 25 "$BROKER_BIN" ) >"$log" 2>&1
 	local status=$?
 	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"
 	# The refusal has to be about this file: a broker that died of a setting this function did
-	# not give it would otherwise read as a refusal of the rules.
+	# not give it would otherwise read as a refusal of the profiles file.
 	[ "$status" -ne 0 ] && [ -n "$K8A_WHY" ] && contains "$1" "$K8A_WHY"
 }
 
 check_k8a() {
-	expect "the judge-1800 and the no-hosts copies exit non-zero naming the entry"
+	expect "the judge-1800 and the no-hosts copies exit non-zero naming the profile"
 	expect "the malformed copy names the parse position"
 	expect "a local broker refuses to start on each of the three failing copies"
 	expect "the new-host, new-header and removed-entry copies exit 0 and list what they add or remove"
@@ -1771,18 +1826,18 @@ check_k8a() {
 	stack_facts
 	local d="$WORK_DIR/k8a"
 	mkdir -p "$d"
-	cp "$AIRLOCK_RULES_FILE" "$d/valid.json"
-	jq '.secrets[0].judge = 1800' "$d/valid.json" >"$d/judge-1800.json"
-	jq '.secrets[0] += {judge: 300} | .secrets[0].hosts = []' "$d/valid.json" >"$d/no-hosts.json"
-	jq '.secrets[0].hosts += ["extra.airlock.test"]' "$d/valid.json" >"$d/new-host.json"
-	jq '.secrets[0] += {headers: ["authorization", "x-extra"]}' "$d/valid.json" >"$d/new-header.json"
-	jq '.secrets = .secrets[1:]' "$d/valid.json" >"$d/removed-entry.json"
-	printf '{"secrets": [{"name": "A", "hosts": ["a.airlock.test"]},]}' >"$d/malformed.json"
+	cp "$AIRLOCK_PROFILES_FILE" "$d/valid.json"
+	jq '.profiles[0].proxy.judge = 1800' "$d/valid.json" >"$d/judge-1800.json"
+	jq '.profiles[0].proxy += {judge: 300} | .profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
+	jq '.profiles[0].proxy.hosts += ["extra.airlock.test"]' "$d/valid.json" >"$d/new-host.json"
+	jq '.profiles[0].proxy += {headers: ["authorization", "x-extra"]}' "$d/valid.json" >"$d/new-header.json"
+	jq '.profiles = .profiles[1:]' "$d/valid.json" >"$d/removed-entry.json"
+	printf '{"profiles": [{"name": "A", "proxy": {"hosts": ["a.airlock.test"]}},]}' >"$d/malformed.json"
 
 	local label status out
 	declare -A K8A_STATUS K8A_OUT
 	for label in judge-1800 no-hosts new-host new-header removed-entry malformed; do
-		out="$("$BROKER_BIN" airlock-check "$d/$label.json" --against "$d/valid.json" 2>&1)"
+		out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/valid.json" 2>&1)"
 		status=$?
 		K8A_STATUS[$label]=$status
 		K8A_OUT[$label]="$out"
@@ -1790,7 +1845,7 @@ check_k8a() {
 	done
 
 	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
-		"the 1800 and no-hosts copies exit non-zero naming the entry" \
+		"the 1800 and no-hosts copies exit non-zero naming the profile" \
 		"judge-1800 exited ${K8A_STATUS[judge-1800]} saying '${K8A_OUT[judge-1800]}'; no-hosts exited ${K8A_STATUS[no-hosts]} saying '${K8A_OUT[no-hosts]}'"
 	judge "$([ "${K8A_STATUS[malformed]}" -ne 0 ] && contains 'byte' "${K8A_OUT[malformed]}" && echo 0 || echo 1)" \
 		"the malformed copy names the parse position" "it exited ${K8A_STATUS[malformed]} saying '${K8A_OUT[malformed]}'"
@@ -1818,7 +1873,7 @@ check_k8a() {
 		"the new-host, new-header and removed-entry copies exit 0 and list what they add or remove" \
 		"new-host said '$(printf '%s' "${K8A_OUT[new-host]}" | tail -n 1)', new-header '$(printf '%s' "${K8A_OUT[new-header]}" | tail -n 1)', removed-entry '$(printf '%s' "${K8A_OUT[removed-entry]}" | tail -n 1)'"
 
-	out="$("$BROKER_BIN" airlock-check "$d/valid.json" --against "$d/valid.json" 2>&1)"
+	out="$("$BROKER_BIN" profiles check "$d/valid.json" --against "$d/valid.json" 2>&1)"
 	status=$?
 	control "the valid file against itself exited $status saying: $(printf '%s' "$out" | tail -n 1)"
 	judge "$([ "$status" = 0 ] && contains "nothing changed" "$out" && echo 0 || echo 1)" \

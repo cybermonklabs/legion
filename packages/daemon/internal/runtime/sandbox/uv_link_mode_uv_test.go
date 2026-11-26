@@ -24,6 +24,7 @@ import (
 // ships, no file of the .venv is an inode the cache holds. The same install with
 // UV_LINK_MODE=hardlink shares them, so the check sees the failure it guards.
 func TestUvCacheSharesNoInodeWithAVenv(t *testing.T) {
+	t.Parallel()
 	uv := testbin.UV(t)
 	r, err := configure(goldenOptions())
 	if err != nil {

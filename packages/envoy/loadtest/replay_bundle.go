@@ -161,7 +161,8 @@ type replayComment struct {
 	// Actor is the comment.created event's actor, which carries the origin the comment's own
 	// author field lacks.
 	Actor replayActor `json:"actor"`
-	// Body is the body at At, after every comment.edited before it.
+	// Body is the body at At, after every comment.edited before it; deletedPostBody for a comment
+	// its author deleted, whose every event Dispatch serves without its body.
 	Body       string  `json:"body"`
 	ArtifactID *string `json:"artifact_id,omitempty"`
 	ReplyTo    *string `json:"reply_to,omitempty"`
@@ -175,8 +176,14 @@ type replayComment struct {
 	Open       bool         `json:"open"`
 	ResolvedAt *string      `json:"resolved_at,omitempty"`
 	ResolvedBy *replayActor `json:"resolved_by,omitempty"`
+	// DeletedAt is when the comment's author deleted it, as the delete mark its events carry
+	// (deleted_at); nil on a comment that stands. One deleted before At stands live in the seed,
+	// written from deletedPostBody, since the seed's Dispatch (35efd326) has no delete route; its
+	// count is replayCounts.CommentsDeleted.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// WindowRefs is true when a window event refers to the comment: a reply whose reply_to or
-	// thread root is it, or its comment.resolved, reopened, anchor_refreshed or edited.
+	// thread root is it, its comment.resolved, reopened, anchor_refreshed or edited, or a
+	// comment.deleted of it or of a comment in its thread.
 	WindowRefs bool `json:"window_refs"`
 }
 
@@ -288,8 +295,11 @@ type replayCounts struct {
 	ArtifactsUnlisted int `json:"artifacts_unlisted"` // created before At, absent from today's listing
 	CommentsOpen      int `json:"comments_open"`
 	CommentsResolved  int `json:"comments_resolved"`
-	AnchoredOpen      int `json:"anchored_open"`
-	AsksOpen          int `json:"asks_open"` // asks open or answered at At
+	// CommentsDeleted counts the comments deleted before At: each stands live in the seed, in its
+	// place, with deletedPostBody (replayComment.DeletedAt).
+	CommentsDeleted int `json:"comments_deleted"`
+	AnchoredOpen    int `json:"anchored_open"`
+	AsksOpen        int `json:"asks_open"` // asks open or answered at At
 	// AsksResolvedBlocks counts the resolved typed ask blocks the state keeps.
 	AsksResolvedBlocks int `json:"asks_resolved_blocks"`
 	WindowEvents       int `json:"window_events"`
@@ -336,6 +346,7 @@ const (
 	evCommentResolved        = "comment.resolved"
 	evCommentReopened        = "comment.reopened"
 	evCommentAnchorRefreshed = "comment.anchor_refreshed"
+	evCommentDeleted         = "comment.deleted"
 
 	evArtifactCreated = "artifact.created"
 	evArtifactVersion = "artifact.version"
@@ -345,6 +356,7 @@ const (
 	evAskResolved = "ask.resolved"
 
 	evMessageCreated  = "message.created"
+	evMessageDeleted  = "message.deleted"
 	evMessageDelivery = "message.delivery"
 	evMessageAccepted = "message.accepted"
 

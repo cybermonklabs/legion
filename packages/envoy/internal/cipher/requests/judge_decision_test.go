@@ -37,13 +37,23 @@ func adminSecret() secrets.LocalSecret {
 	return s
 }
 
+// federationSecretName is the operator's human-tier anthropic-federation secret with no admin tag,
+// which the judge fixture's rules give the judge seconds of, and which a person approves every
+// release of all the same.
+const federationSecretName = "FEDERATION_ADMIN_KEY"
+
+func federationSecret() secrets.LocalSecret {
+	return policytest.TypeSecret(federationSecretName, fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
+}
+
 // newJudgeFixture is newFixture with airlock rules behind it that let the judge decide up to 900
 // seconds of DEEL_API_KEY, the operator's own human-tier secret, of SHARED_KEY, the shared one,
-// and of adminSecretName, the administrator's: the first two records' approvers are a person's
-// login and record.AnyoneApprover, which is the difference the grant's approver turns on, and
-// the third is the entry a deployment must not be able to write its way past, since the rules
-// file is the one thing the admin tag's promise does not answer to. The chain verifier is
-// rebuilt against those rules, since it holds a judge's approval to the same bound
+// of adminSecretName, the administrator's, and of federationSecretName, the Anthropic federation
+// key: the first two records' approvers are a person's login and record.AnyoneApprover, which is
+// the difference the grant's approver turns on, and the last two are the entries a deployment must
+// not be able to write its way past, since the rules file is the one thing a secret whose release
+// a person approves (policy.Secret.PersonApprovesEveryRelease) does not answer to. The chain
+// verifier is rebuilt against those rules, since it holds a judge's approval to the same bound
 // (record.ChainVerifier.JudgeSeconds). A judge is wired, a hook that does nothing, so a request
 // for a judge key is held for it; a test of a broker that runs no judge sets m.Judge to nil.
 func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
@@ -53,6 +63,7 @@ func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
 		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))},
 		{Name: adminSecretName, Hosts: []string{"admin.example"}, Judge: new(uint32(900))},
+		{Name: federationSecretName, Hosts: []string{"api.anthropic.example"}, Judge: new(uint32(900))},
 	}}
 	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
 	m.Judge = func(PendingRequest) {}
@@ -80,7 +91,7 @@ func signJudgeable(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason strin
 // decides from.
 func pendingJudgeable(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, lifetime int, names ...string) Request {
 	t.Helper()
-	req, err := m.Create(t.Context(), enrollmentID, signJudgeable(t, m, key, reason, lifetime, names...), "", nil)
+	req, err := m.Create(t.Context(), enrollmentID, signJudgeable(t, m, key, reason, lifetime, names...), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(%v) = %+v, %v; want a pending request", names, req, err)
 	}
@@ -219,7 +230,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
 	}
 
@@ -236,7 +247,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
 	// written as the empty object rather than refused.
 	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
-	if err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
+	if _, err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
 	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != "" {
@@ -308,7 +319,7 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 					t.Fatalf("the person deciding after the judge = %+v, %v; want ErrTerminal", dec, err)
 				}
 			} else {
-				if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
+				if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
 					t.Fatalf("the hand-over: %v", err)
 				}
 				if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator); err != nil || dec.GrantID == "" {
@@ -436,7 +447,7 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 
 	// The run that met the refusal hands the request to its person, who may grant it, as they
 	// always could.
-	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "withheld"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "withheld"}); err != nil {
 		t.Fatalf("the hand-over: %v", err)
 	}
 	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
@@ -479,5 +490,39 @@ func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
 	if err != nil || person.State != "granted" || person.GrantID == "" {
 		t.Fatalf("the owner's approval of the same administrator's secret = %+v, %v; want it granted, which is the only way one is ever released", person, err)
+	}
+}
+
+// TestTheJudgeDecidesNoFederationSecret: an Anthropic federation secret's token can be an
+// organization administrator's, so a person approves every release of one, as of an admin secret,
+// whatever seconds the airlock rules give the judge — and this fixture's rules give it 900. The
+// judge does not hold a request for it, the hook is not called, and the judge's approval is refused
+// and leaves the request pending with no request.judged row; the owner's approval grants it.
+func TestTheJudgeDecidesNoFederationSecret(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	retag(t, m, federationSecret())
+	if _, decided := m.judgeKey(m.Policy.Get(), federationSecretName); decided {
+		t.Fatalf("judgeKey(%s) = true under a 900-second rules entry; want the judge to decide no federation key", federationSecretName)
+	}
+	watched := watchJudge(m)
+	req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants the Anthropic admin key", 600, federationSecretName)
+	if len(watched.handed) != 0 || req.JudgeDeciding {
+		t.Fatalf("a federation key's request was held for the judge: handed %+v, judge deciding %v", watched.handed, req.JudgeDeciding)
+	}
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a federation secret = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none", judged)
+	}
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the federation secret = %+v, %v; want it granted", person, err)
 	}
 }

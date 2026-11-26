@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+    The daemon starts the roles of one issue pod one at a time. A role's process starts only when no
+    other role of that pod is loading its session, which ends 30 seconds after its agent registers,
+    since the process's memory goes on rising past the registration, and no role ahead of it waits;
+    a load whose agent has not registered two minutes after its process started lets the next role
+    start all the same. Two roles that resumed long sessions together could pass the pod's memory
+    limit and have the whole pod stopped, every role's turn with it. A waiting start is parked on
+    its claim, so a suspension, a release, a close or a pause's stop of a waiting role acts at once
+    and its process never starts; a waiting start the gate lets through while the project is
+    paused starts nothing, and the pause stops the role, owed a launch at the resume. The first
+    start to reach an idle pod starts at once, whatever its role; the roles that wait behind a load
+    start in this order: the earliest whose start a task, a message or an operator raised, then the
+    others as they asked; with no such start, the role working the issue's current phase, then
+    architect, planner, implementer, tester, reviewer, merger. Each start into an issue pod and
+    each load's end write a line to the daemon's log, and a start that waited names the role it
+    waited for, how long, and what ended the wait.
+time: 2026-11-23T00:14:54Z
+custom:
+    Issue: one-load-per-pod

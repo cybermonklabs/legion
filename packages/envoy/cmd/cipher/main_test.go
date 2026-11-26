@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,12 +29,14 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testEnrollmentID is the enrollment id these tests' key dir fixture "issues" (writes into the
@@ -207,6 +208,7 @@ const judgeRefusedText = "the model judge refused this request: the guidance ask
 // and the exec form exit 77, as any denial does, printing the judge's sentence and running no
 // child. Nothing either prints tells the agent to try again or names a person to ask.
 func TestAJudgedRefusalIsFinal(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -227,6 +229,7 @@ func TestAJudgedRefusalIsFinal(t *testing.T) {
 // and handed to its person while the exec form waits prints the judge's line first and then, at
 // the first status read that shows the hand-over, the line naming the person and the page.
 func TestTheExecFormSaysWhenTheJudgeHandsARequestOver(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -312,6 +315,12 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"request_id": "req-denied-listed", "state": "denied",
 				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
 				"grant_id": nil, "record_id": nil, "approver": nil, "detail": refusedDetail,
+			})
+		case "PROJECT_DENIED":
+			writeJSON(w, map[string]any{
+				"request_id": "req-denied-project", "state": "denied",
+				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
+				"grant_id": nil, "record_id": nil, "approver": nil, "detail": name + ": " + policy.ReasonProjectNotNamed,
 			})
 		case "JUDGE_REFUSED":
 			writeJSON(w, map[string]any{
@@ -531,11 +540,12 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
 // stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
 // fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
-// leak into (or shadow) a granted secret.
+// leak into (or shadow) a granted secret. The binary runs in a world of its own (hostIsolation),
+// so a person's sign-in or settings file on the machine running the tests is not a source.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
@@ -549,6 +559,21 @@ func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []str
 	}
 	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, out.String(), errOut.String())
 	return "", "", -1
+}
+
+// hostIsolation is the environment a binary runAgentSecrets runs gets over the test process's own,
+// before the test's extraEnv: a home, a config, a state and a runtime directory of its own, and
+// no sign-in store, machine identity or helper socket, as the harness of startCall gives them. So
+// a developer's own sign-in (`agent-secrets login`), settings file, machine cache or helper on the
+// machine running the tests is no source a test's command takes; a test that wants one names it
+// in extraEnv.
+func hostIsolation(t *testing.T) []string {
+	t.Helper()
+	env := []string{"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY=", "AGENT_SECRETS_HELPER_SOCK="}
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+		env = append(env, name+"="+shortTempDir(t))
+	}
+	return env
 }
 
 // oneJSONObject parses stdout as exactly one JSON object (one line, nothing else) and returns
@@ -597,6 +622,7 @@ func redactSecrets(s string) string {
 }
 
 func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -626,6 +652,7 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, counters := fakeBroker(t)
@@ -692,6 +719,7 @@ var pendingSentences = map[string]string{
 // them through the real binary in the two tests below; the other two have no fixture of their
 // own, and this is what holds their wording.
 func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
+	t.Parallel()
 	person, anyone := "ada@example.com", record.AnyoneApprover
 	for _, row := range []struct {
 		name     string
@@ -717,6 +745,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 // The fake broker holds the first status poll until the test has read those two lines from the
 // command's stderr, so lines printed only once the wait ends never arrive in time.
 func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -739,47 +768,29 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 				defer release()
 
 				cmd := exec.Command(binary, name, "--wait", "200ms", "--", "sh", "-c", "echo ran-the-child")
-				cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
+				cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
 					"AGENT_SECRETS_APPROVE_URL="+approveURL)
-				var stdout strings.Builder
-				cmd.Stdout = &stdout
-				pipe, err := cmd.StderrPipe()
-				if err != nil {
-					t.Fatalf("stderr pipe: %v", err)
-				}
-				if err := cmd.Start(); err != nil {
-					t.Fatalf("start agent-secrets: %v", err)
-				}
-				stderr := bufio.NewReader(pipe)
-				lines := make(chan string, 1)
-				go func() {
-					first, _ := stderr.ReadString('\n')
-					second, _ := stderr.ReadString('\n')
-					lines <- first + second
-				}()
+				c := startCall(t, cmd)
 				want := "agent-secrets: request " + requestID + " to " + fakeSourceText(broker) + " is waiting for approval; waiting up to 200ms\n" +
 					"agent-secrets: " + sentence + "\n"
-				select {
-				case got := <-lines:
-					if got != want {
-						t.Errorf("stderr began %q, want %q", got, want)
-					}
-				case <-time.After(10 * time.Second):
-					release()
-					t.Errorf("stderr said nothing within 10s while the status poll was held, and %q once it returned; want %q before the wait",
-						<-lines, want)
+				// The first two lines arrive while the poll is held, or never: the shared wait only
+				// guards against a call that says nothing and does not end.
+				testwait.Eventually(t, "the call's first two stderr lines while the status poll was held", func() bool {
+					return strings.Count(c.stderr.String(), "\n") >= 2 || c.ended()
+				})
+				if got := c.stderr.String(); !strings.HasPrefix(got, want) {
+					t.Errorf("stderr while the status poll was held began %q, want %q before the wait", got, want)
 				}
 				release()
-				rest, _ := io.ReadAll(stderr)
-				err = cmd.Wait()
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || exitErr.ExitCode() != exitPending {
-					t.Fatalf("exit = %v, want %d (pending): stdout=%q stderr=%q", err, exitPending, stdout.String(), rest)
+				exit := c.end(t)
+				stdout, rest := c.stdout.String(), strings.TrimPrefix(c.stderr.String(), want)
+				if exit != exitPending {
+					t.Fatalf("exit = %d, want %d (pending): stdout=%q stderr=%q", exit, exitPending, stdout, rest)
 				}
-				if strings.Contains(stdout.String(), "ran-the-child") {
-					t.Fatalf("child ran while request was still pending: stdout=%q", stdout.String())
+				if strings.Contains(stdout, "ran-the-child") {
+					t.Fatalf("child ran while request was still pending: stdout=%q", stdout)
 				}
-				if !strings.Contains(string(rest), "agent-secrets status "+requestID) {
+				if !strings.Contains(rest, "agent-secrets status "+requestID) {
 					t.Fatalf("stderr = %q, want the request id and the status command to check it", rest)
 				}
 			})
@@ -792,6 +803,7 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 // the approver the broker names and the page on the broker where they decide it, which a broker
 // that names none leaves out; request exits 75 and status 0, as before.
 func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -822,6 +834,7 @@ func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
 // AGENT_SECRETS_APPROVE_URL. status --json prints the broker's answer byte for byte, approver
 // included.
 func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -846,6 +859,7 @@ func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
 }
 
 func TestExecFormDeniedExitsSeventySevenWithNoChild(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -868,6 +882,7 @@ func TestExecFormDeniedExitsSeventySevenWithNoChild(t *testing.T) {
 }
 
 func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -889,6 +904,7 @@ func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
 // approve; before the command was looked up first, its request reached that person and the run
 // exited 75, still waiting.
 func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -916,6 +932,7 @@ func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
 // for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
 // naming the code and saying to ask again, and the command never runs.
 func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -929,6 +946,7 @@ func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
 // 0 and prints usage(), the conventional exit code for an explicit help request; only the
 // zero-argument form (no NAME, no --help) remains a usage error exiting 2.
 func TestTopLevelHelpExitsZero(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -953,6 +971,7 @@ func TestTopLevelHelpExitsZero(t *testing.T) {
 // exit 0, flags or none, before it needs a broker, a key or a helper; the docs site's CLI
 // reference is built from these answers.
 func TestEveryFormAnswersHelp(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	for _, c := range commands {
 		if c.name == "--version" {
@@ -976,6 +995,7 @@ func TestEveryFormAnswersHelp(t *testing.T) {
 // finding 3: a granted request whose values come back without one of its names must never exec,
 // since silently execing without it would be a silent partial grant.
 func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1002,6 +1022,7 @@ func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
 // must not survive into the child's environment alongside (and potentially before) the
 // broker-released value.
 func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1028,6 +1049,7 @@ func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
 // poll GET /v1/requests/{id} (proof that neither invocation ever entered the pending-wait loop,
 // whether the broker minted the grant fresh or handed back a reused one).
 func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -1053,6 +1075,7 @@ func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
 // helper under `agent-secrets K -- omp`) reaches the broker as that session instead of failing
 // with "AGENT_SECRETS_URL is required".
 func TestExecFormNestedCallKeepsTheSessionIdentity(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1087,6 +1110,7 @@ var testAirlockFiles = airlockFiles{bundle: "/run/user/1000/agent-secrets/airloc
 // CLI sets — the stale proxy, the inherited trust file — is gone, as an inherited copy of a
 // released name is.
 func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
+	t.Parallel()
 	identity := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
@@ -1165,6 +1189,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 // broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
 // the child what the broker sent, byte for byte, line endings and all.
 func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
+	t.Parallel()
 	for name, value := range map[string]string{
 		"one trailing newline":   "sk-live-abc\n",
 		"trailing CRLF":          "sk-live-abc\r\n",
@@ -1190,18 +1215,86 @@ func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	}
 }
 
-// runExecForm runs the exec form of GRANT_ME against broker from keyDir with no helper to fall
-// back to (the runtime dir is empty and AGENT_SECRETS_HELPER_SOCK is empty), returning its exit
-// code, stderr and how long it took. extraEnv comes last, so it can override any of that. Its
-// home and state directory are the test's own, so no sign-in or machine cache of the machine
-// running the test answers for a key dir a row leaves empty.
-func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) (int, string, time.Duration) {
+// call is a run of the built binary a test started (startCall), with what it has written to
+// stdout and stderr so far, so that the test can act on a line the call prints while it runs.
+type call struct {
+	cmd            *exec.Cmd
+	stdout, stderr *cmdtest.LockedBuffer
+	exited         chan struct{}
+}
+
+// startCall starts cmd with its stdout and stderr kept apart, and kills it when the test ends if
+// it is still running.
+func startCall(t *testing.T, cmd *exec.Cmd) *call {
 	t.Helper()
-	env := append([]string{"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_STATE_HOME=" + t.TempDir(),
-		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="}, extraEnv...)
-	start := time.Now()
-	_, stderr, exit := runAgentSecrets(t, binary, broker, keyDir, env, "GRANT_ME", "--", "sh", "-c", "exit 0")
-	return exit, stderr, time.Since(start)
+	c := &call{cmd: cmd, stdout: &cmdtest.LockedBuffer{}, stderr: &cmdtest.LockedBuffer{}, exited: make(chan struct{})}
+	cmd.Stdout, cmd.Stderr = c.stdout, c.stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start %s: %v", cmd.Path, err)
+	}
+	go func() {
+		_ = cmd.Wait()
+		close(c.exited)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-c.exited
+	})
+	return c
+}
+
+// ended reports whether the call has exited. Once it has, its stdout and stderr are whole: Wait
+// returns only after it has copied both.
+func (c *call) ended() bool {
+	select {
+	case <-c.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// says waits until the call's stderr holds line times times, and fails the test when the call
+// ends before that; when names the point the call ended at. The wait is the package's shared one
+// (testwait.Eventually): it guards against a call that hangs, and bounds nothing the row decides.
+func (c *call) says(t *testing.T, line string, times int, when string) {
+	t.Helper()
+	testwait.Eventually(t, "the call to say "+line, func() bool {
+		return strings.Count(c.stderr.String(), line) >= times || c.ended()
+	})
+	if strings.Count(c.stderr.String(), line) < times {
+		t.Fatalf("the call ended (exit %d) %s, and never said %q (%d times): stderr=%q", c.cmd.ProcessState.ExitCode(), when, line, times, c.stderr.String())
+	}
+}
+
+// end waits for the call to exit and returns its exit code. The wait is testwait.Receive on the
+// call's exit (docs/testing.md): it sets no span of its own, so a call that is merely slow on a
+// loaded machine still ends the row, and one that never exits fails it by name 30 s before the
+// test binary's deadline. A row whose verdict needs the call to end within a span waits for that
+// itself, before it calls end.
+func (c *call) end(t *testing.T) int {
+	t.Helper()
+	testwait.Receive(t, "the call to end", c.exited)
+	return c.cmd.ProcessState.ExitCode()
+}
+
+// startExecForm starts the exec form of GRANT_ME against broker from keyDir with no helper to
+// fall back to (hostIsolation: an empty runtime dir and no AGENT_SECRETS_HELPER_SOCK). extraEnv
+// comes last, so it can override any of that. Its home, config and state directories are the
+// test's own, so no sign-in or machine cache of the machine running the test answers for a key
+// dir a row leaves empty.
+func startExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) *call {
+	t.Helper()
+	cmd := exec.Command(binary, "GRANT_ME", "--", "sh", "-c", "exit 0")
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
+	return startCall(t, cmd)
+}
+
+// runExecForm runs startExecForm's call to its end, returning its exit code and stderr.
+func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) (int, string) {
+	t.Helper()
+	c := startExecForm(t, binary, broker, keyDir, extraEnv...)
+	return c.end(t), c.stderr.String()
 }
 
 // writePendingMarker writes the launcher's enrollment.pending into dir (created if absent), aged
@@ -1222,75 +1315,196 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 	return marker
 }
 
+// launcherWaitStart is how a call's first line about waiting on the launcher starts, whatever it
+// names its key dir and its wait: a row in which no call may wait fails on it.
+const launcherWaitStart = "agent-secrets: the launcher is still enrolling this process ("
+
+// launcherWaitLine is the line a call prints as it starts to wait on the launcher still enrolling
+// its key dir, which the line names as named (keyDirName: the setting, never the path), for wait at
+// most (a time.Duration's text), while the key dir holds neither key.pem nor enrollment
+// (awaitEnrollment).
+func launcherWaitLine(named, wait string) string {
+	return launcherWaitStart + named + " holds enrollment.pending); waiting up to " + wait + " for its key.pem and enrollment\n"
+}
+
+// enrollmentWaitLine is the line a waiting call prints once key.pem is there and enrollment is
+// not yet (awaitEnrollment).
+const enrollmentWaitLine = "agent-secrets: still waiting for the launcher's enrollment\n"
+
+// keyGoneWaitLine is the line a waiting call prints when the key.pem it saw is gone again, so it
+// waits for both files once more (awaitEnrollment says each change of what it waits for).
+const keyGoneWaitLine = "agent-secrets: still waiting for the launcher's key.pem and enrollment\n"
+
+// launcherPlayLines is all a call prints on stderr while playTheLauncher plays its launcher, in
+// order, before anything the call prints once it has its identity.
+func launcherPlayLines(named, wait string) string {
+	return launcherWaitLine(named, wait) + enrollmentWaitLine + keyGoneWaitLine + enrollmentWaitLine
+}
+
+// playTheLauncher plays the launcher of keyDir, which is still enrolling the process of c: keyDir
+// holds its fresh marker and neither key.pem nor enrollment, the call names it as named
+// (keyDirName), and the call's bound is wait. It changes the key dir only once the call says it
+// waits for that change, so the call is waiting before each change however slow the machine is:
+// it writes fixture's key.pem once the call says it waits for key.pem and enrollment; once the
+// call says it still waits for the enrollment, it takes key.pem away; once the call says it waits
+// for both again, it puts key.pem back; once the call says a second time that it still waits for
+// the enrollment, it writes fixture's enrollment, and then it removes the marker, as the launcher
+// does. No real launcher takes key.pem back. The stand-in does so because the call's line about
+// it is the one thing that shows, from outside the call, that the call still waits after it said
+// it waits for the enrollment: a call that stops waiting once key.pem is there never says it, and
+// when it reads, however late, it finds key.pem gone or the enrollment not yet written, and fails.
+// Before each change it renews the marker (writePendingMarker), as the launcher does before each
+// step of its setup, so a row that a slow machine stretches past the marker's life
+// (pendingMarkerLife) still finds it fresh. Each file is written whole (writeFileAtomic), as the
+// launcher writes it, so the call never reads one half-written. It fails the test when the call
+// ends before any of those lines, or has ended by the time the launcher is about to write the
+// enrollment. Once the enrollment is written the call may end at any moment, which is what it
+// waited for: a call still running just before that write and exiting 0 afterwards ended after
+// the write, since it cannot sign without the enrollment.
+func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string) {
+	t.Helper()
+	marker := filepath.Join(keyDir, pendingMarker)
+	copyFile := func(name string) {
+		t.Helper()
+		writePendingMarker(t, keyDir, 0)
+		data, err := os.ReadFile(filepath.Join(fixture, name))
+		if err == nil {
+			err = writeFileAtomic(filepath.Join(keyDir, name), data, 0o600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.says(t, launcherWaitLine(named, wait), 1, "before it waited for the launcher")
+	copyFile(keyFile)
+	c.says(t, enrollmentWaitLine, 1, "once key.pem was there and before the launcher wrote the enrollment")
+	writePendingMarker(t, keyDir, 0)
+	if err := os.Remove(filepath.Join(keyDir, keyFile)); err != nil {
+		t.Fatal(err)
+	}
+	c.says(t, keyGoneWaitLine, 1, "once key.pem was gone again and before the launcher wrote the enrollment")
+	copyFile(keyFile)
+	c.says(t, enrollmentWaitLine, 2, "once key.pem was back and before the launcher wrote the enrollment")
+	if c.ended() {
+		t.Fatalf("the call ended (exit %d) while it waited for the enrollment, before the launcher wrote it: stderr=%q", c.cmd.ProcessState.ExitCode(), c.stderr.String())
+	}
+	copyFile(enrollmentFile)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestEnrollWaitRidesOutTheLaunchersSetup is the box's enrollment race: omp starts its MCP
 // servers, and they call agent-secrets, while the launcher is still generating the box's key and
 // enrolling it. While the launcher's enrollment.pending marker is there, a call waits for key.pem
-// and enrollment to appear instead of failing at once.
+// and enrollment to appear instead of failing at once. The row decides by the order of events,
+// never by a span: the launcher changes the key dir only once the call says it waits for that
+// change (playTheLauncher), and the call must exit 0 after the enrollment is there, having said
+// each line of its wait in order. Its bound is a day, so the bound cannot end the wait within the
+// shared test wait; the marker, fresh for 160 s from each renewal before a change and removed only
+// after the enrollment is written, cannot either. A call that does not wait for the marker ends
+// before it says so, and one that stops waiting once key.pem is there never says that it waits
+// for both files again, which fails the row whatever the load.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	fixture := newKeyDir(t)
 	keyDir := t.TempDir()
-	marker := writePendingMarker(t, keyDir, 0)
+	writePendingMarker(t, keyDir, 0)
 
-	// The launcher writes each file whole (writeFileAtomic), so a waiting call never
-	// reads one half-written; the fixture does the same.
-	setupDone := make(chan error, 1)
-	go func() {
-		time.Sleep(time.Second)
-		data, err := os.ReadFile(filepath.Join(fixture, "key.pem"))
-		if err == nil {
-			err = writeFileAtomic(filepath.Join(keyDir, "key.pem"), data, 0o600)
-		}
-		time.Sleep(time.Second)
-		if err == nil {
-			err = writeFileAtomic(filepath.Join(keyDir, "enrollment"), []byte(testEnrollmentID+"\n"), 0o600)
-		}
-		if err == nil {
-			err = os.Remove(marker)
-		}
-		setupDone <- err
-	}()
-
-	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir)
-	if err := <-setupDone; err != nil {
-		t.Fatal(err)
+	c := startExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=24h")
+	playTheLauncher(t, c, keyDir, "AGENT_SECRETS_KEY_DIR", fixture, "24h0m0s")
+	if exit := c.end(t); exit != 0 {
+		t.Fatalf("exit = %d, want 0 once the launcher wrote the enrollment: stderr=%q", exit, c.stderr.String())
 	}
-	if exit != 0 {
-		t.Fatalf("exit = %d after %s, want 0 once the launcher finished: stderr=%q", exit, elapsed, stderr)
-	}
-	if elapsed < 2*time.Second {
-		t.Fatalf("finished in %s, before the launcher wrote the enrollment", elapsed)
+	if want := launcherPlayLines("AGENT_SECRETS_KEY_DIR", "24h0m0s"); !strings.HasPrefix(c.stderr.String(), want) {
+		t.Fatalf("stderr = %q, want it to start with the wait's lines in order, %q", c.stderr.String(), want)
 	}
 }
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
-// stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
-// fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
-// present: the call stops there rather than go on to a later source of the chain.
+// stuck without removing it) holds a call until its AGENT_SECRETS_ENROLL_WAIT has passed, and the
+// call then fails naming the marker and the wait. A fresh marker is a launcher still enrolling,
+// which is present: the call stops there rather than go on to a later source of the chain. The
+// call says that it waits before it reads its deadline (awaitEnrollment), so the row requires that
+// line however late a loaded machine runs the call. The refusal says how long the call waited,
+// from the moment it set its deadline, and its bound: "(waited 1.004s, its bound 1s, while ...)".
+// The row requires two spans each to be at least the bound, and neither can fail a correct call,
+// since load only lengthens them. The call's own time holds only its wait, so a call whose
+// deadline came early fails it however late it started. The row's own span, from before it starts
+// the call to the call's end, holds the call's start too, so it passes such a call that started
+// late; it is there for a call that cuts its wait short and reports its bound as the time it
+// waited, which the call's own time cannot see. The row reads no upper limit, which load could
+// pass; the call's end (call.end) stands against a call whose bound never ends its wait. The two
+// things that end a wait earlier are checked absent: the marker is still fresh, and key.pem never
+// came.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
+	t.Parallel()
+	binary := buildAgentSecrets(t)
+	broker, _ := fakeBroker(t)
+	defer broker.Close()
+	keyDir := t.TempDir()
+	marker := writePendingMarker(t, keyDir, 0)
+
+	start := time.Now()
+	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
+	spanned := time.Since(start)
+	if exit != 1 || !strings.Contains(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
+		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1 saying it waits, naming the launcher's marker and the wait, and no later source", exit, stderr)
+	}
+	_, said, found := strings.Cut(stderr, "(waited ")
+	said, _, bounded := strings.Cut(said, ", its bound 1s, while AGENT_SECRETS_KEY_DIR held enrollment.pending)")
+	waited, err := time.ParseDuration(said)
+	if !found || !bounded || err != nil {
+		t.Fatalf("stderr = %q, want the refusal to say how long the call waited, \"(waited <time>, its bound 1s, while AGENT_SECRETS_KEY_DIR held enrollment.pending)\"", stderr)
+	}
+	if waited < 1*time.Second {
+		t.Fatalf("the call says it waited %s, under its 1s bound: stderr = %q", waited, stderr)
+	}
+	if spanned < 1*time.Second {
+		t.Fatalf("the call ended %s after the row started it, under its 1s bound, though it says it waited %s: stderr = %q", spanned, waited, stderr)
+	}
+	if !freshMarker(keyDir) {
+		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
+	}
+	if _, err := os.Stat(filepath.Join(keyDir, keyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat key.pem: %v; nothing writes it in this row", err)
+	}
+}
+
+// TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline pins the order of the call's own lines when
+// its bound has already passed at its first look (1ns): the call still says that it waits, then
+// refuses. A loaded machine can stall a call for longer than its bound before that look, so a call
+// that read its deadline before it said so would give up with no first line; this row decides by
+// the order the call prints, which no load changes.
+func TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	keyDir := t.TempDir()
 	writePendingMarker(t, keyDir, 0)
 
-	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit != 1 || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
-		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
-		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
-	}
-	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
-		t.Fatalf("gave up after %s, want about the 1s bound", elapsed)
+	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1ns")
+	line := strings.Index(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1ns"))
+	refusal := strings.Index(stderr, ", its bound 1ns, while AGENT_SECRETS_KEY_DIR held enrollment.pending)")
+	if exit != 1 || line < 0 || refusal < line {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1, the first wait line, then the refusal", exit, stderr)
 	}
 }
 
 // TestEnrollWaitNeedsAFreshMarker pins that only the launcher's live marker makes a call wait: an
 // empty key dir (a machine session's, a pod's), a marker older than the launcher's own setup bound
 // (a launcher killed outright), and a failed enrollment the launcher has already reported
-// (enrollment.error, marker removed) all fail at once, as they did before the wait existed.
+// (enrollment.error, marker removed) all fail at once, as they did before the wait existed. The
+// row fails as soon as a call says that it waits. Each call is given a day to wait in, so a call
+// that waited without saying so would not come back within the shared wait, which would fail
+// naming it.
 func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1312,12 +1526,16 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 		{"reported failure", failed, "postgres unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			exit, stderr, elapsed := runExecForm(t, binary, broker.URL, tc.keyDir)
+			c := startExecForm(t, binary, broker.URL, tc.keyDir, "AGENT_SECRETS_ENROLL_WAIT=24h")
+			testwait.Eventually(t, "the call to end or say that it waits", func() bool {
+				return c.ended() || strings.Contains(c.stderr.String(), launcherWaitStart)
+			})
+			if stderr := c.stderr.String(); strings.Contains(stderr, launcherWaitStart) {
+				t.Fatalf("stderr = %q; with no fresh marker the call must not wait", stderr)
+			}
+			exit, stderr := c.end(t), c.stderr.String()
 			if exit == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("exit = %d, stderr = %q, want a failure naming %q", exit, stderr, tc.want)
-			}
-			if elapsed > 10*time.Second {
-				t.Fatalf("took %s; with no fresh marker the call must not wait", elapsed)
 			}
 		})
 	}
@@ -1326,11 +1544,12 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 // TestEnrollWaitRefusesAnInvalidBound pins that a malformed AGENT_SECRETS_ENROLL_WAIT is an
 // error naming the variable, never a silent fall back to the default.
 func TestEnrollWaitRefusesAnInvalidBound(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	for _, bad := range []string{"soon", "-1s"} {
-		exit, stderr, _ := runExecForm(t, binary, broker.URL, newKeyDir(t), "AGENT_SECRETS_ENROLL_WAIT="+bad)
+		exit, stderr := runExecForm(t, binary, broker.URL, newKeyDir(t), "AGENT_SECRETS_ENROLL_WAIT="+bad)
 		if exit == 0 || !strings.Contains(stderr, "AGENT_SECRETS_ENROLL_WAIT") {
 			t.Fatalf("AGENT_SECRETS_ENROLL_WAIT=%s: exit = %d, stderr = %q, want a refusal naming the variable", bad, exit, stderr)
 		}
@@ -1338,6 +1557,7 @@ func TestEnrollWaitRefusesAnInvalidBound(t *testing.T) {
 }
 
 func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1361,6 +1581,7 @@ func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
 // finding 2: --json must print the broker's exact bytes, never appending a newline (or anything
 // else) the response didn't already end with.
 func TestRequestJSONIsByteIdenticalToTheBrokerResponse(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1377,6 +1598,7 @@ func TestRequestJSONIsByteIdenticalToTheBrokerResponse(t *testing.T) {
 }
 
 func TestSelfJSONPrintsExactlyOneContractObjectNamingTheIssuedEnrollment(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1404,6 +1626,7 @@ func TestSelfJSONPrintsExactlyOneContractObjectNamingTheIssuedEnrollment(t *test
 // exactly the argv secret names with the reason carried inside the signed object rather than as
 // a top-level field.
 func TestRequestSignsARequestObject(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 
@@ -1518,6 +1741,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1745).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -1536,6 +1760,7 @@ func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
 // contract: with AGENT_SECRETS_APPROVE_URL set, the second line names it instead of the generic
 // "Dispatch credential page" fallback.
 func TestMachineLoginPrintsTheDispatchURLWhenApproveURLIsSet(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"issued"})
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1554,6 +1779,7 @@ func TestMachineLoginPrintsTheDispatchURLWhenApproveURLIsSet(t *testing.T) {
 // second line names the page the broker's device authorization named, which the helper relays;
 // with it set, that setting still wins.
 func TestMachineLoginPrintsTheBrokersVerificationURI(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelperAt(t, "KQ7M-X4PZ", "https://dispatch.example/credentials/machine", []string{"issued"})
 	for _, tc := range []struct{ approve, want string }{
@@ -1571,6 +1797,7 @@ func TestMachineLoginPrintsTheBrokersVerificationURI(t *testing.T) {
 // TestMachineLoginExitsOneOnDenied pins the terminal-failure half of the poll loop: a
 // login-status answer of "denied" exits 1 and names the state, never retrying past it.
 func TestMachineLoginExitsOneOnDenied(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"denied"})
 	_, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1595,6 +1822,7 @@ func TestMachineLoginExitsOneOnDenied(t *testing.T) {
 // credential the broker rejected becomes) says on stderr to run the login again, and a login in
 // flight outranks a refused credential.
 func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const held = "the helper still holds the launcher credential an earlier login issued"
 	const prefix = "agent-secrets machine login-status: "
@@ -1662,6 +1890,7 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 // credential already past its expiry (the helper has not dropped it yet) with the hint of the
 // helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	machineLogin, identity := cipherclient.FailureNoMachineLogin, cipherclient.FailureIdentityLapsed
 	for _, tc := range []struct {
@@ -1692,6 +1921,7 @@ func TestCredentialExpiryLine(t *testing.T) {
 // reads it back, and prints the enrollment id alone on stdout — the contract scripts/agentbox
 // parses.
 func TestEnrollHelperPrintsEnrollmentID(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-box-1", LeaseExpires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 	keyDir := t.TempDir()
@@ -1713,6 +1943,7 @@ func TestEnrollHelperPrintsEnrollmentID(t *testing.T) {
 // TestUnenrollHelperSucceeds pins unenroll --helper's exit-code-only contract: it asks the local
 // helper to revoke the enrollment over its unix socket and prints nothing on success.
 func TestUnenrollHelperSucceeds(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true})
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1729,6 +1960,7 @@ func TestUnenrollHelperSucceeds(t *testing.T) {
 // v9 dropped launcher bearer tokens entirely: --helper is the only enrollment path left, so it
 // is required (not merely one of two mutually exclusive options).
 func TestEnrollHelperFlagValidation(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := t.TempDir()
 
@@ -1751,6 +1983,7 @@ func TestEnrollHelperFlagValidation(t *testing.T) {
 // level by TestRequestSessionIDFallbackOrder, below; this test is the proof that both real call
 // sites actually call it rather than os.Getenv("OMP_SESSION_ID") directly.
 func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -1795,6 +2028,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2048); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2053).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -1826,6 +2060,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2077).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string

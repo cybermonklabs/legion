@@ -32,6 +32,7 @@ import (
 // kept lane alone. Every other row is a case: such a build gives the role's next holder none of the
 // messages, and it has no seam to force a row's fault, so a row that waits for its seam fails there.
 func TestATakeoverCopyThatStopsOrRunsAgainLosesNothing(t *testing.T) {
+	t.Parallel()
 	t.Run("1 a listener stopped after the claim write leaves the copy to the next sweep", crashStoppedAfterTheClaimWrite)
 	t.Run("1b a record whose claim never landed leaves the holder that kept the role its own messages", crashRecordWhoseClaimNeverLanded)
 	t.Run("1c an older pass paused before its last write leaves a newer takeover of the holder to copy", crashOlderPassPausedBeforeItsLastWrite)
@@ -49,8 +50,8 @@ func TestATakeoverCopyThatStopsOrRunsAgainLosesNothing(t *testing.T) {
 	t.Run("10b a forward whose resolution is past the fence resolves again and goes to the new holder", crashForwardPastTheFence)
 	t.Run("11 a forward stored after the claim's first pass is copied by the next pass", crashForwardStoredAfterTheFirstPass)
 	t.Run("12 every listener down past the hour after the takeover and the next sweep still copies", crashListenersDownPastTheHour)
-	t.Run("12b a forward stored two hours after the takeover is copied by the next pass", crashForwardTwoHoursLate)
-	t.Run("12d a record is held and copies a forward stored 70h55m after the takeover and ends only past 71h", crashRecordHeldToItsLastHour)
+	t.Run("12b a forward stored inside the hour after the takeover is copied by the next pass, and the pass past the hour ends the record", crashForwardInsideTheHour)
+	t.Run("12d a record is held and copies a forward stored 55m after the takeover and ends only past its hour", crashRecordHeldToItsLastHour)
 	t.Run("12c a claim that meets a renewal at every try leaves the holder that kept the role its own messages", crashRenewalAtEveryTry)
 	t.Run("13 control a takeover record ahead of a kept copy changes nothing the lane's readers read", crashRecordAheadOfAKeptCopy)
 	t.Run("14 a role taken back before the previous holder's relay ran reaches both sessions", crashTakenBackBeforeItsRelayRan)
@@ -127,16 +128,19 @@ func crashKeptByItsHolder(t *testing.T, rig *crashRig, standIn *sessionStandIn, 
 			t.Fatalf("after sweep %d %s's own subject holds %v; want its three role messages alone, %v", i+1, holder, events, sent)
 		}
 	}
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, holder)
+	// The new epoch restarts the relay at the holder's floor, which deletes the consumer holding
+	// its three frames and creates it again (awaitSessionConsumerStored).
+	awaitSessionConsumerStored(t, rig.lane, holder)
 	back := startSessionStandIn(t, rig.url, holder, answerDone)
 	rig.register(rig.mux, holder, "epoch-2")
 	crashAwaitEvents(t, back, sent, nil, holder+", back and holding the role, from its own consumer")
 }
 
 // crashOlderClaimAge is how far back the claim of row 1c's older takeover is: past the record's
-// life (71 hours), so the pass that runs now reads to the end and marks the record finished, and
-// the last write it pauses before is that mark.
+// life (takeoverRecordLife), so the pass that runs now reads to the end and marks the record
+// finished, and the last write it pauses before is that mark.
 const crashOlderClaimAge = 72 * time.Hour
 
 // (1c) An older takeover's pass of A pauses before its last write (beforeRecordWrite), the one
@@ -256,7 +260,7 @@ func crashTwoListenersCopyAtOnce(t *testing.T) {
 		beforeCopy: func(r, _ string, frameSeq uint64) error {
 			if r == role && frameSeq == first {
 				arrived.Add(1)
-				for deadline := time.Now().Add(10 * time.Second); arrived.Load() < 2 && time.Now().Before(deadline); {
+				for deadline := time.Now().Add(listenerWaitBound(t)); arrived.Load() < 2 && time.Now().Before(deadline); {
 					time.Sleep(5 * time.Millisecond)
 				}
 			}
@@ -279,7 +283,7 @@ func crashTwoListenersCopyAtOnce(t *testing.T) {
 		cancel()
 		sweeps.Wait()
 	})
-	waitFor(t, 30*time.Second, "both listeners' passes writing the record", func() bool { return written.Load() >= 2 })
+	waitFor(t, "both listeners' passes writing the record", func() bool { return written.Load() >= 2 })
 	if got := arrived.Load(); got != 2 {
 		t.Fatalf("the two listeners' passes reached the first copy %d times; want 2, together", got)
 	}
@@ -326,11 +330,11 @@ func crashReleasedBeforeAnyPass(t *testing.T) {
 // window: the holder stops and deregisters, and its claim is aged past the window.
 func crashReapedBeforeAnyPass(t *testing.T) {
 	crashEndedBeforeAnyPass(t, "4p", "", func(rig *crashRig, standIn *sessionStandIn, holder, role string) {
-		standIn.conn.Close()
+		standIn.close()
 		if recorder := rig.send(rig.mux, http.MethodDelete, "/v1/sessions/"+holder, ""); recorder.Code != http.StatusOK {
 			rig.t.Fatalf("DELETE /v1/sessions/%s: status %d %s", holder, recorder.Code, recorder.Body.String())
 		}
-		waitFor(rig.t, 10*time.Second, holder+" read as not live", func() bool {
+		waitFor(rig.t, holder+" read as not live", func() bool {
 			_, state := rig.harness.sessions.Lookup(holder)
 			return state != session.Live
 		})
@@ -393,18 +397,21 @@ func crashRoleTakenBack(t *testing.T) {
 		sent = append(sent, item.EventID)
 	}
 	crashAwaitEvents(t, first, sent, nil, a+"'s frames, each answered received alone")
-	first.conn.Close()
+	first.close()
 	awaitNoRelaySubscriber(t, rig.url, a)
 	rig.gone(b)
 	rig.claim(rig.away, b, role)
 	// Where the build copies at a takeover, the walk forwards the copies to B, which reads none of
 	// them: the row waits a while for them, and goes on without them at a build that makes none.
 	toB := contracts.LegacyAgentSubject(b)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for len(rig.events(toB)) < len(sent) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("%s's own subject holds %v", b, rig.events(toB))
+	// A's new epoch restarts its relay at its floor, which deletes the consumer holding the three
+	// frames A received and creates it again (awaitSessionConsumerStored).
+	awaitSessionConsumerStored(t, rig.lane, a)
 	back := startSessionStandIn(t, rig.url, a, answerDone)
 	rig.register(rig.mux, a, "epoch-2")
 	awaitAcked(t, rig.consumers, a, rig.seqOn(agent, sent[len(sent)-1]))
@@ -460,8 +467,8 @@ func crashConcurrentClaims(t *testing.T) {
 	select {
 	case answer = <-cAnswer:
 		cAnswer <- answer
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s's claim did not answer within 10s", c)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("%s's claim did not answer in time", c)
 	}
 	if answer.Code != http.StatusOK {
 		t.Fatalf("%s's claim: status %d %s; want 200", c, answer.Code, answer.Body.String())
@@ -620,7 +627,7 @@ func crashReleaseWhileUnfinished(t *testing.T) {
 	if recorder := rig.claimThrough(rig.mux, b, role, instance); recorder.Code != http.StatusOK {
 		t.Fatalf("%s claims %s: status %d %s; want 200", b, role, recorder.Code, recorder.Body.String())
 	}
-	waitFor(t, 10*time.Second, "the claim's pass meeting the failed read", func() bool { return refused.Load() > 0 })
+	waitFor(t, "the claim's pass meeting the failed read", func() bool { return refused.Load() > 0 })
 	rig.release(b, role, instance)
 	late := rig.lateForward(a, role, "stored after the release")
 	failing.Store(false)
@@ -646,7 +653,7 @@ func crashForwardPastTheFence(t *testing.T) {
 	rig.onLane(role, blocker)
 	crashAwait(t, held, 10*time.Second, "the first forward to "+a+" starting")
 	target := rig.onLane(role, "waits in the previous holder's queue")
-	waitFor(t, 10*time.Second, "the second forward queued behind the first", func() bool {
+	waitFor(t, "the second forward queued behind the first", func() bool {
 		return rig.cfg().roleForwards.outstanding() == 2
 	})
 	rig.clock.advance(roleKeepWindow - roleWakeInterval + time.Minute)
@@ -706,22 +713,39 @@ func crashListenersDownPastTheHour(t *testing.T) {
 	crashAwaitEvents(t, next, sent, nil, "the new holder, from the sweep of the listener that is up again")
 }
 
-// (12b) The claim is written with the listener's clock two hours back; after its own pass a
-// forward to A is stored, two hours after the takeover on that clock. The next pass copies it.
-func crashForwardTwoHoursLate(t *testing.T) {
+// (12b) After the claim's own pass, a forward to A is stored 55 minutes after the takeover on the
+// listener's clock, as a forward that resolved A before the claim is stored inside the fence
+// (roles.ForwardFenceAge): the next pass copies it. A pass that starts past the record's hour
+// (takeoverRecordLife, the keep window) and reads to the end ends the record, and no pass after it
+// runs it again.
+func crashForwardInsideTheHour(t *testing.T) {
 	rig := newCrashRig(t)
 	const a, b, role = "ses_cr12b_a", "ses_cr12b_b", "cr12b"
 	rig.gone(a)
 	rig.claim(rig.away, a, role)
 	first := rig.sendTo(a, role, 1, "before the takeover")
 	next := rig.relayed(b, answerDone)
-	rig.clock.advance(-2 * roleKeepWindow)
 	rig.claim(rig.mux, b, role)
-	rig.clock.advance(2 * roleKeepWindow)
 	crashAwaitEvents(t, next, first, nil, "the new holder, from the claim's own pass")
-	late := rig.lateForward(a, role, "stored two hours after the takeover")
+	rig.idle(rig.cfg(), role)
+	rig.clock.advance(roleKeepWindow - 5*time.Minute)
+	late := rig.lateForward(a, role, "stored 55 minutes after the takeover")
 	rig.sweep(rig.cfg(), role)
 	crashAwaitEvents(t, next, []string{late}, nil, "the new holder, from the next pass")
+	if record := rig.onlyRecord(role, a); record.Finished {
+		t.Fatalf("the record %+v is finished inside its hour", record)
+	}
+	rig.clock.advance(10 * time.Minute)
+	rig.sweep(rig.cfg(), role)
+	ended := rig.onlyRecord(role, a)
+	if !ended.Finished {
+		t.Fatalf("the record %+v is not finished by the pass past its hour", ended)
+	}
+	rig.clock.advance(roleWakeInterval)
+	rig.sweep(rig.cfg(), role)
+	if again := rig.onlyRecord(role, a); !again.written.Equal(ended.written) {
+		t.Fatalf("a pass after the record ended wrote it again at %s", again.written)
+	}
 }
 
 // crashRecordWrite is one write of a takeover record as the beforeRecordWrite seam reports it.
@@ -730,14 +754,14 @@ type crashRecordWrite struct {
 	finished bool
 }
 
-// (12d) The claim is written with the listener's clock 70 hours 10 minutes back, and the sweep is
-// run pass after pass (its interval shortened). A pass that finds nothing new writes nothing while
-// the record's last write is younger than takeoverRecordRefresh, and writes the record again,
-// unfinished, once that write is older, so the stream's age limit, counted from the last write,
-// never removes it; a forward stored 70 hours 55 minutes after the takeover is copied; and only
-// once the clock is past 71 hours does a pass mark the record finished, and only the pass that
-// reads to the end: with more than one pass's worth of messages behind the floor, the pass before
-// it writes the record unfinished.
+// (12d) The claim is written with the listener's clock 10 minutes back, and the sweep is run pass
+// after pass (its interval shortened). A pass that finds nothing new writes nothing while the
+// record's last write is younger than takeoverRecordRefresh, and writes the record again,
+// unfinished, once that write is older; a forward stored 55 minutes after the takeover, inside the
+// fence, is copied; and only once the clock is past the record's hour (takeoverRecordLife, the keep
+// window) does a pass mark the record finished, and only the pass that reads to the end: with more
+// than one pass's worth of messages behind the floor, the pass before it writes the record
+// unfinished. So a copy that stops and runs again copies every forward stored within the hour.
 func crashRecordHeldToItsLastHour(t *testing.T) {
 	rig := newCrashRig(t)
 	const a, b, role = "ses_cr12d_a", "ses_cr12d_b", "cr12d"
@@ -757,7 +781,7 @@ func crashRecordHeldToItsLastHour(t *testing.T) {
 			}
 		},
 	})
-	const sinceClaim = 70*time.Hour + 10*time.Minute
+	const sinceClaim = 10 * time.Minute
 	rig.clock.advance(-sinceClaim)
 	rig.claim(rig.mux, b, role)
 	rig.clock.advance(sinceClaim)
@@ -765,7 +789,7 @@ func crashRecordHeldToItsLastHour(t *testing.T) {
 	crashAwaitEvents(t, next, first, nil, "the new holder, from the record's first pass")
 	record := rig.onlyRecord(role, a)
 	if record.Finished {
-		t.Fatalf("the record %+v is finished by a pass that started before 71 hours", record)
+		t.Fatalf("the record %+v is finished by a pass that started inside its hour", record)
 	}
 	rig.sweep(rig.cfg(), role)
 	if again := rig.onlyRecord(role, a); !again.written.Equal(record.written) {
@@ -776,18 +800,18 @@ func crashRecordHeldToItsLastHour(t *testing.T) {
 		rig.sweep(rig.cfg(), role)
 		again := rig.onlyRecord(role, a)
 		if again.Finished {
-			t.Fatalf("pass %d after the first, before 71 hours, finished the record %+v", i+1, again)
+			t.Fatalf("pass %d after the first, inside the hour, finished the record %+v", i+1, again)
 		}
 		if !again.written.After(record.written) {
 			t.Fatalf("pass %d after the first, takeoverRecordRefresh on, left the record as written at %s; want it written again, so the stream's age limit starts again", i+1, record.written)
 		}
 		record = again
 	}
-	late := rig.lateForward(a, role, "stored 70 hours 55 minutes after the takeover")
+	late := rig.lateForward(a, role, "stored 55 minutes after the takeover")
 	rig.sweep(rig.cfg(), role)
 	crashAwaitEvents(t, next, []string{late}, nil, "the new holder, from the pass after the late forward")
 	if record := rig.onlyRecord(role, a); record.Finished {
-		t.Fatalf("the record %+v is finished before 71 hours", record)
+		t.Fatalf("the record %+v is finished inside its hour", record)
 	}
 	rig.clock.advance(10 * time.Minute)
 	rig.storeToSession(a, roleKeepScanMax+50)
@@ -801,15 +825,15 @@ func crashRecordHeldToItsLastHour(t *testing.T) {
 	past := slices.Clone(writes)
 	mu.Unlock()
 	if len(past) < 2 {
-		t.Fatalf("the sweep past 71 hours wrote the record %d times (%+v); want a pass that did not reach the end and the one that did", len(past), past)
+		t.Fatalf("the sweep past the hour wrote the record %d times (%+v); want a pass that did not reach the end and the one that did", len(past), past)
 	}
 	for i, write := range past[:len(past)-1] {
 		if write.finished || write.next >= end {
-			t.Fatalf("write %d of the sweep past 71 hours is %+v; want it unfinished, short of the end at %d", i+1, write, end)
+			t.Fatalf("write %d of the sweep past the hour is %+v; want it unfinished, short of the end at %d", i+1, write, end)
 		}
 	}
 	if last := past[len(past)-1]; !last.finished || last.next != end {
-		t.Fatalf("the last write of the sweep past 71 hours is %+v; want it finished at the end, %d", last, end)
+		t.Fatalf("the last write of the sweep past the hour is %+v; want it finished at the end, %d", last, end)
 	}
 	if record := rig.onlyRecord(role, a); !record.Finished || record.Next != end {
 		t.Fatalf("the record on the stream is %+v; want it finished at %d", record, end)

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A finished root's hand-over of a child it leaves mid-run is one write to Dispatch, so the one
@@ -21,6 +22,7 @@ import (
 // actor: that event is what admission takes the child in by as an orphan (LEGION-624). The labels
 // the child already carried are kept.
 func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -44,7 +46,7 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("set the child mid-run = %s", response.Status)
 	}
-	daemonDispatch := dispatch.New(baseURL, token)
+	daemonDispatch := dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	before, err := daemonDispatch.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the mid-run child: %v", err)
@@ -54,7 +56,7 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	const root = "LEGION-900"
 	until := time.Now().UTC()
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}); err != nil {
 			return err
 		}

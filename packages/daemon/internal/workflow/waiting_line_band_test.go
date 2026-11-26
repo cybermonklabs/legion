@@ -1,5 +1,13 @@
 package workflow
 
+//ci:reads packages/daemon/cmd/legion/main.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/admit.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/awaiting_person_test.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/hold_test.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/api/state.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/daemon/awaiting_catchup.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/phase/phase.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+
 import (
 	"os"
 	"path/filepath"
@@ -56,6 +64,7 @@ import (
 // enough to leave running-legion.md's honest definition of the ordinal, `1 being first in the
 // line`, standing.
 func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {
 		t.Helper()

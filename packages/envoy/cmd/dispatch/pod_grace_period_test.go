@@ -1,5 +1,9 @@
 package main
 
+// cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
+// DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
+//ci:reads packages/envoy/infra/gcp/testdata/dispatch-pod.golden TestDispatchPodGracePeriodCoversStopGrace
+
 import (
 	"encoding/json"
 	"os"
@@ -50,6 +54,7 @@ type dispatchPod struct {
 // terminationGracePeriodSeconds - it sends SIGTERM only once the hook returns - so the seconds
 // left for the shutdown are the grace period less the hook's sleep, and they must cover stopGrace.
 func TestDispatchPodGracePeriodCoversStopGrace(t *testing.T) {
+	t.Parallel()
 	golden, err := os.ReadFile(dispatchPodGolden)
 	if err != nil {
 		t.Fatalf("read %s, the pod gcp:Dispatch renders: %v", dispatchPodGoldenPath, err)

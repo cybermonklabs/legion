@@ -289,6 +289,7 @@ func (r *bootClaimRig) drain() {
 // row still waits on its holder queues a second one, and that the repository recovery starts no
 // pass at all.
 func TestBootReleasesParkedClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("one boot over the board", testBootQueuesTheParkedClaims)
 	t.Run("a second boot while the first row waits", testASecondBootQueuesASecondRelease)
 	t.Run("the repository recovery", testTheRecoveryStartsNoClaimReleasePass)
@@ -372,7 +373,7 @@ func testTheRecoveryStartsNoClaimReleasePass(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)
 	keep := func(map[string]*record.Issue, dispatch.IssueSummary) bool { return true }
-	if err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
+	if _, err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
 		t.Fatalf("recovery reconcile: %v", err)
 	}
 	if got := rig.queued(); len(got) != 0 {

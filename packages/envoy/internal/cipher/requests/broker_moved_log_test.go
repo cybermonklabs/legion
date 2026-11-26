@@ -147,7 +147,7 @@ func TestTheEndOfARequestSignedForAnotherBrokerIsLogged(t *testing.T) {
 	since := time.Now().Add(-time.Hour)
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 
-	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || again.State != "pending" || again.ID == stale.ID {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want a new pending request", again, err)
 	}
@@ -167,7 +167,7 @@ func TestEachStaleRequestEndedIsLoggedNamingTheOneNewRequest(t *testing.T) {
 	second := askOfAnotherBroker(t, m, earlier, earlierKey, stripeKey)
 	moveSession(t, m, earlier, enr)
 
-	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again for both", "DEEL_API_KEY", stripeKey), "", nil)
+	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again for both", "DEEL_API_KEY", stripeKey), "")
 	if err != nil || again.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY, %s) = %+v, %v; want a new pending request", stripeKey, again, err)
 	}
@@ -194,7 +194,7 @@ func TestTheEndBeforeARequestThatVerifiesNamesThatRequest(t *testing.T) {
 			since := time.Now().Add(-time.Hour)
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-			verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "", nil)
+			verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "")
 			if err != nil || verifies.State != "pending" {
 				t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request", verifies, err)
 			}
@@ -204,7 +204,7 @@ func TestTheEndBeforeARequestThatVerifiesNamesThatRequest(t *testing.T) {
 			if c.refused {
 				ask = signRequestFor(t, m, key, 600, "DEEL_API_KEY")
 			}
-			got, err := m.Create(ctx, enr, ask, "", nil)
+			got, err := m.Create(ctx, enr, ask, "")
 			if c.refused {
 				if !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), verifies.ID) {
 					t.Fatalf("Create for another lifetime = %+v, %v; want ErrRequestPending naming %s", got, err, verifies.ID)
@@ -224,14 +224,14 @@ func TestTheEndBeforeARequestThatVerifiesNamesThatRequest(t *testing.T) {
 func TestARequestSignedForThisBrokerLogsNoEnd(t *testing.T) {
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-not-moved")
 	ctx := context.Background()
-	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || own.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request", own, err)
 	}
-	if same, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "", nil); err != nil || !same.Coalesced {
+	if same, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), ""); err != nil || !same.Coalesced {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want it coalesced onto %s", same, err, own.ID)
 	}
-	if req, err := m.Create(ctx, enr, signRequestFor(t, m, key, 600, "DEEL_API_KEY"), "", nil); !errors.Is(err, ErrRequestPending) {
+	if req, err := m.Create(ctx, enr, signRequestFor(t, m, key, 600, "DEEL_API_KEY"), ""); !errors.Is(err, ErrRequestPending) {
 		t.Fatalf("Create(DEEL_API_KEY) for another lifetime = %+v, %v; want ErrRequestPending", req, err)
 	}
 	requireBrokerMovedLines(t, capture)
@@ -261,7 +261,7 @@ func TestACreateWhoseCommitFailsLogsNoEnd(t *testing.T) {
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			if c.verifies {
 				earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-				if verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "", nil); err != nil || verifies.State != "pending" {
+				if verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), ""); err != nil || verifies.State != "pending" {
 					t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request", verifies, err)
 				}
 				moveSession(t, m, earlier, enr)
@@ -281,7 +281,7 @@ func TestACreateWhoseCommitFailsLogsNoEnd(t *testing.T) {
 			if c.lifetime != 0 {
 				ask = signRequestFor(t, m, key, c.lifetime, "DEEL_API_KEY")
 			}
-			got, err := m.Create(ctx, enr, ask, "", nil)
+			got, err := m.Create(ctx, enr, ask, "")
 			if err == nil || errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), "the test refuses this commit") {
 				t.Fatalf("Create = %+v, %v; want the commit's own error", got, err)
 			}
@@ -302,14 +302,14 @@ func TestARequestEndedWithNoAuditDetailLogsAnEmptyObject(t *testing.T) {
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-no-detail")
 	ctx := context.Background()
 	since := time.Now().Add(-time.Hour)
-	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
+	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "")
 	if err != nil || cancelled.State != "pending" {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request", cancelled, err)
 	}
 	if err := m.Cancel(ctx, cancelled.ID, enr); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "", nil)
+	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "")
 	if err != nil || expired.State != "pending" {
 		t.Fatalf("Create(ALICE_KEY) = %+v, %v; want a pending request", expired, err)
 	}
@@ -353,7 +353,7 @@ func TestTheEndAfterARequestThatVerifiesNamesThatRequest(t *testing.T) {
 			if c.refused {
 				ask = signRequestFor(t, m, key, 600, "DEEL_API_KEY")
 			}
-			got, err := m.Create(context.Background(), enr, ask, "", nil)
+			got, err := m.Create(context.Background(), enr, ask, "")
 			if c.refused {
 				if !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), verifies.ID) {
 					t.Fatalf("Create for another lifetime = %+v, %v; want ErrRequestPending naming %s", got, err, verifies.ID)
@@ -379,7 +379,7 @@ func TestTheEndOnAnAskDecidedAtOnceNamesTheRequestWrittenAtOnce(t *testing.T) {
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			c.prepare(t, m)
 
-			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "", nil)
+			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "")
 			if err != nil || got.State != c.state {
 				t.Fatalf("Create(%v) again = %+v, %v; want a new request %s at once", c.names, got, err, c.state)
 			}
@@ -397,7 +397,7 @@ func TestTheEndOnAReusedGrantNamesItsRequest(t *testing.T) {
 	since := time.Now().Add(-time.Hour)
 	granted, _, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
 
-	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || got.ID != granted.ID {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want the live grant of request %s handed back", got, err, granted.ID)
 	}
@@ -414,7 +414,7 @@ func TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd(t *testing.T) {
 			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-refused-early")
 			askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 
-			if got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil); err == nil {
+			if got, err := m.Create(context.Background(), enr, c.ask(t, m, key), ""); err == nil {
 				t.Fatalf("Create = %+v; want it refused", got)
 			}
 			requireBrokerMovedLines(t, capture)

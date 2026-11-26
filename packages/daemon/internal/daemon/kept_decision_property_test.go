@@ -699,7 +699,13 @@ type keptDeparture struct {
 // outbox runner and claim supervisor over a database of its own, the model the generator drives
 // them from, and what each architect was told.
 type keptRun struct {
-	t     *testing.T
+	t *testing.T
+	// ctx is the run's own calls' context — its facts, reads, writes and row runs — with a hold
+	// mark of its own (store.ForConcurrentWorker), so the pool refuses one of them a second
+	// connection while another holds one (store.ErrNestedAcquire). It is the mark of one
+	// sequential flow: a goroutine the run starts beside it takes worker() instead. On an unmarked
+	// context the pool refuses nothing, and a run built on one passes whatever its calls do
+	// (TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext).
 	ctx   context.Context
 	seed  int64
 	rng   *rand.Rand
@@ -945,6 +951,9 @@ func keptPropertySeeds(t *testing.T) []int64 {
 	return seeds
 }
 
+// keptPropertyEnv is the positive count the environment variable name sets, or fallback where it
+// is unset; a value that is no positive count fails the test. The news model test reads its
+// counts through it too (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold).
 func keptPropertyEnv(t *testing.T, name string, fallback int) int {
 	t.Helper()
 	set := os.Getenv(name)
@@ -969,7 +978,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		slog.New(slog.NewJSONHandler(closeLog, nil)))
 	trees := outboxTreeStore(t, pool, keptRoot)
 	run := &keptRun{
-		t: t, ctx: ctx, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
+		t: t, ctx: store.ForConcurrentWorker(ctx), seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
 		pool: pool, records: records,
 		engine: engine,
 		// Admission runs over the project key the records carry, which is what its own reads of the
@@ -1076,7 +1085,7 @@ func (l *keptLog) mark() int {
 // alone: the linger's close hands over what its own reading finds unfinished, and the member a
 // blocker holds is handed over by the step that writes that hand-over (handOverChildWithoutItsRun).
 func (r *keptRun) mirror(key, status string, seq int64, waits ...string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
 			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	}); err != nil {
@@ -1104,6 +1113,11 @@ func (r *keptRun) restart() {
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
+		// The supervisor runs on the run's own mark (r.ctx), and each goroutine a machine starts —
+		// a timer's firing, a prompt's send, whose outcome is a delivery write — takes a mark of its
+		// own, as the daemon gives it (daemon.go's supervise.Deps). Without it every such goroutine
+		// would share the run's mark (Machine.worker) and collide with the run's own reads.
+		Worker: store.ForConcurrentWorker,
 	}
 	r.t.Cleanup(sup.stop)
 	if !first {
@@ -1389,7 +1403,7 @@ func (r *keptRun) decideOn(issue string) {
 	kind := []record.DecisionKind{record.DecisionAskAnswered, record.DecisionAskResolved}[r.rng.IntN(2)]
 	r.at = r.at.Add(time.Minute)
 	outcome, tree := record.RelayNone, ""
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := r.records.Issue(r.ctx, tx, issue)
 		if err != nil || stored == nil {
 			return err
@@ -1500,7 +1514,7 @@ func (r *keptRun) park() {
 func (r *keptRun) awaitTheChildsMerge() {
 	r.child.issue.Phase = phase.Merging
 	r.putIssue(r.child.issue)
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: keptChild,
 			Repo: "acme/widgets", Number: keptChildPullRequest, Branch: "legion/" + keptChild, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
@@ -1549,7 +1563,7 @@ func (r *keptRun) readmitRoot() error {
 // (its nextSlotIndex): the slots a run holds are not a run of indexes from zero once a root in
 // the middle of them has given its own back, and the column is unique.
 func (r *keptRun) takeSlot(key string) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		slots, err := r.records.Slots(r.ctx, tx)
 		if err != nil {
 			return err
@@ -1573,7 +1587,7 @@ func (r *keptRun) takeSlot(key string) error {
 // ended confirm it once every claim of the tree has retired (store.CleanupReservedTree). Those
 // rows are among the ones this run does not drive, so their one lasting mark is written here.
 func (r *keptRun) closeTreeLifecycle(key string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		lifecycle, err := treelifecycle.ReserveCleanup(r.ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
 		if err != nil {
 			return err
@@ -1587,7 +1601,7 @@ func (r *keptRun) closeTreeLifecycle(key string) {
 // releaseSlot gives back the slot of a root that left the workflow, as admission's own pass does
 // for every issue that no longer needs one (releaseSlots).
 func (r *keptRun) releaseSlot(key string) {
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.ReleaseSlot(r.ctx, tx, key)
 	}); err != nil {
 		r.fatalf("release the slot of %s: %v", key, err)
@@ -1604,7 +1618,7 @@ func (r *keptRun) enqueueStart() {
 func (r *keptRun) enqueueStartRow() error {
 	var kept *record.KeptDecisions
 	now := time.Now()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root.issue)
 		if err != nil {
 			return err
@@ -1653,7 +1667,7 @@ func (r *keptRun) handsOverEveryMember() bool {
 // the narrow rule reads that record.Issue does not carry (record.Store.PullRequest).
 func (r *keptRun) pullRequestOpen(key string) bool {
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = r.records.PullRequest(r.ctx, tx, key)
 		return err
@@ -1706,7 +1720,7 @@ func (r *keptRun) handOverMember(member *keptTree, parent string, withRun bool) 
 // waiting behind it, where a failure is the step's to report (raceRow, handOverInsideAHeldTask).
 func (r *keptRun) handOverMemberErr(member *keptTree, parent string, withRun bool) error {
 	now := time.Now()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutHandover(r.ctx, tx, record.Handover{Issue: member.key, Tree: r.root.issue.Tree,
 			Generation: r.root.issue.Generation}); err != nil {
 			return err
@@ -1846,7 +1860,7 @@ func (r *keptRun) adoptionTarget() *keptTree {
 			continue
 		}
 		live := false
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			live, err = record.TreeLive(r.ctx, r.records, tx, *stored, nil)
 			return err
@@ -2075,7 +2089,7 @@ func (r *keptRun) runTogether() {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = r.runner.execute(r.ctx, rows[i])
+			errs[i] = r.runner.execute(r.worker(), rows[i])
 		}(i)
 	}
 	wg.Wait()
@@ -2296,7 +2310,7 @@ func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) er
 
 // finishRow finishes a row as its lane finishes it, under the lease the run took.
 func (r *keptRun) finishRow(row record.OutboxRow) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 	})
 }
@@ -2305,7 +2319,7 @@ func (r *keptRun) finishRow(row record.OutboxRow) error {
 // settle and retry): the store's RetryOutbox under the run's lease, which clears the lease, due
 // again now rather than after the lane's backoff, since the run's time is compressed.
 func (r *keptRun) retryRow(row record.OutboxRow, runErr error) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.RetryOutbox(r.ctx, tx, row.ID, row.LeaseToken, time.Now().UTC(), runErr.Error())
 	})
 }
@@ -3493,7 +3507,7 @@ func (r *keptRun) observe() {
 // the root's one architect session whenever that session is next ready.
 func (r *keptRun) architectToHear(key string) bool {
 	var hears bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		root, err := r.records.Issue(r.ctx, tx, key)
 		if err != nil || root == nil {
 			return err
@@ -3704,7 +3718,7 @@ func (r *keptRun) putIssue(issue record.Issue) {
 }
 
 func (r *keptRun) putIssueErr(issue record.Issue) error {
-	return pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutIssue(r.ctx, tx, issue)
 	})
 }
@@ -3712,7 +3726,7 @@ func (r *keptRun) putIssueErr(issue record.Issue) error {
 // issueRecord is the record of key, nil for an issue the daemon does not record.
 func (r *keptRun) issueRecord(key string) *record.Issue {
 	var stored *record.Issue
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = r.records.Issue(r.ctx, tx, key)
 		return err
@@ -3758,7 +3772,7 @@ func (r *keptRun) enqueue(issue string, payload record.OutboxPayload) {
 	if err != nil {
 		r.fatalf("build an outbox row: %v", err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.Enqueue(r.ctx, tx, row)
 	}); err != nil {
 		r.fatalf("enqueue an outbox row: %v", err)
@@ -3822,7 +3836,7 @@ func (r *keptRun) waitsForItsSlot(tree *keptTree) bool {
 		return false
 	}
 	var waits bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		waits, err = record.WaitsForSlot(r.ctx, tx, r.records, *stored, nil)
 		return err
@@ -3851,6 +3865,62 @@ func (r *keptRun) handle(machine *supervise.Machine, ev supervise.Event) {
 
 func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
+}
+
+// worker is the context of a goroutine the run starts beside its own calls — a row run of the
+// step that runs rows beside each other (runTogether) — with a hold mark of its own
+// (store.ForConcurrentWorker), as each lane of the outbox takes in production. On r.ctx those
+// goroutines would share one mark: one's transaction would set it, and the pool would refuse
+// another a connection it does not hold (store.ErrNestedAcquire). The operation a publish races
+// against (keptPublisher.publish) runs on r.ctx: the publishing flow waits for it outside every
+// transaction, so nothing else on the run's mark runs beside it.
+func (r *keptRun) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
+}
+
+// The kept-decision run's own context carries a hold mark, so the pool refuses a second
+// connection to a caller that already holds one: a goroutine started on r.ctx rather than on
+// worker() collides with the run's own reads, as #5396's pod-update tests did. On the unmarked
+// context this run used to take, the pool refused nothing and no run of this property could
+// catch that. Here a planted holder takes a connection on the run's context, and the run's own
+// read must be refused; so must a read on the supervisor's context, which every machine's
+// goroutine would run on with no Deps.Worker (Machine.worker). The same read on worker(), and on
+// the context Deps.Worker gives a machine's goroutine, is allowed.
+func TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
+	t.Parallel()
+	r := newKeptRun(t, 1, 1)
+	held, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	go func() {
+		_ = store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	// The mark is set when the transaction takes its connection, before the body this waits for.
+	<-held
+
+	for _, shared := range []struct {
+		what string
+		ctx  context.Context
+	}{{"the run's own read", r.ctx}, {"a read on the supervisor's context, a machine goroutine's with no Deps.Worker", r.sup.ctx}} {
+		if _, err := r.pool.Exec(shared.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
+			t.Fatalf("%s while the planted holder holds a connection = %v, want %v: that context carries no hold mark, so nothing of this property can catch a goroutine that shares it",
+				shared.what, err, store.ErrNestedAcquire)
+		}
+	}
+	if r.sup.deps.Worker == nil {
+		t.Fatal("the run's supervisor sets no Deps.Worker, so each goroutine a machine starts shares the run's mark")
+	}
+	for _, own := range []struct {
+		what string
+		ctx  context.Context
+	}{{"a read on a goroutine's own mark (worker)", r.worker()}, {"a read on a machine goroutine's mark (Deps.Worker)", r.sup.deps.Worker(r.sup.ctx)}} {
+		if _, err := r.pool.Exec(own.ctx, "select 1"); err != nil {
+			t.Fatalf("%s while the holder holds one = %v, want it allowed: each goroutine's mark is its own", own.what, err)
+		}
+	}
 }
 
 // fatalf ends the run with what broke, the command that replays it, the step it broke at and

@@ -4,9 +4,10 @@ import "strings"
 
 // Every argv the runtime hands tmux is built here, by a pure function, so the whole command
 // vocabulary can be read — and tested against the shipped TypeScript's argv — in one place. Each
-// starts `tmux -L <socket>`: the daemon's private server, forked by its own first command under
-// the pane environment, never an operator's server (tmux.ts:8-16). The runner swaps `tmux` for
-// the resolved binary.
+// names `-L <socket>`: the daemon's private server, forked by its own first command under the pane
+// environment, never an operator's server (tmux.ts:8-16). That command, new-session, also carries
+// `-f /dev/null`, so the server reads no tmux configuration. The runner swaps `tmux` for the
+// resolved binary.
 
 // bootstrapWindow is the throwaway window a new session is created with, so the session can exist
 // — and have `update-environment` emptied — before any real window runs in it (tmux.ts:190).
@@ -64,7 +65,7 @@ func hasSessionArgv(socket, session string) []string {
 // separator — so no attach can copy a client's environment into the session in between
 // (tmux.ts:262-300).
 func newSessionArgv(socket, session string) []string {
-	return tmuxArgv(socket, append(
+	return append([]string{"tmux", "-f", "/dev/null", "-L", socket}, append(
 		[]string{"new-session", "-d", "-s", session, "-n", bootstrapWindow, "sleep 3600", ";"},
 		disableEnvironmentUpdates(session)...,
 	)...)

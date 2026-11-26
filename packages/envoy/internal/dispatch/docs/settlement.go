@@ -10,6 +10,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -98,11 +99,28 @@ type settlement struct {
 	reconciled     *pmdoc.Node
 	versioned      *pmdoc.Node
 	reconciliation settlementReconciliation
-	// snapshotCursor is the head the version records (doc_update_version), through which every one
-	// of the room's updates it holds is stored.
+	// readHead is the head of the document's stored history this settlement read under the
+	// document's lock, before it stored anything (readLocked). snapshotCursor is the head the
+	// version records (doc_update_version), through which every one of the room's updates it holds
+	// is stored; it equals readHead when the settlement stored no update (savedNothing).
+	readHead       int64
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+}
+
+// savedNothing reports whether this settlement wrote nothing that a later move of an approval
+// request reads, given whether it writes a version (versioning): it writes no version, stores no
+// update in the document's history - none of the room's updates, no block-id stamp and no ask- or
+// check-block repair, so the head it leaves is the head it read (readHead) - and lists no author,
+// neither a pending author nor an in-flight credit. A reopen's move reads the latest version and
+// the editor kept for it (FollowClosedIssueVersions); what else such a settlement writes - block
+// events in SettlementActor's name, the settled version's number in their payloads, the recorded
+// author of an unindexed ask block - changes neither. A settlement armed while another one commits,
+// as the resumption's pick of the row that one is about to delete arms it, finds nothing owed and
+// is such a settlement.
+func (st *settlement) savedNothing(versioning bool) bool {
+	return !versioning && st.snapshotCursor == st.readHead && len(st.credit.authors) == 0
 }
 
 // skipUnreadableSettlement reports whether err stops a settlement at a document whose tree it cannot
@@ -246,6 +264,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// too, so a close this process has not heard of yet is read here, and no close commits until
 	// this settlement's transaction ends.
 	settle.owner, settle.issueClosed = owner, !open
+	if err := lockSettlementFence(ctx, tx, room); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// The owner is read under its lock in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
@@ -271,6 +292,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 	_, outcome := settle.commitVersion(ctx)
 	return outcome
+}
+
+// lockSettlementFence queues the take of the document's document_block_versions row `for no key
+// update`, the revision fence's row (R23 of this change), as the settlement's first write: right
+// after its owner lock, and ahead of every statement the settlement queues, so the write phase
+// takes the row before anything else it writes. Whether a settlement writes a version is decided
+// only in commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and
+// followed each one for a session author, which writes that session's node (asks.Follow); the
+// version's own fence - the version row's trigger (document_block_versions_owe, migration 0122)
+// and refs.BlockIndexing's own - comes after that node. The lock order written on
+// api/inbox_read.go's markInboxReadThreads has a writer under the fence take its row before any
+// node, tuple or projection row it writes, so every settlement takes it here, since any of them
+// may write a version. Those later takes of the same row in this transaction wait on nothing.
+// Every document holds the row from its first version on; a document with none has no row, and
+// the insert of its first version makes it. The take is queued rather than run, as every write of
+// the settlement is: a row lock assigns the transaction its id, which the read phase holds none
+// of.
+func lockSettlementFence(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, fmt.Sprintf("take the revision fence of document %s", artifactID), `
+		select 1 from document_block_versions where artifact_id = $1 for no key update
+	`, artifactID)
 }
 
 // take is what the settlement takes of its room before it opens a transaction: the room warmed
@@ -643,18 +685,29 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // events, after those the version write appended, which the settlement publishes once it commits.
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event) error {
+//
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the settlement opened and its author's follow. Their appends are queued
+// right after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
 	sink := eventSink(ctx)
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		for _, planned := range events {
+		for index, planned := range events {
 			if err := st.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned), sink); err != nil {
 				return err
 			}
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
+			}
+			for _, stated := range caused[index] {
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
 		return nil
@@ -763,17 +816,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// doc_closed_edit_sources), for the reopen's mark to write back into the row it inserts
 	// (settlementPendingStatement) and the reopen's move to name (FollowClosedIssueVersions). A
 	// settlement on an open issue has named its editor itself, and one on a closed issue that
-	// credits SettlementActor names no editor, as the settlement after the reopen, crediting the
-	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
-	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
-	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// credits SettlementActor for the edits it saves names no editor, as the settlement after the
+	// reopen, crediting the same edits, named none then: each forgets the editor an earlier
+	// settlement kept. One on a closed issue whose credit is only the kept editor
+	// (settlementVersionCredit.kept), its version adding none of their text, keeps that same
+	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
+	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
+	// only because it found nothing to credit, and its commit deletes the pending row alone,
+	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
+	// are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
 	}
-	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
+	if st.issueClosed && kept == nil && st.savedNothing(versioning) {
+		if err := clearSettlementPendingRow(ctx, tx, room); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	} else if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
@@ -809,18 +869,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
-		// A person's version opens or moves on the document's edit notice, under the owner lock
-		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
-		// same order the notice a person's version opened before the close, due or held
-		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
-		// reopen, which would start from that row's from_version (openEditNotice), carries the
-		// edits this version saves.
-		if st.issueClosed {
-			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
-				return settleDone, st.abandon(err)
-			}
-		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// A person's version opens or moves on the document's edit notice, and a closed issue's
+		// deletes it (settledEditNotice).
+		if err := s.settledEditNotice(ctx, tx, room, st.issueClosed, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// A document body cites nodes whose rows carry a backlink count, so the version event
@@ -834,11 +885,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
 		}
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}); err != nil {
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only once the event's insert has
+		// run, so it is stated right after it (appendEvents).
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
+	// The nodes and the follows of the asks this settlement opened wait for those asks' ask.opened
+	// events, each stated right after its own (followsByEvent).
+	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
+	if err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.appendEvents(ctx, st.reconciliation.events, follows); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The write phase: every statement this settlement decided on, in the order it made them.
@@ -892,4 +952,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// settledEditNotice is what a settlement's version does to the document's edit notice, under the
+// owner lock the settlement took first: the sweep takes the two in that order too
+// (sendEditNotice). A person's version on an open issue opens or moves on the notice
+// (recordEditNotice). A closed issue's version opens none, and deletes in that same order the
+// notice a person's version opened before the close, due or held (holdEditNotice): neither a
+// reopen inside its quiet time nor the first notice after the reopen, which would start from that
+// row's from_version (openEditNotice), carries the edits this version saves. The version a joined
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
+func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
+	if closedIssue {
+		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
+	}
+	return s.recordEditNotice(ctx, tx, room, version, authors, latest)
 }

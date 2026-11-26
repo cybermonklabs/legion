@@ -1,6 +1,6 @@
 name: CI job envoy-go-race-api
 
-# The steps of ci.yaml's `envoy-go-race-api` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-go-race-api` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job envoy-go-race-api
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -51,6 +51,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 90 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The broker's store, which the package's contract tests open (brokerstoretest.Open in
       # internal/dispatch/api/contract_test.go) and skip without; a skip is a pass, so without this
@@ -63,9 +64,25 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+      # The package's tests run 8 at once (apiTestParallelism, server_test.go), each with a
+      # database and pools of its own, so this samples the service's connections every 2 s while
+      # the next step runs and the step after it prints the peak against max_connections: a change
+      # that makes the tests open more at once shows here before it shows as a 53300 refusal. The
+      # loop runs in the background past its own step, until the runner ends the job.
+      - name: Sample the service's connections while the API's tests run
+        run: |
+          # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+          nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
       # go test counts a skipped test as a pass and, without -v, prints nothing for it, so the
       # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json
       # and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
@@ -76,6 +93,15 @@ jobs:
       - name: Race-test the Dispatch API
         run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
         working-directory: packages/envoy
+      - name: Report the service's peak connections
+        if: always()
+        run: |
+          allowed=$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections")
+          if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
+            echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+          else
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+          fi
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

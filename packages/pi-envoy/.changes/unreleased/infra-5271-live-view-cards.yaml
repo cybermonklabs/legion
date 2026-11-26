@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Dispatch's live view shows the Envoy messages a session receives, such as the brief a session
+  launcher sends and another agent's message: each card the session displays
+  reaches the view as a user message that says who sent it and holds what they wrote. A card that
+  delivers a Dispatch message to the session stays out of the stream, since the view already shows
+  that message from Dispatch's store. A collapsed card in the terminal keeps the line with the
+  words its sender wrote, a Dispatch message's body or an agent's message, where before it showed
+  only `…` until Ctrl+O.

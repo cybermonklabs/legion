@@ -10,15 +10,18 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -33,11 +36,129 @@ const fakeClaudeEnv = "LEGION_TEST_FAKE_CLAUDE"
 // (rig.open), so a test can act while the turn that line ends is still running.
 const fakeClaudeGateEnv = "FAKE_CLAUDE_GATE"
 
+// fakeClaudeGateDeadlineEnv names, in RFC 3339 with nanoseconds, the moment a replay stops waiting
+// for the gate: the moment the rig's own waits give up (deadlineWait).
+const fakeClaudeGateDeadlineEnv = "FAKE_CLAUDE_GATE_DEADLINE"
+
+// stopClock is a Config.Clock for a row that reads the bridge's stop against the bounds the bridge
+// states (Run, end), not against the time a loaded machine takes. Until the row raises it, no timer
+// on it fires, so no bound of the bridge's ends a wait of the stand-in's, however slow the machine
+// makes the stand-in. Once raised to ceiling, a timer fires the moment it is asked for when the
+// clock, moved on to that timer's end, stays within ceiling, and never otherwise: each bound the
+// bridge takes runs its full length, one after the other, which is the most its stated bound
+// allows, and a hold of the bridge's on this clock that would pass the ceiling never ends. The
+// bridge has no wall-clock wait of its own to race the clock (TestTheBridgeWaitsOnlyOnItsClock).
+type stopClock struct {
+	mu      sync.Mutex
+	raised  bool
+	now     time.Duration // the clock's time since raise
+	ceiling time.Duration
+	waiting []stopTimer
+}
+
+// stopTimer is a timer of a stopClock that has not fired: its length and the channel it fires on.
+type stopTimer struct {
+	length time.Duration
+	fires  chan time.Time
+}
+
+func (c *stopClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := stopTimer{length: d, fires: make(chan time.Time, 1)}
+	if !c.fire(timer) {
+		c.waiting = append(c.waiting, timer)
+	}
+	return timer.fires
+}
+
+// raise lets the bridge's bounds run up to ceiling on the clock, counted from now; a timer asked
+// for before counts from now too. The caller holds no lock.
+func (c *stopClock) raise(ceiling time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.raised, c.ceiling = true, ceiling
+	waiting := c.waiting
+	c.waiting = nil
+	for _, timer := range waiting {
+		if !c.fire(timer) {
+			c.waiting = append(c.waiting, timer)
+		}
+	}
+}
+
+// fire fires timer, moving the clock on to its end, when the clock is raised and that end is
+// within the ceiling. The caller holds c.mu.
+func (c *stopClock) fire(timer stopTimer) bool {
+	if !c.raised || c.now+timer.length > c.ceiling {
+		return false
+	}
+	c.now += timer.length
+	timer.fires <- time.Unix(0, 0).Add(c.now)
+	return true
+}
+
+// TestMain runs this binary as the fake Claude Code where fakeClaudeEnv is set, and runs the tests
+// otherwise. Only TestMain makes the fake of a copy a test starts: in a build of these tests
+// without it, such a copy runs the tests, each of which starts copies that run them again.
+// fakeClaudeCopy refuses to start a copy in such a process (fakeClaudeCopyRefusal), and
+// TestACopyStartedAsTheFakeClaudeRunsAsTheFake fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeClaudeEnv) == "1" {
 		os.Exit(fakeClaude())
 	}
 	os.Exit(m.Run())
+}
+
+// fakeClaudeCopy is the path of this test binary, which a test runs as the fake Claude Code with
+// fakeClaudeEnv=1 in the copy's environment. It fails t where fakeClaudeCopyRefusal refuses.
+func fakeClaudeCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// fakeClaudeCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has fakeClaudeEnv=1 was started as the fake Claude Code, and TestMain runs
+// such a process as the fake, so one that runs the tests runs in a build without TestMain, and a
+// copy started there would run the tests again.
+func fakeClaudeCopyRefusal() error {
+	if os.Getenv(fakeClaudeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the fake Claude Code, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeClaudeEnv)
+	}
+	return nil
+}
+
+// fakeClaudeCopyRefusal, which fakeClaudeCopy asks before any copy starts, refuses a process that
+// has fakeClaudeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheFakeClaudeStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeClaudeEnv)
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeClaudeEnv, err)
+	}
+	t.Setenv(fakeClaudeEnv, "1")
+	if err := fakeClaudeCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeClaudeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeClaudeEnv, err)
+	}
+}
+
+// A copy started with fakeClaudeEnv=1 runs as the fake Claude Code: it records its arguments, -h
+// among them. In a build without TestMain, the testing package reads -h before any test runs,
+// prints its own flag usage and exits, so the copy records nothing, this test fails there by name,
+// and the copy starts no copy of its own.
+func TestACopyStartedAsTheFakeClaudeRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	record := filepath.Join(t.TempDir(), "record")
+	cmd := exec.Command(fakeClaudeCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record)
+	out, err := cmd.CombinedOutput()
+	recorded, readErr := os.ReadFile(record)
+	if want := "argv -h\n"; err != nil || readErr != nil || !strings.HasPrefix(string(recorded), want) {
+		t.Fatalf("a copy started as the fake Claude Code with -h: %v, recorded %q (%v), want exit 0 and a record that starts %q\n%s", err, recorded, readErr, want, out)
+	}
 }
 
 // fakeClaude answers Claude Code's stream-json the way the probes recorded it: each user message
@@ -243,26 +364,36 @@ func replay(record *os.File, file string) {
 	}
 	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
 	for i, line := range lines {
-		if i == len(lines)-1 {
-			waitForGate(record)
+		if i == len(lines)-1 && !waitForGate(record) {
+			return
 		}
 		fmt.Fprintf(os.Stdout, "%s\n", line)
 	}
 }
 
-// waitForGate waits up to 10s for the test to open the gate, and returns at once when none is set.
-func waitForGate(record *os.File) {
+// waitForGate waits for the test to open the gate, and answers at once when none is set. Its one
+// bound is the moment the rig's own waits give up (fakeClaudeGateDeadlineEnv): a test a loaded
+// machine makes slow to open the gate still opens it first, and one that never does fails by name
+// at its own wait, the held line never written, rather than reading a line the gate let through on
+// its own.
+func waitForGate(record *os.File) bool {
 	gate := os.Getenv(fakeClaudeGateEnv)
 	if gate == "" {
-		return
+		return true
 	}
-	for range 1000 {
+	deadline, err := time.Parse(time.RFC3339Nano, os.Getenv(fakeClaudeGateDeadlineEnv))
+	if err != nil {
+		fmt.Fprintln(record, "the gate has no deadline:", err)
+		return false
+	}
+	for time.Now().Before(deadline) {
 		if _, err := os.Stat(gate); err == nil {
-			return
+			return true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	fmt.Fprintln(record, "the gate never opened")
+	return false
 }
 
 // rig runs one bridge over the fake Claude: frames go in through daemon, come out on frames.
@@ -287,13 +418,27 @@ func newRig(t *testing.T, args ...string) *rig {
 // daemon, boot token file and generation a bridge reports its turns with (turnoutcome.go).
 func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
 	t.Helper()
+	return startRig(t, extra, nil, args...)
+}
+
+// newRigOn is newRig with the bridge's timers on clock (Config.Clock).
+func newRigOn(t *testing.T, clock Clock, args ...string) *rig {
+	t.Helper()
+	return startRig(t, nil, clock, args...)
+}
+
+// startRig runs one bridge over the fake Claude Code with extra on top of the pane's environment,
+// its timers on clock, or on the wall clock where clock is nil.
+func startRig(t *testing.T, extra []string, clock Clock, args ...string) *rig {
+	t.Helper()
 	dir := t.TempDir()
 	// Run opens the inbox under the process TMPDIR, so the rig places that directory itself, with
 	// room for the inbox's socket.
 	t.Setenv("TMPDIR", testtmp.Dir(t, InboxLongestPath))
 	record, gate := filepath.Join(dir, "record"), filepath.Join(dir, "gate")
-	argv := append([]string{os.Args[0]}, args...)
+	argv := append([]string{fakeClaudeCopy(t)}, args...)
 	env := append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record, fakeClaudeGateEnv+"="+gate,
+		fakeClaudeGateDeadlineEnv+"="+time.Now().Add(deadlineWait(t)).Format(time.RFC3339Nano),
 		"CLAUDE_CONFIG_DIR="+dir, "LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7")
 	env = append(env, extra...)
 	cfg, err := Configure(argv, env)
@@ -303,7 +448,7 @@ func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	logged := &lockedBuffer{}
-	cfg.Stdin, cfg.Stdout, cfg.Log = inR, outW, logged
+	cfg.Stdin, cfg.Stdout, cfg.Log, cfg.Clock = inR, outW, logged, clock
 	r := &rig{t: t, daemon: inW, frames: make(chan map[string]any, 100), record: record, gate: gate,
 		log: logged, done: make(chan int, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -333,8 +478,8 @@ func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
 		_ = inW.Close()
 		select {
 		case <-r.done:
-		case <-time.After(10 * time.Second):
-			t.Error("the bridge did not end")
+		case <-time.After(deadlineWait(t)):
+			t.Errorf("the bridge did not end, %s before the test binary's deadline", deadlineMargin)
 		}
 	})
 	return r
@@ -351,14 +496,15 @@ func (r *rig) send(frame shimwire.Frame) {
 	}
 }
 
-// nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included.
+// nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included,
+// waited for until deadlineMargin before the test binary's deadline (deadlineWait).
 func (r *rig) nextRaw() map[string]any {
 	r.t.Helper()
 	select {
 	case frame := <-r.frames:
 		return frame
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("the bridge wrote nothing within 10s")
+	case <-time.After(deadlineWait(r.t)):
+		r.t.Fatalf("the bridge wrote nothing, %s before the test binary's deadline; the bridge logged:\n%s", deadlineMargin, r.log)
 		return nil
 	}
 }
@@ -437,11 +583,12 @@ func (r *rig) recorded() string {
 	return string(raw)
 }
 
-// waitFor waits up to 10 s for holds, failing with what it waited for.
+// waitFor waits for holds until deadlineMargin before the test binary's deadline (deadlineWait),
+// failing with what it waited for.
 func (r *rig) waitFor(what string, holds func() bool) {
 	r.t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, holds) {
-		r.t.Fatalf("waited 10s for %s; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, r.log, r.recorded())
+	if !testwait.Holds(deadlineWait(r.t), 5*time.Millisecond, holds) {
+		r.t.Fatalf("waited for %s until %s before the test binary's deadline; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, deadlineMargin, r.log, r.recorded())
 	}
 }
 
@@ -497,10 +644,11 @@ func (c *inboxClient) deliverBlocks(id, content string, blocks []json.RawMessage
 	}
 }
 
-// answer is the inbox's next answer, which must come within 10 s.
+// answer is the inbox's next answer, waited for until deadlineMargin before the test binary's
+// deadline (deadlineWait).
 func (c *inboxClient) answer() InboxAnswer {
 	c.t.Helper()
-	if err := c.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(deadlineWait(c.t))); err != nil {
 		c.t.Fatal(err)
 	}
 	line, err := c.answers.ReadBytes('\n')
@@ -1160,9 +1308,19 @@ func TestADeliveryWithPicturesIsSentAsItsBlocks(t *testing.T) {
 
 // An inbox client still connected when the bridge stops (claude-envoy's channel server keeps one
 // connection for every delivery, and may outlive Claude Code) neither holds the bridge's exit nor
-// keeps its inbox's directory.
+// keeps its inbox's directory. Told to stop, the bridge states it exits within Grace +
+// drainTimeout + inboxFlushTimeout + flushTimeout (Run), so a pane's shim, which kills it 5 s after
+// stopping it, finds the inbox removed. The bridge runs on a stopClock raised to exactly that bound
+// at the stop: each of its timers runs its full length, and a hold of the bridge's past the bound
+// never ends, so a bridge whose exit waits for its client on its clock fails the row by name, and
+// a machine that is merely slow, which moves no clock, does not. The row reads no wall time, by
+// design: a hold on the wall clock (a read deadline set seconds ahead, a sleep) ends on its own,
+// and the row cannot tell it from a slow machine without a wall-clock bound, which a loaded runner
+// would race. TestTheBridgeWaitsOnlyOnItsClock (clockwaits_test.go) is the row that fails such a
+// hold, by the package's types.
 func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
-	r := newRig(t, "-p", "--resume", sessionID)
+	clock := &stopClock{}
+	r := newRigOn(t, clock, "-p", "--resume", sessionID)
 	r.prompt("p1", "say WAITING for CI")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
@@ -1174,7 +1332,7 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	defer conn.Close()
 	// An answer proves the inbox accepted the connection and serves it, so its client is one the
 	// inbox's close waits for: a malformed delivery is answered with its refusal.
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(deadlineWait(t))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Write([]byte("{}\n")); err != nil {
@@ -1183,12 +1341,52 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	if answer, err := bufio.NewReader(conn).ReadBytes('\n'); err != nil || !strings.Contains(string(answer), "an id and content") {
 		t.Fatalf("the inbox answered %q, %v", answer, err)
 	}
+	bound := Grace + drainTimeout + inboxFlushTimeout + flushTimeout
+	clock.raise(bound)
 	r.stopped()
+	// The clock fires every timer of the stop as it is asked for, so a bridge that has not ended
+	// waits on something else: a process, a pipe, a goroutine that is runnable but not yet run on a
+	// loaded machine, or the wall clock. Only the last is a hold, and it leaves a goroutine of the
+	// bridge's blocked in a sleep or a timed wait (heldOnTheWallClock), which no clock moves.
+	held := make(chan string, 1)
+	watched := make(chan struct{})
+	defer close(watched)
+	go func() {
+		seen, key := 0, ""
+		for {
+			select {
+			case <-watched:
+				return
+			case <-time.After(testwait.Poll):
+			}
+			found, ok := heldOnTheWallClock(allStacks())
+			switch {
+			case !ok:
+				seen, key = 0, ""
+			case firstLine(found) != key:
+				seen, key = 1, firstLine(found)
+			default:
+				seen++
+			}
+			if seen == heldSamples {
+				held <- found
+				return
+			}
+		}
+	}()
 	select {
 	case code := <-r.done:
 		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge did not end within 10s with an inbox client connected")
+	case found := <-held:
+		t.Errorf("the bridge told to stop with an inbox client connected waits on the wall clock, which no clock of its moves, so the shim's kill would come first; held in %d samples in a row:\n%s", heldSamples, found)
+		select {
+		case code := <-r.done:
+			r.done <- code
+		case <-time.After(deadlineWait(t)):
+			t.Fatalf("the bridge held on the wall clock did not end either; waited until %s before the test binary's deadline", deadlineMargin)
+		}
+	case <-time.After(deadlineWait(t)):
+		t.Fatalf("the bridge told to stop with an inbox client connected did not end within its own bound of %s on its clock; waited until %s before the test binary's deadline", bound, deadlineMargin)
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the inbox's directory %s is still there (%v)", filepath.Dir(path), err)
@@ -1214,7 +1412,7 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 	stdin, daemon := io.Pipe()
 	t.Cleanup(func() { _ = daemon.Close() })
 	logged := &lockedBuffer{}
-	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + stream + "\nexec sleep 300\n"}, Env: os.Environ(),
+	cfg := Config{Argv: []string{"/bin/sh", "-c", "cat " + stream + "\nexec sleep 86400\n"}, Env: os.Environ(),
 		SessionID: sessionID, Stdin: stdin, Stdout: io.Discard, Log: logged}
 	done := make(chan int, 1)
 	go func() {
@@ -1229,13 +1427,13 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 		if code != 128+int(syscall.SIGTERM) {
 			t.Errorf("exit status %d, want %d, Claude Code's once SIGTERM ended it:\n%s", code, 128+int(syscall.SIGTERM), logged)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(deadlineWait(t)):
 		// Claude Code still runs, unreaped, under a bridge that never ended.
 		if match := regexp.MustCompile(`\(pid (\d+)\)`).FindStringSubmatch(logged.String()); match != nil {
 			pid, _ := strconv.Atoi(match[1])
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		t.Fatalf("the bridge did not end within 30s of Claude Code no longer reading:\n%s", logged)
+		t.Fatalf("the bridge did not end after Claude Code no longer read, %s before the test binary's deadline:\n%s", deadlineMargin, logged)
 	}
 	overflow := "Claude Code has left " + strconv.Itoa(claudeQueueLength) + " lines unread"
 	if n := strings.Count(logged.String(), overflow); n != 1 {
@@ -1251,6 +1449,19 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 
 // lockedBuffer is a log the bridge's goroutines write while a test reads it.
 type lockedBuffer = testlog.Buffer
+
+// deadlineMargin is how long before the test binary's deadline a wait of these tests gives up:
+// the time a row whose fact never came has to fail by name, and its cleanups to run, before go
+// test's alarm panics the binary.
+const deadlineMargin = 30 * time.Second
+
+// deadlineWait is the bound of a wait for something the bridge or the fake Claude Code does: what
+// is left of the test binary's deadline less deadlineMargin. Each of these waits is for a fact, so
+// a step a loaded machine makes slow is waited for, and a fact that never comes fails its row by
+// name before go test's alarm.
+func deadlineWait(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, deadlineMargin)
+}
 
 // inboxPathOf is the inbox Claude Code was told, as the fake recorded it.
 func inboxPathOf(t *testing.T, r *rig) string {
@@ -1273,9 +1484,14 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 	}
 }
 
-// The bridge's exit status is Claude Code's, and the shim closing the bridge's input ends it.
+// The bridge's exit status is Claude Code's, and the shim closing the bridge's input ends it. The
+// bridge gives Claude Code Grace to exit on its own once its input ended, and SIGTERMs it after; a
+// stand-in a loaded machine makes slower than that would read as killed (143). So the bridge runs
+// on a stopClock the row never raises: its Grace never passes, the status it reports is the
+// stand-in's own exit, however late it comes, and a bridge that never passes on the input's end
+// still fails the row by name.
 func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
-	r := newRig(t, "-p", "--resume", sessionID)
+	r := newRigOn(t, &stopClock{}, "-p", "--resume", sessionID)
 	r.prompt("p1", "say WAITING")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
@@ -1286,8 +1502,8 @@ func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
 			t.Errorf("exit status %d, want Claude Code's 0", code)
 		}
 		r.done <- code
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge outlived its input")
+	case <-time.After(deadlineWait(t)):
+		t.Fatalf("the bridge outlived its input, %s before the test binary's deadline", deadlineMargin)
 	}
 }
 

@@ -15,7 +15,6 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
-import { inVisualOrder, visualOrder } from "./visual-order";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -348,6 +347,9 @@ const parallelProjects = [
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
   // with spaces reads.
+  // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
+  // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
+  // one drag row, which drags a row of the priorities table by its grip and reads the order back.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -420,6 +422,9 @@ const parallelProjects = [
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
+  // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
+  // priorities table by its grip and reads the order back.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
@@ -718,12 +723,16 @@ export default defineConfig({
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
   // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
-  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
-  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
-  // the run is untouched.
+  // this file in theirs. `shard-reporter.ts` does nothing in a run without `--shard`, and in one
+  // with it places the files on the legs by measured row time in place of Playwright's split by
+  // count (e2e/shard-split.ts says why), so a local `--shard` run holds the rows the CI leg of
+  // that number holds; the shard job names it in its own list for the same reason as above. With
+  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
+  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    [fileURLToPath(new URL("./shard-reporter.ts", import.meta.url))],
     ...(measuring
       ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
       : []),
@@ -743,6 +752,14 @@ export default defineConfig({
     // `retry === 1`), and a row is flaky exactly when its retry passed, so that mode would keep
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
+    //
+    // Recording every first attempt leaves each worker's trace files in its artifacts directory
+    // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
+    // after a hundred rows. Playwright 1.64.1's runner removed them before it let the worker's
+    // stop end, and timed that wait by heartbeats of a worker that had already exited, so a slow
+    // disk printed "worker-<n> process did not exit within 300000ms after stop" for a worker that
+    // had exited. patches/playwright@1.64.1.patch removes them in the background instead, and
+    // e2e/__tests__/playwright-worker-exit.test.ts holds that.
     trace: "retain-on-first-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
@@ -792,9 +809,8 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          // The phone project first in a reverse run, so the whole run is the other way round
-          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
-          ...inVisualOrder(visualProjects, visualOrder()),
+          // Both are declared in every run, as their comment says.
+          ...visualProjects,
           ...(stub.declared ? stubProjects : []),
         ],
 });

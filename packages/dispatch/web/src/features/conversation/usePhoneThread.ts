@@ -41,11 +41,12 @@ export interface PhoneThread {
    *  (`cancelReply`), or none while it is not put away: hidden in its own thread too, and said so
    *  beside the docked composer, until that comment's Reply shows it again or its reply ends. The
    *  field cannot change while it is hidden, so this is what it holds; the docked composer draws
-   *  it once the comment it answers is no longer listed, when no Reply brings it back. */
+   *  it once the comment it answers is no longer listed, or is deleted, when no Reply goes on
+   *  with it. */
   readonly parked: SentDraft | undefined;
-  /** Discard my draft beside a reply put away (`parked`) whose comment is no longer listed:
-   *  drops the thread composer's draft and its send as its own Discard does, which ends its reply
-   *  (`endReply`) and keeps nothing for the comment as it goes. */
+  /** Discard my draft beside a reply put away (`parked`) whose comment is no longer listed, or is
+   *  deleted: drops the thread composer's draft and its send as its own Discard does, which ends
+   *  its reply (`endReply`) and keeps nothing for the comment as it goes. */
   readonly dropParked: () => void;
   /** The thread composer's send name: beneath the tab's, so every Reply holds for it as for the
    *  docked composer's, and its own, so the view can tell its send from the docked one's. */

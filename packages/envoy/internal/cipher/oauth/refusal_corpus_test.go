@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 
 // The refusal texts the TypeScript broker client prints whole (packages/cipher-client,
 // isKnownBrokerRefusal), as this broker's own OAuth library and its own Refusal write them on the
-// wire. testdata/refusal-descriptions.json holds them, and broker-client's refusal-corpus test
+// wire. testdata/refusal-descriptions.json holds them, and cipher-client's refusal-corpus test
 // reads that file, so neither the library's sentence ahead of a hint nor a hint's words can change
 // without a test that names it. Each hint's format string must also stand in the broker's source,
 // so a sentence changed there fails here.
@@ -43,6 +44,9 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidGrant, "The machine login has ended.", nil, "provider.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A machine makes a key of its own.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A sign-in makes a box key of its own.", nil, "exchange.go"},
+	// The two trades that write a launcher credential refuse a key a live read token is bound to
+	// with one hint (exchange.go's keyBindsReadTokenHint).
+	{oauth2.ErrInvalidGrant, "A live read token is bound to the key this proof was signed with. Make a new key.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The token names a project its person cannot see: %s.", []any{corpusProject}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
@@ -59,13 +63,33 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
+	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
+	// refused since a job's token is minted whole.
+	{oauth2.ErrInvalidRequest, "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof is signed with the key the DPoP proof is signed with, and the holder's key is a key of its own.", nil, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this machine holds no launcher credential yet, and a read trade makes none. Sign in with `agent-secrets login` first.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this machine holds a launcher credential that has lapsed, and a read trade renews none. One ordinary trade of the sign-in renews it, as `agent-secrets` makes; then trade for read again.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "A read trade makes or moves no launcher credential, so it cannot send %s=true. Trade for read without the parameter.", []any{oauthwire.FormLauncherCredential}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names a cut, and only a trade that asks for the scope %s may name one.", []any{oauthwire.FormAsOf, oauthwire.ScopeRead}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", []any{oauthwire.ScopeRead}, "exchange.go"},
+	// A read token refused a key a live launcher credential is bound to, as the store refuses it
+	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read
+	// entry's trade that asked for no scope.
+	{oauth2.ErrInvalidRequest, "The key this read token would be bound to signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Send a DPoP-Holder proof by a key made for the token's holder, and the token is bound to that key.", nil, "../oauthstore/store.go"},
+	{oauth2.ErrInvalidRequest, "The key this proof was signed with signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Ask for the scope read with a DPoP-Holder proof by a key made for the token's holder, or trade with a key that holds no launcher credential.", nil, "../oauthstore/store.go"},
 }
 
 // The exchange policy's refusals of a subject token, which the broker hands on as "The subject
 // token was refused: <the policy's error>." Each is the format the policy writes it with, filled
-// with values of the shape broker-client's slots take; the format must stand in the policy's
+// with values of the shape cipher-client's slots take; the format must stand in the policy's
 // source. The refusal that quotes an error text of its own (`not a person's Google identity token
-// (%v)`) is not among them: broker-client withholds it.
+// (%v)`) is not among them: cipher-client withholds it.
 type policyRefusal struct {
 	format string
 	args   []any
@@ -81,7 +105,9 @@ const (
 	policySource     = "../exchange/exchange.go"
 )
 
-var corpusSessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", exchange.MaxSessionBytes)
+const corpusSessionRuleFormat = "a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes"
+
+var corpusSessionRule = fmt.Sprintf(corpusSessionRuleFormat, exchange.MaxSessionBytes)
 
 var policyRefusals = []policyRefusal{
 	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
@@ -115,10 +141,12 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
-// The OAuth error codes broker-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this
+// The OAuth error codes cipher-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this
 // broker's library writes them: each is the library's own error value's code, so the client's
 // list and the codes the broker can answer are read from one place. Every library error the
 // broker's token endpoint returns (exchange.go, provider.go, clientauth.go) must be one of these.
@@ -162,7 +190,7 @@ func TestTheCodeCorpusIsWhatTheLibraryWrites(t *testing.T) {
 		t.Fatalf("%s is not a JSON list of strings: %v", path, err)
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("%s is not the library's codes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check broker-client's list.\nwant: %v\ngot:  %v", path, t.Name(), want, got)
+		t.Fatalf("%s is not the library's codes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check cipher-client's list.\nwant: %v\ngot:  %v", path, t.Name(), want, got)
 	}
 }
 
@@ -185,7 +213,7 @@ func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T)
 				}
 				found++
 				if _, ok := corpusCodes[name]; !ok {
-					t.Errorf("%s returns oauth2.%s, whose code broker-client does not show: add it to corpusCodes and KNOWN_OAUTH_ERROR_CODES", source, name)
+					t.Errorf("%s returns oauth2.%s, whose code cipher-client does not show: add it to corpusCodes and KNOWN_OAUTH_ERROR_CODES", source, name)
 				}
 			}
 		}
@@ -246,7 +274,7 @@ func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
 		t.Fatalf("%s is not a JSON list of strings: %v", path, err)
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("%s is not what this broker writes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check broker-client's list.\nwant:\n%s\ngot:\n%s", path, t.Name(), strings.Join(want, "\n"), strings.Join(got, "\n"))
+		t.Fatalf("%s is not what this broker writes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check cipher-client's list.\nwant:\n%s\ngot:\n%s", path, t.Name(), strings.Join(want, "\n"), strings.Join(got, "\n"))
 	}
 }
 
@@ -267,15 +295,15 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	// The format as Go source writes it: a backquote inside a double-quoted string is itself.
 	for _, refusal := range corpusRefusals {
 		if !strings.Contains(read(refusal.source), refusal.format) {
-			t.Errorf("%s holds no hint %q: the broker's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
+			t.Errorf("%s holds no hint %q: the broker's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
 		}
 	}
 	for _, refusal := range policyRefusals {
 		if !strings.Contains(read(refusal.source), refusal.format) {
-			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
+			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
 		}
 	}
-	if !strings.Contains(read(policySource), `"a session name is printable, carries no whitespace, and is at most %d bytes"`) {
+	if !strings.Contains(read(policySource), strconv.Quote(corpusSessionRuleFormat)) {
 		t.Errorf("%s holds no session rule as the corpus writes it", policySource)
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "api", "handlers_oauth.go"))

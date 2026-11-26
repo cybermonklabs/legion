@@ -34,11 +34,12 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // defaultPodTokenFile is where a Legion pod and a hand-launched session pod both mount their
-// projected ServiceAccount token for the agent-secrets audience, so a pod with the standard
+// projected ServiceAccount token for the broker's audience, so a pod with the standard
 // projection needs no --pod-token-file at all.
 const defaultPodTokenFile = "/var/run/legion/agent-secrets-token/token"
 
@@ -121,13 +122,17 @@ func (s *podLauncherSigner) Sign(method, url string) (string, error) {
 // pod's live enrollment is answered 200 with that enrollment, so re-running enroll on a key dir
 // that already has key.pem gets its own enrollment back; alreadyLive reports that answer, because
 // the broker returns such an enrollment without extending its lease and the caller must renew it.
-func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string) (enrollmentID string, alreadyLive bool, err error) {
-	body, err := json.Marshal(map[string]string{
-		"kind":       "pod",
-		"runtime_id": runtimeID,
-		"thumbprint": thumbprint,
-		"pod_token":  podToken,
-	})
+// projects are the Dispatch projects the pod names, sent only when it names one, as a session's
+// enrollment sends them: the broker takes them from a person's pod, checked against its person,
+// and refuses them from any other pod (PROJECTS_NEED_A_PERSON).
+func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string, projects []string) (enrollmentID string, alreadyLive bool, err error) {
+	body, err := json.Marshal(struct {
+		Kind       string   `json:"kind"`
+		RuntimeID  string   `json:"runtime_id"`
+		Thumbprint string   `json:"thumbprint"`
+		PodToken   string   `json:"pod_token"`
+		Projects   []string `json:"projects,omitempty"`
+	}{Kind: "pod", RuntimeID: runtimeID, Thumbprint: thumbprint, PodToken: podToken, Projects: projects})
 	if err != nil {
 		return "", false, err
 	}
@@ -147,14 +152,15 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	return result.EnrollmentID, status == http.StatusOK, nil
 }
 
-// cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]":
-// the whole of a pod's enrollment, from the projected token to the enrollment file the exec form
-// reads next. It is idempotent over one directory: it keeps key.pem (a new
-// key while the old enrollment is live would be refused ALREADY_ENROLLED), and when the broker
-// answers that this key's enrollment is already live — which it returns without extending the
-// lease — it renews that lease before it answers. Only the enrollment id reaches stdout; every
-// other line, the next command included, is stderr's.
-func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int {
+// cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]
+// [--projects <keys>]": the whole of a pod's enrollment, from the projected token to the
+// enrollment file the exec form reads next, naming projects (--projects, or
+// AGENT_SECRETS_PROJECTS) as a person's session does. It is idempotent over one directory: it
+// keeps key.pem (a new key while the old enrollment is live would be refused ALREADY_ENROLLED),
+// and when the broker answers that this key's enrollment is already live — which it returns
+// without extending the lease — it renews that lease before it answers. Only the enrollment id
+// reaches stdout; every other line, the next command included, is stderr's.
+func cmdEnrollPod(service, tokenFile, out string, projects podProjects, stdout, stderr io.Writer) int {
 	const prefix = "agent-secrets enroll"
 	base := brokerBaseURL()
 	for _, missing := range []struct {
@@ -187,7 +193,7 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	defer unlock()
-	return enrolPod(service, tokenFile, out, base, prefix, stdout, stderr)
+	return enrolPod(service, tokenFile, out, projects, base, prefix, stdout, stderr)
 }
 
 // enrolPod is cmdEnrollPod's work, with the directory made and the lock held.
@@ -207,7 +213,7 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 // names the paths the run used, as the GCP forms' retry commands name the credentials file that
 // signed them in. Every other line names them by their flags (outDir, outKeyFile,
 // --pod-token-file).
-func enrolPod(service, tokenFile, out string, base cipheraddr.Address, prefix string, stdout, stderr io.Writer) int {
+func enrolPod(service, tokenFile, out string, projects podProjects, base cipheraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
 	// that has not reached enrollSessionKey yet leaves no key of its own, but an earlier run's
@@ -262,9 +268,9 @@ func enrolPod(service, tokenFile, out string, base cipheraddr.Address, prefix st
 		refuse(fmt.Sprintf("%s --pod: thumbprint: %v", prefix, err))
 		return 1
 	}
-	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token)
+	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token, projects.keys)
 	if err != nil {
-		refuse(podRefusal(prefix, "enrol", identity, base, err))
+		refuse(podRefusal(prefix, "enrol", identity, base, err) + projects.refusal(err))
 		return 1
 	}
 	if alreadyLive {
@@ -321,6 +327,32 @@ func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Addre
 		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, answered, brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
+}
+
+// podProjects is the Dispatch projects a pod names and where enroll --pod read them: --projects
+// when the command line gave it, AGENT_SECRETS_PROJECTS otherwise. The two travel together, so a
+// refusal of the list names the setting it came from (refusal) and never the list itself.
+type podProjects struct {
+	keys []string
+	// flag is true when --projects named keys, and false when AGENT_SECRETS_PROJECTS did or
+	// nothing named any.
+	flag bool
+}
+
+// refusal is what enroll --pod adds to its line when the broker refused the list
+// PROJECTS_NEED_A_PERSON, as it refuses a list from every pod but a person's. The broker's words
+// are its own, which every client reads, and cannot say where this command read the list, so the
+// line names the setting and says what a service's pod does with it. It never names the list.
+// Any other answer adds nothing.
+func (p podProjects) refusal(err error) string {
+	var refused *apiError
+	if !errors.As(err, &refused) || refused.Code != "PROJECTS_NEED_A_PERSON" {
+		return ""
+	}
+	if p.flag {
+		return ". The list came from --projects: only a person's pod names projects, so a service's pod enrols without --projects"
+	}
+	return ". The list came from " + cipherclient.ProjectsVar + ": only a person's pod names projects, so unset it for a service's pod"
 }
 
 // TokenLogin is POST /v1/launcher-credentials/token, the public route a service logs in at with

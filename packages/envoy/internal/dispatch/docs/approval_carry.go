@@ -877,9 +877,10 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// own (refs.NewReader), planned here and written in the step below, after the update whose
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
-	// of its own.
-	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
-		answered, answer.At, model.ReferenceChanges{})
+	// of its own. The answer holds the parts alone, so the step reconciles the question's
+	// references after them too and settles the forms queue there (questionReconciled false).
+	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
+		answered, answer.At, false, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
@@ -930,15 +931,17 @@ func CutDecisionBlocks(markdown string) (string, error) {
 	return renderWithoutAskBlocks(tree)
 }
 
-// renderWithoutAskBlocks renders a copy of tree with its ask blocks left out (withoutAskBlocks).
+// renderWithoutAskBlocks renders a copy of tree with its ask blocks left out (WithoutAskBlocks).
 func renderWithoutAskBlocks(tree *pmdoc.Node) (string, error) {
-	return pmdoc.Render(withoutAskBlocks(tree))
+	return pmdoc.Render(WithoutAskBlocks(tree))
 }
 
-// withoutAskBlocks is a copy of node's tree with every ask block left out. Each container on the
-// way is a fresh node with its own children; the nodes below the last container - text, inline
-// nodes, leaves - are the parsed tree's own, which nothing here changes.
-func withoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+// WithoutAskBlocks is a copy of node's tree with every ask block left out: the tree
+// CutDecisionBlocks renders, for a reader that goes on to read the cut tree itself and not only
+// its text, as the change set of two versions does (GET /api/v1/artifacts/{id}/changes). Each
+// container on the way is a fresh node with its own children; the nodes below the last
+// container - text, inline nodes, leaves - are the parsed tree's own, which nothing here changes.
+func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
 	if node.Type == "text" || len(node.Children) == 0 {
 		return node
 	}
@@ -948,7 +951,7 @@ func withoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
 		if child.Type == "ask" {
 			continue
 		}
-		copied.Children = append(copied.Children, withoutAskBlocks(child))
+		copied.Children = append(copied.Children, WithoutAskBlocks(child))
 	}
 	if len(copied.Children) == 0 {
 		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})

@@ -23,6 +23,8 @@ import { shownPictureLine } from "../dispatch-picture-tools";
 import {
   oversizePictureText,
   PICTURE_SHOWN_MAX_BYTES,
+  PICTURE_SNIFF_BYTES,
+  readPictureHead,
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
@@ -50,13 +52,13 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { storedUpload } from "./stored-spelling";
 import {
   artifactNameExistsProblem,
   artifactUnderName,
   roundTripRouteAbsent,
   storedTextCheckFailed,
-  storedTextProblem,
-  withoutFinalLineFeed,
+  uploadKindOf,
 } from "./upload-checks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
@@ -84,9 +86,20 @@ async function blockAsks(
  * `agent/<session id>`) as `dispatch_read` does, which a host reads back from a transcript; a
  * larger picture is described without its bytes being fetched when Dispatch states its size. Any
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
- * bytes when it is not. A file carries no token, anchors or approval, so nothing else is read. A
- * picture is shown whatever `shown` holds, and joins it under its address, so the session's later
- * reads name it instead of sending it.
+ * bytes when it is not. The header names the version read by its hash, on the line under its
+ * first: the latest version's `Document token:` line, as a document read prints its token, which
+ * the upload of the next version names as its precondition; a named version's `Content: sha256:`
+ * line, as a named document version's read prints its hash. It goes in the header, never after
+ * the text, so the text after the header is the stored file unchanged, a leading byte order mark
+ * included (the decoder keeps it), and a script or patch read back ends where the file ends. The
+ * dispatch command changes two things, as it does for every output it prints: it adds one line
+ * feed after a file that ends without one, and under Claude Code or Codex it cuts an output past
+ * 25,000 characters and writes the whole of it to a file it names (`fitOutput` in
+ * dispatch-cli.ts). Dispatch states both beside the version in the artifact's
+ * version list, so no other read is made for them, and a Dispatch or a version that states none
+ * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
+ * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
+ * under its address, so the session's later reads name it instead of sending it.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -101,13 +114,21 @@ async function readUploadedFile(
   const number = requested ?? latest;
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
+  const stated = versions.find((version) => version.number === number);
+  const hashLine =
+    requested === undefined
+      ? stated?.token === undefined
+        ? ""
+        : `\nDocument token: ${stated.token}`
+      : stated?.sha256 === undefined
+        ? ""
+        : `\nContent: sha256:${stated.sha256}`;
   const tooLarge = (mime: string, bytes: number): DispatchToolResult => ({
     text:
       `${oversizePictureText(artifact.name, bytes)}, so dispatch doc-read cannot show this ` +
-      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}`,
+      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${hashLine}`,
     details,
   });
-  const stated = versions.find((version) => version.number === number);
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -124,7 +145,7 @@ async function readUploadedFile(
       shown?.add(address);
       return {
         text:
-          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
+          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.${hashLine}\n` +
           shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
         details,
         images: [image],
@@ -134,17 +155,19 @@ async function readUploadedFile(
   }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
+    // ignoreBOM keeps a leading byte order mark as text, so the text encodes back to the stored
+    // bytes.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(file.bytes);
   } catch {
     return {
       text:
         `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
-        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}`,
+        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${hashLine}`,
       details,
     };
   }
   return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}`,
+    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.${hashLine}\n\n${text}`,
     details,
   };
 }
@@ -728,14 +751,31 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       name
     );
     if (held !== undefined) {
+      // The kind Dispatch would store this upload as decides what the refusal may advise: an
+      // upload of another kind than the name holds is refused under that name whatever it
+      // carries, so it is told to take another name. Only a path that is not Markdown has bytes
+      // to read, and only their first PICTURE_SNIFF_BYTES decide.
+      const kind = await uploadKindOf(path, (named) =>
+        input.uploadBytes === undefined
+          ? readPictureHead(resolvePath(input.cwd, named))
+          : Promise.resolve(input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES))
+      );
       throw new ToolInputError(input.tool, [
         artifactNameExistsProblem(
           held,
-          artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`
+          artifactOwner.kind === "project"
+            ? `project ${artifactOwner.project}`
+            : `issue ${issue()}`,
+          kind
         ),
       ]);
     }
   }
+  // The text the upload sends: the text given, or the text Dispatch stores for it when the two
+  // differ only in the order of a typed block's attributes. `reordered` is the answer's line for
+  // each such block.
+  let sent = content;
+  let reordered: readonly string[] = [];
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
   // text it would write under another spelling is refused here rather than stored changed.
   // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
@@ -757,15 +797,17 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
         throw new Error(storedTextCheckFailed(error, name), { cause: error });
       }
     }
-    // The store ends a document with a line feed the writer's own text need not carry, and
-    // that one line feed is no other spelling: both sides lose at most one before they are
-    // compared. Every other difference is refused.
-    if (stored !== undefined && withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)) {
-      throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+    // What goes up, and what is refused, is storedUpload's rule (stored-spelling.ts).
+    if (stored !== undefined) {
+      const upload = storedUpload(content, stored, name);
+      if ("refusal" in upload) throw new ToolInputError(input.tool, [upload.refusal]);
+      sent = upload.sent;
+      reordered = upload.reordered;
     }
   }
-  // A call with a path uploads that file, one with content stores that text, and one with
-  // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
+  // A call with a path uploads that file, one with content stores that text (`sent`, above),
+  // and one with neither makes an empty document the writer fills in afterwards with dispatch
+  // doc-edit.
   const artifactInput =
     path !== undefined
       ? {
@@ -779,8 +821,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
                   type: Bun.file(resolvePath(input.cwd, path)).type,
                 }),
         }
-      : content !== undefined
-        ? { ...options, content }
+      : sent !== undefined
+        ? { ...options, content: sent }
         : options;
   const result =
     artifactOwner.kind === "project"
@@ -801,6 +843,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
         : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+      ...reordered,
       ...adviceLines,
     ].join("\n"),
     details:

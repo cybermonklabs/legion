@@ -65,17 +65,19 @@ func RefusalReason(err error) string {
 // an unknown command. Asking the same shim again changes neither.
 var ErrTokenRefused = errors.New("runtime: the shim did not read its projected token")
 
-// WorkspaceBundleTimeout is how long the agent's side is given to build its workspace's bundle:
-// a handful of jj reads and one `git bundle create` over the commits no remote branch holds,
-// which is a pack of a working copy's own change and a few unpushed commits, never the clone's
-// history. It is the runtimes' budget for the request, not a setting: a release that cannot get
-// a bundle in this long is one the daemon stops rather than one it waits longer for.
-const WorkspaceBundleTimeout = 5 * time.Minute
+// WorkspaceWorkTimeout is how long the agent's side is given to read whether its workspace holds
+// work origin does not hold (WorkspaceWorkReader): two jj reads, one of which snapshots the
+// working copy; nothing is packed or pushed. It is the runtimes' budget for the request, not a
+// setting: a read that cannot finish in this long is one the caller is told about rather than one
+// the daemon waits longer for. It is half of the daemon's one-minute sweep, which bounds the
+// sweep's runtime calls, so a jj that runs out of time is answered by the shim's own timeout
+// inside that bound rather than by the caller's deadline.
+const WorkspaceWorkTimeout = 30 * time.Second
 
 // CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
 // not worker_rpc_timeout_seconds, because a compaction is a model call over the whole transcript
 // where every other request on this interface is a frame the far side answers at once. It is a
-// constant rather than a setting for the reason WorkspaceBundleTimeout is one: a compaction that
+// constant rather than a setting for the reason WorkspaceWorkTimeout is one: a compaction that
 // cannot finish in this long is one the caller is told about rather than one the daemon waits
 // longer for. Ten minutes is the ladder's own widest step (supervise's promptRetryMax), so a
 // compaction never outlasts the wait the stuck claim is already in.
@@ -111,11 +113,15 @@ type Conn interface {
 	// compacted, a summarizer that failed — is a refusal carrying its words (RefusalReason);
 	// every other error is transport.
 	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
-	// BundleWorkspace has the agent's side bundle the unpushed work of the workspace every role
-	// of issue shares, for a release that is about to take the pod, its disk and that workspace
-	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, with the
-	// size it would have been in the refusal, so the release can stop and record why.
-	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
+	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares
+	// holds work that no branch or tag on origin holds, within timeout. The read snapshots the
+	// working copy, as every jj command that reads it does: jj records an operation and, where
+	// files changed, a new working-copy commit and the git ref jj keeps for it (refs/jj/keep). It
+	// changes no file of the working copy, moves no bookmark and pushes nothing. A shim that
+	// cannot read it refuses with its reason, and a shim built before the read is refused by Oh
+	// My Pi as an unknown command; both are refusals that carry their words (RefusalReason), and
+	// neither is an answer of no work.
+	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
 	AgentSecretsEnrollment(ctx context.Context, enrollmentID string) error

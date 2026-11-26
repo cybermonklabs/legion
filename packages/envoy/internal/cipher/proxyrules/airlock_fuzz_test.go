@@ -4,8 +4,8 @@ package proxyrules
 // functions (lean/Airlock/Model.lean, built as the airlock-model program AIRLOCK_MODEL
 // names). Every generated case goes to both sides and the two answers must be the same
 // value, so a change on one side that is not made on the other is a test failure here
-// rather than a surprise in production. This file is in package airlock, not package
-// airlock_test: the generator and the wire shapes sit beside the code they mirror, and
+// rather than a surprise in production. This file is in package proxyrules, not package
+// proxyrules_test: the generator and the wire shapes sit beside the code they mirror, and
 // the comparison reaches the three functions with nothing in between.
 
 import (
@@ -210,9 +210,9 @@ var (
 	prefixPool = []string{"/", "/repos", "", "/r", "/admin/"}
 	phPool     = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
 	valuePool  = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
-	// kindPool holds the three kinds Validate takes, a wrong one, and a right one in the
+	// kindPool holds the four kinds Validate takes, a wrong one, and two right ones in the
 	// wrong case, so validate's kind refusal is reached from both sides of the comparison.
-	kindPool   = []string{"", "aws", "azure", "gcp", "AWS"}
+	kindPool   = []string{"", "aws", "azure", "dpop", "gcp", "AWS", "DPoP"}
 	judgePool  = []uint32{0, 300, 900, 901, 65535}
 	piecePool  = []string{"user", "token ", " ", "\t", "x"}
 	schemePool = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
@@ -388,14 +388,14 @@ func FuzzAirlock(f *testing.F) {
 	})
 }
 
-// TestTheModelReadsAHostlessEntryWithGuidance: a rules file whose entry binds no host and
-// carries a judge and guidance — the entry that says who decides a key the airlock binds
-// nowhere — is valid on both sides, and both refuse a proxy request for it as a secret not
-// behind the airlock. The generator never writes guidance, so this case is the one that puts the
-// field on the wire to the model, whose derived FromJson must read past it. It needs the model,
-// as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects its skip and the
-// airlock-lean job's seed step runs it by name.
-func TestTheModelReadsAHostlessEntryWithGuidance(t *testing.T) {
+// TestTheModelRefusesAHostlessEntry: a rules file whose entry binds no host is refused on both
+// sides, since an entry is a proxy block and every proxy block names a host (theorem T4 of the
+// model). The entry carries a judge and guidance, so this case also puts guidance on the wire to
+// the model, which the generator never writes and whose derived FromJson must read past it. A
+// proxy request for the entry is still refused as a secret not behind the airlock, on both sides.
+// It needs the model, as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects
+// its skip and the airlock-lean job's seed step runs it by name.
+func TestTheModelRefusesAHostlessEntry(t *testing.T) {
 	if modelPath() == "" {
 		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
@@ -420,8 +420,8 @@ func TestTheModelReadsAHostlessEntryWithGuidance(t *testing.T) {
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %+v\ngo:   %+v", line, want, got)
 	}
-	if !got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
-		t.Fatalf("the host-less entry answers %+v; want a valid file and a refusal, secret not behind airlock", got)
+	if got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
+		t.Fatalf("the host-less entry answers %+v; want an invalid file and a refusal, secret not behind airlock", got)
 	}
 }
 

@@ -10,7 +10,8 @@
 import { expect, type Page } from "@playwright/test";
 
 import { createIssue, createProject, patchIssue } from "./api";
-import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
+import { focusThePage } from "./issue-page-g";
+import { onBody, openIssue } from "./keyboard-issue";
 import { stubbed } from "./stub/stub-test";
 
 /** Three Todo issues, in the order the list roves over them. */
@@ -201,7 +202,7 @@ collapsedTest(
     for (const status of ["Backlog", "Todo"])
       await page.getByRole("button", { name: new RegExp(`${status}.*1 issue`) }).click();
     await expect(page.locator("[data-issue-row]")).toHaveCount(0);
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("j");
     await page.keyboard.press("k");
     expect(await onBody(page)).toBe(true);
@@ -215,7 +216,7 @@ collapsedTest(
     for (const listed of roving) await expect(listed).toHaveAttribute("data-enabled", "false");
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: /Todo.*1 issue/ }).click();
-    await leaveFocus(page);
+    await focusThePage(page);
     await page.keyboard.press("j");
     await expect(page.locator(`[data-issue-row="${scene.bravo}"]`)).toBeFocused();
     await page.keyboard.press("?");
@@ -231,7 +232,7 @@ boardTest(
     await expect(page.locator("[data-issue-row]")).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.getByRole("region", { name: "Todo" }).getByRole("article")).toHaveCount(1);
-    await leaveFocus(page);
+    await focusThePage(page);
 
     // The List's rows are gone, so its keys are not the reader's here and `?` must not list
     // them: `o` and `Enter` would otherwise appear twice over, once per scope.

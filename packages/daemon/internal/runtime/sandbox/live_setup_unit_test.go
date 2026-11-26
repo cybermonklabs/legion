@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +26,7 @@ import (
 )
 
 func TestParseSetupMarker(t *testing.T) {
+	t.Parallel()
 	const head = "setup:architect:pod-1/3 cwd=/legion/workspaces/sjawhar/legion-smoke/s4a-1 uid=1000 ppid=41 git_from=/tmp helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok"
 	want := setupMarker{
 		role: "architect", incarnation: "pod-1/3", cwd: "/legion/workspaces/sjawhar/legion-smoke/s4a-1",
@@ -52,6 +55,7 @@ func TestParseSetupMarker(t *testing.T) {
 }
 
 func TestParseSetupMarkerRejectsMalformedRecords(t *testing.T) {
+	t.Parallel()
 	const fields = "cwd=/legion uid=1000 ppid=1 git_from=/tmp"
 	const control = " git_without_helper=refused git_without_helper_error="
 	for _, line := range []string{
@@ -78,6 +82,7 @@ func TestParseSetupMarkerRejectsMalformedRecords(t *testing.T) {
 }
 
 func TestLiveSetupCarriesTheRepositoryAsAnArgument(t *testing.T) {
+	t.Parallel()
 	argv := liveSetup(setupRigRepository(t))
 	if len(argv) != 5 || argv[0] != "/bin/sh" || argv[1] != "-c" || argv[3] != "stage4a-setup" || argv[4] != "https://github.com/sjawhar/legion-smoke" {
 		t.Fatalf("liveSetup = %q, want /bin/sh -c <script> stage4a-setup https://github.com/sjawhar/legion-smoke", argv)
@@ -92,6 +97,7 @@ func TestLiveSetupCarriesTheRepositoryAsAnArgument(t *testing.T) {
 // LEGION_GH_OWNERS_DIR, an empty HOME and the four fixed variables, whatever else the role's
 // environment holds.
 func TestLiveSetupRunsBeforeTheAgent(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	r.roleEnv()
 	global := filepath.Join(r.root, "gitconfig")
@@ -172,9 +178,13 @@ func TestLiveSetupRunsBeforeTheAgent(t *testing.T) {
 // helper, and one that failed for another reason (no DNS, a GitHub 503, its timeout) proves nothing
 // about the helper, so that reason, redacted, is the checkpoint's message.
 func TestLiveSetupNegativeControl(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, tc := range map[string]struct {
-		network               setupNetwork
-		helper                bool
+		network setupNetwork
+		helper  bool
+		// away, when set, is the template the rig's mktemp makes the setup's fresh directories
+		// from (setupRig.mktemp), in place of the real mktemp's random name.
+		away                  string
 		git, gitWithoutHelper string
 		problem               string
 	}{
@@ -183,6 +193,12 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 		"a public repository": {network: public, helper: true, git: "ok", gitWithoutHelper: "ok", problem: "the negative control succeeded without the role's helper"},
 		"no DNS for the control": {
 			network: unresolved, helper: true, git: "ok", gitWithoutHelper: "failed",
+			problem: "the negative control failed for another reason: exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com",
+		},
+		// mktemp's random name can open as a JWT does (a CI run's setup made tmp.eyJ2Sg7LkC), and
+		// it is a path the setup made, which carries no credential.
+		"no DNS for the control, from a directory whose name holds eyJ": {
+			network: unresolved, helper: true, away: "tmp.eyJXXXXXXX", git: "ok", gitWithoutHelper: "failed",
 			problem: "the negative control failed for another reason: exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com",
 		},
 		"a GitHub 503 for the control": {
@@ -199,11 +215,16 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 			if tc.helper {
 				r.roleEnv()
 			}
-			_, lines := r.run(r.start, []string{"/bin/true"})
-			if strings.Contains(strings.Join(lines, "\n"), setupRigOutageToken) || strings.Contains(strings.Join(lines, "\n"), "eyJ") {
-				t.Fatalf("the marker holds the token the control's error carried: %q", lines)
+			if tc.away != "" {
+				r.mktemp(tc.away)
 			}
-			setup := parseSetupMarkerOrFail(t, lines[0])
+			setup := r.probe(r.start)
+			if err := setupMarkerLeak(setup); err != nil {
+				t.Fatal(err)
+			}
+			if tc.away != "" && !strings.HasPrefix(filepath.Base(setup.gitFrom), strings.TrimRight(tc.away, "X")) {
+				t.Fatalf("git_from = %q, want a directory the rig's mktemp made from %s", setup.gitFrom, tc.away)
+			}
 			if setup.git != tc.git || setup.gitWithoutHelper != tc.gitWithoutHelper {
 				t.Errorf("git = %q, git_without_helper = %q; want %q and %q", setup.git, setup.gitWithoutHelper, tc.git, tc.gitWithoutHelper)
 			}
@@ -231,6 +252,7 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 // the message's own newlines printed unprefixed, so its later lines can read as the refusal, the
 // last one included: each such stderr, like a closed port's, reads as `failed`.
 func TestGitRefusalReadsAsRefused(t *testing.T) {
+	t.Parallel()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -324,12 +346,14 @@ func TestGitRefusalReadsAsRefused(t *testing.T) {
 // the payload.
 func pktLine(payload string) string { return fmt.Sprintf("%04x%s", len(payload)+4, payload) }
 
-// controlClass runs liveSetupControlClass alone on a control's exit status and stderr, and returns
-// its git_without_helper and git_without_helper_error.
-func controlClass(t *testing.T, status int, stderr string) (string, string) {
+// controlClass runs liveSetupControlClass alone on a control's exit status and stderr, with env
+// added to the test's environment, and returns its git_without_helper and git_without_helper_error.
+func controlClass(t *testing.T, status int, stderr string, env ...string) (string, string) {
 	t.Helper()
 	script := "status=$1\ncontrol=$2\n" + liveSetupControlClass + `printf '%s\n%s\n' "$git_without_helper" "$git_without_helper_error"`
-	out, err := exec.Command("/bin/sh", "-c", script, "control-class", strconv.Itoa(status), strings.TrimRight(stderr, "\n")).Output()
+	cmd := exec.Command("/bin/sh", "-c", script, "control-class", strconv.Itoa(status), strings.TrimRight(stderr, "\n"))
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run liveSetupControlClass: %v", err)
 	}
@@ -338,9 +362,12 @@ func controlClass(t *testing.T, status int, stderr string) (string, string) {
 }
 
 // A failed control's error is git's first stderr line with control characters removed, and a
-// GitHub token, a JWT and a URL's user info each replaced by `***`, since the marker is read with
-// kubectl exec and printed in the run's log.
+// GitHub token, a URL's user info and a JWT each replaced by `***`, since the marker is read with
+// kubectl exec and printed in the run's log. A JWT is found by its header, as setupMarkerLeak
+// finds one: in compact JSON or with whitespace, behind other base64url characters or alone. A
+// dotted name with no such header stays.
 func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ stderr, want string }{
 		"a stateless installation token": {
 			stderr: "fatal: unable to access 'https://github.com/x/': token " + setupRigOutageToken + " expired",
@@ -353,6 +380,19 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 		"a bare JWT": {
 			stderr: "fatal: bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused",
 			want:   "exit 128: fatal: bearer *** refused",
+		},
+		// RFC 7515 lets a header hold whitespace: `{ "alg"` and `{ "iss"` each open eyAi, not eyJ.
+		"a JWT whose header holds whitespace": {
+			stderr: "fatal: bearer " + compactJWT(`{ "alg":"HS256"}`, `{ "iss":"123456"}`, "signature") + " refused",
+			want:   "exit 128: fatal: bearer *** refused",
+		},
+		"a JWT behind other base64url characters": {
+			stderr: "fatal: bearer x" + compactJWT(`{"alg":"RS256"}`, `{"iss":"123456"}`, "signature") + " refused",
+			want:   "exit 128: fatal: bearer *** refused",
+		},
+		"dotted names": {
+			stderr: "fatal: unable to access 'https://api.github.com/x/': git 2.43.0 could not resolve host: api.github.com",
+			want:   "exit 128: fatal: unable to access 'https://api.github.com/x/': git 2.43.0 could not resolve host: api.github.com",
 		},
 		"user info in a URL": {
 			stderr: "fatal: unable to access 'https://x-access-token:s3cret@github.com/x/': Could not resolve host: github.com",
@@ -380,6 +420,117 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 	}
 }
 
+// compactJWT is a JWT in compact serialization: header, claims and signature, each base64url.
+func compactJWT(header, claims, signature string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return encode([]byte(header)) + "." + encode([]byte(claims)) + "." + encode([]byte(signature))
+}
+
+// The setup runs under the role's locale, and in a UTF-8 locale a bracket expression matches more
+// than ASCII: GNU grep's [A-Za-z] takes é into a candidate run, whose decode then fails at every
+// offset, and GNU sed's [:space:] holds an em space, which stops the user-info match short of its
+// `@`. So each row's error, read under each locale, is the one the C locale gives. A locale this
+// machine lacks reads as C, and the row then cannot see the fault there: the test logs each such
+// locale, and needs one that sees it.
+func TestLiveSetupControlErrorIsRedactedInEveryLocale(t *testing.T) {
+	emSpace := "\u2003"
+	rows := map[string]struct{ stderr, want string }{
+		"a JWT behind letters outside ASCII": {
+			stderr: "fatal: bearer éééé" + compactJWT(`{"alg":"none"}`, `{}`, "") + " refused",
+			want:   "exit 128: fatal: bearer éééé*** refused",
+		},
+		"user info that holds an em space": {
+			stderr: "fatal: unable to access 'https://x-access-token:s3" + emSpace + "cret@github.com/x/': Could not resolve host: github.com",
+			want:   "exit 128: fatal: unable to access 'https://***@github.com/x/': Could not resolve host: github.com",
+		},
+	}
+	seen := 0
+	for _, locale := range []string{"C", "C.UTF-8", "en_US.UTF-8"} {
+		// The fault's own mechanism, read in this locale: [:space:] holding an em space.
+		probe := exec.Command("/bin/sh", "-c", `printf 'a%sb@\n' "$1" | sed -E 's/[^@[:space:]]+@/x/'`, "probe", emSpace)
+		probe.Env = append(os.Environ(), "LC_ALL="+locale)
+		out, err := probe.Output()
+		if err != nil {
+			t.Fatalf("probe %s: %v", locale, err)
+		}
+		if strings.TrimSpace(string(out)) == "x" {
+			t.Logf("LC_ALL=%s classes an em space as no space, as C does: its rows cannot see the fault here", locale)
+		} else {
+			seen++
+		}
+		for name, tc := range rows {
+			t.Run(locale+"/"+name, func(t *testing.T) {
+				class, detail := controlClass(t, 128, tc.stderr, "LC_ALL="+locale)
+				if class != "failed" || detail != tc.want {
+					t.Errorf("control under LC_ALL=%s = %q, %q; want failed, %q", locale, class, detail, tc.want)
+				}
+			})
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no locale this test reads classes an em space as a space, so none of its rows can fail for the locale fault")
+	}
+}
+
+// setupMarkerLeak finds a JWT in any field of a record but its two paths: in the control's error
+// and in a field no program's text should reach, with its header as compact JSON or with
+// whitespace. It is quiet on CI's record, whose git_from, a name mktemp drew at random, holds eyJ,
+// on a JWT in the paths themselves, and on a dotted host name in the control's error.
+func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
+	ci := parseSetupMarkerOrFail(t, "setup:architect:pod-1/3 cwd=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/start uid=1001 ppid=67790 git_from=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/tmp/tmp.eyJ2Sg7LkC helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=failed git_without_helper_error=exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com")
+	appJWT := compactJWT(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
+	for name, tc := range map[string]struct {
+		plant func(m *setupMarker)
+		leak  bool
+	}{
+		"a GitHub App's JWT in the control's error": {
+			plant: func(m *setupMarker) { m.gitWithoutHelperError = "exit 128: fatal: bearer " + appJWT + " refused" },
+			leak:  true,
+		},
+		// RFC 7519's unsecured JWT: the shortest payload, {}, and an empty signature.
+		"an unsecured JWT with no claims in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + compactJWT(`{"alg":"none"}`, `{}`, "") + " refused"
+			},
+			leak: true,
+		},
+		// RFC 7515 lets a header hold whitespace, and `{ "alg"` opens eyAi, not eyJ.
+		"a JWT whose header holds whitespace in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + compactJWT(`{ "alg":"HS256"}`, `{"iss":"123456"}`, "signature") + " refused"
+			},
+			leak: true,
+		},
+		"the rig's outage token in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: unable to access 'https://x-access-token:" + setupRigOutageToken + "@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com"
+			},
+			leak: true,
+		},
+		// parseSetupMarker takes any word as the uid, so a script that printed the wrong variable
+		// there would put the token in it.
+		"the rig's outage token as the uid": {plant: func(m *setupMarker) { m.uid = setupRigOutageToken }, leak: true},
+		"CI's record":                       {plant: func(*setupMarker) {}},
+		"a JWT in the setup's own paths": {
+			plant: func(m *setupMarker) { m.cwd, m.gitFrom = "/legion/"+appJWT+"/start", "/tmp/"+appJWT },
+		},
+		// Three dotted parts, each base64url, with no JSON header among them.
+		"a dotted host name in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: unable to access 'https://api.github.com/sjawhar/legion-smoke/': Could not resolve host: api.github.com"
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := ci
+			tc.plant(&m)
+			if err := setupMarkerLeak(m); (err != nil) != tc.leak {
+				t.Errorf("setupMarkerLeak(%+v) = %v, want a leak: %t", m, err, tc.leak)
+			}
+		})
+	}
+}
+
 // The ls-remote calls run in a fresh directory, with git's repository discovery stopped at its
 // parent (GIT_CEILING_DIRECTORIES). A .git in that parent, which an operator's volume at /tmp or an
 // earlier generation's agent could leave, with a url.insteadOf that sends github.com to a server
@@ -387,6 +538,7 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 // as git=ok with the control refused. The server answers neither call, and the record is the one
 // the probe gives without that .git.
 func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, helper := range map[string]string{
 		"the role's helper": workspace.GitHubCredentialHelper,
 		"a broken helper":   "!different git-credential",
@@ -426,6 +578,7 @@ func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
 // setup-ran reads git_from as the directory the ls-remote calls ran in, and refuses one that is
 // not absolute or is the setup's own directory, the issue clone, or below it.
 func TestSetupGitProblemRefusesTheCloneDirectory(t *testing.T) {
+	t.Parallel()
 	base := setupMarker{cwd: "/legion/workspaces/sjawhar/legion-smoke/s4a-1", git: "ok", gitWithoutHelper: "refused"}
 	for gitFrom, accepted := range map[string]bool{
 		"/tmp/tmp.Ab12Cd": true,
@@ -447,6 +600,7 @@ func TestSetupGitProblemRefusesTheCloneDirectory(t *testing.T) {
 // of it receives (poisons names what each would do), with the role's helper and with another: each
 // one's record and environments are the ones the probe gives without it.
 func TestLiveSetupIgnoresTheRoleEnvironmentGitVariables(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, tc := range map[string]struct {
 		helper, class, git string
 	}{
@@ -485,6 +639,7 @@ func TestLiveSetupIgnoresTheRoleEnvironmentGitVariables(t *testing.T) {
 // whose value forges two command-scope records, an empty reset and Legion's helper, reads as the one
 // local record it is.
 func TestLiveSetupReadsEachConfigRecordWhole(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	clone := r.plainClone()
 	forged := "x\ncommand\tcredential.https://github.com.helper \ncommand\tcredential.https://github.com.helper " + workspace.GitHubCredentialHelper
@@ -496,6 +651,7 @@ func TestLiveSetupReadsEachConfigRecordWhole(t *testing.T) {
 }
 
 func TestLiveSetupNeverRecordsAHelperValue(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	const poison = "not-a-real-token"
 	r := newSetupRig(t, private)
 	r.roleEnv()
@@ -525,6 +681,7 @@ func TestLiveSetupNeverRecordsAHelperValue(t *testing.T) {
 // Every role is told XDG_CONFIG_HOME, and git reads $XDG_CONFIG_HOME/git/config as its
 // global scope when GIT_CONFIG_GLOBAL is unset, so a helper written there must not count.
 func TestLiveSetupIgnoresTheXDGGlobalConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	r := newSetupRig(t, private)
 	xdg := filepath.Join(r.root, "xdg")
 	if err := os.MkdirAll(filepath.Join(xdg, "git"), 0o700); err != nil {
@@ -542,6 +699,7 @@ func TestLiveSetupIgnoresTheXDGGlobalConfig(t *testing.T) {
 }
 
 func TestLiveSetupClassifiesGitCredentialEnv(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	for name, changed := range map[string]bool{
 		"the runtime helper": false,
 		"a changed helper":   true,
@@ -565,6 +723,7 @@ func TestLiveSetupClassifiesGitCredentialEnv(t *testing.T) {
 }
 
 func TestLiveSetupClassifiesEffectiveRepositoryHelpers(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newSetupRig).
 	extra := func(key, value string) func(t *testing.T, r *setupRig, clone string) {
 		return func(t *testing.T, r *setupRig, _ string) {
 			r.roleEnv()
@@ -627,6 +786,7 @@ func TestLiveSetupClassifiesEffectiveRepositoryHelpers(t *testing.T) {
 // together: two fake helpers that record only their own name show the order, and an empty
 // command-scope url-specific value drops a local generic helper.
 func TestGitCombinesBothHelperKeysInReadOrder(t *testing.T) {
+	t.Parallel()
 	h := newHelperLog(t)
 	generic, specific := h.helper("generic"), h.helper("specific")
 	genericFirst := h.repo("generic-first", [2]string{"credential.helper", generic}, [2]string{"credential.https://github.com.helper", specific})
@@ -650,6 +810,7 @@ func TestGitCombinesBothHelperKeysInReadOrder(t *testing.T) {
 // form empties the list as credential.https://github.com's does. So liveSetupScript counts a record
 // under any other helper key as an entry, never as a reset.
 func TestGitCredentialHelperURLForms(t *testing.T) {
+	t.Parallel()
 	h := newHelperLog(t)
 	ran := h.helper("ran")
 	outside := t.TempDir()
@@ -717,9 +878,49 @@ const (
 
 const setupRigToken = "fake-installation-token"
 
-// setupRigOutageToken is a GitHub-token-shaped string the rig's outage errors carry, so a test
-// can see the control's recorded error never holds it.
+// setupRigOutageToken is a GitHub-token-shaped string the rig's outage errors carry, ghs_ and an
+// id before a JWT, so a test can see the control's recorded error never holds it (setupMarkerLeak).
 const setupRigOutageToken = "ghs_1234567_eyJhbGciOiJSUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOjF9.c2lnbmF0dXJl"
+
+// setupMarkerLeak is an error when a setup record carries a JWT, as setupRigOutageToken does. It
+// reads every field but the two paths the setup made itself, cwd (pwd -P) and git_from (mktemp -d,
+// whose random name can open with eyJ as a JWT's header does), which carry no credential. The field
+// meant to hold another program's text is git_without_helper_error, a failed control's first
+// stderr line. fmt prints the fields with a space between them, so no JWT spans two.
+func setupMarkerLeak(m setupMarker) error {
+	m.cwd, m.gitFrom = "", ""
+	if holdsJWT(fmt.Sprint(m)) {
+		return fmt.Errorf("the setup record, its paths aside, holds a JWT: %+v", m)
+	}
+	return nil
+}
+
+// holdsJWT reports whether text holds a JWT in compact serialization: a header, a dot, a payload
+// (`{}` is e30; a JWE's encrypted key may be empty), a dot and the rest, each part base64url. The
+// header is the one part read: it is a JSON object that names its alg (RFC 7515 4.1.1, RFC 7516
+// 4.1.1). Decoding it finds a header written with whitespace, `{ "alg"` (eyAi), as well as compact
+// JSON's eyJ, and finds one behind other base64url characters, as setupRigOutageToken's follows
+// ghs_1234567_; a dotted name such as api.github.com has no such header.
+func holdsJWT(text string) bool {
+	notBase64URL := func(r rune) bool {
+		return !('A' <= r && r <= 'Z' || 'a' <= r && r <= 'z' || '0' <= r && r <= '9' || r == '-' || r == '_')
+	}
+	parts := strings.Split(text, ".")
+	for i := range len(parts) - 2 {
+		if strings.IndexFunc(parts[i+1], notBase64URL) >= 0 {
+			continue
+		}
+		run := parts[i][strings.LastIndexFunc(parts[i], notBase64URL)+1:]
+		for start := range len(run) {
+			header, err := base64.RawURLEncoding.DecodeString(run[start:])
+			var fields map[string]json.RawMessage
+			if err == nil && json.Unmarshal(header, &fields) == nil && fields["alg"] != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 const setupRigGit = `#!/bin/sh
 real=%s
@@ -825,10 +1026,25 @@ func newSetupRig(t *testing.T, network setupNetwork) *setupRig {
 	return r
 }
 
-// roleEnv sets the role's command-scope git entries, gitConfigEnv's as the runtime sets them.
+// roleEnv sets the role's command-scope git entries, GitConfigEnv's as the runtime sets them.
 func (r *setupRig) roleEnv() {
-	for _, variable := range gitConfigEnv() {
+	for _, variable := range GitConfigEnv() {
 		r.t.Setenv(variable.Name, variable.Value)
+	}
+}
+
+// mktemp puts a mktemp first on the rig's PATH whose `mktemp -d` makes its directory from
+// template under TMPDIR, as the real one makes tmp.XXXXXXXXXX there, so a case chooses what the
+// setup's fresh directory's name holds. Any other call is the real mktemp's.
+func (r *setupRig) mktemp(template string) {
+	r.t.Helper()
+	real, err := exec.LookPath("mktemp")
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = -d ] || exec %[1]s \"$@\"\nexec %[1]s -d \"${TMPDIR:-/tmp}\"/%[2]s\n", shellQuote(real), shellQuote(template))
+	if err := os.WriteFile(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
+		r.t.Fatal(err)
 	}
 }
 

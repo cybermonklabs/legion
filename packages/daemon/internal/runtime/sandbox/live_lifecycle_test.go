@@ -45,7 +45,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	root := r.claim("root")
 	since := time.Now()
 	loc, err := r.spawn(root, true)
@@ -788,7 +788,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	old := *worker.last
 	since := time.Now()
-	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -822,8 +822,8 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if err != nil {
 		return err
 	}
-	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion) {
-		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion)
+	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion()) {
+		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion())
 	}
 	envoyVersion, _, err := r.pluginPackageInfo(worker, envoyRoot+"/package.json")
 	if err != nil {
@@ -862,7 +862,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
 	// observes it Gone.
 	mark := r.obs.mark()
-	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -872,7 +872,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if !ok {
 		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
 	}
-	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
+	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion(), oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
 	final, err := r.getPod(name)
@@ -1311,9 +1311,9 @@ func (r *liveRig) checkIndependentProvision() error {
 // `legion git-credential` helper, lists LEGION_E2E_REPO's refs; and GitHub serves the credential
 // that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
 // gives a token that may write. What a role reaches is its App's installations: an issue of one
-// owner's repository holds a token that writes another owner's. The run maps both repositories
-// (mapRepository, here and before the root's launch), so this proves reach across owners and
-// nothing about a repository no mapping names.
+// owner's repository holds a token that writes another owner's. The run's cache set holds both
+// repositories (cacheRepository, here and before the root's launch), so this proves reach across
+// owners and nothing about a repository no live record names.
 // The advertisement is the request a `git push` opens with and writes nothing,
 // where a real push would leave a branch on a repository every run shares and nothing here would
 // delete it. That repository's cache is its own: the issue's launch makes it (its
@@ -1324,7 +1324,7 @@ func (r *liveRig) checkSecondOwner() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(c.repo)
+	r.cacheRepository(c.repo)
 	since := time.Now()
 	if _, err := r.spawn(c, true); err != nil {
 		return err
@@ -1854,6 +1854,7 @@ func (r *liveRig) checkIssueSuspendResume() error {
 // operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
 // carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
 func TestIsGKEExtendedDurationAffinity(t *testing.T) {
+	t.Parallel()
 	key := "cloud.google.com/extended-duration-pods"
 	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
 		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
@@ -1898,6 +1899,7 @@ func TestIsGKEExtendedDurationAffinity(t *testing.T) {
 // extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
 // whether the pod carries any NodeAffinity at all.
 func TestGuaranteedPodAffinity(t *testing.T) {
+	t.Parallel()
 	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{

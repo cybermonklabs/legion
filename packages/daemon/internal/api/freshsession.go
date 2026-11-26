@@ -223,7 +223,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on, in claim.Roles' order.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
@@ -440,9 +440,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// owes a task keeps it — the resume sends that one — and an architect is never started
 	// through a phase at all. The daemon's own delivery of a relaunch's record is no task it
 	// owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing, and
-	// the phase's task takes its place (supervise's queue).
+	// the phase's task takes its place (supervise's queue). Nor is a task of news of the approved
+	// design alone (supervise.HoldsWork): the phase's task is restarted beside it, and waits behind
+	// it until a turn has taken it.
 	status = http.StatusOK
-	if !supervise.HoldsTask(m.Claim().Pending) {
+	if !supervise.HoldsWork(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {
@@ -703,7 +705,7 @@ func relaunchWaits(view supervise.ClaimView) bool {
 // the suspended claim, the retry for a failed or retired one, which a resume is refused for
 // (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
-	return state == supervise.StateSuspended || failedOrRetired(state)
+	return state == supervise.StateSuspended || supervise.FailedOrRetired(state)
 }
 
 // agentRunning is whether a claim runs an agent that is in no turn: one registered, ready or
@@ -874,7 +876,7 @@ func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *
 	}
 	s.operatorFailure(w, r, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
-		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsRestore,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
 	return 0, "", false, false
 }

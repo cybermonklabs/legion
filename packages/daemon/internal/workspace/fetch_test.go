@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -229,7 +230,7 @@ func TestFetchKillsTheAttemptThatReachesItsBound(t *testing.T) {
 	req.Clock = clock
 
 	_, err := Fetch(context.Background(), run, req)
-	if err == nil || !strings.Contains(err.Error(), "command timed out: git -c gc.auto=0") {
+	if want := "command timed out: " + strings.Join(slices.Concat(feedGit, []string{"-c", "gc.auto=0"}), " "); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Fetch = %v, want the last attempt's timeout", err)
 	}
 	if len(run.attempts) != 3 {
@@ -925,7 +926,7 @@ func TestFetchIntoAFeedThatHoldsTheRepositoryFetchesEveryBranch(t *testing.T) {
 			break
 		}
 	}
-	if want := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", "https://github.com/acme/widgets", "+refs/heads/*:refs/heads/*"}; !slices.Equal(fetch.Argv, want) {
+	if want := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", "https://github.com/acme/widgets", "+refs/heads/*:refs/heads/*"}); !slices.Equal(fetch.Argv, want) {
 		t.Fatalf("Fetch ran %q, want %q", fetch.Argv, want)
 	}
 	assertCredentialedEnvironmentBounded(t, fetch, FetchTimeout)
@@ -974,7 +975,7 @@ func TestFetchPointsTheFeedsHeadAtGitHubsDefaultBranch(t *testing.T) {
 		t.Errorf("the feed's HEAD names %s, want the renamed refs/heads/trunk", head)
 	}
 	read := findCall(t, run.Calls()[before:], "git", "--git-dir="+first.Feed, "ls-remote")
-	if want := []string{"git", "--git-dir=" + first.Feed, "ls-remote", "--symref", "https://github.com/acme/widgets", "HEAD"}; !slices.Equal(read.Argv, want) {
+	if want := slices.Concat(feedGit, []string{"--git-dir=" + first.Feed, "ls-remote", "--symref", "https://github.com/acme/widgets", "HEAD"}); !slices.Equal(read.Argv, want) {
 		t.Errorf("Fetch read GitHub's HEAD with %q, want %q", read.Argv, want)
 	}
 	assertCredentialedEnvironmentBounded(t, read, read.Timeout)
@@ -1022,11 +1023,16 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 	}
 }
 
-// A feed repository Fetch did not write is not taken as its own. Before this release an issue's
-// agents could write the issue volume's feed directory, so an upgraded volume may hold a repository
-// there carrying a hook, configuration or link that the token-holding fetch would run or follow.
-// Fetch takes an existing feed only in the shape it writes, and otherwise removes it, says so, and
-// fills the feed afresh: no planted hook runs, and nothing planted survives.
+// A feed repository Fetch did not write is not taken as its own, and it is not replaced either.
+// Before this release an issue's agents could write the issue volume's feed directory, so a volume
+// may hold a repository there carrying a hook, configuration or link that the token-holding fetch
+// would run or follow; and a pod's clone reads the feed's objects through its alternates, so a feed
+// replaced under it would take the clone's history with it. Fetch takes an existing feed only in
+// the shape it writes, and otherwise fails, naming why, runs no git, and leaves the feed where it
+// stands: no planted hook runs, and nothing is removed or cloned in its place — not even the stale
+// lock and the partial pack a killed fetch leaves, which Fetch's sweep removes only from a feed it
+// takes as its own (RemoveStaleFeedLocks). Before, that sweep ran first and removed both from a
+// feed Fetch then refused.
 func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, feed, marker string){
 		"a hook": func(t *testing.T, feed, marker string) {
@@ -1108,28 +1114,50 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 			}
 			marker := filepath.Join(t.TempDir(), "the hook ran")
 			plant(t, first.Feed, marker)
+			var stale []string
+			if info, err := os.Lstat(first.Feed); err == nil && info.IsDir() {
+				for _, name := range []string{"packed-refs.lock", filepath.Join("objects", "pack", "tmp_pack_Stale1")} {
+					path := filepath.Join(first.Feed, name)
+					if err := os.WriteFile(path, []byte("interrupted\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					stale = append(stale, path)
+				}
+			}
 			advanceRemote(t, run.remote)
 			before := len(run.Calls())
-
-			again, err := Fetch(context.Background(), run, req)
+			owner, err := os.Lstat(filepath.Dir(first.Feed))
 			if err != nil {
-				t.Fatalf("the Fetch after the plant: %v", err)
+				t.Fatal(err)
+			}
+			planted, err := os.Lstat(first.Feed)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Fetch(context.Background(), run, req)
+			if err == nil || !strings.Contains(err.Error(), "is not one this fetch wrote") {
+				t.Fatalf("the Fetch after the plant = %v, want it to fail saying the feed is not one it wrote", err)
 			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatal("a planted hook ran in the fetch")
 			}
-			if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "is not one this fetch wrote") }) {
-				t.Errorf("Fetch did not say it refused the feed: %q", logged)
+			if calls := run.Calls()[before:]; len(calls) != 0 {
+				t.Errorf("the Fetch after the plant ran %v, want no git at all", calls)
 			}
-			findCall(t, run.Calls()[before:], "git", "clone", "--bare")
-			if info, err := os.Lstat(filepath.Dir(again.Feed)); err != nil || !info.IsDir() {
-				t.Errorf("the feed's owner directory is %v (%v), want a directory", info, err)
+			if slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "removed") }) {
+				t.Errorf("Fetch logged %q, want nothing removed", logged)
 			}
-			if why, err := foreignFeed(again.Feed); err != nil || why != "" {
-				t.Errorf("the refilled feed reads as foreign: %q (%v)", why, err)
+			if info, err := os.Lstat(filepath.Dir(first.Feed)); err != nil || info.Mode().Type() != owner.Mode().Type() {
+				t.Errorf("the feed's owner directory is %v (%v) after the fetch, want it as it stood, %v", info, err, owner.Mode().Type())
 			}
-			if got, want := strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+again.Feed, "rev-parse", "refs/heads/main")), strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
-				t.Errorf("the refilled feed's main is %s, want the remote's %s", got, want)
+			if info, err := os.Lstat(first.Feed); err != nil || info.Mode().Type() != planted.Mode().Type() {
+				t.Errorf("the feed is %v (%v) after the fetch, want it as it stood, %v", info, err, planted.Mode().Type())
+			}
+			for _, path := range stale {
+				if _, err := os.Lstat(path); err != nil {
+					t.Errorf("the foreign feed's %s after the fetch: %v, want it left as it stood", path, err)
+				}
 			}
 		})
 	}
@@ -1174,21 +1202,18 @@ func TestFetchKeepsAFeedHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 
 // A feed can be garbage-collected between pod starts. A completed gc and one killed while its
 // repack is running leave only files Git owns, so the next fetch keeps the feed instead of replacing
-// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: Fetch removes that
-// stale lock before it judges the feed, so it keeps that feed too, and only Fetch judges it.
+// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: a lock makes no feed
+// foreign, and Fetch removes it once it takes the feed, so it keeps that feed too.
 func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		gc   func(t *testing.T, feed string)
-		// leftLock is set when the gc leaves a lock only Fetch's stale-lock sweep removes, so the
-		// feed is judged through Fetch alone and never by foreignFeed first.
-		leftLock bool
 	}{
 		{name: "completed", gc: func(t *testing.T, feed string) {
 			runSetup(t, feed, "git", "--git-dir="+feed, "gc", "--prune=now")
 		}},
 		{name: "killed during repack", gc: killGitGC},
-		{name: "killed during pack-refs", leftLock: true, gc: func(t *testing.T, feed string) {
+		{name: "killed during pack-refs", gc: func(t *testing.T, feed string) {
 			// git gc writes gc.pid, then packs refs under packed-refs.lock before it repacks; a pod
 			// that ends there leaves both behind.
 			if err := os.WriteFile(filepath.Join(feed, "gc.pid"), []byte("4242 killed-pod"), 0o644); err != nil {
@@ -1209,10 +1234,8 @@ func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 				t.Fatalf("first Fetch: %v", err)
 			}
 			tc.gc(t, first.Feed)
-			if !tc.leftLock {
-				if why, err := foreignFeed(first.Feed); err != nil || why != "" {
-					t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
-				}
+			if why, err := foreignFeed(first.Feed); err != nil || why != "" {
+				t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
 			}
 			before := len(run.Calls())
 
@@ -2423,6 +2446,159 @@ func TestAPackWithoutItsIndexIsIndexedInThePod(t *testing.T) {
 		t.Errorf("Fetch indexed %d packs, want the one the cache streamed without its index", indexed)
 	}
 	runSetup(t, report.Feed, "git", "--git-dir="+report.Feed, "fsck", "--connectivity-only")
+}
+
+// Every git one Fetch starts, and every git the repository cache runs on its clone through FeedGit
+// and FeedGitWithin, maps packs in small windows from its own command line: it reads no system
+// file, its runner removes the role environment's pairs, and the feed's configuration may hold none
+// of the four settings. A recording git first on PATH, the git the runner resolves as boot does,
+// reads what each of those commands sees of the four with `git config --show-scope --get-regexp`
+// under that command's `-c` pairs, its repository and its environment, then runs the real git. Each
+// reads core.packedGitWindowSize 32m, core.packedGitLimit 256m, pack.windowMemory 64m and
+// core.deltaBaseCacheLimit 64m, every line of them from the command scope: a Fetch from a
+// repository cache whose pack came without its index, and whose branch GitHub has since deleted, so
+// it initializes, indexes, checks, reads GitHub's refs, prunes, fetches and configures the feed; a
+// Fetch from GitHub alone, which clones it; and the cache's read of its head and its repack. The
+// repack here is given `-c` pairs of a caller's own, which come after the four and win for its
+// command: 64m windows, a 512m limit and 256m of window memory. Every git the runner started is
+// recorded.
+func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
+	windows := map[string]string{}
+	for _, setting := range packWindows {
+		windows[strings.ToLower(setting[0])] = setting[1]
+	}
+	// callerPairs are a caller's own `-c` pairs, as a caller hands them to FeedGitWithin, and
+	// callerWins what its command reads of the four with them.
+	callerPairs := []string{
+		"-c", "pack.threads=1", "-c", "pack.windowMemory=256m", "-c", "pack.deltaCacheSize=64m",
+		"-c", "core.deltaBaseCacheLimit=64m", "-c", "core.packedGitLimit=512m", "-c", "core.packedGitWindowSize=64m",
+		"-c", "repack.writeBitmaps=false",
+	}
+	callerWins := map[string]string{"core.packedgitwindowsize": "64m", "core.packedgitlimit": "512m", "pack.windowmemory": "256m", "core.deltabasecachelimit": "64m"}
+	for _, tc := range []struct {
+		name string
+		// prepare makes what the subtest's gits run on, and answers what runs them.
+		prepare func(t *testing.T, run *recordingRunner) func() error
+	}{
+		{"from the repository cache", func(t *testing.T, run *recordingRunner) func() error {
+			req := fetchRequest(t)
+			pushRemoteBranch(t, run.remote, "release/gone", "gone.txt")
+			cache := cacheOf(t, run.remote)
+			runSetup(t, t.TempDir(), "git", "--git-dir="+run.remote, "update-ref", "-d", "refs/heads/release/gone")
+			if err := os.Remove(strings.TrimSuffix(packOf(t, cache), ".pack") + ".idx"); err != nil {
+				t.Fatal(err)
+			}
+			req.CacheURL, req.CacheToken = (&fakeCache{body: cacheTar(t, cache)}).serve(t), testCacheToken
+			pushRemoteBranch(t, run.remote, "legion/ACME-7", "newer.txt")
+			return func() error { _, err := Fetch(context.Background(), run, req); return err }
+		}},
+		{"from GitHub alone", func(t *testing.T, run *recordingRunner) func() error {
+			req := fetchRequest(t)
+			return func() error { _, err := Fetch(context.Background(), run, req); return err }
+		}},
+		{"the repository cache's own git and its repack", func(t *testing.T, run *recordingRunner) func() error {
+			cache := cacheOf(t, run.remote)
+			return func() error {
+				if _, err := FeedGit(context.Background(), run, cache, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+					return err
+				}
+				_, err := FeedGitWithin(context.Background(), run, cache, testTimeout, append(slices.Clone(callerPairs), "repack", "-a", "-d", "--quiet")...)
+				return err
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newLocalRunner(t)
+			start := tc.prepare(t, run)
+			sink := recordPackWindows(t, run)
+			if err := start(); err != nil {
+				t.Fatalf("the gits under test: %v", err)
+			}
+			body, err := os.ReadFile(sink)
+			if err != nil {
+				t.Fatalf("the recording git recorded nothing: %v", err)
+			}
+			recorded := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+			for _, line := range recorded {
+				argv, reads, _ := strings.Cut(line, "\t")
+				want := windows
+				if slices.Contains(strings.Fields(argv), "repack") {
+					want = callerWins
+				}
+				// git takes a key's last line, which got keeps.
+				got := map[string]string{}
+				for read := range strings.SplitSeq(reads, ";") {
+					if read == "" {
+						continue
+					}
+					scope, setting, _ := strings.Cut(read, " ")
+					if scope != "command" {
+						t.Errorf("git %s read %s from the %s scope, want the command scope alone", argv, setting, scope)
+					}
+					key, value, _ := strings.Cut(setting, " ")
+					got[key] = value
+				}
+				if !maps.Equal(got, want) {
+					t.Errorf("git %s reads the pack settings as %v, want %v", argv, got, want)
+				}
+			}
+			started := 0
+			for _, call := range run.Calls() {
+				if call.Argv[0] == "git" {
+					started++
+				}
+			}
+			if started == 0 || len(recorded) != started {
+				t.Errorf("the recording git ran %d times for the %d gits the runner started", len(recorded), started)
+			}
+		})
+	}
+}
+
+// recordPackWindows has run's runner start a recording git, resolved from PATH as boot resolves
+// it (testTools), and answers the file it records in: one line each time it runs, its arguments,
+// a tab, then each line `git config --show-scope --get-regexp` prints for packWindows' four keys
+// under the `-c` pairs and the --git-dir its command line names before its subcommand, and its
+// environment, a space for a tab and each ended by `;`. It then runs the real git with its
+// arguments. PATH is the test's own again once the runner has resolved it, so no fixture command
+// runs the recording git.
+func recordPackWindows(t *testing.T, run *recordingRunner) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, sink := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	keys := make([]string, 0, len(packWindows))
+	for _, setting := range packWindows {
+		keys = append(keys, regexp.QuoteMeta(strings.ToLower(setting[0])))
+	}
+	script := "#!/bin/sh\n" +
+		"scoped() {\n" +
+		"  n=$# ahead=1\n" +
+		"  while [ \"$n\" -gt 0 ]; do\n" +
+		"    arg=$1; shift; n=$((n - 1))\n" +
+		"    if [ -n \"$ahead\" ] && [ \"$arg\" = -c ] && [ \"$n\" -gt 0 ]; then\n" +
+		"      set -- \"$@\" -c \"$1\"; shift; n=$((n - 1))\n" +
+		"    elif [ -n \"$ahead\" ] && [ \"${arg#--git-dir=}\" != \"$arg\" ]; then\n" +
+		"      set -- \"$@\" \"$arg\"\n" +
+		"    else\n" +
+		"      ahead=\n" +
+		"    fi\n" +
+		"  done\n" +
+		"  '" + realGit + "' \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
+		"}\n" +
+		"reads=$(scoped \"$@\" | tr '\\t\\n' ' ;')\n" +
+		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> '" + sink + "'\n" +
+		"exec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := os.Getenv("PATH")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
+	run.runner = NewRunner(testTimeout, testTools(t))
+	t.Setenv("PATH", path)
+	return sink
 }
 
 // deltaCommand is the last `git fetch` in calls into the feed repository feed or the staging

@@ -20,7 +20,7 @@ const NEAR_BAND = "100% 0px";
 const SLICE_MS = 50;
 
 /** A row of the outline, of any kind: the rows a slice holds in place stand one under another,
- *  siblings in document order, as `ConversationRows` draws them. */
+ *  siblings in document order, as the outline (`TreeRows.tsx`) draws them. */
 const ROW = "[data-node-row]";
 
 /** What a row draws of words it cuts: how tall it draws them, how many words it holds back,
@@ -482,7 +482,7 @@ function measureClamp(element: HTMLElement, top: number): Clamp | undefined {
 }
 
 /** The blocks of the words `element` holds: the paragraphs, lists and pictures of a text drawn
- *  from its reading, and the one paragraph of a text drawn as stored. */
+ *  from its reading, and otherwise the first element the words hold. */
 function blocksOf(element: HTMLElement): Element[] {
   const drawn = element.querySelector(".dispatch-markdown");
   if (drawn !== null && drawn.children.length > 0) return [...drawn.children];

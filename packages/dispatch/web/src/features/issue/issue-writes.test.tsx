@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -12,12 +12,20 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { narrowIssue, patchAnswer } from "../issue-page/issue-fixtures";
 import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssuePage } from "./IssuePage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: IssueDetails = {
   route_status: null,
@@ -101,11 +109,6 @@ function renderIssuePage(path = "/issues/CORE-1") {
   return { queryClient, unmount: view.unmount };
 }
 
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
-
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
@@ -114,9 +117,6 @@ function stubIssueApi() {
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as this one does; a project that maps none shows no repository item.
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   // The Spec tab's requirements and the header's component line read these for the issue under
   // test; both answer the API's empty shape, which is what this fixture's issue has.
   const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -133,29 +133,8 @@ function stubIssueApi() {
   // The server answers a PATCH with the narrow `Issue`, not `IssueDetails`: no artifacts,
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
-  const patchIssue = answerIssuePatches().mockImplementation(
-    // A null `status` or `title` in the body means "leave it as it is", which is what the server
-    // does with it; every other field the body names is written through. The body's `advances`
-    // is a list of priority ids, which the answer states as the resolved relations instead, so
-    // it is left to the issue's own.
-    async (
-      _key,
-      {
-        rank: _rank,
-        components: _components,
-        advances: _advances,
-        advances_revision: _advancesRevision,
-        status,
-        title,
-        ...update
-      }
-    ) =>
-      narrowIssue({
-        ...issue,
-        ...update,
-        status: status ?? issue.status,
-        title: title ?? issue.title,
-      })
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
   );
 
   return {
@@ -169,7 +148,6 @@ function stubIssueApi() {
       getMyState.mockRestore();
       getIssueCoverage.mockRestore();
       listProjectArchitectureSources.mockRestore();
-      listRepoProjects.mockRestore();
       patchIssue.mockRestore();
     },
   };

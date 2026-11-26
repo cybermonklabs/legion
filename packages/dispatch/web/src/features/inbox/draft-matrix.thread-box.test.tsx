@@ -55,11 +55,12 @@
  * `draft-matrix.thread-box.coverage.ts`, which holds each census item this file answers for to a
  * test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
   BODY,
   drawInboxColumn,
@@ -73,6 +74,7 @@ import {
   REFUSAL,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type {
@@ -85,9 +87,16 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
 import { installInboxApiMocks } from "./inbox-fixture";
 import { threadSendKey } from "./ThreadBody";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 
@@ -102,19 +111,15 @@ const bob = { id: "bob", kind: "user" } as const;
 
 function rootComment(id: string, issueKey: string): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author: bob,
     body: "The retry budget is too small.",
     created_at: "2026-10-12T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: issueKey,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -176,6 +181,7 @@ function plannerMessage(id: string, body: string, overrides: Partial<Message> = 
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

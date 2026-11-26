@@ -26,6 +26,7 @@ import (
 // is taken and the resolution that then fails records nothing, and a mode that cannot be read is
 // refused before the entry is read at all but recorded only where the resolution succeeded.
 func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// entry is the recipient's session entry, nil for a recipient that has none.
@@ -86,15 +87,6 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			harness := newListenerDeliveryHarness(t)
-			// Each copy refills from its bucket on a goroutine its registry starts
-			// (kvwatch.Watcher.Start), and a write that lands after that read's watch is opened
-			// and before the read itself begins carries no mark of it, so the sweep ending the
-			// read takes it back out of the copy (kvwatch.Copy.CompleteRead). The fan-out judges
-			// this message against the copies alone - the interest it matches (registry.Match)
-			// and the entry judgeFollowedTopic reads (sessions.Get) - so both reads are waited
-			// out here, before the two writes below.
-			waitForRegistry(t, harness.registry)
-			waitForSessions(t, harness.sessions)
 			sessionID := "ses_fanout_refusal_" + id.New()
 			topic := "notifications.github.acme.fanout-refusal-" + id.New() + ".mention"
 			if _, err := harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic}); err != nil {
@@ -111,7 +103,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 				// turns on the entry this path read -- an attempt record is left only for a
 				// session whose entry it read and nothing reaches (fanoutDelivery) -- so the
 				// message goes to the handler once that read answers, never on the write alone.
-				waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+				waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 					_, err := harness.sessions.Get(sessionID)
 					return err == nil
 				})
@@ -164,6 +156,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 // message is delivered by that consumer's relay, which a record would make hold its copy, the
 // session's later messages behind it.
 func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	sessionID := "ses_fanout_no_path_" + id.New()
 	topic := "notifications.github.acme.fanout-no-path-" + id.New() + ".mention"
@@ -178,7 +171,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	// The attempt record this test is about is left only for a session whose entry the fan-out
 	// read, so the message goes to the handler once that read answers rather than on the write
 	// alone (the wait above the table).
-	waitFor(t, 10*time.Second, "the seeded entry of "+sessionID+" to be readable", func() bool {
+	waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 		_, err := harness.sessions.Get(sessionID)
 		return err == nil
 	})
@@ -223,6 +216,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 // nobody, so a record would have the relay's own copy of the next event under that key skipped as
 // one already on its way (INFRA-594).
 func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// payload is what the publisher sends.
@@ -281,6 +275,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 // neither an attempt nor a dedupe key for it -- records that would have the next copy of the same
 // event skipped as one the session already has (INFRA-594).
 func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
+	t.Parallel()
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
@@ -324,6 +319,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 // only the two consumers' interests the durable would acknowledge the message before it decoded
 // it (durableNeedsDelivery), and the fan-out would never judge it.
 func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublishedIt(t *testing.T) {
+	t.Parallel()
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)

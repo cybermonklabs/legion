@@ -16,14 +16,18 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimRepairGauges are the three gauges of the role claim copy's repair (registerListGauges).
@@ -60,7 +64,7 @@ func reportsOver(d *listenerDeps) listenerReports {
 	served.Store(d)
 	met := metrics.New()
 	registerListGauges(met, &served)
-	return listenerReports{healthz: healthzHandler(&served), metrics: met.Handler()}
+	return listenerReports{healthz: healthzHandler(&served, nil), metrics: met.Handler()}
 }
 
 // healthzAnswer is one /healthz answer: its status code and its body's fields.
@@ -147,17 +151,24 @@ func (r listenerReports) requireNoRepairSamples(t *testing.T) {
 	}
 }
 
-// loseRoleFromCopy takes role out of registry's copy of the role bucket while the bucket goes on
-// holding its claim, as a delivery the copy missed leaves it, and leaves the copy's fence where it
-// was (kvwatch.Copy.Remove), so the next whole read of the bucket puts the claim back.
+// loseRoleFromCopy settles the rig's copy (settle) and then takes role out of it while the bucket
+// goes on holding its claim, as a delivery the copy missed leaves it, and leaves the copy's fence
+// where it was (kvwatch.Copy.Remove), so the next whole read of the bucket puts the claim back. It
+// returns the report of the read that settled the copy, the last whole read before the loss.
+// Without the settle the loss could come before the watcher has delivered the claim's own record:
+// the claim route's write puts the claim in the copy at once, the watcher delivers the record at
+// that same revision a moment later, and the fence lets it in, so that delivery and not the read
+// would put the claim back (TestALostRoleClaimIsNotPutBackByARecordTheWatcherStillHeld).
 // dropRoleFromCopy's drift is not that one: it fences the role at a revision past any the bucket
 // reaches, so no read repairs it, which the acts' tests need and these must not have.
-func loseRoleFromCopy(t *testing.T, registry *store.Registry, role string) {
+func (r *grantGuardRig) loseRoleFromCopy(t *testing.T, role string) store.RoleClaimRepairReport {
 	t.Helper()
-	guard, roleCopy, _ := roleClaimCopy(t, registry)
+	settled := r.settle(t)
+	guard, roleCopy, _ := roleClaimCopy(t, r.deps.registry)
 	guard.Lock()
 	defer guard.Unlock()
 	roleCopy.Remove(role)
+	return settled
 }
 
 // c-repair-bound, the listener's half. /healthz carries the role claim copy's last whole read -
@@ -168,6 +179,7 @@ func loseRoleFromCopy(t *testing.T, registry *store.Registry, role string) {
 // the report counts the claim the copy lost as put back and the two it held for no claim as taken
 // out.
 func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T) {
+	t.Parallel()
 	const (
 		consumer = "listener-healthz-role-claim-repair"
 		holder   = "ses_healthz_role_claim_repair"
@@ -197,15 +209,16 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	requireRepairField(t, answer, repairField(started.CompletedAt, rig.clock.Now().Sub(started.CompletedAt), 0, 0))
 	reports.requireRepairSamples(t, started.CompletedAt, 0, 0)
 
-	// The copy drifts both ways, and the clock moves past the bound with no read since.
-	loseRoleFromCopy(t, rig.deps.registry, lost)
+	// The copy, settled by a scheduled read, drifts both ways, and the clock moves past the bound
+	// with no read since.
+	settled := rig.loseRoleFromCopy(t, lost)
 	requireDrift(t, rig.deps.registry, lost, "", holder)
 	for _, role := range surplus {
 		holdRoleInCopy(t, rig.deps.registry, role, holder)
 		requireDrift(t, rig.deps.registry, role, holder, "")
 	}
 	late := store.RoleClaimRepairBound + time.Second
-	rig.clock.Advance(started.CompletedAt.Add(late).Sub(rig.clock.Now()))
+	rig.clock.Advance(settled.CompletedAt.Add(late).Sub(rig.clock.Now()))
 	repairErr := rig.deps.registry.RoleClaimRepair().Err()
 	if repairErr == nil {
 		t.Fatalf("the repair error is nil %s after the last whole read, past the %s bound", late, store.RoleClaimRepairBound)
@@ -223,8 +236,8 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 			t.Errorf("the degraded answer %v has no %s; a reader of that field loses it while the repair is late", answer.body, field)
 		}
 	}
-	requireRepairField(t, answer, repairField(started.CompletedAt, late, 0, 0))
-	reports.requireRepairSamples(t, started.CompletedAt, 0, 0)
+	requireRepairField(t, answer, repairField(settled.CompletedAt, late, 0, 0))
+	reports.requireRepairSamples(t, settled.CompletedAt, 0, 0)
 
 	repaired := rig.repair(t)
 	if !repaired.CompletedAt.Equal(rig.clock.Now()) || repaired.PutBack != 1 || repaired.TookOut != len(surplus) {
@@ -241,7 +254,9 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 // holder's row of GET /v1/sessions nor its GET /v1/registry/<session id>, which both read the copy;
 // no registration runs, since its renewal would write the claim and so put it back in the copy;
 // and once the scheduled read - armed inside the bound - has run, both name the role again. The
-// claim record is never written in between, so the read is what put it back.
+// claim record is never written in between, so the read is what put it back; the copy is settled
+// before the loss (loseRoleFromCopy), so the watcher's delivery of the claim's own record cannot
+// put it back first.
 func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t *testing.T) {
 	const (
 		holder = "ses_role_copy_lost_rows"
@@ -268,8 +283,8 @@ func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t
 	}
 	claim := rig.storedClaim(t, role)
 
+	rig.loseRoleFromCopy(t, role)
 	lostAt := rig.clock.Now()
-	loseRoleFromCopy(t, rig.deps.registry, role)
 	requireDrift(t, rig.deps.registry, role, "", holder)
 	if listed, entry := rolesNamed("with the claim lost from the copy"); len(listed) != 0 || len(entry) != 0 {
 		t.Fatalf("with the claim lost from the copy the routes give %s the roles %v and %v, want none: the copy still holds the claim", holder, listed, entry)
@@ -297,4 +312,107 @@ func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t
 			role, claim.Revision, claim.RenewedAt, after.Revision, after.RenewedAt)
 	}
 	t.Logf("the claim the copy lost was back %s after the loss, at claim revision %d", repaired.CompletedAt.Sub(lostAt), claim.Revision)
+}
+
+// holdApplying holds watcher's applying of what it delivers - the mutex every record it delivers
+// takes before it reaches the copy, and every read it installs takes before it begins - until the
+// returned release runs. The test's cleanup releases it too, so a row that fails while holding it
+// leaves no watcher blocked for the rig's stop.
+func holdApplying(t *testing.T, watcher *kvwatch.Watcher) (release func()) {
+	t.Helper()
+	field := reflect.ValueOf(watcher).Elem().FieldByName("applyMu")
+	applying := (*sync.Mutex)(unsafe.Pointer(field.UnsafeAddr()))
+	applying.Lock()
+	var once sync.Once
+	release = func() { once.Do(applying.Unlock) }
+	t.Cleanup(release)
+	return release
+}
+
+// loseRoleFromCopy takes a claim out of the copy only once the watcher has delivered every record
+// the bucket stored before it, so the claim's own record cannot put it back before a read does.
+// The row holds the role claim watcher's applying (holdApplying) while the claim route writes the
+// claim: the copy then holds it from the route's own write, and the watcher still holds the record.
+// Control: a removal made then is undone once the watcher applies again, with no whole read since,
+// as job 139006597518's scheduled read found the claim already back and counted nothing put back.
+// Then the route writes the claim again under the same hold, and loseRoleFromCopy runs: the hold
+// is let go once a read of the bucket has begun, or once loseRoleFromCopy has returned without one,
+// which fails the row. After it the copy names no holder for the role, and the scheduled read puts
+// the claim back and counts it once.
+func TestALostRoleClaimIsNotPutBackByARecordTheWatcherStillHeld(t *testing.T) {
+	t.Parallel()
+	const (
+		holder = "ses_lost_role_held_record"
+		role   = "lost-role-held-record"
+	)
+	rig := newGrantGuardRig(t)
+	rig.register(t, holder, holdingProcess)
+	guard, roleCopy, watcher := roleClaimCopy(t, rig.deps.registry)
+	inCopy := func() string {
+		guard.RLock()
+		defer guard.RUnlock()
+		named, _ := roleCopy.Get(role)
+		return named
+	}
+	// claimHeld has the route write holder's claim while the watcher holds what it delivers, and
+	// returns the claim as the bucket holds it and the hold's release.
+	claimHeld := func(when string) (store.RoleClaim, func()) {
+		t.Helper()
+		release := holdApplying(t, watcher)
+		if recorder := rig.claim(t, holder, role, holdingProcess); recorder.Code != http.StatusOK {
+			t.Fatalf("%s: the claim of %s: status %d %s, want 200", when, role, recorder.Code, recorder.Body.String())
+		}
+		if named := inCopy(); named != holder {
+			t.Fatalf("%s: the copy names %q for %s after the claim route's write, want %s from the route's own write", when, named, role, holder)
+		}
+		return rig.storedClaim(t, role), release
+	}
+
+	first, release := claimHeld("control")
+	completed := rig.deps.registry.RoleClaimRepair().Completed
+	guard.Lock()
+	roleCopy.Remove(role)
+	guard.Unlock()
+	release()
+	testwait.Eventually(t, "control: the record the watcher held to put the removed claim back in the copy", func() bool {
+		return inCopy() == holder
+	})
+	if now := rig.deps.registry.RoleClaimRepair().Completed; now != completed {
+		t.Fatalf("control: %d whole reads completed while the removed claim came back, want none: a read put it back, not the record the watcher held", now-completed)
+	}
+
+	second, release := claimHeld("the loss")
+	if second.Revision <= first.Revision {
+		t.Fatalf("the second claim left %s's record at revision %d, want past %d: the watcher holds no record of it", role, second.Revision, first.Revision)
+	}
+	readsBefore := watcher.StreamReads()
+	var returned atomic.Bool
+	began := make(chan bool, 1)
+	// Eventually's bound, a minute or what the binary's deadline leaves less a second, for a read
+	// that must begin; the goroutine answers rather than fails, and the row reads the answer.
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	go func() {
+		// A read reads the bucket's stream before it waits for the applying (kvwatch's watch).
+		testwait.Holds(bound, testwait.Poll, func() bool { return watcher.StreamReads() > readsBefore || returned.Load() })
+		began <- watcher.StreamReads() > readsBefore
+		release()
+	}()
+	rig.loseRoleFromCopy(t, role)
+	returned.Store(true)
+	if !<-began {
+		t.Fatalf("loseRoleFromCopy took %s out of the copy with no read of the bucket begun while the watcher held the claim's record at revision %d, which then puts the claim back before any read",
+			role, second.Revision)
+	}
+	requireDrift(t, rig.deps.registry, role, "", holder)
+
+	wait := rig.scheduled(t)
+	rig.clock.Advance(wait.Delay())
+	repaired := rig.repair(t)
+	if named := inCopy(); named != holder || repaired.PutBack != 1 || repaired.TookOut != 0 {
+		t.Fatalf("after the scheduled read the copy names %q for %s and the read's report = %+v, want %s and one claim put back, none taken out",
+			named, role, repaired, holder)
+	}
+	if after := rig.storedClaim(t, role); after.Revision != second.Revision {
+		t.Fatalf("%s's claim moved from revision %d to %d: a write put it back, not the read", role, second.Revision, after.Revision)
+	}
 }

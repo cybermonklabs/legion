@@ -19,7 +19,9 @@ const (
 	authRenewProof
 	authAccount
 	authService
+	authEdgeListener
 	authSignIn
+	authOperator
 )
 
 // caller is who server.authenticate proved a request came from. Which field is set follows from
@@ -40,6 +42,12 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// operator is the account of the NATS writer hold's operator, the operator entry of
+	// BROKER_NATS_SERVICES whose platform token authenticated the request.
+	operator string
+	// edge is the edge-listener entry of BROKER_NATS_SERVICES whose account the identity token
+	// that authenticated the request names: the projects it may ask about.
+	edge EdgeListener
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -211,6 +219,19 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.Ser
 	}}
 }
 
+// edgeListenerAuth is a route for an edge listener: an Envoy listener that serves the sessions of
+// the projects its entry names to agents outside the deployment's network. It calls with its own
+// identity token, the one a listed caller presents (a projected ServiceAccount token for the
+// broker's audience, or a Google identity token), verified the same way, and is known by the
+// edge-listener entry of BROKER_NATS_SERVICES that names that token's account, not by
+// BROKER_API_ACCOUNTS. The handler is given that entry, whose projects are the only ones it may
+// ask about.
+func edgeListenerAuth(h func(*server, http.ResponseWriter, *http.Request, EdgeListener)) routeHandler {
+	return routeHandler{auth: authEdgeListener, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.edge)
+	}}
+}
+
 // signInAuth is a route of the broker's own approval page, for a person in a browser signed in to
 // the broker itself (OpenID Connect with the broker's own client, BROKER_SIGNIN_*). The handler is
 // given the session the request's __Host-broker-session cookie names, or the zero session when it
@@ -223,6 +244,27 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.Ser
 func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, approval.Session)) routeHandler {
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
+	}}
+}
+
+// operatorAuth is a route of the NATS writer hold, for its one caller: the operator entry of
+// BROKER_NATS_SERVICES, presenting its own platform token (Authorization: Bearer), the
+// Kubernetes ServiceAccount token for the NATS audience that the auth service verifies the
+// operator's connection by. The token is verified with the auth service's own verifier
+// (NATSHold.OperatorToken), held to the hour the auth service holds every service's token to, and
+// must name the operator entry's account; anything else, every other entry's token and a
+// person's broker token among them, is 403 not_operator. A person's broker token is also every
+// session that person's agents run, so it cannot single out one operator. Every route of the
+// class spends its source address's bucket first, the one the account class spends
+// (authenticate), so a flood of forged tokens costs no verification. The handler is given the
+// operator's account, which every row it writes names as its writer.
+//
+// It is a class of its own rather than a power of accountAuth's because the operator is no caller
+// BROKER_API_ACCOUNTS lists: its authority is the operator entry of the NATS auth service's list,
+// and its token is minted only under a person's approved release of the operator's credential.
+func operatorAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+	return routeHandler{auth: authOperator, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.operator)
 	}}
 }
 
@@ -248,7 +290,11 @@ func routes() []apiRoute {
 		// already public in the broker's own reference. Mounted only when the broker runs its
 		// OAuth provider, since with none it would name endpoints that are not there.
 		{http.MethodGet, "/.well-known/oauth-authorization-server", public((*server).authorizationServerMetadata)},
-		// Enroll a session's or pod's signing key under the caller's machine credential.
+		// Enroll a session's or pod's signing key under the caller's machine credential. Where
+		// BROKER_PROJECT_ACCESS_URL is set, an enrollment under a person's machine login or pod
+		// login is made only once Dispatch has said what kind of member that person is: a
+		// restricted member's is refused 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, and every one is
+		// refused 503 MEMBER_KIND_UNCHECKABLE while that cannot be read from Dispatch.
 		{http.MethodPost, "/v1/enrollments", launcherAuth((*server).createEnrollment)},
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
@@ -308,15 +354,35 @@ func routes() []apiRoute {
 		// Describe the calling session's enrollment and its live grants.
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
+		// Where BROKER_PROJECT_ACCESS_URL is set, a session whose person Dispatch calls a
+		// restricted member is denied every secret, restricted-member, and a session whose person's
+		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request written.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
-		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
+		// seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided
+		// or once N seconds pass. Every other session is 403 NOT_YOURS. Before that, a session other
+		// than the one the request hangs off is answered 404 NOT_FOUND, as for an id no request has,
+		// when the request touches a private Dispatch project the session cannot see (one its own
+		// credential does not name, or whose list no longer holds its person), whoever owns it, and
+		// 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel a pending request the calling session's owner made, by the same rule as the read.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read,
+		// its 404 NOT_FOUND for a request of a private project the session cannot see and its 503
+		// PROJECT_ACCESS_UNAVAILABLE included; neither cancels anything.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
-		// Release a live grant's values to the session that holds it.
+		// Release a live grant's values to the session that holds it. Every other session is 403
+		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
+		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
+		// while Dispatch cannot say; neither releases anything. Where BROKER_PROJECT_ACCESS_URL is
+		// set, a restricted member's session is refused 403 GRANT_NOT_LIVE and the grant ended, and
+		// one whose person's kind cannot be read from Dispatch is refused 503
+		// MEMBER_KIND_UNCHECKABLE with nothing released.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
-		// End a grant the calling session holds.
+		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
+		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
+		// as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say;
+		// neither revokes anything.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
 		// List the undecided requests and machine logins the named person is asked to decide, each
 		// with its state, pending or expired, and its deadline, and each secret request with the
@@ -327,29 +393,51 @@ func routes() []apiRoute {
 		// for that state: the records a decision may still settle, and the records whose deadline
 		// passed before anybody decided them that nobody has dismissed, before the sweep and after
 		// it, the pending ones first and each state newest first. Any other state is 400
-		// STATE_INPUT.
+		// STATE_INPUT. A person Dispatch calls a restricted member is no approver of a secret or of
+		// a service's machine login, so their list holds no secret request and no service's login
+		// an older broker opened, even one naming them, and while Dispatch cannot say what kind of
+		// member the person is it holds none of those either; the person's own machine logins stay
+		// on it.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
 		// token whose name carries relaysDecisions. It reads the record only once the caller is
 		// authenticated, so a caller with no token, or one the broker does not accept, is refused
-		// the same whether the id names a record or not. A secret request is decided only on the
-		// broker's own page by a person signed in to the broker, so for one this answers the listed
-		// caller 403 DECIDE_ON_BROKER_PAGE naming that page (or naming none, on a broker that signs
-		// nobody in), or 403 JUDGE_DECIDES while the model judge holds it, writing nothing.
+		// the same whether the id names a record or not, and an id no record has is 404 NOT_FOUND.
+		// A secret request is decided only on the broker's own page by a person signed in to the
+		// broker, so for one this answers the listed caller 403 DECIDE_ON_BROKER_PAGE naming that
+		// page (or naming none, on a broker that signs nobody in), or 403 JUDGE_DECIDES while the
+		// model judge holds it, writing nothing. To a person a private project hides the request
+		// from — the body's approver, or a body naming none — it is the same 404 NOT_FOUND as an id
+		// no record has, and while Dispatch cannot say whether the person may see it, 503
+		// PROJECT_ACCESS_UNAVAILABLE.
 		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuth(relaysDecisions, (*server).approveRecord)},
 		// Deny a pending machine login as the named person, who must type its code, on the
 		// caller's word and behind the same authentication and the same power as approve. A
-		// secret request is refused the same way, writing nothing, with 403
+		// service's login a broker from before token logins opened is denied by anyone signed in
+		// but a person Dispatch calls a restricted member, who is no approver of a secret: 403
+		// NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of
+		// member the person is, denying nothing. A
+		// secret request is refused the same way, writing nothing: 404 NOT_FOUND to a person its
+		// private project hides it from, as for an id no record has, 503 PROJECT_ACCESS_UNAVAILABLE
+		// while Dispatch cannot answer for it, and otherwise 403 JUDGE_DECIDES or 403
 		// DECIDE_ON_BROKER_PAGE naming the page where a person signed in to the broker denies it.
 		{http.MethodPost, "/v1/credential-requests/{record}/deny", accountAuth(relaysDecisions, (*server).denyRecord)},
 		// Dismiss an expired credential request, a secret request or a machine login whose deadline
 		// passed before anybody decided it, as the named person, for good: it leaves every list
 		// that asks for expired records, the person's own and, for a shared request, everybody's.
-		// A record that can still be decided is 409 RECORD_PENDING, and one that was decided, or
-		// cancelled before its deadline, is 409 RECORD_TERMINAL. A second dismissal answers the
-		// first one's values and writes nothing. The person is the login the body names, which the
-		// broker takes on the caller's word: a dismissal decides nothing and releases nothing.
+		// An id no record has, and a secret request of a private project the person may not see,
+		// are one 404 NOT_FOUND, and a request Dispatch cannot answer for is 503
+		// PROJECT_ACCESS_UNAVAILABLE, dismissing nothing. A record that can still be decided is 409
+		// RECORD_PENDING, and one that was decided, or cancelled before its deadline, is 409
+		// RECORD_TERMINAL. A second dismissal answers the first one's values and writes nothing.
+		// A person Dispatch calls a restricted member dismisses only their own machine logins: a
+		// secret request, or a service's login an older broker opened, even one naming them, is 403
+		// NOT_APPROVER to them, saying why, and while Dispatch cannot say what kind of member the
+		// person whose list holds such a record is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE,
+		// dismissing nothing. The
+		// person is the login the body names, which the broker takes on the caller's word: a
+		// dismissal decides nothing and releases nothing.
 		{http.MethodPost, "/v1/credential-requests/{record}/dismiss", accountAuth(relaysDecisions, (*server).dismissRecord)},
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
@@ -359,7 +447,9 @@ func routes() []apiRoute {
 		// each naming who approved it. A person's pod login is a token login of a Kubernetes account
 		// that BROKER_POD_OPERATORS maps to a person, made with a token of one of its pods or with
 		// one bound to no pod. It carries a service and a subject, but only that person's list holds
-		// it, and its person field names that person. The person is the one the caller names.
+		// it, and its person field names that person. A person Dispatch calls a restricted member
+		// is listed their own machines' and pods' logins alone, and so is anyone while Dispatch
+		// cannot say what kind of member the person is. The person is the one the caller names.
 		{http.MethodGet, "/v1/launcher-credentials", accountAuth(relaysDecisions, (*server).listLauncherCredentials)},
 		// End a machine login, expired or not: a service's (its token login, or one a person approved
 		// before token logins) as anyone signed in, a person's machine's as the person who approved
@@ -368,17 +458,55 @@ func routes() []apiRoute {
 		// pods included, ends with its grants and pending requests. The revoke does not keep a pod
 		// out: the pod logs in again with its token under a new login while BROKER_SERVICE_LOGINS
 		// names its account, and that login acts for the person only while BROKER_POD_OPERATORS
-		// still maps the account to the person. The revoking person is the login the request names,
-		// which the broker still takes on the caller's word: a revoke only takes power away.
+		// still maps the account to the person. A person Dispatch calls a restricted member ends
+		// their own logins alone: a service's is 404 NOT_FOUND to them, as an id no login has, and
+		// so it is to anyone while Dispatch cannot say what kind of member the person is, who still
+		// ends their own. The revoking person is the login the request names, which the broker
+		// still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
-		// List the live grants of the named person's sessions, automatic or approved, and those the
-		// person approved. The person is the one the caller names.
+		// List the live grants the named person's Live grants page shows: those the person
+		// approved, those of their own sessions, those the model judge approved in anyone's stead,
+		// and those a pod that acts for no person took without asking (a service's pod, or a
+		// person's pod BROKER_POD_OPERATORS no longer maps), which nobody may revoke. A grant the
+		// person approved, or whose session acts for them, is listed whatever project it touches;
+		// an unmapped person's pod acts for no one, so its other grants are listed to its former
+		// person naming no operator. Any other grant of a private project the person may not see is
+		// left out, and one Dispatch cannot answer for is left out while it cannot. A person
+		// Dispatch calls a restricted member is no approver of a secret and sees nothing beyond
+		// their own projects, so their list holds the grants of the sessions that act for them
+		// alone: no grant they approved or could approve, no grant of a service's pod, and none of
+		// a person's pod that BROKER_POD_OPERATORS no longer maps to them. While Dispatch cannot
+		// say what kind of member the person is, the list holds no grant of a session that does not
+		// act for them either. The person is the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
-		// End a grant as its approver or as its enrollment's operator. The operator's revoke also
-		// withholds the secrets the grant's request got automatically from that session, even when
-		// the grant had already ended: its other grants that got them automatically end too, and it
-		// asks before it gets them again. The revoking person is the login the request names, which
-		// the broker still takes on the caller's word: a revoke only takes power away.
+		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
+		// pod acts for no one), whatever project it touches and whether or not Dispatch answers for it,
+		// or, for a grant the model judge approved in anyone's stead, as anyone the grant's private
+		// project, if it has one, lets see it. The operator's
+		// revoke also withholds the secrets the grant's request got automatically from that session,
+		// even when the grant had already ended: its other grants that got them automatically end
+		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
+		// grant a private project hides from the person are one 404 NOT_FOUND, a grant Dispatch
+		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another box each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
+		// its enrollment acts for, and one the grant admits only as an approver is 403
+		// NOT_APPROVER, saying why. Each of these revokes nothing. While Dispatch does not answer
+		// what kind of member the person is (a timeout, a failed connection, a gateway's 502, 503
+		// or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming
+		// no code or INTERNAL, which Dispatch answers while its database fails), only the person
+		// the grant names as its approver ends it as an approver. Every revoke through a group or
+		// as anyone then, whatever session holds the grant, and every revoke while Dispatch answers
+		// anything else the broker cannot read (a refused account, a kind this broker does not
+		// know, another code, a certificate or a name that does not resolve), is 503
+		// MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be
+		// ended then by that person, its operator, who asks Dispatch nothing; a grant on a session
+		// that acts for no person (a service's pod, a person's pod the broker no longer maps, or a
+		// machine's own session) is ended through the broker by nobody but its named approver
+		// until Dispatch answers. A revoke whose caller hung up after the member-kind read is 503
+		// REQUEST_ENDED. The revoking person is the login the request names, which the broker
+		// still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
@@ -402,6 +530,20 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
+		// Answer an edge listener the repositories the issues of one project resolve to,
+		// ?project=<KEY>, as Dispatch answers them (GET /api/v1/access/projects/{key}/repositories
+		// at BROKER_PROJECT_ACCESS_URL), read from Dispatch on every call and never kept:
+		// {"project", "repositories": ["owner/name", …]}, [] when none. Only an edge listener
+		// whose BROKER_NATS_SERVICES entry lists the project is answered; a project the entry does
+		// not list is 403 PROJECT_NOT_LISTED and Dispatch is not asked. Whenever the broker cannot
+		// get Dispatch's whole answer within 2 seconds (Dispatch's 503 or any other refusal, a
+		// stall, a body it cannot read, or no BROKER_PROJECT_ACCESS_URL at all) it is 503
+		// REPOSITORIES_UNKNOWN, never a list; and past 16 calls of one edge listener waiting on
+		// Dispatch at once on one broker process, 503 REPOSITORIES_BUSY. That bound is each
+		// process's, so N replicas let one edge listener hold 16 × N calls on Dispatch: a guard on
+		// Dispatch's load, not a security bound. The edge-listener entries are read whether or not
+		// the broker runs the NATS auth service.
+		{http.MethodGet, "/v1/project-repositories", edgeListenerAuth((*server).projectRepositories)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
 		// page lists them, without the service logins that page also lists. This route, the machine
@@ -420,7 +562,15 @@ func routes() []apiRoute {
 		// Dispatch's Live grants page lists them.
 		{http.MethodGet, "/v1/operator/grants", launcherAuth((*server).listOperatorGrants)},
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
-		// automatic grant's secrets from its session.
+		// automatic grant's secrets from its session. It answers as the person's own revoke of the
+		// grant does: a grant whose approver is the operator, or whose enrollment acts for the
+		// operator (an unmapped person's pod acts for no one), is ended whatever project it touches
+		// and whether or not Dispatch answers. Of any other grant, an id no grant has and a grant a
+		// private project hides from the operator are one 404 NOT_FOUND, a grant Dispatch cannot
+		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant the operator may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another box each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. Each of these revokes nothing.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is
 		// in, and the Google exchange audience: what the CLI needs so it and the broker never
@@ -449,8 +599,9 @@ func routes() []apiRoute {
 		// decide and one "Approve all N shown". It checks the id's shape, then the session, then
 		// the record: a malformed id is a 400, a request with no live session, or with ?switch=1,
 		// redirects to the sign-in provider and returns here, and only a signed-in person's
-		// unknown record id is a 404. A machine login's record is printed with the note that it
-		// is decided by typing its code on Dispatch's machine-login page, and offers no button.
+		// unknown record id, or a record a private project hides from them, is the one 404. A
+		// machine login's record is printed with the note that it is decided by typing its code
+		// on Dispatch's machine-login page, and offers no button.
 		{http.MethodGet, "/approve/{record}", signInAuth((*approval.Page).ServeRecord)},
 		// Decide records an approval page printed, as the signed-in person: a form from the
 		// broker's own origin only, carrying the page's token, which binds it to the session and to
@@ -486,5 +637,77 @@ func routes() []apiRoute {
 		// probe: a liveness probe on it would have the kubelet kill the container in the middle of
 		// the drain, dropping the requests the pod was draining.
 		{http.MethodGet, "/healthz", public((*server).healthz)},
+		// Read the NATS writer hold's row: its gen, phase, hold id, reason, who wrote it and when,
+		// and the time the operator signed it with its signature, which the operator's commands
+		// verify before they act on it; 404 no_row while there is none, and 409 below_floor for a
+		// verified row this replica's floor of the row reads as an older row put back or another
+		// row at the gen it served (holdRowFloor, a signedrecord.Floor).
+		{http.MethodGet, "/v1/nats-hold", operatorAuth((*server).readNATSHold)},
+		// Move the writer hold's row, in one statement with its log row, from the gen the body
+		// names to one above it: released to prepare with a new hold id, never empty and never one
+		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
+		// with the same hold id, which the row keeps. The body is signed by a key of
+		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
+		// A move from an older row put back is 409 gen_mismatch with no row, and one from another
+		// row at the gen the floor took (a fork), or whose gen the log already holds (a row put back
+		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
+		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
+		// other move 400 bad_transition. A row signed more than five minutes from the broker's
+		// clock, or more than five minutes before the latest signing time the floor took or the
+		// log's verified entries hold, is 409 clock_skew, judged before the write, storing
+		// nothing. The move commits before it answers, so every decision of the auth service that
+		// starts after the answer reads the new phase.
+		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
+		// Write the writer hold's row while there is none, the first row or one a database admin
+		// deleted, signed within five minutes of the broker's clock, the floor's latest time and
+		// the log's (409 clock_skew otherwise, storing nothing), judged by the log's latest entry,
+		// which must verify (409 below_floor otherwise, storing nothing): held with a hold id, only
+		// after a prepare or held entry of that hold id, or released, only after a released entry,
+		// a prepare entry of the hold id it names (409 hold_mismatch otherwise, naming that hold,
+		// so the prepared hold is not left where no command reaches it), or a held one whose hold's
+		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
+		// clients mid-hold, and a hold the log shows ended is not held again); and, whatever the
+		// latest entry, never while any hold's journal, an ended hold's included, is below the
+		// record floor, does not verify, or holds an entry whose hold row the verified log does
+		// not hold or that names none (409 below_floor), nor while a hold's journal shows hold set
+		// done, or hold set not done with the hold's held entry in the log, and no end (a done
+		// hold release or hold abort, or a verified released entry naming the hold while its
+		// journal shows hold release's or hold abort's intent as that command's latest entry and
+		// no other intent pending) (400 bad_transition), each naming the hold, the log's latest
+		// entry, and the key id of a signature whose key the list no longer holds; at one above
+		// the highest gen nats_hold_log holds (1 for an empty log), signed over that gen. Another
+		// gen is 409 gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's
+		// commands cannot read the log; a row that is there is 409 row_exists.
+		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
+		// Write one record of the hold the row names, whatever its phase: its cohort, its
+		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
+		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
+		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
+		// and so is a write storing a gen at or below the record's floor (recordFloors), an insert
+		// of a key the routes deleted while its signed delete verifies, and a hold id other than
+		// the row's 409 hold_mismatch.
+		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
+		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
+		// was stored and its signature; a record below its floor, or one the floor has seen that
+		// is now absent with no signed delete of it that verifies, is 409 below_floor.
+		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
+		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
+		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released,
+		// and for hold abort on a row lost in prepare and restored released: signed over the
+		// record's current gen (400 bad_signature otherwise), only while the row is prepare with
+		// that hold id, or released with it while that hold's done record verifies and shows
+		// prepare, or there is no done record (409 hold_mismatch otherwise), and only at that gen
+		// (409 gen_mismatch otherwise). The same statement keeps the signed delete beside the
+		// records, so every replica reads the cohort as deleted. No other kind is deleted, so the
+		// journal outlives an abort.
+		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
+		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
+		// rollback, with hold_gen the hold row's current gen, only while the row is held with the
+		// body's hold id (409 hold_mismatch, with the row, otherwise). The body is signed over that
+		// gen, which the operator reads and verifies just before it writes; a signature over any
+		// other gen is 400 bad_signature.
+		{http.MethodPut, "/v1/nats-hold/cutover", operatorAuth((*server).putNATSHoldCutover)},
+		// List every family's cutover row, each with its signature.
+		{http.MethodGet, "/v1/nats-hold/cutover", operatorAuth((*server).readNATSHoldCutovers)},
 	}
 }

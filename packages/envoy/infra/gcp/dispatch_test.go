@@ -238,6 +238,16 @@ func runDispatchOnMocks(t *testing.T, m *pulumitest.Mocks, name string, args *gc
 	})
 }
 
+// requireInputError requires err to carry a core.InputError refusing input, as every refusal of
+// the package's components is (packages/envoy/infra/AGENTS.md), so a caller finds the input with
+// errors.As rather than by parsing the message.
+func requireInputError(t *testing.T, err error, input string) {
+	t.Helper()
+	var refused *core.InputError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, input, refused.Input, "%v", err)
+}
+
 func TestDispatchSettingsApplyDefaults(t *testing.T) {
 	settings, err := gcp.ResolveDispatch(dispatchArgs())
 	require.NoError(t, err)
@@ -391,171 +401,179 @@ func TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes(t *testing.T) {
 func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 	cases := []struct {
 		name string
-		edit func(*gcp.DispatchArgs)
-		err  []string
+		// input is the core.InputError's Input: the input to correct, named as the schema names
+		// it, a list by its own name.
+		input string
+		edit  func(*gcp.DispatchArgs)
+		err   []string
 	}{
-		{name: "an invalid hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "dispatch-" }, err: []string{"hostname", "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"}},
+		{name: "an invalid hostname", input: "hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "dispatch-" }, err: []string{"hostname", "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"}},
 		// A hostname with a label weborigin.ReservedLabel refuses is refused, in every mode, the
 		// cluster-only one included, with that function's reason; the labels it takes are in
 		// TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes.
-		{name: "a hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "certificate authorities"}},
-		{name: "a hostname that is an xn-- label the IDNA lookup profile refuses", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "Fake A-label"}},
-		{name: "a cluster-only hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) {
+		{name: "a hostname of the reserved label form", input: "hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "certificate authorities"}},
+		{name: "a hostname that is an xn-- label the IDNA lookup profile refuses", input: "hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "Fake A-label"}},
+		{name: "a cluster-only hostname of the reserved label form", input: "hostname", edit: func(a *gcp.DispatchArgs) {
 			*a = *dispatchClusterOnlyArgs()
 			a.Hostname = "ex--dispatch"
 		}, err: []string{`hostname: host label "ex--dispatch"`}},
-		{name: "an invalid tailnet DNS name", edit: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "Example-Tailnet.ts.net" }, err: []string{"tailnetDnsName", "ts.net"}},
-		{name: "no tags", edit: func(a *gcp.DispatchArgs) { a.Tags = nil }, err: []string{"tags", "at least one"}},
-		{name: "an invalid tag", edit: func(a *gcp.DispatchArgs) { a.Tags = []string{"example-dispatch"} }, err: []string{"tags[0]", "tag:"}},
-		{name: "an unpinned Envoy image", edit: func(a *gcp.DispatchArgs) { a.EnvoyImage = "example.invalid/envoy:latest" }, err: []string{"envoyImage", "@sha256:"}},
-		{name: "an unpinned Tailscale image", edit: func(a *gcp.DispatchArgs) { a.TailscaleImage = "example.invalid/tailscale:latest" }, err: []string{"tailscaleImage", "@sha256:"}},
-		{name: "an unpinned Cloud SQL proxy image", edit: func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = "example.invalid/cloud-sql-proxy:latest" }, err: []string{"cloudSqlProxyImage", "@sha256:"}},
-		{name: "an unpinned front-door tools image", edit: func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/envoy:latest" }, err: []string{"frontDoorToolsImage", "@sha256:"}},
-		{name: "no front-door tools image", edit: func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "" }, err: []string{"frontDoorToolsImage", "pinned by digest"}},
-		{name: "no region", edit: func(a *gcp.DispatchArgs) { a.Region = "" }, err: []string{"region", "required"}},
-		{name: "no sign-in client ID", edit: func(a *gcp.DispatchArgs) { a.SignInClientId = "" }, err: []string{"signInClientId", "required"}},
-		{name: "an invalid sign-in domain", edit: func(a *gcp.DispatchArgs) { a.SignInDomain = "Example.COM" }, err: []string{"signInDomain", "lowercase DNS name"}},
-		{name: "an empty database version", edit: func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef("") }, err: []string{"databaseVersion", "empty"}},
-		{name: "an empty database tier", edit: func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef("") }, err: []string{"databaseTier is empty", "leave it unset for db-custom-4-15360"}},
-		{name: "an invalid namespace", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef("Dispatch") }, err: []string{"namespace", "DNS label"}},
-		{name: "an invalid allowed namespace", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", "Legion"} }, err: []string{"allowedNamespaces[1]", "DNS label"}},
-		{name: "a namespace longer than a DNS label", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef(strings.Repeat("a", 64)) }, err: []string{"namespace", "DNS label"}},
-		{name: "an allowed namespace longer than a DNS label", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{strings.Repeat("a", 64)} }, err: []string{"allowedNamespaces[0]", "DNS label"}},
-		{name: "no tailnet auth key", edit: func(a *gcp.DispatchArgs) { a.TailnetAuthKey = nil }, err: []string{"tailnetAuthKey", "required"}},
-		{name: "no NATS URL", edit: func(a *gcp.DispatchArgs) { a.NatsUrl = nil }, err: []string{"natsUrl", "required"}},
-		{name: "no NATS seed secret", edit: func(a *gcp.DispatchArgs) { a.NatsSeedSecret = nil }, err: []string{"natsSeedSecret", "required"}},
-		{name: "no sign-in client secret", edit: func(a *gcp.DispatchArgs) { a.SignInClientSecret = nil }, err: []string{"signInClientSecret", "required"}},
-		{name: "an agent secrets URL with a path", edit: func(a *gcp.DispatchArgs) {
+		{name: "an invalid tailnet DNS name", input: "tailnetDnsName", edit: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "Example-Tailnet.ts.net" }, err: []string{"tailnetDnsName", "ts.net"}},
+		{name: "no tags", input: "tags", edit: func(a *gcp.DispatchArgs) { a.Tags = nil }, err: []string{"tags", "at least one"}},
+		{name: "an invalid tag", input: "tags", edit: func(a *gcp.DispatchArgs) { a.Tags = []string{"example-dispatch"} }, err: []string{"tags[0]", "tag:"}},
+		{name: "an unpinned Envoy image", input: "envoyImage", edit: func(a *gcp.DispatchArgs) { a.EnvoyImage = "example.invalid/envoy:latest" }, err: []string{"envoyImage", "@sha256:"}},
+		{name: "an unpinned Tailscale image", input: "tailscaleImage", edit: func(a *gcp.DispatchArgs) { a.TailscaleImage = "example.invalid/tailscale:latest" }, err: []string{"tailscaleImage", "@sha256:"}},
+		{name: "an unpinned Cloud SQL proxy image", input: "cloudSqlProxyImage", edit: func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = "example.invalid/cloud-sql-proxy:latest" }, err: []string{"cloudSqlProxyImage", "@sha256:"}},
+		{name: "an unpinned front-door tools image", input: "frontDoorToolsImage", edit: func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/envoy:latest" }, err: []string{"frontDoorToolsImage", "@sha256:"}},
+		{name: "no front-door tools image", input: "frontDoorToolsImage", edit: func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "" }, err: []string{"frontDoorToolsImage", "pinned by digest"}},
+		{name: "no region", input: "region", edit: func(a *gcp.DispatchArgs) { a.Region = "" }, err: []string{"region", "required"}},
+		{name: "no sign-in client ID", input: "signInClientId", edit: func(a *gcp.DispatchArgs) { a.SignInClientId = "" }, err: []string{"signInClientId", "required"}},
+		{name: "an invalid sign-in domain", input: "signInDomain", edit: func(a *gcp.DispatchArgs) { a.SignInDomain = "Example.COM" }, err: []string{"signInDomain", "lowercase DNS name"}},
+		{name: "an empty database version", input: "databaseVersion", edit: func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef("") }, err: []string{"databaseVersion", "empty"}},
+		{name: "an empty database tier", input: "databaseTier", edit: func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef("") }, err: []string{"databaseTier is empty", "leave it unset for db-custom-4-15360"}},
+		{name: "an invalid namespace", input: "namespace", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef("Dispatch") }, err: []string{"namespace", "DNS label"}},
+		{name: "an invalid allowed namespace", input: "allowedNamespaces", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", "Legion"} }, err: []string{"allowedNamespaces[1]", "DNS label"}},
+		{name: "a namespace longer than a DNS label", input: "namespace", edit: func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef(strings.Repeat("a", 64)) }, err: []string{"namespace", "DNS label"}},
+		{name: "an allowed namespace longer than a DNS label", input: "allowedNamespaces", edit: func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{strings.Repeat("a", 64)} }, err: []string{"allowedNamespaces[0]", "DNS label"}},
+		{name: "no tailnet auth key", input: "tailnetAuthKey", edit: func(a *gcp.DispatchArgs) { a.TailnetAuthKey = nil }, err: []string{"tailnetAuthKey", "required"}},
+		{name: "no NATS URL", input: "natsUrl", edit: func(a *gcp.DispatchArgs) { a.NatsUrl = nil }, err: []string{"natsUrl", "required"}},
+		{name: "no NATS seed secret", input: "natsSeedSecret", edit: func(a *gcp.DispatchArgs) { a.NatsSeedSecret = nil }, err: []string{"natsSeedSecret", "required"}},
+		{name: "no sign-in client secret", input: "signInClientSecret", edit: func(a *gcp.DispatchArgs) { a.SignInClientSecret = nil }, err: []string{"signInClientSecret", "required"}},
+		{name: "an agent secrets URL with a path", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example/v1"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no path"}},
-		{name: "an agent secrets URL without a scheme", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL without a scheme", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "example-broker.internal.example"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "absolute http(s) URL"}},
-		{name: "an agent secrets URL with a user and password", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with a user and password", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://user:example-pass@example-broker.internal.example"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets URL with a user alone", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with a user alone", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://user@example-broker.internal.example"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets URL with a query", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with a query", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example?token=example-pass"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets URL with an empty query", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with an empty query", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example?"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets URL with a fragment", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with a fragment", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example#example-pass"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets URL with an empty fragment", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL with an empty fragment", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example#"
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "no user, password, query or fragment", "(not echoed)"}},
-		{name: "an agent secrets audience without its URL", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets audience without its URL", input: "agentSecretsUrl", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsAudience = "example-broker-audience"
 		}, err: []string{"agentSecretsUrl", "required when agentSecretsAudience is set"}},
-		{name: "an agent secrets URL without its audience", edit: func(a *gcp.DispatchArgs) {
+		{name: "an agent secrets URL without its audience", input: "agentSecretsAudience", edit: func(a *gcp.DispatchArgs) {
 			a.AgentSecretsUrl = "https://example-broker.internal.example"
 		}, err: []string{"agentSecretsAudience", "required when agentSecretsUrl is set"}},
-		{name: "an app client ID alone", edit: func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }, err: []string{"appId, appPrivateKeySecretName, appPrivateKeySecretKey", "required when appClientId is set"}},
-		{name: "an app private key secret name alone", edit: func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }, err: []string{"appClientId, appId, appPrivateKeySecretKey", "required when appPrivateKeySecretName is set"}},
-		{name: "an app without its ID", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app client ID alone", input: "appId", edit: func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }, err: []string{"appId, appPrivateKeySecretName, appPrivateKeySecretKey", "required when appClientId is set"}},
+		{name: "an app private key secret name alone", input: "appClientId", edit: func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }, err: []string{"appClientId, appId, appPrivateKeySecretKey", "required when appPrivateKeySecretName is set"}},
+		{name: "an app without its ID", input: "appId", edit: func(a *gcp.DispatchArgs) {
 			a.AppClientId = "example-app-client-id"
 			a.AppPrivateKeySecretName = "example-app-key"
 			a.AppPrivateKeySecretKey = "key.pem"
 		}, err: []string{"appId", "required when appClientId is set"}},
-		{name: "a non-numeric app ID", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "12ab" }, err: []string{"appId", "numeric"}},
-		{name: "a zero app ID", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "0" }, err: []string{"appId", "numeric"}},
-		{name: "an invalid app private key secret name", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretName = "Example_Key" }, err: []string{"appPrivateKeySecretName", "DNS subdomain"}},
-		{name: "an invalid app private key secret key", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretKey = "bad/key" }, err: []string{"appPrivateKeySecretKey", "must match"}},
-		{name: "fewer than one replica", edit: func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(0) }, err: []string{"replicas", "at least 1"}},
-		{name: "fewer than one front-door replica", edit: func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(0) }, err: []string{"frontDoorReplicas 0", "at least 1"}},
-		{name: "fewer than one listener replica", edit: func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(-1) }, err: []string{"listenerReplicas -1", "at least 1"}},
-		{name: "no NATS copies", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(0) }, err: []string{"natsReplicas 0", "is below 1", "leave it unset for one copy"}},
-		{name: "a negative NATS copy count", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(-1) }, err: []string{"natsReplicas -1", "is below 1", "leave it unset for one copy"}},
-		{name: "more NATS copies than NATS keeps", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(6) }, err: []string{"natsReplicas 6", "is above 5, the most copies NATS keeps"}},
-		{name: "a stream byte limit of none", edit: func(a *gcp.DispatchArgs) { a.StreamMaxBytes = pulumi.IntRef(0) }, err: []string{"streamMaxBytes 0", "is below 1", "leave it unset for no limit"}},
-		{name: "a negative stream byte limit", edit: func(a *gcp.DispatchArgs) { a.StreamMaxBytes = pulumi.IntRef(-1) }, err: []string{"streamMaxBytes -1", "is below 1", "leave it unset for no limit"}},
-		{name: "a pprof port of 0", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(0) }, err: []string{"pprofPort 0", "1-65535", "leave it unset"}},
-		{name: "a negative pprof port", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(-1) }, err: []string{"pprofPort -1", "1-65535"}},
-		{name: "a pprof port past 65535", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(65536) }, err: []string{"pprofPort 65536", "1-65535"}},
-		{name: "a pprof port on envoy-dispatch's own port", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(8766) }, err: []string{"pprofPort 8766", "envoy-dispatch"}},
-		{name: "a pprof port on cloud-sql-proxy's port", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(5432) }, err: []string{"pprofPort 5432", "cloud-sql-proxy"}},
-		{name: "an empty priority class", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("") }, err: []string{"priorityClassName is empty", "leave it unset for no priority class"}},
-		{name: "a priority class that is no DNS subdomain", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("Example_Priority") }, err: []string{`priorityClassName "Example_Priority"`, "DNS subdomain"}},
-		{name: "a priority class with trailing whitespace", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("example-priority ") }, err: []string{`priorityClassName "example-priority "`, "DNS subdomain"}},
-		{name: "a priority class longer than 253 characters", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef(strings.Repeat("a.", 127) + "a") }, err: []string{"priorityClassName", "DNS subdomain"}},
-		{name: "a system cluster-critical priority class", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("system-cluster-critical") }, err: []string{`priorityClassName "system-cluster-critical"`, "reserves for its own system components"}},
-		{name: "a system node-critical priority class", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("system-node-critical") }, err: []string{`priorityClassName "system-node-critical"`, "reserves for its own system components"}},
-		{name: "a disruption budget of no pod", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"appPdbMinAvailable 0", "from 1 to replicas (1)", "leave it unset for no PodDisruptionBudget"}},
-		{name: "a negative disruption budget", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(-1) }, err: []string{"appPdbMinAvailable -1", "from 1 to replicas (1)"}},
-		{name: "a disruption budget above the default replica count", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(2) }, err: []string{"appPdbMinAvailable 2", "from 1 to replicas (1)"}},
-		{name: "a disruption budget above the replica count", edit: func(a *gcp.DispatchArgs) {
+		{name: "a non-numeric app ID", input: "appId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "12ab" }, err: []string{"appId", "numeric"}},
+		{name: "a zero app ID", input: "appId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "0" }, err: []string{"appId", "numeric"}},
+		{name: "an invalid app private key secret name", input: "appPrivateKeySecretName", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretName = "Example_Key" }, err: []string{"appPrivateKeySecretName", "DNS subdomain"}},
+		{name: "an invalid app private key secret key", input: "appPrivateKeySecretKey", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretKey = "bad/key" }, err: []string{"appPrivateKeySecretKey", "must match"}},
+		{name: "a verdict App id without the App", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { a.VerdictAppId = pulumi.StringRef("5341240") }, err: []string{"verdictAppId is given without the GitHub App", "appClientId"}},
+		{name: "a blank verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(" ") }, err: []string{"verdictAppId is blank: give the verdict App's id, or leave it out"}},
+		{name: "a non-numeric verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("not-a-number") }, err: []string{`verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`}},
+		{name: "a verdict App id with a leading zero", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("05341240") }, err: []string{`verdictAppId "05341240" is not a GitHub App id`}},
+		{name: "a zero verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("0") }, err: []string{`verdictAppId "0" is not a GitHub App id`}},
+		{name: "fewer than one replica", input: "replicas", edit: func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(0) }, err: []string{"replicas", "at least 1"}},
+		{name: "fewer than one front-door replica", input: "frontDoorReplicas", edit: func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(0) }, err: []string{"frontDoorReplicas 0", "at least 1"}},
+		{name: "fewer than one listener replica", input: "listenerReplicas", edit: func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(-1) }, err: []string{"listenerReplicas -1", "at least 1"}},
+		{name: "no NATS copies", input: "natsReplicas", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(0) }, err: []string{"natsReplicas 0", "is below 1", "leave it unset for one copy"}},
+		{name: "a negative NATS copy count", input: "natsReplicas", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(-1) }, err: []string{"natsReplicas -1", "is below 1", "leave it unset for one copy"}},
+		{name: "more NATS copies than NATS keeps", input: "natsReplicas", edit: func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(6) }, err: []string{"natsReplicas 6", "is above 5, the most copies NATS keeps"}},
+		{name: "a stream byte limit of none", input: "streamMaxBytes", edit: func(a *gcp.DispatchArgs) { a.StreamMaxBytes = pulumi.IntRef(0) }, err: []string{"streamMaxBytes 0", "is below 1", "leave it unset for no limit"}},
+		{name: "a negative stream byte limit", input: "streamMaxBytes", edit: func(a *gcp.DispatchArgs) { a.StreamMaxBytes = pulumi.IntRef(-1) }, err: []string{"streamMaxBytes -1", "is below 1", "leave it unset for no limit"}},
+		{name: "a pprof port of 0", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(0) }, err: []string{"pprofPort 0", "1-65535", "leave it unset"}},
+		{name: "a negative pprof port", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(-1) }, err: []string{"pprofPort -1", "1-65535"}},
+		{name: "a pprof port past 65535", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(65536) }, err: []string{"pprofPort 65536", "1-65535"}},
+		{name: "a pprof port on envoy-dispatch's own port", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(8766) }, err: []string{"pprofPort 8766", "envoy-dispatch"}},
+		{name: "a pprof port on cloud-sql-proxy's port", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(5432) }, err: []string{"pprofPort 5432", "cloud-sql-proxy"}},
+		{name: "an empty priority class", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("") }, err: []string{"priorityClassName is empty", "leave it unset for no priority class"}},
+		{name: "a priority class that is no DNS subdomain", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("Example_Priority") }, err: []string{`priorityClassName "Example_Priority"`, "DNS subdomain"}},
+		{name: "a priority class with trailing whitespace", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("example-priority ") }, err: []string{`priorityClassName "example-priority "`, "DNS subdomain"}},
+		{name: "a priority class longer than 253 characters", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef(strings.Repeat("a.", 127) + "a") }, err: []string{"priorityClassName", "DNS subdomain"}},
+		{name: "a system cluster-critical priority class", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("system-cluster-critical") }, err: []string{`priorityClassName "system-cluster-critical"`, "reserves for its own system components"}},
+		{name: "a system node-critical priority class", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("system-node-critical") }, err: []string{`priorityClassName "system-node-critical"`, "reserves for its own system components"}},
+		{name: "a disruption budget of no pod", input: "appPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"appPdbMinAvailable 0", "from 1 to replicas (1)", "leave it unset for no PodDisruptionBudget"}},
+		{name: "a negative disruption budget", input: "appPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(-1) }, err: []string{"appPdbMinAvailable -1", "from 1 to replicas (1)"}},
+		{name: "a disruption budget above the default replica count", input: "appPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(2) }, err: []string{"appPdbMinAvailable 2", "from 1 to replicas (1)"}},
+		{name: "a disruption budget above the replica count", input: "appPdbMinAvailable", edit: func(a *gcp.DispatchArgs) {
 			a.Replicas = pulumi.IntRef(3)
 			a.AppPdbMinAvailable = pulumi.IntRef(4)
 		}, err: []string{"appPdbMinAvailable 4", "from 1 to replicas (3)"}},
-		{name: "a front-door budget of no pod", edit: func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"frontDoorPdbMinAvailable 0", "from 1 to frontDoorReplicas (2)", "leave it unset for no PodDisruptionBudget"}},
-		{name: "a front-door budget above the default front-door count", edit: func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(3) }, err: []string{"frontDoorPdbMinAvailable 3", "from 1 to frontDoorReplicas (2)"}},
-		{name: "a front-door budget above the front-door count", edit: func(a *gcp.DispatchArgs) {
+		{name: "a front-door budget of no pod", input: "frontDoorPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"frontDoorPdbMinAvailable 0", "from 1 to frontDoorReplicas (2)", "leave it unset for no PodDisruptionBudget"}},
+		{name: "a front-door budget above the default front-door count", input: "frontDoorPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(3) }, err: []string{"frontDoorPdbMinAvailable 3", "from 1 to frontDoorReplicas (2)"}},
+		{name: "a front-door budget above the front-door count", input: "frontDoorPdbMinAvailable", edit: func(a *gcp.DispatchArgs) {
 			a.FrontDoorReplicas = pulumi.IntRef(1)
 			a.FrontDoorPdbMinAvailable = pulumi.IntRef(2)
 		}, err: []string{"frontDoorPdbMinAvailable 2", "from 1 to frontDoorReplicas (1)"}},
-		{name: "a front-door budget measured against the app's count", edit: func(a *gcp.DispatchArgs) {
+		{name: "a front-door budget measured against the app's count", input: "frontDoorPdbMinAvailable", edit: func(a *gcp.DispatchArgs) {
 			a.Replicas = pulumi.IntRef(5)
 			a.FrontDoorPdbMinAvailable = pulumi.IntRef(4)
 		}, err: []string{"frontDoorPdbMinAvailable 4", "from 1 to frontDoorReplicas (2)"}},
-		{name: "a listener budget of no pod", edit: func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"listenerPdbMinAvailable 0", "from 1 to listenerReplicas (1)", "leave it unset for no PodDisruptionBudget"}},
-		{name: "a listener budget above the default listener count", edit: func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(2) }, err: []string{"listenerPdbMinAvailable 2", "from 1 to listenerReplicas (1)"}},
-		{name: "a listener budget above the listener count", edit: func(a *gcp.DispatchArgs) {
+		{name: "a listener budget of no pod", input: "listenerPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(0) }, err: []string{"listenerPdbMinAvailable 0", "from 1 to listenerReplicas (1)", "leave it unset for no PodDisruptionBudget"}},
+		{name: "a listener budget above the default listener count", input: "listenerPdbMinAvailable", edit: func(a *gcp.DispatchArgs) { a.ListenerPdbMinAvailable = pulumi.IntRef(2) }, err: []string{"listenerPdbMinAvailable 2", "from 1 to listenerReplicas (1)"}},
+		{name: "a listener budget above the listener count", input: "listenerPdbMinAvailable", edit: func(a *gcp.DispatchArgs) {
 			a.ListenerReplicas = pulumi.IntRef(3)
 			a.ListenerPdbMinAvailable = pulumi.IntRef(4)
 		}, err: []string{"listenerPdbMinAvailable 4", "from 1 to listenerReplicas (3)"}},
-		{name: "a lowercase database availability type", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("regional") }, err: []string{`databaseAvailabilityType "regional"`, "ZONAL or REGIONAL"}},
-		{name: "an empty database availability type", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("") }, err: []string{`databaseAvailabilityType ""`, "ZONAL or REGIONAL", "leave it unset for ZONAL"}},
-		{name: "an unknown database availability type", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("MULTI_REGIONAL") }, err: []string{`databaseAvailabilityType "MULTI_REGIONAL"`, "ZONAL or REGIONAL"}},
-		{name: "an app CPU that is not a quantity", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("two") }, err: []string{`appCpu "two"`, "Kubernetes quantity"}},
-		{name: "an app CPU with a memory suffix in the wrong case", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("1gi") }, err: []string{`appCpu "1gi"`, "Kubernetes quantity"}},
-		{name: "an app memory that is not a quantity", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("4 GiB") }, err: []string{`appMemory "4 GiB"`, "Kubernetes quantity"}},
-		{name: "an empty app CPU", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("") }, err: []string{"appCpu is empty", "leave it unset for 1"}},
-		{name: "an empty app memory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("") }, err: []string{"appMemory is empty", "leave it unset for 4Gi"}},
-		{name: "a negative app CPU", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("-1") }, err: []string{`appCpu "-1"`, "more than 0"}},
-		{name: "a zero app memory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("0") }, err: []string{`appMemory "0"`, "more than 0"}},
-		{name: "an app CPU below Autopilot's pod floor with the proxy's", edit: func(a *gcp.DispatchArgs) {
+		{name: "a lowercase database availability type", input: "databaseAvailabilityType", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("regional") }, err: []string{`databaseAvailabilityType "regional"`, "ZONAL or REGIONAL"}},
+		{name: "an empty database availability type", input: "databaseAvailabilityType", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("") }, err: []string{`databaseAvailabilityType ""`, "ZONAL or REGIONAL", "leave it unset for ZONAL"}},
+		{name: "an unknown database availability type", input: "databaseAvailabilityType", edit: func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef("MULTI_REGIONAL") }, err: []string{`databaseAvailabilityType "MULTI_REGIONAL"`, "ZONAL or REGIONAL"}},
+		{name: "an app CPU that is not a quantity", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("two") }, err: []string{`appCpu "two"`, "Kubernetes quantity"}},
+		{name: "an app CPU with a memory suffix in the wrong case", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("1gi") }, err: []string{`appCpu "1gi"`, "Kubernetes quantity"}},
+		{name: "an app memory that is not a quantity", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("4 GiB") }, err: []string{`appMemory "4 GiB"`, "Kubernetes quantity"}},
+		{name: "an empty app CPU", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("") }, err: []string{"appCpu is empty", "leave it unset for 1"}},
+		{name: "an empty app memory", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("") }, err: []string{"appMemory is empty", "leave it unset for 4Gi"}},
+		{name: "a negative app CPU", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("-1") }, err: []string{`appCpu "-1"`, "more than 0"}},
+		{name: "a zero app memory", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("0") }, err: []string{`appMemory "0"`, "more than 0"}},
+		{name: "an app CPU below Autopilot's pod floor with the proxy's", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("250m")
 			a.ProxyCpu = pulumi.StringRef("200m")
 		}, err: []string{`appCpu "250m" and proxyCpu "200m"`, "at least 500m together", "Autopilot raises"}},
-		{name: "an app memory below Autopilot's pod floor with the proxy's", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app memory below Autopilot's pod floor with the proxy's", input: "appMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("500m")
 			a.AppMemory = pulumi.StringRef("128Mi")
 			a.ProxyMemory = pulumi.StringRef("256Mi")
 		}, err: []string{`appMemory "128Mi" and proxyMemory "256Mi"`, "at least 512Mi together", "Autopilot raises"}},
-		{name: "an app CPU above Autopilot's pod ceiling", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app CPU above Autopilot's pod ceiling", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("30")
 			a.AppMemory = pulumi.StringRef("64Gi")
 		}, err: []string{`appCpu "30" and proxyCpu "1"`, "at most 30 CPU together", "rejects"}},
 		// 29.5 CPU fit beside the 200m the proxy had; beside its 1 CPU the pod requests 30.5.
-		{name: "an app CPU above Autopilot's pod ceiling only with the proxy's default", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app CPU above Autopilot's pod ceiling only with the proxy's default", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("29.5")
 			a.AppMemory = pulumi.StringRef("64Gi")
 		}, err: []string{`appCpu "29.5" and proxyCpu "1"`, "at most 30 CPU together", "rejects"}},
-		{name: "an app memory above Autopilot's pod ceiling", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app memory above Autopilot's pod ceiling", input: "appMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("20")
 			a.AppMemory = pulumi.StringRef("110Gi")
 		}, err: []string{`appMemory "110Gi" and proxyMemory "2Gi"`, "at most 110Gi together", "rejects"}},
 		// 109Gi fit beside the 256Mi the proxy had; beside its 2Gi the pod requests 111Gi.
-		{name: "an app memory above Autopilot's pod ceiling only with the proxy's default", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app memory above Autopilot's pod ceiling only with the proxy's default", input: "appMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("20")
 			a.AppMemory = pulumi.StringRef("109Gi")
 		}, err: []string{`appMemory "109Gi" and proxyMemory "2Gi"`, "at most 110Gi together", "rejects"}},
-		{name: "app CPU raised without memory to match", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("8") }, err: []string{`appCpu "8", appMemory "4Gi", proxyCpu "1" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
-		{name: "app memory raised without CPU to match", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("32Gi") }, err: []string{`appCpu "1", appMemory "32Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
-		{name: "app memory just above 6.5 GiB per CPU with the proxy's", edit: func(a *gcp.DispatchArgs) {
+		{name: "app CPU raised without memory to match", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("8") }, err: []string{`appCpu "8", appMemory "4Gi", proxyCpu "1" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "app memory raised without CPU to match", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("32Gi") }, err: []string{`appCpu "1", appMemory "32Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "app memory just above 6.5 GiB per CPU with the proxy's", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("800m")
 			a.AppMemory = pulumi.StringRef("6401Mi")
 			a.ProxyCpu = pulumi.StringRef("200m")
@@ -563,146 +581,151 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		}, err: []string{`appCpu "800m", appMemory "6401Mi", proxyCpu "200m" and proxyMemory "256Mi"`, "between 1 and 6.5 GiB of memory per CPU"}},
 		// 1 CPU and 11Gi were refused beside the 200m and 256Mi the proxy had (9.4 GiB per CPU);
 		// beside its 1 CPU and 2Gi the pod is 2 CPU and 13Gi, exactly 6.5, and 11265Mi tips it over.
-		{name: "app memory just above 6.5 GiB per CPU with the proxy's default", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("11265Mi") }, err: []string{`appCpu "1", appMemory "11265Mi", proxyCpu "1" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
-		{name: "an app CPU with leading whitespace", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef(" 1") }, err: []string{`appCpu " 1"`, "Kubernetes quantity"}},
-		{name: "an app CPU with trailing whitespace", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("1 ") }, err: []string{`appCpu "1 "`, "Kubernetes quantity"}},
-		{name: "an app memory with leading whitespace", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef(" 4Gi") }, err: []string{`appMemory " 4Gi"`, "Kubernetes quantity"}},
-		{name: "an app memory with a trailing line break", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("4Gi\n") }, err: []string{`appMemory "4Gi\n"`, "Kubernetes quantity"}},
+		{name: "app memory just above 6.5 GiB per CPU with the proxy's default", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("11265Mi") }, err: []string{`appCpu "1", appMemory "11265Mi", proxyCpu "1" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "an app CPU with leading whitespace", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef(" 1") }, err: []string{`appCpu " 1"`, "Kubernetes quantity"}},
+		{name: "an app CPU with trailing whitespace", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.AppCpu = pulumi.StringRef("1 ") }, err: []string{`appCpu "1 "`, "Kubernetes quantity"}},
+		{name: "an app memory with leading whitespace", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef(" 4Gi") }, err: []string{`appMemory " 4Gi"`, "Kubernetes quantity"}},
+		{name: "an app memory with a trailing line break", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("4Gi\n") }, err: []string{`appMemory "4Gi\n"`, "Kubernetes quantity"}},
 		// Kubernetes reads this as 100 CPU: the mantissa makes up for the exponent.
-		{name: "an app CPU whose exponent a small mantissa makes up for", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app CPU whose exponent a small mantissa makes up for", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("0.000000000000000000000000000000000001e38")
 		}, err: []string{`appCpu "0.000000000000000000000000000000000001e38"`, "decimal exponent outside e-9 to e18"}},
 		// Kubernetes reads this as 4 CPU, a size the pod could have with 6Gi.
-		{name: "an app CPU of 4 written with a large exponent", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app CPU of 4 written with a large exponent", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("0.0000000000000000000000000000000000004e37")
 			a.AppMemory = pulumi.StringRef("6Gi")
 		}, err: []string{`appCpu "0.0000000000000000000000000000000000004e37"`, "decimal exponent outside e-9 to e18"}},
 		// Kubernetes reads this as 10 CPU.
-		{name: "an app CPU whose negative exponent a long mantissa makes up for", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app CPU whose negative exponent a long mantissa makes up for", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("10000000000000000000000000000000000000000e-39")
 		}, err: []string{`appCpu "10000000000000000000000000000000000000000e-39"`, "decimal exponent outside e-9 to e18"}},
-		{name: "an app memory with an exponent past int's range", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("1e99999999999999999999") }, err: []string{`appMemory "1e99999999999999999999"`, "decimal exponent outside e-9 to e18"}},
-		{name: "a proxy CPU that is not a quantity", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("one") }, err: []string{`proxyCpu "one"`, "Kubernetes quantity"}},
-		{name: "a proxy memory that is not a quantity", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("2 GiB") }, err: []string{`proxyMemory "2 GiB"`, "Kubernetes quantity"}},
-		{name: "a proxy CPU with trailing whitespace", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("1 ") }, err: []string{`proxyCpu "1 "`, "Kubernetes quantity"}},
-		{name: "a proxy memory with an exponent outside the suffixes' range", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("2e19") }, err: []string{`proxyMemory "2e19"`, "decimal exponent outside e-9 to e18"}},
-		{name: "an empty proxy CPU", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("") }, err: []string{"proxyCpu is empty", "leave it unset for 1"}},
-		{name: "an empty proxy memory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("") }, err: []string{"proxyMemory is empty", "leave it unset for 2Gi"}},
+		{name: "an app memory with an exponent past int's range", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.AppMemory = pulumi.StringRef("1e99999999999999999999") }, err: []string{`appMemory "1e99999999999999999999"`, "decimal exponent outside e-9 to e18"}},
+		{name: "a proxy CPU that is not a quantity", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("one") }, err: []string{`proxyCpu "one"`, "Kubernetes quantity"}},
+		{name: "a proxy memory that is not a quantity", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("2 GiB") }, err: []string{`proxyMemory "2 GiB"`, "Kubernetes quantity"}},
+		{name: "a proxy CPU with trailing whitespace", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("1 ") }, err: []string{`proxyCpu "1 "`, "Kubernetes quantity"}},
+		{name: "a proxy memory with an exponent outside the suffixes' range", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("2e19") }, err: []string{`proxyMemory "2e19"`, "decimal exponent outside e-9 to e18"}},
+		{name: "an empty proxy CPU", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("") }, err: []string{"proxyCpu is empty", "leave it unset for 1"}},
+		{name: "an empty proxy memory", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("") }, err: []string{"proxyMemory is empty", "leave it unset for 2Gi"}},
 		// A negative proxy size beside a large app size would pass the pod's floor on the sum.
-		{name: "a negative proxy CPU", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("-100m") }, err: []string{`proxyCpu "-100m"`, "more than 0"}},
-		{name: "a zero proxy memory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("0Mi") }, err: []string{`proxyMemory "0Mi"`, "more than 0"}},
-		{name: "a proxy CPU below Autopilot's pod floor with the app's", edit: func(a *gcp.DispatchArgs) {
+		{name: "a negative proxy CPU", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("-100m") }, err: []string{`proxyCpu "-100m"`, "more than 0"}},
+		{name: "a zero proxy memory", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("0Mi") }, err: []string{`proxyMemory "0Mi"`, "more than 0"}},
+		{name: "a proxy CPU below Autopilot's pod floor with the app's", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("300m")
 			a.AppMemory = pulumi.StringRef("512Mi")
 			a.ProxyCpu = pulumi.StringRef("100m")
 			a.ProxyMemory = pulumi.StringRef("256Mi")
 		}, err: []string{`appCpu "300m" and proxyCpu "100m"`, "at least 500m together", "Autopilot raises"}},
-		{name: "a proxy memory below Autopilot's pod floor with the app's", edit: func(a *gcp.DispatchArgs) {
+		{name: "a proxy memory below Autopilot's pod floor with the app's", input: "appMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("300m")
 			a.AppMemory = pulumi.StringRef("256Mi")
 			a.ProxyCpu = pulumi.StringRef("200m")
 			a.ProxyMemory = pulumi.StringRef("255Mi")
 		}, err: []string{`appMemory "256Mi" and proxyMemory "255Mi"`, "at least 512Mi together", "Autopilot raises"}},
-		{name: "a proxy CPU above Autopilot's pod ceiling with the app's", edit: func(a *gcp.DispatchArgs) {
+		// Where the consumer set only the proxy's size, the refusal's input is the proxy's.
+		{name: "a proxy CPU above Autopilot's pod ceiling with the app's", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) {
 			a.ProxyCpu = pulumi.StringRef("29001m")
 			a.ProxyMemory = pulumi.StringRef("60Gi")
 		}, err: []string{`appCpu "1" and proxyCpu "29001m"`, "at most 30 CPU together", "rejects"}},
-		{name: "a proxy memory above Autopilot's pod ceiling with the app's", edit: func(a *gcp.DispatchArgs) {
+		{name: "a proxy memory above Autopilot's pod ceiling with the app's", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("10")
 			a.ProxyCpu = pulumi.StringRef("10")
 			a.ProxyMemory = pulumi.StringRef("107Gi")
 		}, err: []string{`appMemory "4Gi" and proxyMemory "107Gi"`, "at most 110Gi together", "rejects"}},
-		{name: "proxy CPU raised without memory to match", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("8") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "8" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
-		{name: "proxy memory raised without CPU to match", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("10Gi") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "1" and proxyMemory "10Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
-		{name: "an app ephemeral storage that is not a quantity", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("4 GiB") }, err: []string{`appEphemeralStorage "4 GiB"`, "Kubernetes quantity"}},
-		{name: "a proxy ephemeral storage with trailing whitespace", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("1Gi ") }, err: []string{`proxyEphemeralStorage "1Gi "`, "Kubernetes quantity"}},
-		{name: "an empty app ephemeral storage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("") }, err: []string{"appEphemeralStorage is empty", "leave it unset for Autopilot's default of 1Gi"}},
-		{name: "an empty proxy ephemeral storage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("") }, err: []string{"proxyEphemeralStorage is empty", "leave it unset for Autopilot's default of 1Gi"}},
+		{name: "proxy CPU raised without memory to match", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("8") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "8" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "proxy memory raised without CPU to match", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("10Gi") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "1" and proxyMemory "10Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "too little memory per CPU with only the proxy's memory set", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) {
+			a.ProxyCpu = pulumi.StringRef("5")
+			a.ProxyMemory = pulumi.StringRef("512Mi")
+		}, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "5" and proxyMemory "512Mi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "an app ephemeral storage that is not a quantity", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("4 GiB") }, err: []string{`appEphemeralStorage "4 GiB"`, "Kubernetes quantity"}},
+		{name: "a proxy ephemeral storage with trailing whitespace", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("1Gi ") }, err: []string{`proxyEphemeralStorage "1Gi "`, "Kubernetes quantity"}},
+		{name: "an empty app ephemeral storage", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("") }, err: []string{"appEphemeralStorage is empty", "leave it unset for Autopilot's default of 1Gi"}},
+		{name: "an empty proxy ephemeral storage", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("") }, err: []string{"proxyEphemeralStorage is empty", "leave it unset for Autopilot's default of 1Gi"}},
 		// A negative size beside a large one would pass the pod's ceiling on the sum.
-		{name: "a negative app ephemeral storage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("-1Gi") }, err: []string{`appEphemeralStorage "-1Gi"`, "more than 0"}},
-		{name: "a zero proxy ephemeral storage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("0") }, err: []string{`proxyEphemeralStorage "0"`, "more than 0"}},
-		{name: "an app ephemeral storage with an exponent past e18", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("0.0000000000000000000001e30") }, err: []string{`appEphemeralStorage "0.0000000000000000000001e30"`, "decimal exponent outside e-9 to e18"}},
-		{name: "ephemeral storage below Autopilot's pod floor", edit: func(a *gcp.DispatchArgs) {
+		{name: "a negative app ephemeral storage", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("-1Gi") }, err: []string{`appEphemeralStorage "-1Gi"`, "more than 0"}},
+		{name: "a zero proxy ephemeral storage", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("0") }, err: []string{`proxyEphemeralStorage "0"`, "more than 0"}},
+		{name: "an app ephemeral storage with an exponent past e18", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("0.0000000000000000000001e30") }, err: []string{`appEphemeralStorage "0.0000000000000000000001e30"`, "decimal exponent outside e-9 to e18"}},
+		{name: "ephemeral storage below Autopilot's pod floor", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) {
 			a.AppEphemeralStorage = pulumi.StringRef("5Mi")
 			a.ProxyEphemeralStorage = pulumi.StringRef("4Mi")
 		}, err: []string{`appEphemeralStorage "5Mi" and proxyEphemeralStorage "4Mi"`, "at least 10Mi together", "Autopilot raises"}},
-		{name: "an app ephemeral storage above Autopilot's pod ceiling beside the proxy's default", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("9217Mi") }, err: []string{`appEphemeralStorage "9217Mi" and proxyEphemeralStorage unset (Autopilot's 1Gi)`, "at most 10Gi together", "rejects"}},
-		{name: "a proxy ephemeral storage above Autopilot's pod ceiling beside the app's default", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("10Gi") }, err: []string{`appEphemeralStorage unset (Autopilot's 1Gi) and proxyEphemeralStorage "10Gi"`, "at most 10Gi together", "rejects"}},
-		{name: "an Azure endpoint without its quota", edit: func(a *gcp.DispatchArgs) {
+		{name: "an app ephemeral storage above Autopilot's pod ceiling beside the proxy's default", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("9217Mi") }, err: []string{`appEphemeralStorage "9217Mi" and proxyEphemeralStorage unset (Autopilot's 1Gi)`, "at most 10Gi together", "rejects"}},
+		{name: "a proxy ephemeral storage above Autopilot's pod ceiling beside the app's default", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("10Gi") }, err: []string{`appEphemeralStorage unset (Autopilot's 1Gi) and proxyEphemeralStorage "10Gi"`, "at most 10Gi together", "rejects"}},
+		{name: "an Azure endpoint without its quota", input: "azureEmbedTokensPerMinute", edit: func(a *gcp.DispatchArgs) {
 			setAzureKey(a)
 			a.AzureEmbedTokensPerMinute = nil
 		}, err: []string{"azureEmbedTokensPerMinute is required when azureEmbedEndpoint is set"}},
-		{name: "a zero Azure quota", edit: func(a *gcp.DispatchArgs) { setAzureKey(a); a.AzureEmbedTokensPerMinute = pulumi.IntRef(0) }, err: []string{"azureEmbedTokensPerMinute 0", "positive integer"}},
-		{name: "a negative Azure quota", edit: func(a *gcp.DispatchArgs) { setAzureKey(a); a.AzureEmbedTokensPerMinute = pulumi.IntRef(-1) }, err: []string{"azureEmbedTokensPerMinute -1", "positive integer"}},
-		{name: "an Azure deployment without the endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedDeployment = pulumi.String("example-embed-deployment") }, err: []string{"azureEmbedEndpoint is required when azureEmbedDeployment is set"}},
-		{name: "an Azure quota without the endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedTokensPerMinute = pulumi.IntRef(300000) }, err: []string{"azureEmbedEndpoint is required when azureEmbedTokensPerMinute is set"}},
-		{name: "an Azure key without the endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedKeySecret = pulumi.String(azureEmbedKeySecret) }, err: []string{"azureEmbedEndpoint is required when azureEmbedKeySecret is set"}},
+		{name: "a zero Azure quota", input: "azureEmbedTokensPerMinute", edit: func(a *gcp.DispatchArgs) { setAzureKey(a); a.AzureEmbedTokensPerMinute = pulumi.IntRef(0) }, err: []string{"azureEmbedTokensPerMinute 0", "positive integer"}},
+		{name: "a negative Azure quota", input: "azureEmbedTokensPerMinute", edit: func(a *gcp.DispatchArgs) { setAzureKey(a); a.AzureEmbedTokensPerMinute = pulumi.IntRef(-1) }, err: []string{"azureEmbedTokensPerMinute -1", "positive integer"}},
+		{name: "an Azure deployment without the endpoint", input: "azureEmbedDeployment", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedDeployment = pulumi.String("example-embed-deployment") }, err: []string{"azureEmbedEndpoint is required when azureEmbedDeployment is set"}},
+		{name: "an Azure quota without the endpoint", input: "azureEmbedTokensPerMinute", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedTokensPerMinute = pulumi.IntRef(300000) }, err: []string{"azureEmbedEndpoint is required when azureEmbedTokensPerMinute is set"}},
+		{name: "an Azure key without the endpoint", input: "azureEmbedKeySecret", edit: func(a *gcp.DispatchArgs) { a.AzureEmbedKeySecret = pulumi.String(azureEmbedKeySecret) }, err: []string{"azureEmbedEndpoint is required when azureEmbedKeySecret is set"}},
 		// The sign-in is shared, so it takes either endpoint and is refused with neither.
-		{name: "an Azure tenant without either endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureTenantId = pulumi.String(azureTenantID) }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureTenantId is set", "whichever of the embedder and the answerer is on Azure"}},
-		{name: "an Azure client without either endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureClientId = pulumi.String(azureClientID) }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureClientId is set"}},
-		{name: "an Azure audience without either endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureFederationAudience = pulumi.StringRef("api://example-audience") }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureFederationAudience is set"}},
-		{name: "both Azure credential forms", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure tenant without either endpoint", input: "azureTenantId", edit: func(a *gcp.DispatchArgs) { a.AzureTenantId = pulumi.String(azureTenantID) }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureTenantId is set", "whichever of the embedder and the answerer is on Azure"}},
+		{name: "an Azure client without either endpoint", input: "azureClientId", edit: func(a *gcp.DispatchArgs) { a.AzureClientId = pulumi.String(azureClientID) }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureClientId is set"}},
+		{name: "an Azure audience without either endpoint", input: "azureFederationAudience", edit: func(a *gcp.DispatchArgs) { a.AzureFederationAudience = pulumi.StringRef("api://example-audience") }, err: []string{"azureEmbedEndpoint or azureChatEndpoint is required when azureFederationAudience is set"}},
+		{name: "both Azure credential forms", input: "azureEmbedKeySecret", edit: func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureEmbedKeySecret = pulumi.String(azureEmbedKeySecret)
 		}, err: []string{"azureEmbedKeySecret is set with azureTenantId or azureClientId", "exactly one"}},
-		{name: "an Azure endpoint without a credential", edit: setAzureEndpoint, err: []string{"azureEmbedEndpoint needs one credential: azureEmbedKeySecret, or azureTenantId with azureClientId"}},
-		{name: "an Azure tenant without its client", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure endpoint without a credential", input: "azureEmbedEndpoint", edit: setAzureEndpoint, err: []string{"azureEmbedEndpoint needs one credential: azureEmbedKeySecret, or azureTenantId with azureClientId"}},
+		{name: "an Azure tenant without its client", input: "azureClientId", edit: func(a *gcp.DispatchArgs) {
 			setAzureEndpoint(a)
 			a.AzureTenantId = pulumi.String(azureTenantID)
 		}, err: []string{"azureClientId is required when azureTenantId is set"}},
-		{name: "an Azure client without its tenant", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure client without its tenant", input: "azureTenantId", edit: func(a *gcp.DispatchArgs) {
 			setAzureEndpoint(a)
 			a.AzureClientId = pulumi.String(azureClientID)
 		}, err: []string{"azureTenantId is required when azureClientId is set"}},
-		{name: "an Azure audience with the key form", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure audience with the key form", input: "azureFederationAudience", edit: func(a *gcp.DispatchArgs) {
 			setAzureKey(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://example-audience")
 		}, err: []string{"azureFederationAudience is set without azureTenantId and azureClientId"}},
-		{name: "an empty Azure audience", edit: func(a *gcp.DispatchArgs) {
+		{name: "an empty Azure audience", input: "azureFederationAudience", edit: func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("")
 		}, err: []string{"azureFederationAudience is empty", "api://AzureADTokenExchange"}},
-		{name: "an Azure chat deployment without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatDeployment = pulumi.String("example-chat-deployment") }, err: []string{"azureChatEndpoint is required when azureChatDeployment is set"}},
-		{name: "an Azure chat api-version without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatApiVersion = pulumi.StringRef("2024-05-01-preview") }, err: []string{"azureChatEndpoint is required when azureChatApiVersion is set"}},
-		{name: "an Azure chat scope without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatScope = pulumi.StringRef("https://ai.azure.com/.default") }, err: []string{"azureChatEndpoint is required when azureChatScope is set"}},
-		{name: "an Azure chat quota without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.AzureChatTokensPerMinute = pulumi.IntRef(120000) }, err: []string{"azureChatEndpoint is required when azureChatTokensPerMinute is set"}},
-		{name: "a chat model without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }, err: []string{"chatEndpoint is required when chatModel is set"}},
-		{name: "a chat token without the chat endpoint", edit: func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }, err: []string{"chatEndpoint is required when chatTokenSecret is set"}},
-		{name: "both answerer forms", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure chat deployment without the chat endpoint", input: "azureChatDeployment", edit: func(a *gcp.DispatchArgs) { a.AzureChatDeployment = pulumi.String("example-chat-deployment") }, err: []string{"azureChatEndpoint is required when azureChatDeployment is set"}},
+		{name: "an Azure chat api-version without the chat endpoint", input: "azureChatApiVersion", edit: func(a *gcp.DispatchArgs) { a.AzureChatApiVersion = pulumi.StringRef("2024-05-01-preview") }, err: []string{"azureChatEndpoint is required when azureChatApiVersion is set"}},
+		{name: "an Azure chat scope without the chat endpoint", input: "azureChatScope", edit: func(a *gcp.DispatchArgs) { a.AzureChatScope = pulumi.StringRef("https://ai.azure.com/.default") }, err: []string{"azureChatEndpoint is required when azureChatScope is set"}},
+		{name: "an Azure chat quota without the chat endpoint", input: "azureChatTokensPerMinute", edit: func(a *gcp.DispatchArgs) { a.AzureChatTokensPerMinute = pulumi.IntRef(120000) }, err: []string{"azureChatEndpoint is required when azureChatTokensPerMinute is set"}},
+		{name: "a chat model without the chat endpoint", input: "chatModel", edit: func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }, err: []string{"chatEndpoint is required when chatModel is set"}},
+		{name: "a chat token without the chat endpoint", input: "chatTokenSecret", edit: func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }, err: []string{"chatEndpoint is required when chatTokenSecret is set"}},
+		{name: "both answerer forms", input: "chatEndpoint", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			setChatEndpoint(a)
 		}, err: []string{"chatEndpoint is set with azureChatEndpoint", "one deployment names one answerer"}},
-		{name: "an Azure chat endpoint without its quota", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure chat endpoint without its quota", input: "azureChatTokensPerMinute", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			a.AzureChatTokensPerMinute = nil
 		}, err: []string{"azureChatTokensPerMinute is required when azureChatEndpoint is set"}},
-		{name: "a zero Azure chat quota", edit: func(a *gcp.DispatchArgs) { setAzureChat(a); a.AzureChatTokensPerMinute = pulumi.IntRef(0) }, err: []string{"azureChatTokensPerMinute 0", "positive integer"}},
-		{name: "a negative Azure chat quota", edit: func(a *gcp.DispatchArgs) { setAzureChat(a); a.AzureChatTokensPerMinute = pulumi.IntRef(-1) }, err: []string{"azureChatTokensPerMinute -1", "positive integer"}},
-		{name: "an Azure chat endpoint without its deployment", edit: func(a *gcp.DispatchArgs) {
+		{name: "a zero Azure chat quota", input: "azureChatTokensPerMinute", edit: func(a *gcp.DispatchArgs) { setAzureChat(a); a.AzureChatTokensPerMinute = pulumi.IntRef(0) }, err: []string{"azureChatTokensPerMinute 0", "positive integer"}},
+		{name: "a negative Azure chat quota", input: "azureChatTokensPerMinute", edit: func(a *gcp.DispatchArgs) { setAzureChat(a); a.AzureChatTokensPerMinute = pulumi.IntRef(-1) }, err: []string{"azureChatTokensPerMinute -1", "positive integer"}},
+		{name: "an Azure chat endpoint without its deployment", input: "azureChatDeployment", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			a.AzureChatDeployment = nil
 		}, err: []string{"azureChatDeployment is required when azureChatEndpoint is set"}},
-		{name: "an Azure chat endpoint without the sign-in", edit: func(a *gcp.DispatchArgs) {
+		{name: "an Azure chat endpoint without the sign-in", input: "azureChatEndpoint", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			a.AzureTenantId, a.AzureClientId = nil, nil
 		}, err: []string{"azureChatEndpoint needs the keyless Azure sign-in", "takes no API key"}},
-		{name: "an empty Azure chat api-version", edit: func(a *gcp.DispatchArgs) {
+		{name: "an empty Azure chat api-version", input: "azureChatApiVersion", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			a.AzureChatApiVersion = pulumi.StringRef("")
 		}, err: []string{"azureChatApiVersion is empty", "sends no api-version"}},
-		{name: "an empty Azure chat scope", edit: func(a *gcp.DispatchArgs) {
+		{name: "an empty Azure chat scope", input: "azureChatScope", edit: func(a *gcp.DispatchArgs) {
 			setAzureChat(a)
 			a.AzureChatScope = pulumi.StringRef("")
 		}, err: []string{"azureChatScope is empty", "leave it unset"}},
-		{name: "a chat endpoint without its token", edit: func(a *gcp.DispatchArgs) {
+		{name: "a chat endpoint without its token", input: "chatTokenSecret", edit: func(a *gcp.DispatchArgs) {
 			setChatEndpoint(a)
 			a.ChatTokenSecret = nil
 		}, err: []string{"chatTokenSecret is required when chatEndpoint is set"}},
-		{name: "a chat endpoint without its model", edit: func(a *gcp.DispatchArgs) {
+		{name: "a chat endpoint without its model", input: "chatModel", edit: func(a *gcp.DispatchArgs) {
 			setChatEndpoint(a)
 			a.ChatModel = nil
 		}, err: []string{"chatModel is required when chatEndpoint is set"}},
-		{name: "an empty chat model", edit: func(a *gcp.DispatchArgs) {
+		{name: "an empty chat model", input: "chatModel", edit: func(a *gcp.DispatchArgs) {
 			setChatEndpoint(a)
 			a.ChatModel = pulumi.StringRef("")
 		}, err: []string{"chatModel is empty"}},
@@ -717,6 +740,7 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 				require.ErrorContains(t, err, want)
 			}
 			require.NotContains(t, err.Error(), "example-pass", "a refusal never quotes the URL")
+			requireInputError(t, err, c.input)
 		})
 	}
 }
@@ -789,6 +813,9 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in the front-door tools image", "frontDoorToolsImage", func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/" + seed + digest }},
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
+		{"a seed inside a Workspace domain", "signInWorkspaceDomains[1]", func(a *gcp.DispatchArgs) {
+			a.SignInWorkspaceDomains = []string{"example.net", lower + ".example.org"}
+		}},
 		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
 		{"a seed inside the public origin", "publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
@@ -809,10 +836,13 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
 		}},
+		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
 		{"a seed as the app private key secret key", "appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = seed }},
+		{"a seed as the verdict App id", "verdictAppId", func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(seed) }},
+		{"a seed in the consumer-name setting", "consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh-" + seed }},
 		{"a seed in the Azure federation audience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://" + lower)
@@ -842,6 +872,10 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 			_, err := gcp.ResolveDispatch(args)
 			require.EqualError(t, err, row.input+" holds an nkey seed (not echoed)")
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)
+			// The message names the entry by its path; the core.InputError names a list by its
+			// own name, the path cut at its index.
+			input, _, _ := strings.Cut(row.input, "[")
+			requireInputError(t, err, input)
 		})
 	}
 }
@@ -928,6 +962,7 @@ func TestDispatchRefusesASeedInDatabaseWaitsFor(t *testing.T) {
 	_, err := runDispatch(t, args, true)
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: databaseWaitsFor holds an nkey seed (not echoed)")
 	require.NotContains(t, strings.ToUpper(err.Error()), seed)
+	requireInputError(t, err, "databaseWaitsFor")
 }
 
 func TestDispatchRegistersItsCloudResources(t *testing.T) {
@@ -2446,6 +2481,7 @@ func TestDispatchRefusesABlankSecretOnceItResolves(t *testing.T) {
 				_, err := runDispatch(t, args, true)
 				require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+input.name+
 					" is blank, which no credential is")
+				requireInputError(t, err, input.name)
 			})
 		}
 	}
@@ -2570,6 +2606,29 @@ func TestDispatchPodWithBrokerAndAppMatchesGolden(t *testing.T) {
 	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-broker-and-app.golden")
 }
 
+// verdictAppId gives Dispatch the verdict App's id as DISPATCH_VERDICT_APP_ID, right after the App's
+// own three variables, so its CI reconcile pass leaves that App's check suites out of the CI record
+// as the listener does under ENVOY_VERDICT_APP_ID; nothing else in the pod changes. Unset, the pod
+// renders no such variable and is TestDispatchPodWithBrokerAndAppMatchesGolden's own.
+func TestDispatchPodWritesTheVerdictAppIdOnlyWhenGiven(t *testing.T) {
+	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
+	require.NoError(t, err)
+	require.NotContains(t, containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch")), "DISPATCH_VERDICT_APP_ID")
+
+	m, err = runDispatch(t, dispatchVerdictAppArgs(t), true)
+	require.NoError(t, err)
+	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-verdict-app.golden")
+}
+
+// dispatchVerdictAppArgs is dispatchBrokerAndAppArgs with the verdict App's id given, the fixture
+// of testdata/dispatch-pod-with-verdict-app.golden.
+func dispatchVerdictAppArgs(t *testing.T) *gcp.DispatchArgs {
+	t.Helper()
+	args := dispatchBrokerAndAppArgs(t)
+	args.VerdictAppId = pulumi.StringRef("5341240")
+	return args
+}
+
 // With a broker configured, the app's container carries what Dispatch boots on: Dispatch requires
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE whenever DISPATCH_AGENT_SECRETS_URL is set, refuses to
 // start while either removed shared-bearer setting (DISPATCH_AGENT_SECRETS_TOKEN or its _FILE) is
@@ -2672,7 +2731,59 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 	args.OidcIssuer = dispatchOidcIssuer
 	m, err := runDispatch(t, args, true)
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
+	requireInputError(t, err, "oidcAudience")
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+}
+
+// requireOptionalEnv fails unless env carries name with want, or, with want "", carries no name at
+// all: an optional setting renders only when its input is set.
+func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
+	t.Helper()
+	if want == "" {
+		require.NotContains(t, env, name)
+		return
+	}
+	require.Equal(t, want, env[name])
+}
+
+// A value Dispatch refuses at boot is refused when the stack plans, naming the input, so one typo
+// never reaches a Deployment whose one replica would then not start: an owner fallback that is no
+// lowercase email.
+func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	for _, row := range []struct {
+		name, want string
+		edit       func(*gcp.DispatchArgs)
+	}{
+		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
+		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+			// The core.InputError names a list by its own name, the path cut at its index.
+			input, _, _ := strings.Cut(row.want, "[")
+			requireInputError(t, err, input)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
+// projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
+// the owner of every project the migration left without one, and renders nothing when it is unset.
+func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
+	for _, owner := range []string{"", "owner@example.com"} {
+		t.Run(fmt.Sprintf("%q", owner), func(t *testing.T) {
+			args := dispatchArgs()
+			args.ProjectOwnerFallback = owner
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PROJECT_OWNER_FALLBACK", owner)
+		})
+	}
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

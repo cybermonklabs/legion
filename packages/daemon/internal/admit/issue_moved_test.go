@@ -639,12 +639,13 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		applyMovement(t, pool, admission, engine, "supervise", "worker-silent-"+issueKey, intake.WorkerSilent{Issue: issueKey,
 			Role: claim.RoleImplementer, Generation: stands.Generation, LastStep: lastStep, Bound: silenceBound})
 
+		resume := resumeTaskOf(t, pool, engine, issueKey)
 		var resend, told bool
 		for _, row := range effects(t, pool) {
 			switch payload := row.payload.(type) {
 			case record.SuperviseRequest:
 				resend = resend || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == resume)
 			case record.Notice:
 				told = told || (row.issue == issueKey && payload.Kind == "worker-silent")
 			}
@@ -868,7 +869,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// boot the daemon starts again every claim of its project that owns its issue's current phase
 	// and that the daemon or its own exit suspended (workflow's booted, the resume by rule); a
 	// claim level with its entry is sent the task that takes its phase on at no entry of its own
-	// (workflow.ResumePhaseTask), built where every start of a phase worker is built (workflow's
+	// (workflow's Engine.ResumeTask), built where every start of a phase worker is built (workflow's
 	// Engine.started, through workflow.StartOrOwe's own body). A claim behind that entry is sent
 	// the entry's work through the one function every send of an owed entry is written by
 	// (workflow's sendOwedEntry), which the eighth kind above locks. Either start is the daemon
@@ -922,12 +923,13 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		now = before.Add(time.Minute)
 		applyMovement(t, pool, admission, engine, "daemon", "boot:"+testProject+":1", intake.DaemonBooted{Boot: 1})
 
+		resume := resumeTaskOf(t, pool, engine, issueKey)
 		var resumed bool
 		for _, row := range effects(t, pool) {
 			if payload, ok := row.payload.(record.SuperviseRequest); ok {
 				resumed = resumed || (row.issue == issueKey && payload.Op == "start" && payload.RuleResume &&
 					payload.ResumeTask && payload.Entry == 0 && payload.Role == claim.RoleImplementer &&
-					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+					payload.Phase == phase.Implementing && payload.Task == resume)
 			}
 		}
 		if !resumed {

@@ -43,6 +43,7 @@ import (
 // credential the controller's launcher signs in with, and the form that launcher runs, the
 // roles-dir form with it and the single-role form without (controllerPod.launcherContainer).
 func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testing.T) {
+	t.Parallel()
 	const overlay = "/etc/legion-operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
@@ -100,7 +101,7 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 				t.Fatalf("the controller's pod holds nothing of this change, so this case proves nothing")
 			}
 			obs := readopt(t, g.ctx, r2, loc)[0]
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-controller-g2", controllerSession
 			next, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {
@@ -135,6 +136,7 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 // nothing is lost by replacing the pod where it stands — and it is replaced at its next launch,
 // with no second registration anywhere.
 func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := controllerSpec(t)
 	loc := g.spawn(spec)
@@ -178,9 +180,8 @@ func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t
 // its gh volume an empty directory rather than a projection of its Secret
 // (TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory, volumes: a projection with no items
 // would project every key of the Secret, the launcher token among them). That state is ordinary
-// and transient: a project whose mapping names no repository both Apps are installed on yet, and
-// a daemon whose read of an installation GitHub did not answer, which leaves that repository out
-// for now and reads it again.
+// and transient: a project whose Apps are installed on no owner yet, and a daemon whose read of an
+// installation GitHub did not answer, which leaves that owner out for now and reads it again.
 //
 // When the project then gains its first owner, that pod's /var/run/legion/gh holds no directory
 // of that owner's name: the refresher's Update reaches the Secret and never the projection, so
@@ -195,6 +196,7 @@ func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t
 // runtime's making and stays unmoved, and the comparison stays one way: an owner the pod holds
 // that the daemon no longer serves is a stale directory and no reason to remake a pod.
 func TestAnOwnerlessControllerPodIsReplacedOnceItsProjectGainsAnOwner(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
 		o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
@@ -250,6 +252,7 @@ func TestAnOwnerlessControllerPodIsReplacedOnceItsProjectGainsAnOwner(t *testing
 // served. Were it the other way round, every launch of such a deployment's controller would
 // replace the pod it just made, for ever, since the replacement's gh directory is empty too.
 func TestAnOwnerlessControllerIsKeptWhileItsProjectStaysOwnerless(t *testing.T) {
+	t.Parallel()
 	ownerless := func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
 		o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
@@ -281,6 +284,7 @@ func TestAnOwnerlessControllerIsKeptWhileItsProjectStaysOwnerless(t *testing.T) 
 // A pod projecting an owner the daemon no longer serves is ahead of the daemon, not behind it: a
 // stale directory costs nothing, and remaking the pod would delete the issue's disk for it.
 func TestMovedGhDirsLeavesAPodItCannotJudgeAndOneAheadOfTheDaemon(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	name := roleVolume(ghVolume, claim.RoleTester)
 	for what, spec := range map[string]corev1.PodSpec{
@@ -295,15 +299,17 @@ func TestMovedGhDirsLeavesAPodItCannotJudgeAndOneAheadOfTheDaemon(t *testing.T) 
 	}
 }
 
-// A repository the mapping gains is no pod to replace; an owner it gains is. The directories a pod
-// created now would hold depend on the pod's own repository — the owner it writes to holds one
-// directory per other repository that owner serves — so movedGhDirs reads that repository off the
-// pod's workspace fetch (fetchRepository) rather than guessing it, and asks for the owner-only set
-// of a pod that fetches none, the controller's. It then compares owner directories alone: a pod
-// whose own owner has since gained a sibling repository keeps running, reading that repository
-// through its owner's directory until the issue's next pod projects a directory of its own for it,
-// where a pod lacking an owner's directory holds no token of that owner at all.
+// A repository the daemon comes to serve is no pod to replace; an owner it gains is. The
+// directories a pod created now would hold depend on the pod's own repository — the owner it
+// writes to holds one directory per other repository that owner serves — so movedGhDirs reads
+// that repository off the pod's workspace fetch (fetchRepository) rather than guessing it, and
+// asks for the owner-only set of a pod that fetches none, the controller's. It then compares
+// owner directories alone: a pod whose own owner has since gained a sibling repository keeps
+// running, reading that repository through its owner's directory until the issue's next pod
+// projects a directory of its own for it, where a pod lacking an owner's directory holds no token
+// of that owner at all.
 func TestMovedGhDirsComparesTheOwnerDirectoriesOfThePodsOwnRepository(t *testing.T) {
+	t.Parallel()
 	t.Run("a repository of an owner the pod already holds", func(t *testing.T) {
 		var asked []string
 		withSibling := func(repo ghrepo.Repository, _ []appauth.AppRole) []string {
@@ -320,7 +326,7 @@ func TestMovedGhDirsComparesTheOwnerDirectoriesOfThePodsOwnRepository(t *testing
 		asked = nil
 
 		if moved, ok := g.r.movedGhDirs(g.pod(issue.Sandbox.Name), claim.RoleArchitect); ok {
-			t.Errorf("the issue pod moved %q, want it left where it is: the mapping gained a repository of an owner it holds, not an owner", moved.String())
+			t.Errorf("the issue pod moved %q, want it left where it is: the daemon came to serve a repository of an owner it holds, not an owner", moved.String())
 		}
 		if _, ok := g.r.movedGhDirs(g.pod(controller.Sandbox.Name), claim.RoleController); ok {
 			t.Error("the controller's pod, which fetches no repository, moved though it holds every owner the daemon serves")

@@ -13,14 +13,15 @@ import (
 )
 
 // liveProcess writes the server_processes row of a server process whose embedder has identity,
-// started startedAgo before the database's now() and live now, and returns its instance id.
+// started startedAgo before the database's now() and live now, and returns its instance id. The
+// row names this build's owner lock protocol, as processes.Register writes it.
 func liveProcess(t *testing.T, database *store.Store, identity string, startedAgo time.Duration) string {
 	t.Helper()
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, started_at, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now())
-		returning instance::text`, identity, startedAgo.Seconds()).Scan(&id); err != nil {
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, started_at, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $1, false, now() - make_interval(secs => $2), now(), $3)
+		returning instance::text`, identity, startedAgo.Seconds(), store.OwnerLockProtocol).Scan(&id); err != nil {
 		t.Fatalf("add a server process embedding with %q: %v", identity, err)
 	}
 	return id
@@ -150,8 +151,8 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 	// transaction here, and it starts after the other identity's process.
 	mustExec(t, database.Pool, `
 		with gone as (delete from server_processes where instance = $1::uuid)
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false)`, first, configuredIdentity)
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
+		values (gen_random_uuid(), '{fingerprint}', 1, 1, $2, false, $3)`, first, configuredIdentity, store.OwnerLockProtocol)
 
 	secondEmbedder := newPlaceEmbedder(foreignIdentity)
 	cover(t, Deps{Store: second, Embedder: secondEmbedder})

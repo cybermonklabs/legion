@@ -14,9 +14,21 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
+
+// CloneBound is CloneTimeout as ensureRepoClone reads it, through programbound: a variable so that
+// cmd/legion's tests, whose workspace-init runs the shared clone on a stand-in jj, can give it their
+// own deadline, since a stand-in slower than CloneTimeout, as a loaded machine can make one, is
+// killed there, and can read the bound the clone took (programbound.Of(&CloneBound)). CloneTimeout
+// stays the constant ProvisionBound sums.
+var CloneBound = CloneTimeout
+
+func init() {
+	programbound.Register(&CloneBound)
+}
 
 const provisioningTokenFileEnv = "LEGION_PROVISIONING_TOKEN_FILE"
 
@@ -267,8 +279,9 @@ func GitHubURL(repository ghrepo.Repository) string {
 // over git's file transport alone: no credential, and no network. The feed is GitHub as it stood
 // when the pod's workspace-fetch ran, and a tree agent may have pushed since, so a fetch from it
 // brings the repository's default branch and the issue's own bookmark alone, each by its exact
-// name: every other bookmark keeps its target and its tracking. The local clone owns object-store
-// entries for the feed's history, so replacing a foreign feed cannot invalidate its refs.
+// name: every other bookmark keeps its target and its tracking. The clone reads the feed's objects
+// through its alternates (feedClone), and Fetch never replaces a feed it finds present, so no
+// object its refs need goes from under it.
 func feedRemote(feed string, repo ghrepo.Repository, bookmark, defaultBranch string) remote {
 	return remote{
 		env: []string{
@@ -284,10 +297,10 @@ func feedRemote(feed string, repo ghrepo.Repository, bookmark, defaultBranch str
 
 // ensureRepoClone ports workspace.ts's ensureRepoClone: clone into a temporary sibling, verify it
 // contains .jj, then rename it into place. A killed clone can therefore never appear to be a final
-// clone. From GitHub the clone is `jj git clone`; from a pod's feed (source.feed) it is a local git
-// clone followed by Jujutsu's import of every commit. The size-following steps share one
-// CloneTimeout, counted on clock from the first's start, each given what remains of it
-// (cloneSteps), not the runner's slow-command budget.
+// clone. From GitHub the clone is `jj git clone`; from a pod's feed (source.feed) it is a shared
+// local git clone (feedClone) followed by Jujutsu's import of every commit. The size-following
+// steps share one CloneTimeout, counted on clock from the first's start, each given what remains
+// of it (cloneSteps), not the runner's slow-command budget.
 func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote, defaultBranch string, source remote) error {
 	jjDir := filepath.Join(cloneDir, ".jj")
 	if exists, err := pathExists(cloneDir); err != nil {
@@ -317,7 +330,8 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	// Every step runs in the clone's parent, the directory os.MkdirAll made above: it is there
 	// before the first step starts, and it outlives them all, where temporary is filled by the
 	// steps themselves and then renamed or removed.
-	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(CloneTimeout), dir: filepath.Dir(cloneDir), credential: source}
+	bound := programbound.Of(&CloneBound)
+	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(bound), bound: bound, dir: filepath.Dir(cloneDir), credential: source}
 	if source.feed != "" {
 		if err := feedClone(ctx, run, steps, temporary, remote, defaultBranch, source); err != nil {
 			return err
@@ -344,11 +358,18 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	return nil
 }
 
-// feedClone makes the colocated clone at temporary from a pod's feed. A local-path `git clone`
-// creates object-store entries for the clone, hard-linking feed objects where the filesystem allows,
-// so removing or replacing the feed cannot strip the clone's history. Origin is then set to remote,
-// GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it jj's; and the
-// default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later fetch moves it.
+// feedClone makes the colocated clone at temporary from a pod's feed. It is a shared local clone
+// (`git clone --shared`): the clone's objects/info/alternates names the feed's objects on the feed's
+// own path, which every container of an issue pod that runs git or jj in the clone mounts
+// read-only, so the clone reads the feed's objects in place and holds only what it writes itself,
+// and the pod's disk holds the repository once. A plain local clone copied every feed object, since
+// a hard link cannot cross the pod's two mounts of the disk, and a 19 GiB feed and its copy filled a
+// 50 GiB disk. The feed's automatic maintenance stays off (feedConfiguration), Fetch never removes
+// or replaces a feed it finds present (ownFeedRepository), and the clone's own `git gc` and
+// `jj util gc` repack only its local objects, so no object the clone borrows goes. Origin is then
+// set to remote, GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it
+// jj's; and the default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later
+// fetch moves it.
 // The clone takes no working tree (`git clone --no-checkout`), so the pod writes the repository's
 // working copy once, in the issue's own jj workspace: nothing reads the shared clone's working
 // copy, so it is never written. The two jj steps that follow keep jj's
@@ -366,7 +387,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 // two commands that open no repository, `jj git clone` and `jj git init --colocate`. A
 // default branch the feed lacks is left untracked, for the base's own refusal to name (baseCommit).
 func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, remote, defaultBranch string, source remote) error {
-	if err := steps.run(ctx, run, []string{"git", "clone", "--quiet", "--no-checkout", source.feed, temporary}, source.env); err != nil {
+	if err := steps.run(ctx, run, []string{"git", "clone", "--quiet", "--no-checkout", "--shared", source.feed, temporary}, source.env); err != nil {
 		return err
 	}
 	gitDir := filepath.Join(temporary, ".git")
@@ -397,7 +418,8 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 }
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at
-// deadline by clock: ProvisionBound budgets one CloneTimeout for workspace-init's clone. dir is
+// deadline by clock: ProvisionBound budgets one CloneTimeout for workspace-init's clone. bound is
+// that bound as the clone read it (CloneBound), which a step with nothing left names. dir is
 // where a step runs that opens no repository (`jj git clone`, `jj git init --colocate`): the
 // directory the shared clone is made beside, since a jj that opens no workspace would otherwise
 // search upwards from whatever directory the daemon or a test happens to run in and write the
@@ -407,6 +429,7 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 type cloneSteps struct {
 	clock      Clock
 	deadline   time.Time
+	bound      time.Duration
 	dir        string
 	credential remote
 }
@@ -423,7 +446,7 @@ func (s cloneSteps) run(ctx context.Context, run Runner, argv, env []string) err
 func (s cloneSteps) runIn(ctx context.Context, run Runner, dir string, argv, env []string) error {
 	left := s.deadline.Sub(s.clock.Now())
 	if left <= 0 {
-		return fmt.Errorf("the shared clone's %s bound ran out before %s", CloneTimeout, strings.Join(argv, " "))
+		return fmt.Errorf("the shared clone's %s bound ran out before %s", s.bound, strings.Join(argv, " "))
 	}
 	result, err := runCommandTimeout(ctx, run, argv, env, dir, left)
 	result.Stderr = s.credential.scrub(result.Stderr)

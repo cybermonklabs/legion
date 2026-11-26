@@ -48,19 +48,14 @@ const readHeaderTimeout = 10 * time.Second
 // today's healthy read.
 const stateReadBound = 60 * time.Second
 
-// stateRollbackBound is what the state route gives the rollback that ends its transaction once
-// the read is over, on a context of its own (stateRoute). Five seconds: the rollback is one
-// round trip to a server that just answered, so the only thing this waits out is a server that
-// has stopped answering altogether, and waiting longer on one of those would hold the very
-// connection the rollback is there to give back.
-const stateRollbackBound = 5 * time.Second
-
 // Options are what the routes answer from.
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
-	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
-	StateTransactions StateTransactions
+	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses:
+	// the daemon's store pool, which the daemon's serve sets. A test sets a fake that opens no
+	// database transaction. Unset, the state route answers a failure.
+	StateTransactions store.TxPool
 	// StateReadBound is how long the state route's read may take before it answers a failure and
 	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
 	// test sets a smaller one so it need not wait out a minute.
@@ -69,6 +64,10 @@ type Options struct {
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
+	// Intake is the replay and the discard of the project's give-ups (intake.GiveUps), which the
+	// four give-up routes run. Nil, a daemon with no workflow and so no intake, answers those
+	// routes 503.
+	Intake GiveUps
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
 	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
@@ -165,10 +164,12 @@ type Options struct {
 	// answers the owners each App is installed on, which the controller's gh bundle holds one
 	// directory per owner of (appauth.Source, appauth.ControllerCredential).
 	Tokens appauth.Source
-	// GitHubRepositories are the project's repositories as the daemon serves them
-	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
-	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
-	GitHubRepositories func() []ghrepo.Repository
+	// Served is whether both role Apps answered installed on a repository (daemon's
+	// repositories.servesRepository), the one question the rename rule asks of a repository: the
+	// controller's gh bundle holds a directory for each owner a configured rename moved a served
+	// repository away from (appauth.ControllerCredential). Nil serves no repository, which leaves
+	// every configured rename unresolved.
+	Served func(ghrepo.Repository) bool
 	// RepositoryRenames is the deployment's repository equivalence
 	// (config.Config.RepositoryRenames): the controller's gh bundle holds one entry for a
 	// configured rename's two owners (appauth.ControllerCredential). The zero value configures none.
@@ -176,9 +177,9 @@ type Options struct {
 	// Serving is the repository GitHub holds a recorded one under now, which every GitHub call
 	// this server makes is minted for and addressed to (serving): the daemon's one rule
 	// (daemon's repositories.serving, which the Sandbox runtime's own token source is handed
-	// too), so the mapping and the configured renames are read in one place and no caller here
-	// writes a second copy of it. Nil serves a recorded repository under its own name, which a
-	// test that configures no rename and a daemon with no GitHub Apps both want.
+	// too), so the installation answers and the configured renames are read in one place and no
+	// caller here writes a second copy of it. Nil serves a recorded repository under its own name,
+	// which a test that configures no rename and a daemon with no GitHub Apps both want.
 	Serving func(recorded ghrepo.Repository) ghrepo.Repository
 	// Releaser releases what the runtime holds for a tree whose operator close reserved and
 	// finished its cleanup: the daemon's runtime.
@@ -316,10 +317,11 @@ type ClaimActivityStore interface {
 
 type server struct {
 	state             StateSource
-	stateTransactions StateTransactions
+	stateTransactions store.TxPool
 	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
 	stateBound  time.Duration
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
+	giveUps     GiveUps
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
 	// awaitStream is Options.AwaitStream (apply).
@@ -344,9 +346,11 @@ type server struct {
 	backend func(role claim.Role) runtime.Backend
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
-	controllerMu       sync.Mutex
-	tokens             appauth.Source
-	githubRepositories func() []ghrepo.Repository
+	controllerMu sync.Mutex
+	tokens       appauth.Source
+	// served is Options.Served, never nil here: NewServer serves no repository where the caller
+	// hands none.
+	served func(ghrepo.Repository) bool
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer
 	// moved it away from, which the controller's gh bundle reads (appauth.ControllerCredential).
@@ -412,11 +416,16 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
+	served := opts.Served
+	if served == nil {
+		served = func(ghrepo.Repository) bool { return false }
+	}
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
 		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
+		giveUps:            opts.Intake,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
 		awaitStream:        opts.AwaitStream,
@@ -431,7 +440,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		noPluginInstall:    opts.NoPluginInstall,
 		backend:            opts.Backend,
 		tokens:             opts.Tokens,
-		githubRepositories: opts.GitHubRepositories,
+		served:             served,
 		renames:            opts.RepositoryRenames,
 		serving:            serving,
 		githubAPI:          opts.GitHubAPI,
@@ -524,7 +533,7 @@ type statingContract struct {
 }
 
 func (s statingContract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))
+	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion()))
 	s.handler.ServeHTTP(w, r)
 }
 
@@ -558,13 +567,17 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
 		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/plans/register", s.registerPlan},
+		{"POST /legion/v1/tasks/stop", s.stopTask},
 		{"POST /legion/v1/waves/release", s.waveRelease},
 		{"POST /legion/v1/phase/backward", s.phaseBackward},
 		{"POST /legion/v1/phase/retry", s.phaseRetry},
 		{"POST /legion/v1/signoff", s.signOff},
 		{"POST /legion/v1/roots/close", s.closeRoot},
-		{"POST /legion/v1/children/park", s.parkChild},
+		{"POST /legion/v1/children/park", s.removedChildRoute},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
+		{"POST /legion/v1/intake/replay", s.intakeReplay},
+		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
 
@@ -579,6 +592,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+		{"POST /legion/v1/operator/intake/replay", s.operator(s.operatorIntakeReplay)},
+		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
 
@@ -821,38 +836,29 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	}
 	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
 	defer cancel()
-	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
+	var state State
+	var claims []supervise.Claim
+	// The step that failed names the log line, as each did before the read ran through
+	// store.TransactWith: the begin, until the body runs; the statement bound; the state source;
+	// and the commit, for a failure after a body that succeeded.
+	failed := "api: begin state transaction failed"
+	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
+	}, func(ctx context.Context, tx pgx.Tx) error {
+		failed = "api: commit state transaction failed"
+		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
+			failed = "api: bound the state transaction's statements failed"
+			return err
+		}
+		var err error
+		state, claims, err = s.state.State(ctx, tx)
+		if err != nil {
+			failed = "api: state source failed"
+		}
+		return err
 	})
 	if err != nil {
-		s.logRequestFailure(r, err, "api: begin state transaction failed")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
-	}
-	defer func() {
-		// The rollback runs on a context detached from the read's, with a little budget of its
-		// own: the moment the read's deadline passes is exactly the moment this has to reach the
-		// server, and a rollback asked for on the context that just expired is never sent at all,
-		// which gives the pool back a connection to throw away rather than one with its
-		// transaction ended.
-		ending, endRollback := context.WithTimeout(context.WithoutCancel(r.Context()), stateRollbackBound)
-		defer endRollback()
-		_ = tx.Rollback(ending)
-	}()
-
-	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
-		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
-	}
-	state, claims, err := s.state.State(reading, tx)
-	if err != nil {
-		s.logRequestFailure(r, err, "api: state source failed")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
-	}
-	if err := tx.Commit(reading); err != nil {
-		s.logRequestFailure(r, err, "api: commit state transaction failed")
+		s.logRequestFailure(r, err, failed)
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
 		return State{}, nil, false
 	}
@@ -903,10 +909,11 @@ const recordNotFound = "RECORD_NOT_FOUND"
 // `state.Issues[key]` out of it, rather than asking the store a cheaper question of one issue,
 // because the record must equal the record of that issue inside the whole-project body field for
 // field: `waitingLine` and `slot` come from the project's admission, `check` from its open
-// production checks, `gatedSteps` from the deployment's steps and the three memory fields from
-// the tree's draw. None of the six is a fact of the issue's own row. Building the answer from
-// the same value the whole-project body is built from makes that equality hold by construction,
-// and a test holds a later change to it.
+// production checks, `gatedSteps` from the tree's steps (record.TreeSteps: the deployment's, and a
+// criteria row its root registered beside them) and the three memory fields from the tree's draw.
+// None of the six is a fact of the issue's own row. Building the answer from the same value the
+// whole-project body is built from makes that equality hold by construction, and a test holds a
+// later change to it.
 //
 // An issue the daemon holds no record for is a 404 carrying recordNotFound and the sentence the
 // plugin's own `read_record` answers for an unknown issue today

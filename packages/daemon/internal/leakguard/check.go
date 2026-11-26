@@ -92,7 +92,7 @@ func (g *Guard) Resolve() (string, error) {
 	}
 	nothingElse := func(none error) error {
 		if there := unusableOnPath(searchPath); there != "" {
-			return brokenCheck{path: there, error: fmt.Errorf("%s names none, %s on PATH is no executable file, and no pointer file names a check", CheckVar, there)}
+			return brokenCheck{path: there, error: fmt.Errorf("%s names none, %s on PATH is no executable file, and no pointer file names a check", CheckVar, shownText(there))}
 		}
 		return noneNamed{none}
 	}
@@ -108,7 +108,7 @@ func (g *Guard) Resolve() (string, error) {
 	pointer := filepath.Join(config, pointerFile)
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
+		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, shownText(pointer), withoutPath(err))
 		if _, statErr := os.Lstat(pointer); errors.Is(statErr, fs.ErrNotExist) {
 			return "", nothingElse(err)
 		}
@@ -116,9 +116,9 @@ func (g *Guard) Resolve() (string, error) {
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {
-		return "", brokenCheck{path: pointer, error: fmt.Errorf("the pointer file %s names no check", pointer)}
+		return "", brokenCheck{path: pointer, error: fmt.Errorf("the pointer file %s names no check", shownText(pointer))}
 	}
-	return found(named, "the pointer file "+pointer)
+	return found(named, "the pointer file "+shownText(pointer))
 }
 
 // unusableOnPath is the first file of the check's name on an entry of searchPath that lookpath.On
@@ -237,15 +237,15 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 	switch {
 	case err != nil:
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
-			Err: fmt.Errorf("%s=%s, and the manifest of the check at %s could not be read: %w", CheckerVar, checker, check, err)}
+			Err: fmt.Errorf("%s=%s, and the manifest of the check at %s could not be read: %w", CheckerVar, checker, shownText(check), err)}
 	case !strings.EqualFold(held.digest, checker):
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
-			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held.digest)}
+			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, shownText(check), held.digest)}
 	}
 	dir, err := held.privateCopy(PrivateCopyBase, privateCopyFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
-			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", check, CheckerVar, checker, err)}
+			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", shownText(check), CheckerVar, checker, err)}
 	}
 	return sharedRun{path: filepath.Join(dir, checkName), program: held.files[checkProgram], dir: dir}, nil
 }
@@ -344,17 +344,19 @@ func writeCopyFile(path string, body []byte, mode os.FileMode) error {
 // the digest held need not be the file that runs. It is refused, as is a stale one, or one that
 // names a directory or a file with no execute bit, each reported as the broken setup it is rather
 // than as a child process that would not start; and every shape refuses it alike, a push included,
-// which runs the check through bash and would otherwise run a file the others cannot.
+// which runs the check through bash and would otherwise run a file the others cannot. The report
+// names the path as shownText shows it, and once: the error under it is what went wrong alone
+// (withoutPath).
 func found(path, source string) (string, error) {
 	if !filepath.IsAbs(path) {
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no absolute path", source, path)}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no absolute path", source, shownText(path))}
 	}
 	info, err := os.Stat(path)
 	switch {
 	case err != nil:
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, path, err)}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, shownText(path), withoutPath(err))}
 	case !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0:
-		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no executable file (%s)", source, path, info.Mode())}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no executable file (%s)", source, shownText(path), info.Mode())}
 	}
 	return path, nil
 }
@@ -384,6 +386,20 @@ func noAnswer(env []string) string {
 		return path
 	}
 	return "/bin/false"
+}
+
+// modeArgv is the argv of a call of the shared check at path in one of its modes: `<path> <mode>
+// -- <args>`, and `<path> <mode>` alone for no args. From leak-check-v33 the check refuses, with
+// exit 2, a call of exactly two arguments whose first is a mode word, since that is how a pre-push
+// hook calls it, with a remote's name and its URL; a mode call writes `--` right after the mode
+// word, which the check takes out, and only that one (its README.md, "Modes"). So a mode with one
+// argument needs the `--`, `<mode> --` with none is a call of two arguments too, and the check
+// hands the mode args exactly, a `--` of their own among them.
+func modeArgv(path, mode string, args ...string) []string {
+	if len(args) == 0 {
+		return []string{path, mode}
+	}
+	return append(append(make([]string, 0, 3+len(args)), path, mode, "--"), args...)
 }
 
 // child is one process this package runs: the shared check in one of its shapes, a read of a
@@ -436,6 +452,27 @@ func program(base []string, name string) string {
 // did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
 // which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
+	cmd, killed := g.command(ctx, c)
+	var printed bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &printed, &printed
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+	}
+	started := time.Now()
+	err := procgroup.Err(cmd.Run())
+	switch {
+	case killed():
+		return 0, printed.String(), stopped(ctx, c, started)
+	case err != nil:
+		return 0, printed.String(), err
+	}
+	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// command is c as a command under ctx, not yet started, in a process group of its own, and the
+// killed answer of procgroup.Configure for it: whether the end of ctx stopped it. Its standard
+// output and error are the caller's to set.
+func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
@@ -448,28 +485,30 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// struct. It also makes the bound reach a helper the child started, which for the shared
 	// check is the git it runs against the remote.
 	killed := procgroup.Configure(cmd)
-	var printed bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if c.stderr != nil {
-		cmd.Stderr = c.stderr
+	cmd.WaitDelay = g.exitDelay()
+	return cmd, killed
+}
+
+// exitDelay is how long a child's output is waited for once the child has exited: exec's
+// WaitDelay, procgroup.WaitDelay where no test set Guard.waitDelay.
+func (g *Guard) exitDelay() time.Duration {
+	if g.waitDelay > 0 {
+		return g.waitDelay
 	}
-	started := time.Now()
-	err := procgroup.Err(cmd.Run())
-	switch {
-	case killed():
-		stopped := &stoppedError{
-			program:   filepath.Base(c.argv[0]),
-			ran:       time.Since(started),
-			cancelled: errors.Is(ctx.Err(), context.Canceled),
-		}
-		if deadline, ok := ctx.Deadline(); ok {
-			stopped.bound = deadline.Sub(started)
-		}
-		return 0, printed.String(), stopped
-	case err != nil:
-		return 0, printed.String(), err
+	return procgroup.WaitDelay
+}
+
+// stopped is the *stoppedError of c, started at started, which the end of ctx stopped.
+func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
+	stop := &stoppedError{
+		program:   filepath.Base(c.argv[0]),
+		ran:       time.Since(started),
+		cancelled: errors.Is(ctx.Err(), context.Canceled),
 	}
-	return cmd.ProcessState.ExitCode(), printed.String(), nil
+	if deadline, ok := ctx.Deadline(); ok {
+		stop.bound = deadline.Sub(started)
+	}
+	return stop
 }
 
 // stoppedError is a child that the end of the caller's context stopped before it exited: its

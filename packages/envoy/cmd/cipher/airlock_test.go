@@ -16,8 +16,9 @@ import (
 	"time"
 )
 
-// testAirlockPlaceholder is one placeholder in the broker's own shape: its prefix and 32
-// characters of the alphabet requests.mintPlaceholder draws from.
+// testAirlockPlaceholder is one placeholder in the broker's own shape: placeholder.Prefix and
+// placeholder.Length (32) characters of placeholder.Alphabet, as placeholder.Mint draws them
+// (internal/cipher/placeholder).
 const testAirlockPlaceholder = "agent-secrets-placeholder-aBcD1234aBcD1234aBcD1234aBcD1234"
 
 // testAirlockCertificate is the PEM the release carries as the proxy's certificate authority.
@@ -56,6 +57,7 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 // it, and an entry that is missing sends a request the proxy refuses (a private address) or
 // cannot reach (the broker itself) through it.
 func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
+	t.Parallel()
 	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com"}, map[string]string{"value": testAirlockPlaceholder})
 	for _, row := range []struct {
 		name        string
@@ -131,6 +133,7 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 // TestAirlockNoProxyReachesBothSpellings: a client reads one spelling or the other, so the child
 // carries the same list under both.
 func TestAirlockNoProxyReachesBothSpellings(t *testing.T) {
+	t.Parallel()
 	release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, map[string]string{"value": testAirlockPlaceholder})
 	env := childEnvMap(t, []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=intranet.example.org"}, nil, release, testAirlockFiles)
 	if env["NO_PROXY"] != env["no_proxy"] || env["NO_PROXY"] == "" {
@@ -144,6 +147,7 @@ func TestAirlockNoProxyReachesBothSpellings(t *testing.T) {
 // TestAirlockAWSSlotsReachTheirOwnVariables: an AWS key pair behind the airlock is the one secret
 // whose shape every AWS client reads from three variables of its own rather than from the name.
 func TestAirlockAWSSlotsReachTheirOwnVariables(t *testing.T) {
+	t.Parallel()
 	id, secret, token := testAirlockPlaceholder+"-id", testAirlockPlaceholder+"-secret", testAirlockPlaceholder+"-token"
 	for _, row := range []struct {
 		name      string
@@ -180,6 +184,7 @@ func TestAirlockAWSSlotsReachTheirOwnVariables(t *testing.T) {
 // TestAirlockRefusesTwoAWSNames: one environment holds one AWS_ACCESS_KEY_ID, so a grant of two
 // AWS key pairs behind the airlock is refused rather than silently resolved.
 func TestAirlockRefusesTwoAWSNames(t *testing.T) {
+	t.Parallel()
 	slots := map[string]string{"aws-access-key-id": testAirlockPlaceholder, "aws-secret-access-key": testAirlockPlaceholder}
 	release := testRelease("AWS_ONE", []string{"*.amazonaws.com"}, slots)
 	release.Names["AWS_TWO"] = AirlockName{Value: testAirlockPlaceholder, Slots: slots, Hosts: []string{"*.amazonaws.com"}}
@@ -198,6 +203,7 @@ func TestAirlockRefusesTwoAWSNames(t *testing.T) {
 // credential, so the URL must carry it and every client must be able to parse it out again,
 // whether or not the placeholder holds a character a URL must escape.
 func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
+	t.Parallel()
 	for _, password := range []string{
 		testAirlockPlaceholder,
 		"needs:escaping/@ and?more#",
@@ -231,6 +237,7 @@ func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 // TestAirlockProxyURLRefusesAnUnusableOne: a URL with no host would leave every client with a
 // proxy setting it cannot dial, so it is a refusal rather than a broken environment.
 func TestAirlockProxyURLRefusesAnUnusableOne(t *testing.T) {
+	t.Parallel()
 	release := testRelease("AIRLOCK_ME", nil, nil)
 	release.ProxyURL = "not a url at all"
 	if _, err := airlockProxyURL(release); err == nil {
@@ -244,6 +251,7 @@ func TestAirlockProxyURLRefusesAnUnusableOne(t *testing.T) {
 // bundle, and that neither file is in the working directory, which a check of this change greps
 // for the secret's value.
 func TestPrepareAirlockWritesTheTrustBundleAndWgetrc(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	inheritedRoots := filepath.Join(t.TempDir(), "roots.pem")
 	const rootPEM = "-----BEGIN CERTIFICATE-----\nMIIINHERITEDROOT\n-----END CERTIFICATE-----\n"
@@ -324,6 +332,7 @@ func TestPrepareAirlockWritesTheTrustBundleAndWgetrc(t *testing.T) {
 // TestTrustBundleWithoutASystemOneIsTheProxyAlone: a machine with no trust file to name leaves
 // the command the proxy's certificate and nothing else, which is what it had.
 func TestTrustBundleWithoutASystemOneIsTheProxyAlone(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "not-there.pem")
 	got := string(trustBundle([]string{"SSL_CERT_FILE=" + missing}, testAirlockCertificate))
 	if got != testAirlockCertificate && !strings.Contains(got, testAirlockCertificate) {
@@ -344,6 +353,7 @@ func TestTrustBundleWithoutASystemOneIsTheProxyAlone(t *testing.T) {
 // alone, as curl, Python requests, git and the AWS SDKs read theirs from their own variable alone,
 // and its authority joins the bundle as theirs do.
 func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
+	t.Parallel()
 	const (
 		systemRoots = "-----BEGIN CERTIFICATE-----\nMIIINHERITEDROOT\n-----END CERTIFICATE-----\n"
 		nodeRoot    = "-----BEGIN CERTIFICATE-----\nMIIICORPORATEROOT\n-----END CERTIFICATE-----\n"
@@ -409,6 +419,7 @@ func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
 // than any build, one that lasts until its session ends stays, the directory another run is
 // building now stays, and this run's own directory is there when it returns.
 func TestPrepareAirlockTidiesWhatEarlierRunsLeft(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	root := filepath.Join(runtimeDir, "agent-secrets", "airlock")
 	leave := func(name, expires string, writeExpires bool) string {
@@ -458,6 +469,7 @@ func TestPrepareAirlockTidiesWhatEarlierRunsLeft(t *testing.T) {
 // finds no expires file reads the directory as one a run left unfinished and removes it, which
 // takes away the other run's bundle while it is being written.
 func TestPrepareAirlockIsNeverSeenHalfWrittenByAnotherRunsTidy(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	root := filepath.Join(runtimeDir, "agent-secrets", "airlock")
 	environ := []string{"XDG_RUNTIME_DIR=" + runtimeDir}
@@ -523,6 +535,7 @@ func TestPrepareAirlockIsNeverSeenHalfWrittenByAnotherRunsTidy(t *testing.T) {
 // It answers that directory rather than writing over files the first run's command may be
 // reading at that moment, and the directory it built for itself is gone.
 func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T) {
+	t.Parallel()
 	runtimeDir := t.TempDir()
 	environ := []string{"XDG_RUNTIME_DIR=" + runtimeDir}
 	expires := time.Now().Add(time.Hour)
@@ -558,6 +571,7 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 // TestPrepareAirlockFallsBackToTheTemporaryDirectory: a session with no XDG_RUNTIME_DIR writes
 // under TMPDIR, and never into the working directory.
 func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	files, err := prepareAirlock([]string{"TMPDIR=" + tmp}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 	if err != nil {
@@ -588,6 +602,7 @@ func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
 // that calls it is one internal/testtmp's placement check refuses, since that is how a test
 // comes to place a directory wherever it runs.
 func TestTheSharedTemporaryRootNamesThisUser(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:611).
 	joined := func(environ []string) string {
 		base, elements := airlockRootParts(environ)
 		return filepath.Join(base, elements[0], elements[1])
@@ -610,6 +625,7 @@ func TestTheSharedTemporaryRootNamesThisUser(t *testing.T) {
 // would hold is the trust bundle every direct call of the command is verified against. The run is
 // refused with the path, and nothing is written under it.
 func TestPrepareAirlockRefusesARootOthersCanWriteIn(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "agent-secrets", "airlock")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -639,6 +655,7 @@ func TestPrepareAirlockRefusesARootOthersCanWriteIn(t *testing.T) {
 // whoever made the link chose, so the files would be written and read somewhere this run never
 // named. It is refused with the path, and the directory the link points at is left empty.
 func TestPrepareAirlockRefusesARootThatIsASymbolicLink(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	elsewhere := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(base, "agent-secrets"), 0o700); err != nil {
@@ -674,6 +691,7 @@ func TestPrepareAirlockRefusesARootThatIsASymbolicLink(t *testing.T) {
 // A parent another user owns is the same hole and cannot be made here, since this test runs as
 // one unprivileged user; the mode is the shape of it this pod can stand up.
 func TestPrepareAirlockRefusesAParentOthersCanWriteIn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:710).
 	for _, row := range []struct {
 		name   string
 		shared bool
@@ -725,6 +743,7 @@ func TestPrepareAirlockRefusesAParentOthersCanWriteIn(t *testing.T) {
 // root with one Mkdir per element rather than following the link is what sees it, so the run is
 // refused with the parent's path and the directory the link points at is left empty.
 func TestPrepareAirlockRefusesAParentThatIsASymbolicLink(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	elsewhere := t.TempDir()
 	parent := filepath.Join(base, "agent-secrets")
@@ -752,6 +771,7 @@ func TestPrepareAirlockRefusesAParentThatIsASymbolicLink(t *testing.T) {
 // the "released no value" refusal, the command runs, its source line is the one it has always
 // been, and its environment holds the placeholder and the proxy.
 func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()

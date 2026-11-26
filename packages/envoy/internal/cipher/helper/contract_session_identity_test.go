@@ -52,6 +52,7 @@ func (cr *contractRig) sessionReq(t *testing.T, sess *Session, method, path stri
 // file, and the broker hands back the enrollment it already has, so the release still works and
 // nobody is asked to approve anything twice.
 func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("HOME", t.TempDir())
 	cr := newContractRig(t)
 	cr.login(t)
@@ -131,7 +132,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := next.register(ctx, peer, os.Getpid(), sessionID, false, 0, 20*time.Second)
+	resumed := next.register(ctx, peer, os.Getpid(), sessionID, nil, false, 0, 20*time.Second)
 	if !resumed.OK || resumed.EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, %s", resumed, reg.EnrollmentID)
 	}
@@ -224,6 +225,7 @@ func awaitEnrollmentsSaved(t *testing.T, cr *contractRig) {
 // through a later enrollment of the same session name, which is what this test shows nothing
 // here has.
 func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("HOME", t.TempDir())
 	cr := newContractRig(t)
 	cr.login(t)
@@ -278,7 +280,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	// goRevoke), so the broker has answered the revoke before the grant is read, however long a
 	// loaded machine takes; a poll of five seconds failed here under load on main, 1 run of 12
 	// (the pull request records the runs).
-	next.waitRevokes()
+	next.waitRevokes(t)
 	status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
@@ -301,6 +303,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 // enrollment still there afterwards; it also shows a helper upgraded in place carrying the
 // records it finds at the old path over to the new one.
 func TestContractTheProductionRecordsPathSurvivesTheRuntimeDirectoryGoing(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	runtime := t.TempDir()
 	getenv := func(key string) string {

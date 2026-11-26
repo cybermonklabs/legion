@@ -122,6 +122,18 @@ result is one TOON block with recognized routing and delivery fields such as `to
 `id`, and `summary`; a structured `payload` appears once as `message`. Invalid JSON is represented
 as a safe `unrecognised` value rather than exposed as raw bytes.
 
+A collapsed card shows its first 12 lines and, when the words its sender wrote sit past them, the
+line that holds them: an Envoy message's `message`, or its `summary` when it carries no message,
+and a Dispatch message's `body` (`readInboundCard` in `@legion/envoy-client/inbound-card`). Ctrl+O
+shows the rest. Every card the session displays also reaches Dispatch's live view of the session,
+on the agent stream (`@legion/pi-shared/agent-stream`), as a user message that says who sent it
+and holds those words, with the card's `note` and `body_note` under them; a card with no such
+words, such as a Dispatch notification, an empty message or one of the plugin's own notices, shows
+there whole and verbatim. A card that delivers a Dispatch message to the session, or the agent's
+copy of a person's `!command` report, names that message in its `details` (`dispatchMessageId`)
+and stays out of the stream, since the live view shows the message from Dispatch's store and the
+report from its own frame.
+
 `envoy_inbox` returns the 50 most recent delivered envelopes as metadata (`event_id`, `at`, `from`,
 and `summary`) for recovery after an interrupt. `envoy_role_get` returns the current holder and
 last-seen timestamp for a role. `envoy_subscribe` reports listener warnings in both its text and
@@ -323,7 +335,7 @@ From this directory:
 ```sh
 bun run test
 bun test extensions/envoy.test.ts -t "<name>"   # one test
-bunx tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
 bun run lint
 bun run build
 ```
@@ -428,10 +440,21 @@ missing file contributes nothing, so each section is then on only when its varia
 `token` or `natsSeed` starting with `!` is a command whose trimmed output is the value (10 s, its
 exit status deciding; never run from a checkout's file). `DISPATCH_URL`, `DISPATCH_TOKEN_FILE`,
 `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`,
-`NATS_NKEY_SEED_FILE` and `NATS_NKEY_SEED` each override their own field; a file's token goes with
+`NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED`, `NATS_AUTH` and `ENVOY_INBOUND` each override their own
+field; a file's token goes with
 `DISPATCH_URL` or `ENVOY_URL` only when it names the file's own server, and a file's seed with
 `ENVOY_NATS_URL` only when it names the file's NATS servers, so another server needs its own token
-or seed variable. `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
+or seed variable. `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in the `envoy` section)
+takes inbound messages through the listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`,
+over HTTPS alone, with the session's own broker token, rather than over NATS: for an agent on a
+machine with no NATS connection to the deployment. It is refused beside `ENVOY_NATS_URL` or
+`envoy.natsUrls`, naming both, with a bearer for the listener, with no broker route, and for a
+process that names no session. With the setting, a listener at a plain http address of another
+machine turns Envoy off as a whole, its tools included, a NATS server named or not (the token
+would cross the network unencrypted; a conflict with a NATS server is named first; this machine's
+own listener may be plain http, and a session not set to `listener` keeps plain http); the
+socket carries no live view, so the session opens none and the start notice says so (the
+`@legion/envoy-client` README, "The listener's relay socket"). `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
 Legion daemon delivers it to a pane) never falls back when unreadable. Omitting
 `dispatch.serverUrl` while `dispatch.enabled` is true targets `http://localhost:8766`, the Go
 server's listen address. With Envoy off the session has no Envoy tools and takes no inbound
@@ -502,7 +525,7 @@ takes `--content` once it ends in `.md`.
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
 A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
-An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; Dispatch will refuse it `400 PRECONDITION_REQUIRED` again once every deployed command sends one, so name the token.
 A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
@@ -526,6 +549,10 @@ reviews these calls:
 
 - `dispatch ask`, `dispatch message`, `dispatch edit-ask`, `dispatch comment`, `dispatch doc-edit`
   and `dispatch request-approval`
+- the four corrections of a post the gate already reviewed: `dispatch edit-comment`,
+  `dispatch delete-comment`, `dispatch edit-message` and `dispatch delete-message`. An edit's new
+  body is the text under review, as the `comment` or `message` that posted it was; a delete
+  carries no body, so what is under review is the call itself, which names the post it takes down
 - `dispatch issue` with `--spec` or `--spec-file`
 - `dispatch artifact` when it uploads a markdown document: inline text (`--content`,
   `--content-file`), a `--path` file whose name ends in `.md` or `.markdown`, or a `--name` that
@@ -674,7 +701,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
-`@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
+`@legion/envoy-client/askgate-marker`): the ten commands above, an `issue` with a spec and an
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
@@ -982,7 +1009,9 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   send the recorder back to the read and then to the append. Each append carries a key of its own,
   the sha256 of the session and the record's id, so an append Dispatch ran late is replayed to its
   next attempt rather than written twice; the same record sent again with another time in its body
-  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. Keys
+  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. An append Dispatch made
+  and gave no copy of its answer for (`409 KEY_COMMITTED`, or a replay of an answer it kept none
+  of) is in the document, so the record is written and counted nowhere as not confirmed. Keys
   belong to the login that sent them, and every Legion pod writes under the shared agent token,
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h

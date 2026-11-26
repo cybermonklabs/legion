@@ -82,7 +82,7 @@ func (r *podUpdateRig) openRoundAnsweredBy(roles ...claim.Role) {
 }
 
 // sweepSettled is one sweep over machines that decide nothing: a claim whose machine is deciding
-// reads as one that has not answered (roundGroup's mask), so a sweep over a settled rig decides
+// reads as one that has not answered (masked), so a sweep over a settled rig decides
 // by the rule under test and by nothing else, and its outcome can be read once.
 func (r *podUpdateRig) sweepSettled() {
 	r.t.Helper()
@@ -181,6 +181,7 @@ func holdLinesNaming(t *testing.T, rig *podUpdateRig, role claim.Role) []map[str
 // report named running subagents. Before R1, the first sweep after the answers replaces the pod,
 // and the first assertion fails.
 func TestPodUpdateBackgroundSubagentHoldsTheRoundBeforeItsBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsBackgroundWork(claim.RoleImplementer, "subagent")
@@ -208,6 +209,7 @@ func TestPodUpdateBackgroundSubagentHoldsTheRoundBeforeItsBound(t *testing.T) {
 // report is all the hold waited for, so the pod is replaced there, before the bound, as on a round
 // that its answers end, and no line says the bound made the replacement.
 func TestPodUpdateBackgroundReportOfNothingRunningEndsTheRoundAtTheNextSweep(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	clocks := rig.replacementClocks()
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
@@ -242,6 +244,7 @@ func TestPodUpdateBackgroundReportOfNothingRunningEndsTheRoundAtTheNextSweep(t *
 // reports that nothing runs, and the next sweep replaces the pod. No line of the hold is written,
 // and no line says the bound made the replacement.
 func TestPodUpdateBackgroundNoneLetsTheAnswersEndTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleImplementer)
@@ -269,6 +272,7 @@ func TestPodUpdateBackgroundNoneLetsTheAnswersEndTheRound(t *testing.T) {
 // that R1's hold named, with the kind its report names, apart from the claims that had not
 // answered and the turns that ran, of which there were none.
 func TestPodUpdateBackgroundThatOutlivesTheBoundEndsAtTheBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	clocks := rig.replacementClocks()
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
@@ -314,6 +318,7 @@ func TestPodUpdateBackgroundThatOutlivesTheBoundEndsAtTheBound(t *testing.T) {
 // have started work the earlier report does not name. Once the tester reports again after that
 // turn, the pod is replaced.
 func TestPodUpdateBackgroundReportOlderThanTheLastTurnHoldsTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleImplementer)
@@ -351,10 +356,11 @@ func TestPodUpdateBackgroundReportOlderThanTheLastTurnHoldsTheRound(t *testing.T
 // answered; the report of each names work that runs. The round ends on the answers at the next
 // sweep, and no line of the hold names either claim.
 func TestPodUpdateBackgroundOfAFailedOrSuspendedClaimHoldsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, inPod: true, contract: api.DaemonAPIVersion()},
 	)
 	if c := rig.claimOf(claim.RolePlanner); c.State != supervise.StateFailed || podOf(c.Locator) != podUpdatePod {
 		t.Fatalf("the planner is %s at %+v, want it failed with a process recorded in pod %s", c.State, c.Locator, podUpdatePod)
@@ -394,6 +400,7 @@ func TestPodUpdateBackgroundOfAFailedOrSuspendedClaimHoldsNothing(t *testing.T) 
 // word refuses the replacement once, naming the implementer and its kind, nothing is replaced,
 // and the round stays open. Once the implementer reports that nothing runs, the pod is replaced.
 func TestPodUpdateBackgroundReportedInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleImplementer)
@@ -440,6 +447,7 @@ func TestPodUpdateBackgroundReportedInTheLaunchTurnRefusesTheReplacement(t *test
 // reviewer reported that nothing runs and is named nowhere, and the line carries no list of the
 // answers or the turns.
 func TestPodUpdateBackgroundHeldLineNamesEachRoleAndItsKinds(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester), readyWorker(claim.RoleReviewer))
 	rig.openRoundAnsweredBy(roles...)
@@ -473,6 +481,7 @@ func TestPodUpdateBackgroundHeldLineNamesEachRoleAndItsKinds(t *testing.T) {
 // loss of its work. The line names it as unreported, and its first report that nothing runs ends
 // the round.
 func TestPodUpdateBackgroundNoReportAtAllHoldsTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleTester)
@@ -504,6 +513,7 @@ func TestPodUpdateBackgroundNoReportAtAllHoldsTheRound(t *testing.T) {
 // implementer unreported, rather than end the round on the report of the process that went. The
 // relaunched process's first report that nothing runs ends the round.
 func TestPodUpdateBackgroundViewOfALaterLaunchReadsAsNoReport(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleImplementer)
@@ -546,6 +556,7 @@ func TestPodUpdateBackgroundViewOfALaterLaunchReadsAsNoReport(t *testing.T) {
 // the hold names the tester. The case of a running report in another pod is read in
 // podupdate_background_reading_test.go.
 func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsNothingRunning(claim.RoleImplementer)
@@ -572,14 +583,15 @@ func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
 
 // A claim in the round's pod that the round has not asked holds the round too (R1, R5 case 12).
 // The planner is still launching there with no session, so the round neither asks it nor waits
-// for its answer (askedClaims): only its report can hold the round, and that report names a
+// for its answer (roundAsks): only its report can hold the round, and that report names a
 // subagent. The line names the planner with that kind, and the planner's report that nothing
 // runs ends the round.
 func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateLaunching, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateLaunching, inPod: true, contract: api.DaemonAPIVersion()},
 	)
 	if c := rig.claimOf(claim.RolePlanner); c.State != supervise.StateLaunching || c.Session != "" || podOf(c.Locator) != podUpdatePod {
 		t.Fatalf("the planner is %s with session %q at %+v, want it launching with no session in pod %s", c.State, c.Session, c.Locator, podUpdatePod)
@@ -619,6 +631,7 @@ func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.
 // it, before the bound. A round that read the machine's view would wait for the bound. The
 // restarted supervision logs to a quiet logger, so the test reads the replacements.
 func TestPodUpdateBackgroundIsReadFromTheStoreAcrossARestart(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
 	rig.reportsBackgroundWork(claim.RoleImplementer, "subagent")

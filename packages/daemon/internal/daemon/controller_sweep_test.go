@@ -46,6 +46,7 @@ func (liveTrees) Claims(context.Context) ([]supervise.Claim, error) { return nil
 // state, as the store holds it after the stop, and hands its answer to a real Sandbox runtime
 // (sandbox.New) over an API that holds the controller's Sandbox, at the periodic sweep's grace.
 func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t *testing.T) {
+	t.Parallel()
 	controller := claim.ControllerToken("legion")
 	for _, tc := range []struct {
 		state supervise.ClaimState
@@ -80,10 +81,10 @@ func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t
 				SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 				Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 				BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-				Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-				ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+				Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+				ControllerCredential: appauth.ControllerCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 				GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-				RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+				RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,
 			})
 			if err != nil {
 				t.Fatal(err)

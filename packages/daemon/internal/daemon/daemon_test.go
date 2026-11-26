@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestAnIssueMovedWhileBootListsIsStillAdmitted reads the captured event through ../intake/testdata
+
 import (
 	"bufio"
 	"bytes"
@@ -17,7 +19,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,7 +29,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -60,19 +61,36 @@ import (
 
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
-// testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// testDSN is the database a test's daemons write in: a clone of the package's migrated template
+// (testpg.Clone), one per test, so a test's rows, its advisory locks (the one lock every fact
+// applies under among them) and its daemons' sweeps are its own, and tests run beside each other.
+// Two calls with one t answer the one clone: a test that boots two daemons, of one project or of
+// two, boots them on one database. A pool opened on it, the daemon's under test among them, holds
+// testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// (testdb.PoolBounded). The daemon has no in-memory mode: what it does on a boot is what its store
+// recorded, and a boot migrates Legion's schema into whatever database it is given, which on a
+// clone of the migrated template finds nothing left to do. A test that sets LEGION_TEST_PG_DSN
+// itself, to a server its own test needs, gets the value it set.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	return testdb.RunDatabaseFor(dsn)
+	if dsn != processDSN {
+		return dsn
+	}
+	if clone, ok := testClones.Load(t); ok {
+		return clone.(string)
+	}
+	clone := testpg.Clone(t, "legion_daemon_run")
+	testClones.Store(t, clone)
+	t.Cleanup(func() { testClones.Delete(t) })
+	return clone
 }
+
+// testClones is each running test's database (testDSN), by its *testing.T.
+var testClones sync.Map
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
 // path is bounded at 108 bytes, and t.TempDir() spells the whole test name. The budget asked of
@@ -84,7 +102,8 @@ func shortTempDir(t *testing.T) string {
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
 // records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// Every limit and timeout is the shipped default, `review_round_cap` among them: a pane's `legion`
+// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap alone.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
@@ -107,6 +126,7 @@ func testConfig(t *testing.T) config.Config {
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
+		ReviewRoundCap:                          config.DefaultReviewRoundCap,
 		DaemonURL:                               "http://127.0.0.1:" + strconv.Itoa(port),
 		WorkerStreamPort:                        0,
 		WorkerBootTimeout:                       120 * time.Second,
@@ -160,6 +180,7 @@ func randomSuffix(t *testing.T) string {
 // port is never held — nothing is handed out for it — since the listener resolves port 0 itself
 // at bind time; the daemon still ends up serving a real, dialable address.
 func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
@@ -185,30 +206,39 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	}
 }
 
-// heldPorts are the listeners holdPortOn holds, by address, until a daemon takes one (heldListen).
+// heldPorts are the listeners holdPortAt holds, by address, until a daemon takes one (heldListen).
 var heldPorts = struct {
 	sync.Mutex
 	byAddress map[string]net.Listener
 }{byAddress: map[string]net.Listener{}}
 
-// holdPortOn listens on a free port of host for t and returns it. The listener is held until a
-// daemon of t's takes it through heldListen, or t ends. It is held under net.JoinHostPort(host,
-// port), the address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0
-// listener as [::]:<port>, the dual-stack wildcard.
+// holdPortOn listens on a free port of host for t and returns it (holdPortAt).
 func holdPortOn(t *testing.T, host string) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	return holdPortAt(t, host, 0)
+}
+
+// holdPortAt listens on port of host for t, a free one where port is 0, and returns the port it
+// holds. The listener is held until a daemon of t's takes it through heldListen, or t ends, whose
+// cleanup drops it only while it is still the one held for its address. It is held under
+// net.JoinHostPort(host, port), the address the daemon builds from bind, not the listener's
+// Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack wildcard.
+func holdPortAt(t *testing.T, host string, port int) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		t.Fatalf("hold a free port on %s: %v", host, err)
+		t.Fatalf("hold the port %d (0 for a free one) on %s: %v", port, host, err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	port = listener.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	heldPorts.Lock()
 	heldPorts.byAddress[address] = listener
 	heldPorts.Unlock()
 	t.Cleanup(func() {
 		heldPorts.Lock()
-		delete(heldPorts.byAddress, address)
+		if heldPorts.byAddress[address] == listener {
+			delete(heldPorts.byAddress, address)
+		}
 		heldPorts.Unlock()
 		_ = listener.Close()
 	})
@@ -243,6 +273,41 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	}
 	t.Cleanup(func() { _ = file.Close() })
 	return file, port
+}
+
+// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
+// descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
+// before the listener closes, so the port is held throughout, and a test can hand it to one daemon
+// after another (heldSocketListen).
+func takeHeldSocket(t *testing.T, address string) *os.File {
+	t.Helper()
+	listener, err := heldListen("tcp", address)
+	if err != nil {
+		t.Fatalf("take the held port %s: %v", address, err)
+	}
+	file, err := listener.(*net.TCPListener).File()
+	_ = listener.Close()
+	if err != nil {
+		t.Fatalf("take the descriptor of %s: %v", address, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// heldSocketListen is the listen of a daemon on the loopback socket on port that the test holds
+// (heldSocket, takeHeldSocket) for longer than that daemon lives: each call takes a listener of a
+// descriptor of its own (net.FileListener), which the daemon closes when it stops, while the test's
+// descriptor keeps the socket listening, so a daemon started again on the port finds it never let
+// go. A call for any other address is refused rather than bound, as heldListen refuses an address
+// nothing holds.
+func heldSocketListen(socket *os.File, port int) func(network, address string) (net.Listener, error) {
+	held := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	return func(network, address string) (net.Listener, error) {
+		if network != "tcp" || address != held {
+			return nil, &net.AddrError{Err: "the test holds no socket for " + network + " there, only for tcp " + held, Addr: address}
+		}
+		return net.FileListener(socket)
+	}
 }
 
 // rebindHeldPorts hands cfg a freshly held API port. A daemon that has stopped closed the
@@ -288,6 +353,8 @@ func (stillClock) Now() time.Time { return time.Now() }
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
 
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
+
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type stopped struct{}
@@ -296,7 +363,7 @@ func (stopped) Stop() bool { return true }
 
 // built is what the daemon handed the runtime it built: the connection directory, the address
 // every pane's shim dials, the workflow's App tokens and repository rule, the store it reads, and
-// the repositories the project's mapping names.
+// the cache set, the repositories the Sandbox runtime keeps a repository cache of.
 type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
@@ -304,7 +371,7 @@ type built struct {
 	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
-	mapped     func() []ghrepo.Repository
+	cached     func() []ghrepo.Repository
 }
 
 // fakeRuntime is a daemon whose runtime is rt — the fake, or a test's runtime built over it: the
@@ -312,10 +379,10 @@ type built struct {
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
-			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
-			record.conns, record.address, record.apps, record.repository, record.store, record.mapped = listener, address, apps, repository, st, mapped
+			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
 			return rt, nil
 		},
 		clock:  stillClock{},
@@ -350,6 +417,7 @@ func boots(t *testing.T, cfg config.Config) (int, time.Time) {
 // arrives before the store opens ends the start with nothing recorded
 // (TestRunStopsAtOnceWhileItWaitsToOpenItsStore).
 func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 
 	if err := runStoppedOnceItsStoreIsOpen(cfg); err != nil {
@@ -396,6 +464,7 @@ func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
 // (c-boot-db-retry case 5). The waits between the attempts are a millisecond here; the number of
 // attempts is the production policy's.
 func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.PostgresDSN = secretDSN("127.0.0.1:1")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -443,109 +512,6 @@ func secretDSN(address string) string {
 	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
 }
 
-// pgConnection is what pgProxy does with one connection it accepts.
-type pgConnection int
-
-const (
-	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
-	forwardConnection pgConnection = iota
-	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
-	resetConnection
-	// silentConnection holds the connection open and never answers it.
-	silentConnection
-)
-
-// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
-// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
-// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
-// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
-// test of the attempts counts one connection to each. The proxy and every connection through it
-// close when the test ends.
-func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
-	t.Helper()
-	upstream, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
-	}
-	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
-	proxied, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the Postgres proxy: %v", err)
-	}
-	var mu sync.Mutex
-	var held []net.Conn
-	closed := false
-	// hold keeps conns until the test ends, or closes them at once when it has.
-	hold := func(conns ...net.Conn) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if closed {
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-			return false
-		}
-		held = append(held, conns...)
-		return true
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		closed = true
-		for _, conn := range held {
-			_ = conn.Close()
-		}
-	})
-	go func() {
-		for n := 0; ; n++ {
-			client, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			handling := forwardConnection
-			if n < len(plan) {
-				handling = plan[n]
-			}
-			switch handling {
-			case resetConnection:
-				_ = client.(*net.TCPConn).SetLinger(0)
-				_ = client.Close()
-			case silentConnection:
-				hold(client)
-			default:
-				go func() {
-					postgres, err := net.Dial("tcp", server)
-					if err != nil {
-						_ = client.Close()
-						return
-					}
-					if !hold(client, postgres) {
-						return
-					}
-					go func() {
-						_, _ = io.Copy(postgres, client)
-						_ = postgres.Close()
-						_ = client.Close()
-					}()
-					_, _ = io.Copy(client, postgres)
-					_ = postgres.Close()
-					_ = client.Close()
-				}()
-			}
-		}
-	}()
-	proxied.Host = listener.Addr().String()
-	query := proxied.Query()
-	query.Set("sslmode", "disable")
-	proxied.RawQuery = query.Encode()
-	return proxied.String()
-}
-
 // refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
 // and message, as a Postgres that refuses the connection answers it, and returns its address and
 // the count of the connections it has accepted.
@@ -590,8 +556,9 @@ func storeOpenWaits(t *testing.T, logs string) []map[string]any {
 // serves (c-boot-db-retry case 1). Each wait is logged with its attempt, its wait and the reset,
 // after one line that names the bound of the attempts.
 func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
-	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	cfg.PostgresDSN = testdb.Outage(t, cfg.PostgresDSN, testdb.Reset, testdb.Reset).DSN
 	proxy, err := url.Parse(cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -628,6 +595,7 @@ func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
 // exits at its first refusal (c-boot-db-retry case 3): one connection and no wait, and the
 // refusal names the host and not the password.
 func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
+	t.Parallel()
 	address, connections := refusingPostgres(t, "28P01", `password authentication failed for user "legion"`)
 	cfg := testConfig(t)
 	cfg.PostgresDSN = secretDSN(address)
@@ -667,6 +635,7 @@ func TestRunExitsAtOnceWhenPostgresRefusesThePassword(t *testing.T) {
 // cleanly (c-boot-db-retry case 6): run returns nil, names the stop in its log, and records no
 // boot.
 func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	// The store the start would have recorded its boot in, which boots reads.
 	recorded := cfg
@@ -721,6 +690,7 @@ func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
 // row for it would inflate `daemon.boots` — the value `legion state` answers with and the stage
 // gate asserts on.
 func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
 	// The listener testConfig holds for the port is the other listener: the daemon binds the port
@@ -745,6 +715,7 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 // the same — the not-configured line under no setting, and the configured line, which names the
 // setting's repository and checker, under the deployment's.
 func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                      string
 		setting                   leakguard.Setting
@@ -777,6 +748,7 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 // port the kernel chose and held from then on: the daemon serves its API on that socket without
 // binding an address of its own, and its boot line names the address it serves on.
 func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	file, _ := heldSocket(t)
 	// The descriptor `legion start` inherits is a bare number no *os.File owns, which Adopt closes.
@@ -817,6 +789,7 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 // The API the daemon serves answers from the store it just migrated: this is the whole of
 // `legion state` and of the plugin's read.
 func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
@@ -851,6 +824,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 // with a PEM and no Dispatch, so no workflow opens and no token is minted (openWorkflow); the body
 // shows the Apps' ids and neither the key nor the store's DSN.
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
+	t.Parallel()
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
 	cfg.ReviewRoundCap = 5
@@ -892,6 +866,7 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 // route applies it with (intake.ApplyFact): the API-only daemon this harness boots carries no
 // workflow runtime, and so no lane that would run the rows the test seeds.
 func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	ctx := context.Background()
@@ -910,7 +885,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
 			return err
 		}
@@ -988,6 +963,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 // its turn are the whole of what is under test; nothing else of the boot's is armed anywhere near
 // as soon, the boot timeout being two minutes out and the probe interval thirty seconds.
 func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	// Thirty wakes a minute, one at a time: the wake behind the burst's waits one two-second
 	// interval and the part of one the daemon's jitter draws (openSupervision's rand.N), which is
@@ -1006,7 +982,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 		}
 		putClaim(t, cfg, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: role,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 		})
 		writePrompt(t, cfg, token)
 		unfinished[token] = role
@@ -1059,12 +1035,16 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 
 // The other lane of the same wave (api.State.WakesWaiting): a re-admission whose architect is
 // already running writes it a catch-up in place of a launch, and that wake waits on its outbox row
-// rather than in a machine (workflow.QueueCatchUp, record.Notice.PacedAt). The state names it like
-// any other — the root architect's claim, its issue, architect, kind `catch-up` and the row's own
-// moment — and names it no longer once that moment has passed, since the wake the pacing was
-// holding is then out. Without this lane a state read during a re-admission wave would show an
-// empty queue while every architect of it still waited.
+// rather than in a machine (record.Notice.PacedAt). The row here is one a release before the
+// pacing's two queues wrote, which reserved a moment for it and which this release still finds in
+// an outbox it is upgraded over: the state names it like any other — the root architect's claim,
+// its issue, architect, kind `catch-up` and the row's own moment — and names it no longer once
+// that moment has passed, since the wake the pacing was holding is then out. Without this lane a
+// state read during a re-admission wave would show an empty queue while every architect of it
+// still waited. A row this release holds in its queue is named with the pacer's estimate for its
+// place instead (TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace).
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-6"
 	ctx := context.Background()
@@ -1081,19 +1061,12 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	// written rather than that moment less a few hundred nanoseconds.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
-		root := runningRoot(issue, phase.Implementing)
-		if err := records.PutIssue(ctx, tx, root); err != nil {
-			return err
-		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
-		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
+		t.Fatalf("record the running root: %v", err)
 	}
-	var row int64
-	if err := st.Pool().QueryRow(ctx, "select id from outbox where issue = $1 and kind = $2", issue, string(record.OutboxKindNotice)).Scan(&row); err != nil {
-		t.Fatalf("read the catch-up's row: %v", err)
-	}
+	row := pacedCatchUp(t, st.Pool(), records, issue, 1, now, due)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -1128,13 +1101,14 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 // daemon still shows the controller and still mints its grants — a restart does not cut the
 // operator's controller off, as the shipped state file did not.
 func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	if state := d.state(); state.ControllerLocator != nil {
 		t.Fatalf("controllerLocator before any controller = %+v, want none", state.ControllerLocator)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("controller secret = %d; body %s", status, body)
 	}
@@ -1144,7 +1118,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 	}
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d; body %s", status, body)
@@ -1196,21 +1170,39 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
+// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
+// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
+// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
+// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
 // within the given time. A test that points its workflow at no GitHub of its own gets
 // repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
 // rather than from github.com.
+//
+// The daemon's own log is kept beside log, and printed when the test fails, its stop included,
+// since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
+// logs how long that took and when each boot stage began (bootStages), so a run's output says
+// what the boots of its tests spent their time on.
 func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
 	}
+	kept := &syncBuffer{}
+	log = slog.New(slog.NewMultiHandler(log.Handler(), slog.NewJSONHandler(kept, nil)))
+	// Registered before the stop, so it runs after it.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the daemon's log:\n%s", kept.String())
+		}
+	})
+	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
@@ -1246,7 +1238,26 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	}) {
 		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
+}
+
+// bootStages is when each boot stage (`legion workflow boot stage`) began in log, a JSON log, after
+// started: "store +0.12s, config +0.31s, ...", in the order the daemon logged them.
+func bootStages(log string, started time.Time) string {
+	var stages []string
+	for line := range strings.Lines(log) {
+		var entry struct {
+			Time  time.Time `json:"time"`
+			Msg   string    `json:"msg"`
+			Stage string    `json:"stage"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != "legion workflow boot stage" {
+			continue
+		}
+		stages = append(stages, fmt.Sprintf("%s +%.2fs", entry.Stage, entry.Time.Sub(started).Seconds()))
+	}
+	return strings.Join(stages, ", ")
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,
@@ -1510,133 +1521,283 @@ func (s *shim) prompt() shimwire.Prompt {
 	return prompt
 }
 
-// A project whose every mapped repository lacks an App boots, serving none: it mints for no owner,
-// still knows the review App's login, and its state names each left-out repository with the App it
-// lacks, for an operator to install.
-func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
-	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
-		})
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
+// repoProjectsBoard is the Dispatch of a daemon whose project names no repository: the calls every
+// boot makes (servedBootCall) and an empty listing of issues, with every other call answered 404.
+// A request under /api/v1/settings/repo-projects, Dispatch's repo-projects table, is answered 404
+// too, and told to onRepoProjects, since the daemon reads nothing of it: that case proves the
+// daemon sends the route no request (dispatch://INFRA-4401 check a-go, item 1), and
+// dispatch://INFRA-3532's own change deletes it, with the rename pass.
+func repoProjectsBoard(t *testing.T, project string, onRepoProjects func(*http.Request)) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/settings/repo-projects"):
+			onRepoProjects(r)
+			http.NotFound(w, r)
+		case servedBootCall(t, w, r, project):
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
 			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		default:
+			http.NotFound(w, r)
 		}
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
+}
+
+// liveTreeBoard is the Dispatch of a daemon booted over a live tree (bootOverALiveTree),
+// repoProjectsBoard failing the test on a request under /api/v1/settings/repo-projects, a case
+// dispatch://INFRA-3532's own change deletes with the rename pass.
+func liveTreeBoard(t *testing.T, project string) string {
+	t.Helper()
+	return repoProjectsBoard(t, project, func(r *http.Request) {
+		t.Errorf("Dispatch request = %s %s: the daemon reads no repo-projects table", r.Method, r.URL.Path)
+	})
+}
+
+// bootOverALiveTree boots a daemon whose store holds one live tree of its project, its root
+// running in implementing on repo (seedWorkflowTree), with tokens, GitHub's REST API at githubAPI
+// and logging to log. It answers the root's key, the running daemon and the state's entry for repo
+// once that entry carries what the refresher's preparation of the records' repositories kept (its
+// Apps or its read error): the boot itself reads GitHub for no repository here, since the record
+// carries its repository columns and no `repository_renames` pair is configured (so neither the
+// backfill nor the rename pass reads one), and the preparation runs once the API serves
+// (prepareAtStart, INFRA-4401 D4).
+func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
+	t.Helper()
+	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
+	root := seedLiveTreeOn(t, cfg, repo)
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.workflowTokens, o.githubAPI = tokens, githubAPI
+	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
+	var entry api.LiveRepositoryView
+	settled(t, d, "name "+repo+" with what GitHub answered for it", func(state api.State) bool {
+		for _, live := range state.Repositories.Live {
+			if live.Repo == repo && (live.Apps != nil || live.ReadError != "") {
+				entry = live
+				return true
 			}
 		}
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	return root, d, entry
+}
+
+// seedLiveTreeOn records one live tree of cfg's project in the store cfg names, its root running
+// in implementing on repo with its repository columns filled and no claim (seedWorkflowTree), and
+// answers the root's key. The schema is brought forward before the tree is seeded, as boots does:
+// the daemon's own boot migrates the store only after this, and this may be the first test of the
+// run to touch it.
+func seedLiveTreeOn(t *testing.T, cfg config.Config, repo string) string {
+	t.Helper()
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
-		Apps: &api.AppInstallationsView{Implement: true}}}}
-	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
-		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
+	root := cfg.Project + "-1"
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
 	}
-	if roles := tokens.Roles(); len(roles) != 0 {
-		t.Fatalf("the boot minted %v with no owner to mint for", roles)
+	_, err = st.Migrate(context.Background())
+	st.Close()
+	if err != nil {
+		t.Fatalf("migrate the store: %v", err)
+	}
+	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
+		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
+	return root
+}
+
+// warnLinesNaming is each WARN line of logged, a daemon's JSON log, that holds every one of words.
+func warnLinesNaming(logged string, words ...string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if !strings.Contains(line, `"level":"WARN"`) {
+			continue
+		}
+		if !slices.ContainsFunc(words, func(word string) bool { return !strings.Contains(line, word) }) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// errorLines is every ERROR line of logged, a daemon's JSON log. pollClient bounds each readiness
+// poll at a second, and a poll the daemon answers more slowly than that is abandoned by the test;
+// the API logs the request whose context went with it at Warn, because the failure is the
+// request's own ending (api's logRequestFailure), so an ERROR line here is the daemon's.
+func errorLines(logged string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// A daemon over a live record on a repository a role App is not installed on boots and serves,
+// and its state names the repository with each App's installation, the review App's missing, for
+// an operator to install: a project works in each repository both role Apps reach, so a missing
+// App refuses no boot (INFRA-4401 A2), and the record is left as it is.
+func TestABootOverARecordOnARepositoryAnAppIsNotInstalledOnNamesTheApp(t *testing.T) {
+	t.Parallel()
+	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
+	_, _, entry := bootOverALiveTree(t, "acme/widgets", tokens, repositoriesGitHub(t), quietLogger())
+	if entry.Apps == nil || !entry.Apps.Implement || entry.Apps.Review || entry.ReadError != "" {
+		t.Fatalf("state's entry for acme/widgets = %+v, want the implement App installed and the review App not", entry)
+	}
+	if got, want := entry.NotInstalled(), "the review App is not installed on acme/widgets"; got != want {
+		t.Fatalf("state's entry for acme/widgets says %q, want %q", got, want)
 	}
 }
 
-// A project whose every mapped repository's installation read fails boots all the same, serving
-// none: its API answers, its state names each repository left out with the App, the repository and
-// GitHub's failure, and one ERROR line says so, where the boot used to exit into its supervisor's
-// restart and the same failure.
-func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
+// A daemon over a live record whose repository's installation read fails boots all the same: its
+// API answers, and its state names the repository with the App and GitHub's failure as its read
+// error, for the refresher to read again (rereadBadAnswers), where a boot once exited into its
+// supervisor's restart and the same failure. The daemon writes no ERROR line: the failure is one
+// repository's, said once at WARN, which says a live record names it and when the refresher reads
+// it again.
+func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
 	var logged syncBuffer
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
-		})
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
+	_, _, entry := bootOverALiveTree(t, "acme/widgets", tokens, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
+	want := "the implement App's installation on acme/widgets could not be read: " + failure.Error()
+	if entry.Apps != nil || entry.ReadError != want {
+		t.Fatalf("state's entry for acme/widgets = %+v, want no Apps and the read error %q", entry, want)
+	}
+	if failed := errorLines(logged.String()); len(failed) != 0 {
+		t.Fatalf("ERROR lines = %q, want none: one repository's failed read refuses no boot", failed)
+	}
+	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/widgets"`, failure.Error(), `"live":true`, `"retryIn":"30s"`); len(warned) != 1 {
+		t.Fatalf("WARN lines naming the failed read = %q, want one", warned)
+	}
+}
+
+// A daemon over a live record on a repository GitHub answers 404 for boots and serves: /readyz
+// answers 200, the state's entry for the repository carries the 404 as its read error beside both
+// Apps installed, one WARN line names it, and the record is unchanged. A boot read of a
+// repository a record names never stops the boot (INFRA-4401 A2): a 404 is shown in legion state
+// and the log and changes no record.
+//
+// The control is a boot preparation that returns the 404 as an error that stops the boot
+// (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 4): the daemon then exits before its
+// state names the repository.
+func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
+	t.Parallel()
+	missing := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	}})
+	var logged syncBuffer
+	root, d, entry := bootOverALiveTree(t, "acme/gone", &workflowTokenRecorder{}, missing, slog.New(slog.NewJSONHandler(&logged, nil)))
+	if entry.Apps == nil || !entry.Apps.Implement || !entry.Apps.Review || !strings.HasPrefix(entry.ReadError, "the name and default branch of acme/gone could not be read: ") ||
+		!strings.Contains(entry.ReadError, "404") {
+		t.Fatalf("state's entry for acme/gone = %+v, want both Apps installed and GitHub's 404 as its read error", entry)
+	}
+	if status, body := d.request(http.MethodGet, "/readyz", nil, false); status != http.StatusOK {
+		t.Fatalf("GET /readyz = %d %s, want 200: the daemon serves over a record on a missing repository", status, body)
+	}
+	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/gone"`, "the name and default branch of acme/gone could not be read: "); len(warned) != 1 {
+		t.Fatalf("WARN lines naming acme/gone's read error = %q, want one", warned)
+	}
+	st, err := store.Open(context.Background(), d.cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer st.Close()
+	kept := storedIssueOf(t, context.Background(), st.Pool(), record.NewStore(), root)
+	if kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
+		t.Fatalf("%s after the boot = %+v, want it unchanged on acme/gone@main in implementing", root, kept)
+	}
+}
+
+// No boot warning names commit_issue_trailer_repos or a configured rename: the daemon reads no
+// table of Dispatch's about repositories, so a trailer repository or a pair's name that no such
+// table names is no gap to warn of, and nothing of the boot or of the refresher's first job says
+// either (dispatch://INFRA-4401 check a-go, item 9). Here the project's commit_issue_trailer_repos
+// names orbit/gadgets and repository_renames pairs sjawhar/legion with cybermonklabs/legion
+// (transferredLegion), and no record names any of them. The lines are matched by the phrases of
+// the two warnings this change deleted, not by the word rename, since the rename pass and the
+// refresher's read of the pairs log WARN lines of their own that name a rename (renameLeftLine,
+// readPairNames). Control: with either warning back (the boot's warning of a trailer repository,
+// or of a pair naming a repository the project does not serve), a WARN line names it.
+func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
+	t.Parallel()
+	cfg := workflowConfig(t, workflowNATS(t))
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]config.Project{}
+	}
+	project := cfg.Projects[cfg.Project]
+	project.CommitIssueTrailerRepos = []ghrepo.Repository{ghrepo.MustParse("orbit/gadgets")}
+	cfg.Projects[cfg.Project] = project
+	cfg.RepositoryRenames = transferredLegion
+	var logged syncBuffer
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.workflowTokens = &workflowTokenRecorder{}
+	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logged, nil)))
+	testwait.Eventually(t, "the refresher's first job", func() bool {
+		return strings.Contains(logged.String(), "legion workflow prepared the repositories its records name")
+	})
+	for line := range strings.SplitSeq(logged.String(), "\n") {
+		if !strings.Contains(line, `"level":"WARN"`) {
+			continue
+		}
+		for _, deleted := range []string{
+			"a configured repository rename names a repository this project does not serve",
+			"commit_issue_trailer_repos names a repository",
+		} {
+			if strings.Contains(line, deleted) {
+				t.Errorf("WARN line %s says %q, a boot warning this change deleted, want none", line, deleted)
 			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
+		}
+	}
+}
+
+// servesNoRepositoryLine is the phrase of the boot's line for a project whose live records name no
+// repository (workflowRuntime.connect).
+const servesNoRepositoryLine = "the daemon serves no repository until an issue names one"
+
+// A boot of a project with no live record logs one INFO line that says the daemon serves no
+// repository until an issue names one, naming the project and no mapping, and a boot over one
+// live record, a tree running on acme/widgets (bootOverALiveTree), does not log it
+// (dispatch://INFRA-4401 check a-go, item 11). Controls: with the line deleted, the first case
+// finds no such line; with the line logged whatever the live records name, the second finds one.
+func TestABootWithNoLiveRecordSaysItServesNoRepository(t *testing.T) {
+	t.Parallel()
+	t.Run("no live record", func(t *testing.T) {
+		cfg := workflowConfig(t, workflowNATS(t))
+		var logged syncBuffer
+		o := fakeRuntime(fake.NewRuntime(), &built{})
+		o.workflowTokens = &workflowTokenRecorder{}
+		startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logged, nil)))
+		lines := loggedLines(t, logged.String(), servesNoRepositoryLine)
+		if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["project"] != cfg.Project {
+			t.Fatalf("lines saying %q = %v, want one at INFO naming project %s\nlog:\n%s", servesNoRepositoryLine, lines, cfg.Project, logged.String())
+		}
+		if line := strings.ToLower(fmt.Sprint(lines[0])); strings.Contains(line, "mapp") {
+			t.Fatalf("the line %v names a mapping, want none", lines[0])
 		}
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
-			}
+
+	t.Run("one live record", func(t *testing.T) {
+		var logged syncBuffer
+		bootOverALiveTree(t, "acme/widgets", &workflowTokenRecorder{}, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
+		if lines := loggedLines(t, logged.String(), servesNoRepositoryLine); len(lines) != 0 {
+			t.Fatalf("lines saying %q = %v, want none: a live record names acme/widgets", servesNoRepositoryLine, lines)
 		}
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	want := []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the implement App's installation on acme/widgets could not be read: " + failure.Error() + "; Legion reads it again"}}
-	if len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want) {
-		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its failed read", state.Repositories)
-	}
-	// Every ERROR line the booting daemon writes, counted whole. pollClient bounds each readiness
-	// poll at a second (:275), and a poll the daemon answers more slowly than that - on a busy
-	// machine, or under the race detector - is abandoned by this test; the API logs the request
-	// whose context went with it at Warn, because the failure is the request's own ending
-	// (api's logRequestFailure). So the test's own doing costs this row nothing, and the row is
-	// the end-to-end guard it reads as: an ERROR line here is the boot's.
-	var errorLines []string
-	for line := range strings.SplitSeq(logged.String(), "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) {
-			errorLines = append(errorLines, line)
-		}
-	}
-	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "every mapped repository's GitHub App installation read failed") || !strings.Contains(errorLines[0], failure.Error()) {
-		t.Fatalf("ERROR lines = %q, want one naming the failed read", errorLines)
-	}
+	})
 }
 
 // The workflow has to assemble every integration boundary before opening its API. The order in
 // this log is the boot sequence operators rely on when an external dependency refuses.
 func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	tokens := &workflowTokenRecorder{}
 	var logged syncBuffer
@@ -1679,12 +1840,12 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// The boot mints the implement then the review App's token, then reads each served repository
-	// as the implement App.
-	if got := tokens.Roles(); len(got) != 3 || got[0] != appauth.Implement || got[1] != appauth.Review || got[2] != appauth.Implement {
-		t.Fatalf("App token roles = %v, want implement then review, then implement for the repository read", got)
+	// This boot mints no App token: the key proof under the App's JWT mints no token for an owner
+	// (proveAppKeys), and the project's records name no repository for another step to read.
+	if got := tokens.Roles(); len(got) != 0 {
+		t.Fatalf("App token roles = %v, want none: the key proof under the App's JWT mints no token for an owner, and no record names a repository", got)
 	}
-	want := []string{"prompts", "store", "config", "dispatch", "appauth", "repositories", "launcher", "intake", "admission", "outbox", "api"}
+	want := []string{"prompts", "store", "config", "appauth", "launcher", "intake", "admission", "outbox", "api"}
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
 		var entry struct {
@@ -1708,6 +1869,7 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 // so boot creates the consumers before it lists: what the listing missed, the consumer delivers.
 // The admitted issue's branch is then created under the GitHub root the daemon was given.
 func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	js := workflowJetStream(t, natsURL)
 	captured, err := os.ReadFile("../intake/testdata/dispatch/issue-updated.json")
@@ -1825,6 +1987,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 // With no notification stream the daemon would boot with no intake, and nothing Dispatch or GitHub
 // says would ever reach it. Boot refuses instead, naming the stream, before the API answers.
 func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	if err := workflowJetStream(t, natsURL).DeleteStream(context.Background(), "ENVOY_NOTIFICATIONS"); err != nil {
 		t.Fatalf("delete the notification stream: %v", err)
@@ -1853,6 +2016,7 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 // Intake ending while the daemon runs (here its durable consumer is deleted) stops the daemon with
 // that error, instead of the daemon serving on with nothing reading Dispatch or GitHub.
 func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1897,6 +2061,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 // the outage, not just the adapter TestReadinessAttempt (readiness_test.go) already covers in
 // isolation.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
+	// Not parallel: it writes the package variable readinessRetry (fastReadiness).
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
 	var requests atomic.Int64
@@ -1928,45 +2093,6 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	}
 }
 
-// The boot's first Dispatch read is the repository mapping. A Dispatch with no ready endpoint,
-// fronted here by a proxy that answers 503 for it, fails that read for as long as it has none, and
-// the boot waits that out (readinessRetry, without limit) as it waits out the listing for
-// admission, and comes up once Dispatch answers. Bounded at appMintRetry's attempts, the read
-// exited the daemon, and its supervisor restarted it straight back into the same refusal. Here
-// Dispatch fails the mapping read two times more than appMintRetry's budget allows.
-func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
-	quickAppMints(t)
-	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
-	refusals := int64(appMintRetry.Attempts + 2)
-	var reads atomic.Int64
-	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
-		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
-				http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
-				return
-			}
-			if servedBootCall(t, w, r, project) {
-				return
-			}
-			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-				t.Errorf("write Dispatch issues: %v", err)
-			}
-		})
-	})
-
-	if err := bootsOrExits(t, cfg, &workflowTokenRecorder{}, 60*time.Second); err != nil {
-		t.Fatalf("boot = %v, want it to wait out %d failed mapping reads and come up", err, refusals)
-	}
-	if got := reads.Load(); got <= refusals {
-		t.Fatalf("Dispatch saw %d mapping reads, want the %d it failed and the one the daemon booted on", got, refusals)
-	}
-}
-
 // workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
 const workflowDispatchToken = "dispatch-test-token"
 
@@ -1983,13 +2109,9 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, project string) string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
+	// Boot reads this process's environment for the real gh, which TestMain names once for every
+	// test (LEGION_GH_PATH): the first gh on a machine's PATH may be a script, which boot refuses
+	// (RefuseScriptGH).
 	cfg.DispatchURL = board(t, cfg.Project)
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
@@ -2068,16 +2190,23 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 	return !r.missing[key], nil
 }
 
-// InstalledOwners answers no owner list: the recorder knows which repositories each App is
-// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
-// each replaces the runtime that would. A rig that builds one names its owners itself.
+// InstalledUnder answers as InstalledOn does: the recorder answers each name for itself, as GitHub
+// answers a name it redirects nowhere.
+func (r *workflowTokenRecorder) InstalledUnder(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	return r.InstalledOn(ctx, role, repo)
+}
+
+// InstalledOwners answers each App installed on acme, the account of acme/widgets, which every
+// rig over the recorder works in: the boot's proof of each App's key reads it (proveAppKeys) and
+// records it as that App's installations, so a launch's addressing names acme from the first
+// launch. No rig builds a gh bundle over the recorder, since each replaces the runtime that would.
 func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
-	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
+	return []string{"acme"}, nil
 }
 
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:
-// the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
-// GitHub App installed on every repository; the publish of the project's gated design steps,
+// the webhook App check, Dispatch's GitHub App installed on every repository; the publish of the
+// project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
 // first sweep sends; the publish of the documents a gated issue's own gates record, which the
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
@@ -2112,8 +2241,6 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	}
 	var body any
 	switch {
-	case r.URL.Path == "/api/v1/settings/repo-projects":
-		body = []map[string]any{{"repo": "acme/widgets", "project": project, "default": true}}
 	case strings.HasPrefix(r.URL.Path, "/api/v1/github/app-installation/"):
 		body = map[string]bool{"installed": true}
 	case strings.HasPrefix(r.URL.Path, "/api/v1/artifacts/") &&
@@ -2163,6 +2290,7 @@ func workflowNATS(t *testing.T) string {
 // The `runtime.tmux` block's take_over reaches the tmux runtime as the value the runtime knows,
 // and a block without it, or no block, takes nothing over.
 func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux", Tmux: &config.Tmux{TakeOver: config.TakeOverKubernetes}}}
 	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).TakeOver; got != tmux.TakeOverKubernetes {
 		t.Errorf("TakeOver = %q, want %q", got, tmux.TakeOverKubernetes)
@@ -2176,12 +2304,16 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch: the
+// Envoy bearer's, the deployment's private-name rule file's and the pane NATS seed's. The names
+// are known from the configuration alone, so none of the three files is read to name them.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
-	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
+	t.Parallel()
+	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED",
+		PrivateNameRulesFile: "/etc/legion/private-names.toml", PrivateNameRulesNamedBy: "private_name_rules_file"}
 	names := launchSecretNames(cfg, lookup(nil))
-	if len(names) != 2 {
-		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
+	if want := []string{"ENVOY_TOKEN", leakguard.RulesSecret, "NATS_NKEY_SEED"}; !slices.Equal(names, want) {
+		t.Fatalf("launchSecretNames = %v, want %v, every launch secret of a daemon configured with each, in name order", names, want)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

@@ -1,6 +1,6 @@
 name: CI job sessions-script
 
-# The steps of ci.yaml's `sessions-script` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#sessions-script` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -14,9 +14,9 @@ name: CI job sessions-script
 # skips, which is what turned the `test` job red at run 42443071997 once the Postgres service
 # and the variable left that job with the daemon's Go suite (dispatch://INFRA-1413).
 #
-# A job rather than the service put back on `test`: this was the one step of those thirty-odd
+# A job rather than the service put back on `test`: this was the one step of that job
 # that needs a database, and a service on `test` starts Postgres for every change that selects
-# any of its thirty-two harness steps — the cost this issue exists to stop. The `test` job keeps
+# any of its harness steps — the cost this issue exists to stop. The `test` job keeps
 # the lint and the typecheck of scripts/sessions, which need no database and share its Bun.
 #
 # No install: the suite and the script it spawns import node: builtins and bun alone, so the Bun
@@ -25,13 +25,13 @@ name: CI job sessions-script
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -57,6 +57,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The server the suite creates its own session-store database on, and drops again: the
       # login is the image's superuser, since the test's first statement is a CREATE DATABASE.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -68,6 +69,12 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       - name: Test the session message-wait script
         run: bun test scripts/sessions

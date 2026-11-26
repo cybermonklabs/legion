@@ -74,8 +74,11 @@ export function IssuePresets({
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). */
-  signals: Readonly<Record<Preset, PresetSignal>>;
+  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
+   *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
+   *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
+   *  control's description or name points at one, so none names an element that is not drawn. */
+  signals?: Readonly<Record<Preset, PresetSignal>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -138,9 +141,10 @@ export function IssuePresets({
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
     // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
-    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
-    // also decides which dialog the key closes, as Details' drawer asks it.
+    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
+    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
+    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
+    // Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       if (dialogOpen()) return;
@@ -247,7 +251,7 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              <Signal preset={active} signal={signals[active]} />
+              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
             </span>
             <MenuMark />
           </button>
@@ -258,7 +262,9 @@ export function IssuePresets({
                 // where it is the one on, which its dot draws.
                 <button
                   aria-checked={preset === active}
-                  aria-labelledby={`${nameId(preset)} ${signalId(preset)}`}
+                  aria-labelledby={
+                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
+                  }
                   className={`${pageMenuItem} flex items-baseline gap-1.5`}
                   key={preset}
                   onClick={() => {
@@ -275,7 +281,9 @@ export function IssuePresets({
                   <span id={nameId(preset)} {...pageChrome}>
                     {PRESET_NAMES[preset]}
                   </span>
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                  {signals === undefined ? null : (
+                    <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                  )}
                 </button>
               ))}
             </div>
@@ -315,7 +323,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signalId(preset)}
+                aria-describedby={signals === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -354,7 +362,9 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                {signals === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                )}
               </label>
             </span>
           );

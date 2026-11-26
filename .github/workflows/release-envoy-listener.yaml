@@ -56,7 +56,7 @@ on:
 # version counts every commit since the newest tag, and packages/envoy/deploy/scripts/autodeploy.sh
 # deploys the newest of main's last 30 commits that has a published image, so the next release
 # carries every older commit's change). That sentence is this repository's one copy of the
-# reasoning: the Confirm the version step below, .github/scripts/release-push.sh's `restart` and
+# reasoning: the Confirm the version step below, `.github/scripts/release-push.sh#restart)` and
 # .github/scripts/check-release-credentials.sh's rule 4 point here instead of restating it, so
 # the day autodeploy reads another number of commits there is one paragraph to correct.
 #
@@ -72,7 +72,7 @@ concurrency:
   group: release-envoy-listener-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: false
 
-# Every job declares its own permissions (targets, build, docker, image_index, attest,
+# Every job declares its own permissions (ref, targets, build, docker, image_index, attest,
 # release_build, release_names, release_publish below); nothing runs under this workflow-level
 # default, so it stays empty rather than becoming an unreviewed grant to a job added later with no
 # block of its own.
@@ -115,6 +115,21 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # Says whether the run is on main, for release_build's and release_publish's `if:`, which cannot
+  # test that themselves: .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main
+  # says why. A job of its own, not a step of targets: a job's outputs are read when it ends, after
+  # every step of it has run, and targets runs code of the checkout.
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
 
   # The architectures the archives are built for: .github/go-release-targets.json, the list the
   # pull request's notices check reads too. A full checkout to read one tracked file is more than
@@ -177,16 +192,29 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
       # The archive holds envoy-listener and THIRD_PARTY_NOTICES, the license of every Go module the
       # binary compiles in (scripts/go-third-party-notices.sh, run with the build's own GOOS and
-      # GOARCH), which fails the build when one cannot be determined.
+      # GOARCH), which fails the build when one cannot be determined. The binary is stamped with
+      # this run's commit (internal/buildversion's commit), as the image's binaries are
+      # (packages/envoy/docker/Dockerfile's LEGION_COMMIT), so every NATS connection of a listener
+      # run from the archive names its build (legion@<commit>), which legacy-subjects-gate.sh's
+      # census of connections reads; -buildvcs=false records no other commit. The step reads the
+      # stamp back from the binary and fails without it.
       - name: Build envoy binary
+        env:
+          SHA: ${{ github.sha }}
         run: |
           mkdir -p out
-          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false -o out/envoy-listener ./cmd/listener
+          GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false \
+            -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.commit=$SHA" \
+            -o out/envoy-listener ./cmd/listener
+          go version -m out/envoy-listener | grep -F -- "buildversion.commit=$SHA" >/dev/null \
+            || { echo "::error::out/envoy-listener was not built with buildversion.commit=$SHA"; exit 1; }
           GOOS=linux GOARCH=${{ matrix.arch }} ../../scripts/go-third-party-notices.sh out/THIRD_PARTY_NOTICES ./cmd/listener
           tar czf legion-envoy-${{ matrix.arch }}.tar.gz -C out envoy-listener THIRD_PARTY_NOTICES
         working-directory: packages/envoy
@@ -247,6 +275,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           # The amd64 leg keeps the module cache it has always had. An arm64 entry would be one more
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
@@ -479,7 +509,8 @@ jobs:
   # Only main releases: a workflow_dispatch from any other branch publishes its `envoy:<sha>` image
   # above and stops there.
   release_build:
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -533,6 +564,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
       # CGO_ENABLED=0 matches the existing agent-secrets builds
       # (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile):
       # without it, a same-arch build (amd64 here) links dynamically against the
@@ -637,11 +670,11 @@ jobs:
     # targets too: this job holds contents: write, the deploy key and the rest, so it runs no
     # script to derive the image it tags and reads back, and takes it from targets' output, which
     # `needs` carries only to a job naming targets directly.
-    needs: [build, image_index, release_build, release_names, targets]
+    needs: [build, image_index, ref, release_build, release_names, targets]
     # On `always()`, so a skipped release_build does not skip this job; every job whose outputs
-    # the steps below read has its result tested, targets' among them.
+    # the `if:` or the steps below read has its result tested, targets' and ref's among them.
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
+      always() && needs.ref.result == 'success' && needs.ref.outputs.main == 'true' &&
       needs.build.result == 'success' && needs.image_index.result == 'success' &&
       needs.targets.result == 'success'
     concurrency:
@@ -673,6 +706,8 @@ jobs:
       actions: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     steps:
       # For release-push.sh and the tag, with every tag. No credential is left in the checkout: the
       # deploy key reaches the "Tag release" step alone.
@@ -702,7 +737,10 @@ jobs:
               rm -f "$error_file"
               return 0
             fi
-            if grep -Eqi 'manifest unknown|name unknown|not found' "$error_file"; then
+            # No image only on buildx's own line for a tag the registry does not hold, as the last
+            # line, for this reference: `ERROR: <image>:<tag>: not found`. A refusal of another
+            # request that ends in "404 Not Found" (a token endpoint's) is no answer about the tag.
+            if [ "$(tail -n 1 "$error_file")" = "ERROR: $IMAGE:$sha: not found" ]; then
               rm -f "$error_file"
               return 1
             fi
@@ -930,6 +968,23 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
+      # The release just tagged is the previous build every pull request and merge group from now
+      # on resolves for ci.yaml's dispatch-two-builds job, and that job only restores it: the fill of
+      # this push in .github/workflows/ci-caches.yaml ran before the tag existed and built the
+      # release before. So this asks ci-caches.yaml on main to fill the Dispatch builds alone
+      # (`only: dispatch-builds`). A workflow_dispatch made with this job's GITHUB_TOKEN creates a
+      # run, and actions: write lets the token make it. Plain gh, as this credentialed job runs no
+      # script but release-push.sh (check-release-credentials.sh rule 1). A refused dispatch costs
+      # builds, not the release, so it warns and the job goes on.
+      - name: Fill the cache of the earlier Dispatch builds with this release
+        if: steps.confirm.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds; then
+            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it"
+          fi
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this
       # repository attested, so the check pins the signer as docs/kubernetes.md ("Pin by digest,
@@ -951,7 +1006,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
           FILES: ${{ steps.assets.outputs.files }}
-        # release-push.sh `release`, as in release.yaml. --upload-to-published: a re-run puts this
+        # `.github/scripts/release-push.sh#release)`, as in release.yaml. --upload-to-published: a re-run puts this
         # run's assets over a published release's own, which release.yaml's jobs leave as they are.
         run: |
           assets=()

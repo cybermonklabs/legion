@@ -7,7 +7,7 @@ name: Docs site
 # built.
 #
 # Three inputs carry the only difference between the callers. Two booleans each add one trailing
-# step that only docs-pages.yaml needs, and ci.yaml's `ci-ok-changes` adds the ci-ok report its own
+# step that only docs-pages.yaml needs, and `.github/workflows/ci.yaml#ci-ok-changes` adds the ci-ok report its own
 # jobs end with. Every other step is the same for both.
 #
 # A reusable workflow, not a composite action, for two reasons. A composite action's step keys do
@@ -44,7 +44,7 @@ on:
         default: false
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for its docs job. Empty for
           docs-pages.yaml, which reports nothing.
         type: string
@@ -70,6 +70,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
     # truncate. The step before it turns the service's crash safety off.
     services:
@@ -99,6 +101,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
@@ -108,6 +112,7 @@ jobs:
       # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
       # main by the exact key alone. The save-cache input names the one caller that writes the
       # entry, and that caller is docs-pages.yaml.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -133,7 +138,8 @@ jobs:
         # .github/ci-notes/dispatch-browser.md records against its step of this name, that
         # was `0 upgraded, 9 newly installed`, `Need to get 21.1 MB of archives`, plus 12.8 MB of
         # package indexes in `apt-get update`. The shots want none of it: they are taken in a
-        # headless Chromium (docs/site/media/shots.ts:51 and walkthrough.ts:266 call
+        # headless Chromium (`docs/site/media/shots.ts#chromium.launch()` and
+        # `docs/site/media/walkthrough.ts#chromium.launch()` call
         # `chromium.launch()` with no options) and compared against no committed baseline
         # (docs/site/media/README.md), and fonts-liberation and fonts-noto-color-emoji are on
         # the image already. With the apt call goes this step's removal of the runner image's
@@ -141,34 +147,15 @@ jobs:
         # intermittently failed `apt-get update` and took `--with-deps` down with it.
         run: bunx playwright install chromium
         working-directory: docs/site
-      # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
-      # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
-      # waits for the runner's disk. With them on, a write a closed page left in flight can hold a
+      # The service with crash safety off (.github/scripts/pg-crash-safety-off.sh), as the e2e
+      # harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
+      # waits for the runner's disk. With it on, a write a closed page left in flight can hold a
       # table past the reset each shot set starts with (docs/site/media/shot-runner.ts), which
       # waits at most 5 s for it: dispatch-browser.yaml's multiprocess job failed so, a read mark
-      # holding user_document_reads while the disk was slow. A service container takes no server
-      # arguments, so `alter system` writes the three, as .github/scripts/pg-connection-ceiling.sh
-      # writes max_connections on a service, and a reload applies them: max_connections needs that
-      # script's restart, and these three need only the reload, synchronous_commit reaching every
-      # session that starts after it. The step reads them back from a new session and fails unless
-      # each is off.
+      # holding user_document_reads while the disk was slow.
       - name: Turn crash safety off on the screenshots' Postgres
         timeout-minutes: 2
-        run: |
-          container="${{ job.services.postgres.id }}"
-          docker exec "$container" psql -U postgres -v ON_ERROR_STOP=1 -q \
-            -c 'alter system set fsync = off' \
-            -c 'alter system set full_page_writes = off' \
-            -c 'alter system set synchronous_commit = off' \
-            -c 'select pg_reload_conf()'
-          for _ in $(seq 1 20); do
-            settings=$(docker exec "$container" psql -U postgres -Atc \
-              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')")
-            [ "$settings" = "off off off" ] && break
-            sleep 0.5
-          done
-          echo "fsync, full_page_writes, synchronous_commit: $settings"
-          [ "$settings" = "off off off" ] || { echo "::error::the service's fsync, full_page_writes and synchronous_commit read '$settings' after the reload, not 'off off off'"; exit 1; }
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       - name: Take the screenshots
         run: bun run docs:media
         # A step of the run that hangs fails it within two minutes (STEP_TIMEOUT_MS in
@@ -238,7 +225,7 @@ jobs:
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
       # ci.yaml's call only: on a merge-group run whose group this job's own result decides it
       # posts the failing ci-ok at once, and on every other run it posts nothing, the verdict
-      # being ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how).
+      # being `.github/workflows/ci.yaml#ci-ok` job's own check run (.github/actions/ci-ok-report says how).
       # ci.yaml's docs job runs on a pull request and on a merge group alike, so the step is live
       # here; docs-pages.yaml's call passes no `ci-ok-changes`, and the step skips.
       - name: Report ci-ok when this job decides a merge-group run
@@ -261,6 +248,8 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

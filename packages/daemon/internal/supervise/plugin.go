@@ -127,9 +127,9 @@ const PodUpdateContract = 46
 // that kind alone (dispatch://INFRA-2712 R4). The other caller of relaunchStale passes the
 // launch kind instead, because it is one claim's own launch (staleRegistration).
 //
-// admitted is whether a credit of the refresh gate was taken for this claim before this decision
+// credit is the credit of the refresh gate taken for this claim, or nil, before this decision
 // was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
-// claim it posts and hands it over on the event (StalePlugin.Admitted). The machine holds it
+// claim it posts and hands it over on the event (StalePlugin.Credit). The machine holds it
 // from here until the decision that raises the relaunch ends with no refresh wake of this
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
@@ -138,39 +138,37 @@ const PodUpdateContract = 46
 // whose own end runs the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
-// credit straight back to the gate, keeping the flag for the wake the held one was taken for.
-// The pass reads the views the machines last published, so a wake parked a moment before it
-// counted is one its reading misses (internal/daemon's parkedWakes), and the post that reading
-// raises reaches a machine whose refresh is already waiting. The flag is one bit and says only
-// that a credit is held, so taking the second onto it would lose it: the decision would return
-// at the guard below over the wake already waiting, the end of it would keep one flag for the
-// two credits, and that wake's turn would give back one credit for two admissions.
+// credit straight back to the gate, keeping the one held for the wake it was taken for. The pass
+// reads the views the machines last published, so a wake parked a moment before it counted is
+// one its reading misses (internal/daemon's parkedWakes), and the post that reading raises
+// reaches a machine whose refresh is already waiting. A machine holds one credit, so taking the
+// second in place of the first would leave the first held by nothing: the decision would return
+// at the guard below over the wake already waiting, that wake's turn would give back one credit
+// for two admissions, and the other would wait for a sweep's correction to take it back
+// (reclaimCredit).
 //
 // A decision reached with no credit asks the gate itself, at the guard below, which is the
 // machine's one ask of it (admitRefresh). Three roads reach that guard holding none, and the
 // last of them is no post at all. The controller's claim is posted uncredited because its wake
 // is outside the pacing (reserveWake), and the guard spares it rather than asking for it. A
 // claim the pass read in a turn is posted uncredited because its relaunch takes no wake now
-// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the pass's
-// snapshot and this machine disagree — a claim read idle that has started a turn since — and the
-// end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
-// comes back through here at the turn's end, with no credit of its own and the claim in whatever
-// state that end left it (afterTurn).
-func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
-	if admitted {
-		if m.refreshCredit {
-			// This machine's wake already holds a credit, and one flag holds one credit: the
-			// post's own goes back to the gate here, where losing it would cost the lane a
-			// credit nothing ever waits for (the doc above, RefreshGate.Release).
-			m.deps.RefreshGate.Release()
+// (holdStaleRelaunch, R2); the credit such a post does carry is the window where the claim the
+// pass read (Machine.Published) and this machine disagree — a claim read idle that has started a
+// turn since — and the end of this decision gives it back (endRefreshLane). And the relaunch that
+// hold left waiting comes back through here at the turn's end, with no credit of its own and the
+// claim in whatever state that end left it (afterTurn).
+func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit) error {
+	if credit != nil {
+		if m.refreshCredit != nil {
+			// This machine already holds a credit: the post's own goes back.
+			credit.Release()
 		} else {
-			m.refreshCredit = true
+			m.holdCredit(credit)
 		}
 	}
 	if m.claim.PluginContract == m.deps.PluginContract {
 		return nil
 	}
-	// A claim already queued for a wake takes no second one.
 	if m.wake != nil {
 		return nil
 	}
@@ -182,22 +180,14 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		m.holdStaleRelaunch(trigger)
 		return nil
 	}
-	// Every relaunch of this lane waits under a credit of the gate, so one reached with none asks
-	// for its own here, which is the lane's one ask inside a machine; the roads that reach it
-	// holding none are named above. Relaunching on no credit would park a wake the gate never
-	// counted — eight of them at once where a wave's turns end together, which is twice the rate
-	// in the pacing and the one thing R1 promises cannot happen. Refused, the claim is left to
-	// the next sweep, which reads it idle and admits it like any other. The ask is made here
-	// rather than on those roads because it is made after the three guards above: a claim that
-	// is no longer stale, that already holds a wake or that holds no capability burns no credit
-	// it would give back at once.
-	if !controller && !m.refreshCredit {
-		if !m.admitRefresh() {
+	if !controller && m.refreshCredit == nil {
+		c := m.admitRefresh()
+		if c == nil {
 			m.log.Info("supervise: this claim's stale-plugin relaunch reached the refresh gate with no credit of its own and the gate is full; its relaunch waits for the next sweep",
 				"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 			return nil
 		}
-		m.refreshCredit = true
+		m.holdCredit(c)
 	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
 }
@@ -218,13 +208,13 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.
 //
-// The daemon's own pass posts such a claim with no credit at all, reading the state its
-// snapshot of the claims holds (refreshStalePlugins in internal/daemon). That snapshot and this
-// machine can disagree — the claim it read idle can have started a turn by the time the post is
-// decided here, and one it read working can have ended its turn — so a post that reaches this
-// call carrying a credit is exactly that window, and the end of this decision gives the credit
-// straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
-// claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+// The daemon's own pass posts such a claim with no credit at all, reading the state the claim's
+// machine last published (Machine.Published, refreshStalePlugins in internal/daemon). That read and
+// this decision can disagree — a decision that lands between them can start the turn of a claim
+// read idle, or end the turn of one read working — so a post that reaches this call carrying a
+// credit is exactly that window, and the end of this decision gives the credit straight back,
+// since it leaves no refresh wake waiting (endRefreshLane). The window costs the claim one sweep,
+// which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
@@ -289,7 +279,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // suspended, with nothing relaunched and the mark exactly as it found it, and the next
 // stale-plugin pass raises the relaunch again (refreshPlugin, the daemon's refreshStalePlugins).
 // The mark costs no write of its own either: the launch that commits it writes the claim as it
-// starts (launchNow).
+// starts (commitPluginRelaunch, launchTries).
 //
 // The intent names one launch and no other: a later launch of this machine, raised by something
 // else, marks nothing for this relaunch. The launch that took it holds it by then — the gate
@@ -380,11 +370,11 @@ func (m *Machine) commitPluginRelaunch() {
 
 // refreshStalePlugin is the StalePlugin event's row, for the four states a claim's relaunched
 // process can run in: the event's own Trigger (boot or sweep) names the pass that posted it, and
-// its Admitted says whether that pass took a credit of the refresh gate for this claim, which
-// the machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
+// its Credit is the credit of the refresh gate that pass took for this claim, or nil, which the
+// machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 	stale := ev.(StalePlugin)
-	return m.refreshPlugin(ctx, stale.Trigger, stale.Admitted)
+	return m.refreshPlugin(ctx, stale.Trigger, stale.Credit)
 }
 
 // refreshOverturned is the fact the lane's relaunch was raised for, read again at the wake's own
@@ -450,20 +440,20 @@ func (m *Machine) refreshOverturned() bool {
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
 // relaunch starts the process that replaces the stale one (launchNow, commitPluginRelaunch),
 // never where that relaunch is decided, so a relaunch the pacing holds over the live old
-// process for tens of minutes (reserveWake, parkWake) has marked nothing yet, and the charged
+// process for tens of minutes (reserveWake, waitOnMachine) has marked nothing yet, and the charged
 // branch below reads a mark that names a relaunch that did run. What the guard adds is the rest
 // of the answer: without it a process that reconnects and re-registers on the old contract
 // inside that wait would be relaunched here, which raises a second relaunch over the one still
-// waiting, replaces its wake and takes a second token for the launch that wake was already
-// going to make (reserveWake). The same guard keeps a claim already marked by a relaunch that ran
-// from being charged twice: when that relaunch's process registers stale, the charged relaunch
-// parks a wake with the mark still set, and a re-registration of that process inside the wait
-// would otherwise meet the mark and be charged a second launch failure for the one registration
-// the claim was already charged for. The registration is still refused, as every stale one is,
-// so the agent exits rather than take work on a contract this daemon does not speak, and the
-// launch's turn replaces its process (wakeNow). It is the guard judge makes of every observation
-// of that same process, for the one report that reaches a decision of its own instead. The
-// guard reads whether a wake that starts a process waits, whichever lane parked it
+// waiting, replaces its wake and takes a second place at the back of the pacing's queue for the
+// launch that wake was already going to make (reserveWake). The same guard keeps a claim already
+// marked by a relaunch that ran from being charged twice: when that relaunch's process registers
+// stale, the charged relaunch parks a wake with the mark still set, and a re-registration of that
+// process inside the wait would otherwise meet the mark and be charged a second launch failure for
+// the one registration the claim was already charged for. The registration is still refused, as
+// every stale one is, so the agent exits rather than take work on a contract this daemon does not
+// speak, and the launch's turn replaces its process (wakeNow). It is the guard judge makes of
+// every observation of that same process, for the one report that reaches a decision of its own
+// instead. The guard reads whether a wake that starts a process waits, whichever lane parked it
 // (launchWaits, StartsProcess): the refresh lane's relaunch of this same claim is exactly the
 // launch this registration must not raise a second one over.
 //
@@ -490,12 +480,12 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	if m.launchWaits() {
 		m.log.Info("supervise: a registration on another plugin contract reached a claim whose relaunch waits its turn; that turn replaces this process and nothing is relaunched or charged here",
-			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
+			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.due())
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin, nil)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

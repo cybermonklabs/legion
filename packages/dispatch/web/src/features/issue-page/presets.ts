@@ -1,19 +1,5 @@
-import {
-  drawnLine,
-  firstLineOf,
-  heldBy,
-  isCheck,
-  isStatement,
-  lineWords,
-  nodeWords,
-  type TreeNode,
-} from "./issue-tree";
-import {
-  type FILTER_SIGNAL_WORDS,
-  NODE_TYPE_NAMES,
-  type NodeType,
-  type Preset,
-} from "./page-words";
+import { heldBy, isCheck, isStatement, nodeWords, parentLineOf, type TreeNode } from "./issue-tree";
+import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
@@ -119,9 +105,16 @@ function kindOf(node: TreeNode): NodeType | undefined {
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
  *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
- *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
+ *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. A
+ *  post its author deleted holds none: its text is the deleted line as the model writes it
+ *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
+ *  and its row draws the page's own deleted line in its place (`node-line.tsx`'s `DeletedLine`),
+ *  so no word typed finds it (deleted-post R3). */
 function holds(node: TreeNode, wanted: string): boolean {
-  return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
+  return (
+    wanted === "" ||
+    (node.deletedAt === undefined && nodeWords(node).toLowerCase().includes(wanted))
+  );
 }
 
 /**
@@ -216,24 +209,16 @@ function filterView(
       contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
-    // A drawn child under a node that is no row carries that node as its one line, cut by R1's
-    // first-line rule from the words of the node's first block (`lineWords`), so a heading is
-    // never run into the paragraph after it, and drawn as a row's first line is (`drawnLine`):
-    // an ellipsis only where the cut ended inside a sentence. A node with no words - no text, or
-    // a reading none of whose blocks holds a word - is named by the page's word for its kind
-    // (`NODE_TYPE_NAMES`), never by its id, which is no name a reader reads (R22). A drawn
-    // child's own rows are the child alone.
-    const line =
-      drawn || !parts.some((part) => part.drawn)
-        ? undefined
-        : {
-            id: node.id,
-            line: parentLineOf(node),
-            // The parent's own address, which makes its line the link a reader follows to it
-            // (R18, and R26: a step's row reaches the statement it serves).
-            ...(node.reference === undefined ? {} : { reference: node.reference }),
-            type: node.type,
-          };
+    // A drawn child under a node that is no row carries that node as its one line, which the row
+    // projects from the node's own words as every one line of a node is drawn (`lineReading`):
+    // R1's first-line rule over the words of the node's first block, so a heading is never run
+    // into the paragraph after it, with an ellipsis only where the cut ended inside a sentence. A
+    // node with no words is named by the page's word for its kind (`NODE_TYPE_NAMES`), never by
+    // its id, which is no name a reader reads (R22). The line carries the node's own address,
+    // which makes it the link a reader follows to it (R18, and R26: a step's row reaches the
+    // statement it serves), and a comment's or a message's marks, which its child's row draws
+    // with the line (deleted-post R2 and R3). A drawn child's own rows are the child alone.
+    const line = drawn || !parts.some((part) => part.drawn) ? undefined : parentLineOf(node);
     const below = parts.flatMap((part) =>
       part.drawn && line !== undefined
         ? part.rows.map((row) => ({ ...row, parentLine: line }))
@@ -253,14 +238,6 @@ function filterView(
     root: { ...root, children: top, held: heldBy(top) },
     rootRow: false,
   };
-}
-
-/** The one line a node that is no row of a filter is drawn as on its child's row: R1's first
- *  line of its first block's words (`lineWords`), and the page's word for its kind where those
- *  hold none (R22). */
-function parentLineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** What one control of the filter row draws after its name (R2): its count, then, where the
