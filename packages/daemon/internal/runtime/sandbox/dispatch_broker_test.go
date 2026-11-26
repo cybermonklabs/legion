@@ -157,9 +157,14 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 //
 // The refusal names the pod by a locator too (runtime.AwaitingPodRound): the one a process of the
 // refused claim in that pod would have, at the launch's own generation, which this runtime's
-// PodDrift takes as it takes a running process's and answers the identity the pod lacks. That is
-// what the supervisor keeps of a claim that records no process, and what the update round opens
-// over and replaces the pod through where no claim records one.
+// PodDrift takes as it takes a running process's and answers the identity the pod lacks, marked as
+// a drift that breaks the pod (runtime.BreakingDrift, R7 of #5285, spec v26). This is the one case
+// of the exchange identity's drift that breaks the pod: the deployment sets dispatch_token_broker,
+// names no transition file, and the pod carries no identity the exchange trades, so every launch
+// into the pod is refused and the claim runs again only once the round has replaced the pod. No
+// read of the pod's disk keeps it, then. That is what the supervisor keeps of a claim that records
+// no process, and what the update round opens over and replaces the pod through where no claim
+// records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
@@ -214,9 +219,9 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	if err := r2.checkLocator(refusal.Pod); err != nil {
 		t.Fatalf("the runtime refuses the locator its own refusal named: %v", err)
 	}
-	identity := (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
+	identity := runtime.BreakingDrift + (movedAddress{agentSecretsExchangeVolume, "(unset)", enrollmentName(exchangeTokenProjection(r2.agentSecrets))}).String()
 	if drifted := driftOf(t, g, r2, refusal.Pod); !slices.Contains(drifted, identity) {
-		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for",
+		t.Errorf("PodDrift through the refusal's locator = %q, want %q among it: the identity the pod lacks is the drift its round is opened for, and it breaks the pod",
 			drifted, identity)
 	}
 }

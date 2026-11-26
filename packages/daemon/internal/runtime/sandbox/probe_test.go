@@ -874,7 +874,7 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 		{"a missing manifest met on one pull", func(g *probeRig) {
 			g.waitsSaying("ErrImagePull", pullFailure("ErrImagePull", "NotFound", resolving(testImage+": not found"))).pullsFailed(1, "NotFound", resolving(testImage+": not found"))
 		}, []string{"(container probe waiting: ErrImagePull)"}},
-		{"no pod at all", func(g *probeRig) { g.hold.Store(true) },
+		{"no pod at all", func(g *probeRig) { g.setHold(true) },
 			[]string{"probe pod " + probeSandboxName + " did not start within " + neverFinishedBudget.String() + ": no pod"}},
 		// A pod whose probe outlasts the attempt: what it logged so far is quoted.
 		{"a pod still probing", func(g *probeRig) {
@@ -1162,7 +1162,7 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 			// No pod: the fakes' watches ignore label selectors, so a pod of another project's
 			// Sandbox would reach the runtime's store, which a real API server never sends it.
 			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)})
-			g.hold.Store(true)
+			g.setHold(true)
 
 			err := g.probe(probeOptions(t))
 
