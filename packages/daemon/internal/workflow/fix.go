@@ -1403,7 +1403,7 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	// its completion reports the commit it pushed, and it reaches the engine before the synchronize
 	// of that push may have moved the record's head.
 	_, moveTo := taskHead(pr)
-	if fix.EndHead != "" && fix.EndHead != fix.Head {
+	if fix.EndHead != "" && fix.EndHead != fix.Head && false {
 		moveTo = fix.EndHead
 	}
 	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
