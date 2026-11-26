@@ -67,6 +67,18 @@
 # (one_pass_phase --store-every-2s), so a negative control's build that stores another way stores
 # them that way.
 #
+# The three head checks run after the phases (head_check), each on a stack of its own (fresh_stack):
+# a NATS of its own, an emptied database with no delivery settings, and one start of the server
+# with a deployment's delivery reconcile, every five minutes from a moment within its first five
+# and no pass at its start. head-no-settings is R1 of the results lookup: with no delivery
+# settings, the results route compares a check with the head of an open pull request within 5
+# seconds of its event, in the project's default repository and in a repository an issue names as
+# its own. head-from-github is R2: a later event of a closed pull request leaves it closed, and
+# envelopes GitHub never sent, published through an envoy-listener this checkout builds, move no
+# head. github-outage is R4: the fake GitHub answers every call with 500 for 6 minutes while one pull
+# request opens and another gets a push, and within 10 minutes after GitHub answers again the
+# results route names each head (the driver's section "the head checks on a stack of their own").
+#
 # first-start-tip runs last (first_start_tip), on a NATS of its own and an emptied database: R3 of
 # the results lookup, the first start after a deploy. A server with no GitHub App, so no delivery
 # intake, makes the stream; the driver publishes the events of two pull requests while no server
@@ -82,6 +94,9 @@
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
 #     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
 #     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
+#     [VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1] \
+#     [VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state|head] \
+#     [VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] \
 #     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch of that commit>] \
 #     bash scripts/e2e/verification-results.sh
@@ -106,18 +121,32 @@
 # that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
 # --negative-control.
 # VERIFICATION_RESULTS_E2E_ONLY and VERIFICATION_RESULTS_E2E_OLD_BUILD reach the driver as they
-# are, and only a negative control of the seven checks sets them: the first names the one case to
-# run, and the driver skips every other case and phase but the boundary's self-check and the
-# writes the named case stands on; the second, set to 1, names a server built before the
-# attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
-# boundary of one pass does not count that line. Under the first, a run exits 1 (`FAIL <case>`)
-# only when the named case failed; a run that stopped before that case's check exits 2, and its
-# lines read `UNKNOWN <case>`: it shows nothing of the check, as a control or as a pass.
+# are. The first names the one case to run, a check's run or its negative control's: under the
+# name of one of the seven checks the driver skips every other case and phase but the boundary's
+# self-check and the writes the named case stands on. Only a negative control of the seven checks
+# sets the second, to 1: it names a server built before the attribution line of a pass, as
+# DISPATCH_BIN built from a commit before that line is, so the boundary of one pass does not count
+# that line. Under the first, a run exits 1 (`FAIL <case>`) only when the named case failed; a run
+# that stopped before that case's check exits 2, and its lines read `UNKNOWN <case>`: it shows
+# nothing of the check, as a control or as a pass.
 # VERIFICATION_RESULTS_E2E_ONLY=first-start-tip runs first-start-tip alone: no case, no phase and
 # no older-rows. VERIFICATION_RESULTS_E2E_TIP_CONTROL=1, which the run refuses without it, is
 # first-start-tip's negative control: before the first start the driver creates the intake's
 # durable to deliver from the stream's first message, so that start reads each older event and
 # writes its head, and first-start-tip fails.
+# VERIFICATION_RESULTS_E2E_ONLY=head-no-settings, head-from-github or github-outage runs that head
+# check alone, and each has a switch the run refuses without it, which runs its negative control:
+# the case's server is then the build the switch names in place of this checkout's (control_build).
+# VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1 builds main at 1af8393264, before the fix of the
+# intake on main and before this change, whose intake writes no head with no delivery settings:
+# S1 finds no pull request 45 seconds after the event. VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL
+# names one of two builds of this checkout, each with one fault, which `go build -overlay` lays from
+# scripts/e2e/fixtures/head-from-github-<value>.diff over pull_request_heads.go: `state` takes the
+# state from the event's action, so the labeled event of the closed #48 opens it again and F2's
+# forged close closes #62; `head` takes the head from the event, so F1's and F6's forged envelopes
+# move a head. VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 builds 4b2d1e83f85c, whose #2001 has no
+# head 10 minutes after GitHub answers again. A build of a commit takes git and tar, as the release
+# before's does; the overlay takes patch.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
 # build writes older-rows' database. Unset, it is the newest commit of main without this change,
 # read from git at each run (release_before_of_head): on a branch that has not merged, main at the
@@ -134,11 +163,13 @@
 # VERIFICATION_RESULTS_E2E_ONLY names another case, since older-rows does not run then.
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
-# (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
-# answers on it. The server's port is refused inside the kernel's ephemeral range too, since each
-# one-pass phase starts the server on it again. NATS listens on a port the kernel picks. The work
-# directory, under TMPDIR, holds the binaries, the driver's state file and every process's log, the
-# server's of every start in one: removed when the run passes, kept and printed when it fails.
+# (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), and, where head-from-github runs,
+# VERIFICATION_RESULTS_E2E_LISTENER_PORT (19067) for its envoy-listener, each refused when
+# something already answers on it. The server's port is refused inside the kernel's ephemeral range
+# too, since each one-pass phase starts the server on it again. NATS listens on a port the kernel
+# picks. The work directory, under TMPDIR, holds the binaries, the driver's state file and every
+# process's log, the server's of every start in one: removed when the run passes, kept and printed
+# when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -187,6 +218,25 @@ case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | older-rows) older_rows=1 ;; es
 first_start_tip=''
 case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | first-start-tip) first_start_tip=1 ;; esac
 tip_control=${VERIFICATION_RESULTS_E2E_TIP_CONTROL:-}
+# Each head check runs in a whole run, after the phases, and alone under its own name; the cases
+# and the one-pass phases run in a whole run and under the name of one of the seven checks.
+head_no_settings=''
+head_from_github=''
+github_outage=''
+attribution=''
+case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in
+  '') head_no_settings=1 head_from_github=1 github_outage=1 attribution=1 ;;
+  head-no-settings) head_no_settings=1 ;;
+  head-from-github) head_from_github=1 ;;
+  github-outage) github_outage=1 ;;
+  first-start-tip) ;;
+  *) attribution=1 ;;
+esac
+listener_port=${VERIFICATION_RESULTS_E2E_LISTENER_PORT:-19067}
+# The head checks' negative controls (control_build). Each names the build its case's server runs.
+no_settings_control=${VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL:-}
+from_github_control=${VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL:-}
+outage_control=${VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL:-}
 # A negative control's run (VERIFICATION_RESULTS_E2E_ONLY) shows something of its check only when
 # that check failed: the driver's status 1, which under that setting is a failed case of the named
 # check alone (case_failed). Any other stop (a prerequisite, a build, a start, a server that exited,
@@ -213,6 +263,14 @@ nats_pid=''
 fake_envoy_pid=''
 fake_github_pid=''
 dispatch_pid=''
+listener_pid=''
+listener_url=''
+# The store of the NATS that runs (start_nats), which fresh_stack removes before the next one.
+nats_store=''
+# The build a head check's negative control names (control_build), and the server of each start
+# of a head check: that build, else the run's own.
+control_bin=''
+case_bin=''
 
 # cleanup stops what the run started and prints the run's last line through lib/run-verdict.sh,
 # which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
@@ -226,6 +284,7 @@ cleanup() {
   trap - EXIT INT TERM
   set +e
   stop_pid "$dispatch_pid"
+  stop_pid "$listener_pid"
   stop_pid "$fake_github_pid"
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
@@ -234,8 +293,10 @@ cleanup() {
       rm -rf "$work"
     else
       rm -rf "${work:?}/bin" "${work:?}/nats-store" "${work:?}/older-rows-nats-store" \
-        "${work:?}/first-start-tip-nats-store" "${work:?}/release-before" \
-        "${work:?}/release-before.git" "${work:?}/main-history.git"
+        "${work:?}/first-start-tip-nats-store" "${work:?}/head-no-settings-nats-store" \
+        "${work:?}/head-from-github-nats-store" "${work:?}/github-outage-nats-store" \
+        "${work:?}/release-before" "${work:?}/release-before.git" "${work:?}/main-history.git" \
+        "${work:?}/control" "${work:?}/control.git"
     fi
   fi
   if [ -n "$only_case" ] && [ -z "$case_failed" ] && ! run_passed "$rc"; then
@@ -283,14 +344,44 @@ if [ -n "$tip_control" ]; then
   [ "$only_case" = first-start-tip ] ||
     fail "VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's negative control, and needs VERIFICATION_RESULTS_E2E_ONLY=first-start-tip"
 fi
-for port in "$dispatch_port" "$envoy_port" "$github_port"; do
+# control_switch NAME VALUE CASE ALLOWED... refuses a head check's control switch, the variable
+# VERIFICATION_RESULTS_E2E_<NAME> set to VALUE: a VALUE none of ALLOWED, a run that is not of the
+# case CASE alone (VERIFICATION_RESULTS_E2E_ONLY), and a DISPATCH_BIN beside it, which would name
+# nothing the run starts, since the case's server is the build the switch names.
+control_switch() {
+  local name=$1 value=$2 case_name=$3 allowed
+  shift 3
+  [ -n "$value" ] || return 0
+  for allowed in "$@"; do
+    [ "$value" = "$allowed" ] && break
+  done
+  [ "$value" = "$allowed" ] || fail "VERIFICATION_RESULTS_E2E_$name=$value is not one of: $*"
+  [ "$only_case" = "$case_name" ] ||
+    fail "VERIFICATION_RESULTS_E2E_$name is $case_name's negative control, and needs VERIFICATION_RESULTS_E2E_ONLY=$case_name"
+  [ -z "$dispatch_bin" ] ||
+    fail "VERIFICATION_RESULTS_E2E_$name names $case_name's server, so DISPATCH_BIN names nothing the run starts"
+}
+control_switch NO_SETTINGS_CONTROL "$no_settings_control" head-no-settings 1
+control_switch FROM_GITHUB_CONTROL "$from_github_control" head-from-github state head
+control_switch OUTAGE_CONTROL "$outage_control" github-outage 1
+if [ -n "$no_settings_control" ] || [ -n "$outage_control" ]; then
+  for tool in git tar; do
+    command -v "$tool" >/dev/null || fail "$tool is not on PATH: the negative control takes its commit's tree with git archive"
+  done
+fi
+if [ -n "$from_github_control" ]; then
+  command -v patch >/dev/null || fail "patch is not on PATH: the negative control lays its fault with patch"
+fi
+ports=("$dispatch_port" "$envoy_port" "$github_port")
+[ -z "$head_from_github" ] || ports+=("$listener_port")
+for port in "${ports[@]}"; do
   if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
     fail "'$port' is not a port"
   fi
   port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
 done
-[ "$(printf '%s\n' "$dispatch_port" "$envoy_port" "$github_port" | sort -u | wc -l)" -eq 3 ] ||
-  fail "the Dispatch, fake Envoy and fake GitHub ports are not three different ports"
+[ "$(printf '%s\n' "${ports[@]}" | sort -u | wc -l)" -eq "${#ports[@]}" ] ||
+  fail "the Dispatch, fake Envoy, fake GitHub and envoy-listener ports are not different ports"
 # Each one-pass phase starts the server again on its port. The kernel gives any port of its
 # ephemeral range to an outgoing connection, so such a connection can take the port between two
 # starts, and the next start fails with "address already in use".
@@ -342,26 +433,66 @@ release_before_of_head() {
   fi
 }
 
-# release_before_tree takes the release before's packages/envoy into $work/release-before and sets
-# release_before_sha. The tree is the commit's own, taken out of a repository and never checked
+# commit_tree COMMIT NAME HINT takes COMMIT's packages/envoy into $work/NAME and sets tree_sha to
+# the commit's whole sha. The tree is the commit's own, taken out of a repository and never checked
 # out, so this working copy is never touched: this checkout's own repository where it holds the
-# commit, else a bare repository of the run's own that fetches that one commit, at depth 1, from
-# this checkout's `origin`, since a CI checkout is shallow and holds its own head alone.
-release_before_tree() {
-  local source=$root url
-  if ! release_before_sha=$(git -C "$root" rev-parse --verify --quiet "$release_before^{commit}" 2>/dev/null); then
+# commit, else a bare repository of the run's own, $work/NAME.git, that fetches that one commit,
+# at depth 1, from this checkout's `origin`, since a CI checkout is shallow and holds its own head
+# alone. HINT ends the refusal of a checkout that holds no such commit and names no origin.
+# older-rows takes the release before's tree this way, and a head check's negative control the
+# tree of the commit it builds.
+commit_tree() {
+  local commit=$1 name=$2 hint=$3 source=$root url
+  if ! tree_sha=$(git -C "$root" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null); then
     url=$(git -C "$root" remote get-url origin 2>/dev/null) ||
-      fail "this checkout holds no commit $release_before and names no origin to fetch it from; give VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN, an envoy-dispatch built from it"
-    source=$work/release-before.git
+      fail "this checkout holds no commit $commit and names no origin to fetch it from; $hint"
+    source=$work/$name.git
     git init -q --bare "$source" || fail "could not make the repository $source"
-    git -C "$source" fetch -q --no-tags --depth=1 "$url" "$release_before" ||
-      fail "could not fetch the release before, $release_before, from $url"
-    release_before_sha=$(git -C "$source" rev-parse --verify --quiet "FETCH_HEAD^{commit}") ||
-      fail "the fetch of $release_before from $url brought no commit"
+    git -C "$source" fetch -q --no-tags --depth=1 "$url" "$commit" ||
+      fail "could not fetch $commit from $url"
+    tree_sha=$(git -C "$source" rev-parse --verify --quiet "FETCH_HEAD^{commit}") ||
+      fail "the fetch of $commit from $url brought no commit"
   fi
-  mkdir -p "$work/release-before"
-  git -C "$source" archive "$release_before_sha" packages/envoy | tar -x -C "$work/release-before" ||
-    fail "could not take the tree of $release_before_sha"
+  mkdir -p "$work/$name"
+  git -C "$source" archive "$tree_sha" packages/envoy | tar -x -C "$work/$name" ||
+    fail "could not take the tree of $tree_sha"
+}
+
+# control_build builds the server a head check's negative control names, to
+# $work/bin/envoy-dispatch-control, and sets control_bin. VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL
+# and VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL each name a commit, whose tree commit_tree takes.
+# VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL names a fault of this checkout's own build: its
+# fixture, scripts/e2e/fixtures/head-from-github-<value>.diff, is laid with patch on a copy of
+# pull_request_heads.go in $work/control, and `go build -overlay` builds this checkout with the
+# copy in place of the file, so the working copy is never touched. A diff whose lines no longer
+# match the file is refused (--fuzz=0), and the run stops there, UNKNOWN.
+control_build() {
+  local commit what file=internal/dispatch/delivery/pull_request_heads.go
+  if [ -n "$from_github_control" ]; then
+    mkdir -p "$work/control"
+    patch -s --fuzz=0 --no-backup-if-mismatch -o "$work/control/pull_request_heads.go" \
+      "$root/packages/envoy/$file" <"$root/scripts/e2e/fixtures/head-from-github-$from_github_control.diff" ||
+      fail "scripts/e2e/fixtures/head-from-github-$from_github_control.diff does not apply to $file"
+    printf '{"Replace":{"%s":"%s"}}\n' "$root/packages/envoy/$file" "$work/control/pull_request_heads.go" \
+      >"$work/control/overlay.json"
+    go -C "$root/packages/envoy" build -overlay "$work/control/overlay.json" \
+      -o "$work/bin/envoy-dispatch-control" ./cmd/dispatch ||
+      fail "./cmd/dispatch with head-from-github-$from_github_control.diff did not build"
+    note "the negative control's envoy-dispatch is this checkout's with head-from-github-$from_github_control.diff laid on $file"
+  else
+    if [ -n "$no_settings_control" ]; then
+      commit=1af83932649d138124b4f1691da1521e2a2ff768
+      what="main at 1af8393264, before the fix of the intake on main and before this change"
+    else
+      commit=4b2d1e83f85c8575e2056bb9628da0b5ee2d829f
+      what="4b2d1e83f85c"
+    fi
+    commit_tree "$commit" control "give DISPATCH_BIN, an envoy-dispatch built from it, with VERIFICATION_RESULTS_E2E_ONLY alone"
+    go -C "$work/control/packages/envoy" build -o "$work/bin/envoy-dispatch-control" ./cmd/dispatch ||
+      fail "the negative control's ./cmd/dispatch of $tree_sha did not build"
+    note "the negative control's envoy-dispatch is the build of $what ($tree_sha)"
+  fi
+  control_bin=$work/bin/envoy-dispatch-control
 }
 
 begin build
@@ -390,10 +521,19 @@ elif [ -n "$older_rows" ]; then
       fail "could not read the newest commit of origin's main without this change; give VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit> or VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN"
     note "the release before is $release_before, the newest commit of origin's main without this change"
   fi
-  release_before_tree
+  commit_tree "$release_before" release-before \
+    "give VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN, an envoy-dispatch built from it"
   go -C "$work/release-before/packages/envoy" build -o "$work/bin/envoy-dispatch-release-before" ./cmd/dispatch ||
     fail "the release before's ./cmd/dispatch did not build"
-  note "built the release before's envoy-dispatch from $release_before_sha"
+  note "built the release before's envoy-dispatch from $tree_sha"
+fi
+if [ -n "$no_settings_control$from_github_control$outage_control" ]; then
+  control_build
+fi
+case_bin=${control_bin:-$dispatch_bin}
+if [ -n "$head_from_github" ]; then
+  go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener ||
+    fail "./cmd/listener did not build"
 fi
 pass
 
@@ -406,9 +546,11 @@ pass
 
 begin nats
 # start_nats STORE starts natsd with its store in STORE, on the port the kernel picks (`-p -1`),
-# read back from the line the server logs once it listens, and sets nats_url. older-rows runs on a
-# NATS of its own, which older_rows_upgrade stops before it starts the run's own.
+# read back from the line the server logs once it listens, and sets nats_url and nats_store.
+# older-rows runs on a NATS of its own, which older_rows_upgrade stops before it starts the run's
+# own, and so does each head check and first-start-tip (fresh_stack).
 start_nats() {
+  nats_store=$1
   start_process nats "$work/bin/natsd" -p -1 -store_dir "$1"
   await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
   nats_port=$(report_port "$work/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
@@ -501,8 +643,9 @@ pass
 export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
 
 # driver ARG... runs the driver with ARG... before its three URLs. The state file carries what one
-# run of the driver leaves for a later one. A server that exited during the run fails the check,
-# and so does the driver's status: 1 is a case that failed (it sets case_failed), 3 a half of a
+# run of the driver leaves for a later one, and the listener's URL is head-from-github's, empty
+# where no listener runs. A server or a listener that exited during the run fails the check, and
+# so does the driver's status: 1 is a case that failed (it sets case_failed), 3 a half of a
 # one-pass phase that VERIFICATION_RESULTS_E2E_ONLY skips (it sets phase_skipped), any other a step
 # outside the cases.
 phase_skipped=''
@@ -511,11 +654,15 @@ driver() {
   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
     VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
     VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+    VERIFICATION_RESULTS_E2E_LISTENER_URL=$listener_url \
     VERIFICATION_RESULTS_E2E_STATE=$work/driver-state.json \
     bun "$root/scripts/e2e/verification-results.ts" "$@" "$dispatch_url" "$nats_url" "$github_url" ||
     status=$?
   if [ -n "$dispatch_pid" ] && ! kill -0 "$dispatch_pid" 2>/dev/null; then
     fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
+  fi
+  if [ -n "$listener_pid" ] && ! kill -0 "$listener_pid" 2>/dev/null; then
+    fail "envoy-listener exited during the run; see $work/logs/listener.log"
   fi
   case "$status" in
     0) ;;
@@ -613,9 +760,66 @@ older_rows_upgrade() {
   pass
 }
 
+# fresh_stack NAME gives the case NAME a stack of its own: it stops the server of the step before,
+# if any, and the NATS, removes that NATS's store and keeps its log as nats-before-NAME.log,
+# empties the database and the driver's state file, and starts a NATS of NAME's own, with no
+# stream.
+fresh_stack() {
+  stop_dispatch
+  stop_pid "$nats_pid"
+  nats_pid=''
+  rm -rf "$nats_store"
+  mv "$work/logs/nats.log" "$work/logs/nats-before-$1.log"
+  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+  rm -f "$work/driver-state.json"
+  start_nats "$work/$1-nats-store"
+}
+
+# start_listener starts the envoy-listener this checkout builds, on the run's NATS, for
+# head-from-github's envelopes GitHub never sent: on loopback with no credential, which the listener
+# takes on loopback alone, with a home of its own, and sets listener_url once it answers /healthz.
+start_listener() {
+  mkdir -p "$work/listener-home"
+  start_process listener env -i \
+    PATH="$PATH" \
+    HOME="$work/listener-home" \
+    TMPDIR="$work" \
+    ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID=verification-results \
+    NATS_URLS="$nats_url" \
+    PORT="$listener_port" \
+    "$work/bin/envoy-listener"
+  await_start listener "$listener_pid" 60 "envoy-listener to answer /healthz" \
+    curl -fsS --max-time 2 "http://127.0.0.1:$listener_port/healthz"
+  listener_url=http://127.0.0.1:$listener_port
+}
+
+# head_check NAME runs the head check NAME (the driver's section "the head checks on a stack of
+# their own") on a stack of its own (fresh_stack). The driver seeds the fake while no server runs
+# (NAME-fixture); the server starts once, its delivery reconcile every five minutes from a moment
+# within its first five and no pass at its start, as a deployment's runs, so what the case reads is
+# the intake's; head-from-github's listener starts beside it; and the driver runs the case (NAME).
+# The server is the build a negative control names where its switch is set (case_bin).
+head_check() {
+  begin "$1"
+  fresh_stack "$1"
+  driver --phase "$1-fixture"
+  start_dispatch 5m '' "$case_bin"
+  note "envoy-dispatch $case_bin started, with its delivery reconcile every 5m and no pass at its start"
+  if [ "$1" = head-from-github ]; then
+    start_listener
+    note "envoy-listener on $listener_url"
+  fi
+  driver --phase "$1"
+  stop_pid "$listener_pid"
+  listener_pid=''
+  listener_url=''
+  stop_dispatch
+  pass
+}
+
 # first_start_tip runs first-start-tip (the driver's section "first-start-tip"), each start of it
-# with the next pass of its delivery reconcile an hour away. It stops the server of the step
-# before, if any, and the NATS, empties the database and starts a NATS of its own, with no stream.
+# with the next pass of its delivery reconcile an hour away, on a stack of its own (fresh_stack).
 # A server with no GitHub App, and so no delivery intake, starts and makes the stream, as a
 # deployment's stream stands before the first start that runs an intake, and stops. The driver
 # publishes the events of two pull requests while no server runs (backlog). The server starts
@@ -629,14 +833,7 @@ older_rows_upgrade() {
 # falls in the window of calls the driver reads only once in more than a thousand runs.
 first_start_tip() {
   begin first-start-tip
-  stop_dispatch
-  stop_pid "$nats_pid"
-  nats_pid=''
-  rm -rf "$work/nats-store"
-  mv "$work/logs/nats.log" "$work/logs/nats-before-first-start-tip.log"
-  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
-  rm -f "$work/driver-state.json"
-  start_nats "$work/first-start-tip-nats-store"
+  fresh_stack first-start-tip
   dispatch_settings=(DISPATCH_TEST_CI_RECONCILE_INTERVAL=1h DISPATCH_TEST_REDELIVERY_INTERVAL=1h)
   start_dispatch 1h '' '' ''
   note "envoy-dispatch started with no GitHub App, so no delivery intake, and made the stream on $nats_url"
@@ -660,8 +857,9 @@ first_start_tip() {
   pass
 }
 
-# Under VERIFICATION_RESULTS_E2E_ONLY=first-start-tip, first-start-tip runs alone.
-if [ "$only_case" != first-start-tip ]; then
+# The cases and the one-pass phases run in a whole run and under the name of one of the seven
+# checks; a head check and first-start-tip run after them, and alone under their own names.
+if [ -n "$attribution" ]; then
   [ -z "$older_rows" ] || older_rows_upgrade
 
   begin dispatch
@@ -688,5 +886,8 @@ if [ "$only_case" != first-start-tip ]; then
   one_pass_phase stores-agree-link
   one_pass_phase limit-of-one
 fi
+[ -z "$head_no_settings" ] || head_check head-no-settings
+[ -z "$head_from_github" ] || head_check head-from-github
+[ -z "$github_outage" ] || head_check github-outage
 [ -z "$first_start_tip" ] || first_start_tip
 run_end

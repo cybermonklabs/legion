@@ -1,0 +1,12 @@
+--- a/packages/envoy/internal/dispatch/delivery/pull_request_heads.go
++++ b/packages/envoy/internal/dispatch/delivery/pull_request_heads.go
+@@ -1590,6 +1590,9 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
+ 		}
+ 		return headRead{}, markHeadNotStored(err)
+ 	}
++	// v-head-from-github's negative control, never a build of the branch: the head taken from the
++	// event in place of GitHub's answer (scripts/e2e/verification-results.sh).
++	pull.Head.SHA = payload["head_sha"]
+ 	// The write waits on a lock of pull_request_reads_owed no longer than the owe beside it does
+ 	// (owedTableBound): its trigger owes a read where two answers of one GitHub second differ, or
+ 	// where the write replaces a newer row no read of GitHub wrote (pull_request_heads_older_read).

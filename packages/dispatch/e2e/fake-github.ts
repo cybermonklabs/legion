@@ -13,11 +13,13 @@ import { harnessPorts } from "./harness-ports";
 // fields of the search and the completion are `searched`, `author`, `created_at`,
 // `merged_at` and `labels`. A pull request with one of them also answers what the
 // completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
-// does once its installation's budget is spent.
+// does once its installation's budget is spent, and one seeded with refused_pulls refuses
+// the read of those pull requests with the status GitHub gives.
 // Tests seed per-repository state through /__fixture/repos and read it back there,
 // and read how many times the server asked for each commit's check runs and for each
-// repository's pull requests, and each call it made, through /__fixture/requests; the
-// server reaches this via DISPATCH_GITHUB_API_BASE.
+// repository's pull requests, and each call it made, through /__fixture/requests. PUT
+// /__fixture/outage takes GitHub down, every call answering one status until DELETE
+// /__fixture/outage. The server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
 
@@ -144,6 +146,18 @@ interface FakeRepo {
    *  its token answers RATE_LIMITED. The installation lookup and the token mint are the App's own
    *  calls, and answer as before. */
   readonly rate_limited?: boolean;
+  /** Pull requests whose read GitHub refuses, by number, with the status it answers: the read of
+   *  the pull request and the read of its commits answer that status with GitHub's words for it,
+   *  404 `Not Found` for a number the repository does not have and 403 `Resource not accessible by
+   *  integration` for a read the App's token may not make. A number not here answers as before. */
+  readonly refused_pulls?: Record<string, number>;
+}
+
+/** GitHub's words for a refused read of a pull request (`refused_pulls`), by status. */
+function refusalMessage(status: number): string {
+  if (status === 404) return "Not Found";
+  if (status === 403) return "Resource not accessible by integration";
+  return "Server Error";
 }
 
 /** Deterministic commit sha for a repository's current files. */
@@ -491,6 +505,13 @@ function callOf(method: string, pathname: string): Call {
   return minted === null ? { route } : { installation: Number(minted[1]), route };
 }
 
+// The status GitHub answers every call with while it is down, or undefined while it answers.
+// PUT /__fixture/outage {status} takes GitHub down, and DELETE /__fixture/outage brings it back: in
+// between, every call of the server's, the App's own installation lookup and token mint included,
+// is logged and answered that status with GitHub's error body, and nothing else is read or counted.
+// The fixture routes and /healthz still answer, so a test sets what GitHub holds during an outage.
+let outage: number | undefined;
+
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
@@ -530,7 +551,28 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
 
+    if (request.method === "PUT" && url.pathname === "/__fixture/outage") {
+      const { status } = (await request.json()) as { status?: unknown };
+      if (typeof status !== "number" || status < 400 || status > 599) {
+        return Response.json(
+          { message: "an outage needs a status from 400 to 599" },
+          { status: 400 }
+        );
+      }
+      outage = status;
+      return Response.json({ outage });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/__fixture/outage") {
+      outage = undefined;
+      return Response.json({ outage: null });
+    }
+
     if (url.pathname === "/healthz") return Response.json({ ok: true });
+    if (outage !== undefined) {
+      logCall(callOf(request.method, url.pathname));
+      return Response.json({ message: "Server Error" }, { status: outage });
+    }
     // A GraphQL query is logged where its body is read, below, with what it asks for.
     if (!(request.method === "POST" && url.pathname === "/graphql")) {
       logCall(callOf(request.method, url.pathname));
@@ -736,11 +778,16 @@ const server = Bun.serve({
 
     // A seeded pull request answers as GitHub does. A stored pull request's attribution read is
     // skipped on a server error, leaving the row as seeded, so an unseeded one answers 500: a 404
-    // would mark it unfetchable and change the delivery data under the test. A pull request that
+    // would mark it unfetchable and change the delivery data under the test. A number the seed
+    // lists in `refused_pulls` answers that status, as GitHub refuses it. A pull request that
     // `completes` selects also answers the fields that the completion of a partial row reads. Its
     // line counts are always 3 added lines and 1 deleted line.
     const pull = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/);
     if (request.method === "GET" && pull !== null) {
+      const refused = repos.get(`${pull[1]}/${pull[2]}`)?.refused_pulls?.[pull[3] ?? ""];
+      if (refused !== undefined) {
+        return Response.json({ message: refusalMessage(refused) }, { status: refused });
+      }
       const seeded = repos.get(`${pull[1]}/${pull[2]}`)?.pulls?.[pull[3] ?? ""];
       if (seeded === undefined) {
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
@@ -775,12 +822,17 @@ const server = Bun.serve({
 
     // A seeded pull request's commits, paged as GitHub pages them (`pageOf`): each one's sha and
     // message, oldest first, the last at the head. `commits_status` answers that status instead,
-    // with GitHub's error body. An unseeded pull request answers 500, as its own read does. Each
-    // commit of a pull request that `completes` selects also has the dates of `commitDatesOf`.
+    // with GitHub's error body. A refused number answers as its own read does (`refused_pulls`),
+    // and an unseeded pull request answers 500, as its own read does. Each commit of a pull request
+    // that `completes` selects also has the dates of `commitDatesOf`.
     const pullCommits = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/commits$/);
     if (request.method === "GET" && pullCommits !== null) {
       const fullName = `${pullCommits[1]}/${pullCommits[2]}`;
       const number = pullCommits[3] ?? "";
+      const refused = repos.get(fullName)?.refused_pulls?.[number];
+      if (refused !== undefined) {
+        return Response.json({ message: refusalMessage(refused) }, { status: refused });
+      }
       const seeded = repos.get(fullName)?.pulls?.[number];
       if (seeded === undefined) {
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
