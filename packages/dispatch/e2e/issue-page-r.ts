@@ -745,13 +745,21 @@ export async function proseRowGate(page: Page, key: string): Promise<Gate> {
   const size = page.viewportSize() ?? DESKTOP;
   await page.setViewportSize(DESKTOP);
   await gotoIssue(page, presetPath(key, "graph"));
-  const drawn = await settledState("Graph's rows under the criterion", [
-    ["prose row", readRow(page, prose.id).first()],
-    ["no prose row", readRow(page, statement.id).first()],
-  ]);
+  await expect(
+    readRow(page, statement.id).first(),
+    "Graph drew no third statement row"
+  ).toBeVisible();
+  // The third statement's row is visible, so Graph has already committed every row from this read.
+  const drawn = await issuePage(page).evaluate(
+    (root, id) =>
+      [...root.querySelectorAll("[data-node-row]")].some(
+        (row) => row.getAttribute("data-node-read-id") === id
+      ),
+    prose.id
+  );
   await page.setViewportSize(size);
   return {
-    met: drawn === "prose row",
+    met: drawn,
     owed:
       "owed until part T's prose draft step is on this branch's base (proseRowGate): Graph " +
       `draws no row for the seeded prose block here; ${OWED_BY}`,
