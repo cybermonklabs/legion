@@ -146,6 +146,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // action.
   const landed = useRef<{
     at: number | null;
+    going: ReadonlySet<string>;
     id: string;
     last: string | null;
     spent: ScrollPlaces;
@@ -229,8 +230,16 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     const { leaving } = list;
     const order = list.order();
     // The press's rows are still going: read it again when they have gone, and spend none of the
-    // readings on the wait, which is as long as the write is.
-    if (leaving !== undefined && order.some((row) => leaving(row))) {
+    // readings on the wait, which is as long as the write is. The rows the list named as leaving
+    // when the landing was made are waited for by name as well: a list stops naming such a row
+    // before its own read takes it away (the Inbox's `dismissedHere`), and a reading that landed
+    // on one in that window would hold it on the page, since a list keeps a row the reader's hand
+    // is in (`features/inbox/Inbox.tsx`'s `heldRow`), so the going could never finish.
+    const { going } = landing;
+    const stillGoing =
+      order.some((row) => going.has(row)) ||
+      (leaving !== undefined && order.some((row) => leaving(row)));
+    if (stillGoing) {
       readings.current = 0;
       again();
       return;
@@ -307,9 +316,15 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   useLayoutEffect(finish);
   /** Records a landing, by the row of the mark it is on, and sees it read again as the hand-off's
    *  own landings are. */
-  const owe = (id: string, at: number | null, last: string | null, spent: ScrollPlaces): void => {
+  const owe = (
+    id: string,
+    at: number | null,
+    last: string | null,
+    spent: ScrollPlaces,
+    going: ReadonlySet<string>
+  ): void => {
     forget();
-    landed.current = { at, id, last, spent };
+    landed.current = { at, going, id, last, spent };
     const acted = new AbortController();
     for (const kind of READER_ACTS) {
       document.addEventListener(kind, forget, {
@@ -325,6 +340,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     const last = list.lastMarked();
     const order = list.order();
     const kept = order.filter((id) => list.leaving?.(id) !== true);
+    // The rows this press is taking away, by name: the reading waits for each of them to go before
+    // it reads the landing against the list and the box they leave behind.
+    const going = new Set(order.filter((id) => list.leaving?.(id) === true));
     const listed = last !== null && kept.includes(last);
     const landing = onceGone(order, list);
     const head = list.head?.() ?? null;
@@ -340,7 +358,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       // The landing is finished once this press's rows and the bar have gone (above), and the
       // reader's own next action takes that reading back: a press, a key or a wheel of theirs
       // means they have moved on, and where they are is theirs.
-      owe(id, viewScrollOf(mark), last, spent);
+      owe(id, viewScrollOf(mark), last, spent, going);
       return true;
     }
     if (listed) return false;
@@ -351,7 +369,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     land,
     own: (id: string, spent: ScrollPlaces) => {
       const mark = list.control(id);
-      owe(id, mark === null ? null : viewScrollOf(mark), list.lastMarked(), spent);
+      const order = list.order();
+      owe(
+        id,
+        mark === null ? null : viewScrollOf(mark),
+        list.lastMarked(),
+        spent,
+        new Set(order.filter((row) => list.leaving?.(row) === true))
+      );
     },
   };
 }
