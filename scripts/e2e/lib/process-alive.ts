@@ -14,15 +14,27 @@ export function aliveBy(read: StatRead): (pid: number) => boolean {
     } catch {
       return false;
     }
-    return !read(`/proc/${pid}/stat`)
-      .replace(/^.*\) /, "")
-      .startsWith("Z");
+    const stat = statOf(pid, read);
+    return stat !== undefined && !stat.replace(/^.*\) /, "").startsWith("Z");
   };
+}
+
+/** `pid`'s stat line, or undefined where the process ended before the read. */
+function statOf(pid: number, read: StatRead): string | undefined {
+  try {
+    return read(`/proc/${pid}/stat`);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
+    throw error;
+  }
 }
 
 /**
  * Whether `pid` names a running process: one that answers signal 0 and whose state in
  * `/proc/<pid>/stat` is not `Z`. A zombie still answers signal 0, and it is gone for every purpose
- * of a row.
+ * of a row. A process that ends between the signal and the read leaves no stat file, and the read
+ * fails with `ENOENT` or `ESRCH`: that process is gone too. Any other failure of the read, such as
+ * a `/proc` this process may not read, says nothing about the process, so it throws.
  */
 export const alive = aliveBy((path) => readFileSync(path, "utf8"));

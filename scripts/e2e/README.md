@@ -7336,6 +7336,8 @@ A harness shell makes the same root for itself with one `ln -s` an entry, as `li
 ## lib/process-alive.ts
 
 `alive(pid)` says whether a process a row started is still running: it answers signal 0, and `/proc/<pid>/stat` names a state other than `Z`, since a zombie still answers signal 0.
+A process that ends between the signal and the read leaves no stat file, and the read fails with `ENOENT` or `ESRCH`: `alive` returns false for it, and throws on any other failure of the read, which says nothing about the process.
+`lib/process-alive.test.ts` forces that race with a read that fails after the signal has succeeded.
 `lib/parked-decision-teardown.test.ts` waits on it for a pane, a broker and a broker's session to end.
 
 ## lib/process-tree.sh
