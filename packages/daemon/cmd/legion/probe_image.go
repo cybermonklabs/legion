@@ -103,9 +103,9 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // (promptrefs.Encode's encoding, decoded as the flags are read). Without it, the probe resolves the
 // references of the role prompts this binary embeds (prompts.RoleReferences). When its environment
 // names a NATS nkey seed (a probe pod's NATS_NKEY_SEED_FILE, the providers Secret's key), that seed
-// is read as the daemon reads its own (natsauth.Seed) and must be a user's, and the line before the
-// OK line names that user's public key (bootprobe.NATSUserLine), never the seed, for the daemon to
-// compare with its own. With --role-namespaces, which the probe Sandbox passes and the image build
+// is read as the daemon reads its own (natsauth.Seed) and must be a user's, and the user line,
+// which comes before the shipped line and the OK line, names that user's public key
+// (bootprobe.NATSUserLine), never the seed, for the daemon to compare with its own. With --role-namespaces, which the probe Sandbox passes and the image build
 // does not (a build's container may not make the namespaces), it first runs one role generation as
 // an issue pod's launcher runs every role, its own `legion version` as the shim, over a layout of
 // its own in that directory (launcher.CheckRoleNamespaces), and refuses, exit 1, when the
