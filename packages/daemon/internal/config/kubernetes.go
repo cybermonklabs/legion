@@ -285,7 +285,8 @@ type PluginsConfig struct {
 	PiLegion, PiEnvoy string
 }
 
-// Scheduling is where the pods may run beyond the Legion pool, which the runtime selects itself.
+// Scheduling is where the pods may run on the cluster's general nodes, which they share: the node
+// labels every pod selects, the taints it tolerates and its priority class.
 type Scheduling struct {
 	NodeSelector  map[string]string
 	Tolerations   []Toleration
@@ -452,8 +453,8 @@ const (
 	kubernetesKey      = "runtime.kubernetes"
 	podKey             = kubernetesKey + ".pod"
 	defaultIssueVolume = "50Gi"
-	// poolLabel is the node label that selects the Legion pool. The runtime sets it on every pod,
-	// and the cluster's admission policy requires its value.
+	// poolLabel is the node label of the retired Legion pool, which set Legion's pods apart from
+	// the cluster's general nodes. Legion's pods share those nodes, so a selector may not name it.
 	poolLabel = "legion.dev/pool"
 )
 
@@ -2246,8 +2247,9 @@ func readScheduling(value *yaml.Node) (Scheduling, error) {
 	return scheduling, nil
 }
 
-// readNodeSelector is a mapping of label to value, merged by the runtime over the Legion pool's own
-// label, which it may not name: the admission policy requires the pool's value.
+// readNodeSelector is a mapping of label to value, which the runtime gives every pod as written (a
+// microVM pod its own ComputeClass in place of any class this names), and which may not name the
+// Legion pool's label: Legion's pods share the cluster's general nodes.
 func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 	if value == nil {
 		return nil, nil
@@ -2264,7 +2266,7 @@ func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 			return nil, refusal
 		}
 		if label == poolLabel {
-			return nil, fmt.Errorf("%s must not set %s: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value", key, poolLabel)
+			return nil, fmt.Errorf("%s must not set %s: Legion's pods share the cluster's general nodes, and the retired Legion pool's label would set them apart on nodes of their own", key, poolLabel)
 		}
 		if _, exists := selector[label]; exists {
 			return nil, fmt.Errorf("%s names %s twice", key, label)

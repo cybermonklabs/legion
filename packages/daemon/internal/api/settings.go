@@ -42,7 +42,10 @@ type Settings struct {
 	StateDir      string          `json:"state_dir"`
 	Runtime       RuntimeSettings `json:"runtime"`
 	// AdmissionCap is the cap; `admission.cap` carries the same value, read from the same configuration.
-	AdmissionCap     int    `json:"admission_cap"`
+	AdmissionCap int `json:"admission_cap"`
+	// AdmissionP0Bound is legion.yaml's P0 bound, absent while the file gives none; the bound in
+	// force, which a value set while the daemon runs may replace, is `admission.p0Bound`.
+	AdmissionP0Bound *int   `json:"admission_p0_bound,omitempty"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`
 	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then, and otherwise
@@ -559,6 +562,7 @@ func SettingsOf(cfg config.Config) Settings {
 		StateDir:                                cfg.StateDir,
 		Runtime:                                 RuntimeSettings{Name: cfg.Runtime.Name, Kubernetes: kubernetesSettingsOf(cfg.Runtime.Kubernetes), Tmux: tmuxSettingsOf(cfg.Runtime.Tmux)},
 		AdmissionCap:                            cfg.AdmissionCap,
+		AdmissionP0Bound:                        cfg.AdmissionP0Bound,
 		DaemonURL:                               endpointOf(cfg.DaemonURL),
 		WorkerStreamPort:                        cfg.WorkerStreamPort,
 		OmpInvocation:                           cfg.OmpInvocation,

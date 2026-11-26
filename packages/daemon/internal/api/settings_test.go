@@ -58,6 +58,7 @@ var settingsEmitted = map[string]string{
 	"Config.StateDir":                                "state_dir",
 	"Config.Runtime":                                 "runtime",
 	"Config.AdmissionCap":                            "admission_cap",
+	"Config.AdmissionP0Bound":                        "admission_p0_bound",
 	"Config.DaemonURL":                               "daemon_url",
 	"Config.WorkerStreamPort":                        "worker_stream_port",
 	"Config.OmpInvocation":                           "omp_invocation",
@@ -367,7 +368,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// (a) The top level: every key of the table, omp_invocation apart, which the loader refuses
 	// under runtime kubernetes.
 	wantTop := []string{
-		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
+		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "admission_p0_bound", "daemon_url",
 		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "private_name_rules_file",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",

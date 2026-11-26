@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
@@ -259,8 +260,8 @@ func main() {
 	// (config.ProxyMintedRules): every broker with an airlock port serves every minted grant of
 	// the database it shares, so a pod that grants none still sends a grant's token, and a proof
 	// of its own key, to every host a dpop block binds. Each binds one exact host, a private
-	// destination's, with an allow list, in Authorization alone, and no kind binds that host;
-	// each destination needs a dpop block to bind its host.
+	// destination's, with an allow list, in Authorization alone, and no kind binds that host; each
+	// destination needs a dpop block to bind its host.
 	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
 	// The approve capability, from the dpop block named oauth.ApproveName: a person's sign-in is
 	// traded for its placeholder, and the proxy mints a token for the grant on each pod at the
@@ -268,29 +269,24 @@ func main() {
 	// spends it while the grant lives. A file with no such block serves none.
 	approve, approveServed := approveCapabilityOf(profiles, fileRules, cfg.ProxyPrivateUpstreams)
 	logApproveCapability(approve, approveServed)
-	// And the proxy's certificate authority, built in the same breath and refused the same way:
-	// the key beside the certificate, which the proxy port signs each bound host's certificate
-	// with, and the certificate itself, which every release of a name a proxy block holds back
-	// hands the command as the one thing it trusts the proxy by. It is the last thing about the
-	// airlock that can refuse a boot - a file that is not a certificate, a key that is not that
-	// certificate's, or a certificate that is no authority would leave every bound host's
-	// handshake failing for every command, found out one command at a time - so it is read
-	// before the database is migrated, before the socket is bound and before anything reaches
-	// for AWS. nil for a deployment with no airlock, which binds no proxy port.
+	// And the proxy's certificate authority, built in the same breath and refused the same way.
+	// With BROKER_PROXY_CA_POOL it starts with no certificate and asks the pool for this pod's
+	// intermediate at once, beside the rest of the boot, renewing it for as long as the process
+	// runs; until the first answer it signs nothing and GET /healthz answers 503 NO_INTERMEDIATE.
+	// Without the pool it is the mounted pair, and the last thing about the airlock that can
+	// refuse a boot - a file that is not a certificate, a key that is not that certificate's, a
+	// chain that reaches no root, or a certificate that could sign no trusted leaf for a bound
+	// host would leave every such handshake failing for every command, found out one command at
+	// a time - so it is read before the database is migrated, before the socket is bound and
+	// before anything reaches for AWS. nil for a deployment with no airlock, which binds no proxy
+	// port. What a release hands the command is the authority's roots (ReleaseRoots), encoded from
+	// the certificates this process signs under rather than read out of a file again, so a file
+	// that held a key beside its certificate hands every command nothing more.
 	var airlockCA *proxy.Authority
 	if len(proxied) > 0 {
-		if airlockCA, err = proxy.NewAuthority(cfg.AirlockCACertFile, cfg.AirlockCAKeyFile); err != nil {
-			// Named by the two variables an operator sets, since what the refusal under this
-			// is about is the files they name.
-			fatal(fmt.Errorf("BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE: %w", err))
-		}
+		airlockCA, err = proxyAuthority(ctx, cfg, fileRules)
+		fatal(err)
 	}
-	// What a release hands the command: the authority's own certificate, encoded from the
-	// certificate this process signs with rather than read out of the file again. A file is
-	// bytes an operator put there - a combined PEM holding the certificate and its key is one
-	// the authority above accepts - and a second reader of it would hand every command whatever
-	// else the file holds, the key with which any host's certificate could be signed among it.
-	airlockCACertificate := airlockCACertificatePEM(airlockCA)
 	// And the extra roots the proxy verifies a service's certificate against on its own calls
 	// upstream, which a local stack points at the certificate of its stand-in services. It is
 	// read here with the files above and refused the same way: a file that is not a
@@ -555,7 +551,7 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, airlockCACertificate, secrets.NewRetry(registry), dispatch, groupReader)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, airlockCA, secrets.NewRetry(registry), dispatch, groupReader)
 	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
@@ -569,7 +565,7 @@ func main() {
 	var approveSettings *oauth.ApproveSettings
 	if approveServed {
 		reqMachine.Minted = append(reqMachine.Minted, approve.kind(oauthStore))
-		approveSettings = approve.settings(cfg.AirlockProxyURL, airlockCACertificate)
+		approveSettings = approve.settings(cfg.AirlockProxyURL, airlockCA.ReleaseRoots)
 	}
 	// The one table that says which principal holds a session name is written by both of the
 	// things that name a session: the token exchange, at every token it mints, and an
@@ -803,6 +799,11 @@ func main() {
 		// The NATS writer hold's routes, which admit the operator entry alone, with the auth
 		// service's own verifier of its token, and store only what one of its keys signed.
 		NATSHold: holdRoutes(cfg, st, holdSchema, cfg.NATS.Services, natsTokens, holdFloor),
+	}
+	// A pod whose proxy holds no intermediate it may sign with is not ready: it would fail every
+	// bound host's handshake.
+	if airlockCA != nil {
+		deps.ProxyReady = airlockCA.Ready
 	}
 	api.Register(mux, deps)
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
@@ -1172,15 +1173,15 @@ func publicURLPortZero(publicURL string) bool {
 	return err == nil && port == 0
 }
 
-// refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's ten and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
-// a local run, as the port-0 refusal above does and for the same reason: each of them points
-// the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
-// a check the airlock or the judge is made of, so one reaching a real deployment must fail
-// loudly at boot rather than quietly serve a broker that is not the one the operator
-// configured. The refusal names the variable it found, since an operator reads which of its
-// settings it has to take out. Extracted from main so a test can drive it directly instead of
-// through fatal, which calls os.Exit.
+// refuseAirlockTestSettingsInProduction refuses every setting of the airlock's local stand-ins:
+// the ten BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's one, unless
+// BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and for the
+// same reason: each points the broker at a stand-in, lets it dial an address no production proxy
+// may dial, moves its clock, or turns off a check the proxy or the judge is made of. One reaching
+// a real deployment must fail loudly at boot rather than quietly serve a broker that is not the
+// one the operator configured. The refusal names the variable it found, since an operator reads
+// which of its settings it has to take out. Extracted from main so a test can drive it directly
+// instead of through fatal, which calls os.Exit.
 func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile string) error {
 	if fakeSecretsFile != "" {
 		return nil
@@ -1199,6 +1200,9 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
+		{"BROKER_PROXY_TEST_CA_URL", cfg.ProxyTestCAURL != ""},
+		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", cfg.ProxyTestClockOffsetFile != ""},
+		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", cfg.ProxyTestRenewalMargin != nil},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1231,6 +1235,105 @@ func readAirlockTestUpstreamRoots(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE %s: holds no PEM certificate", path)
 	}
 	return pool, nil
+}
+
+// proxyAuthority is the proxy's certificate authority as the settings name it, on rules' bound
+// hosts: with BROKER_PROXY_CA_POOL, one that asks that pool for this pod's intermediate on ctx
+// from now on and renews it (proxy.Authority.Intermediates), with the pod's own Google credential
+// or, at the local stand-in BROKER_PROXY_TEST_CA_URL names, none; without it, the mounted pair,
+// read now and refused now. Either way every release carries BROKER_PROXY_RELEASE_ROOTS_FILE's
+// roots beside its own, and BROKER_PROXY_TEST_CLOCK_OFFSET_FILE moves its clock. Each refusal
+// names the setting it is about.
+func proxyAuthority(ctx context.Context, cfg config.Config, rules proxyrules.Rules) (*proxy.Authority, error) {
+	releaseRoots, err := readProxyReleaseRoots(cfg.ProxyReleaseRootsFile)
+	if err != nil {
+		return nil, err
+	}
+	options := proxy.AuthorityOptions{ReleaseRoots: releaseRoots, Hosts: boundHosts(rules), Log: slog.Default()}
+	if cfg.ProxyTestClockOffsetFile != "" {
+		clock, err := proxy.NewOffsetFileClock(cfg.ProxyTestClockOffsetFile)
+		if err != nil {
+			return nil, fmt.Errorf("BROKER_PROXY_TEST_CLOCK_OFFSET_FILE: %w", err)
+		}
+		options.Clock = clock
+	}
+	if cfg.ProxyCAPool == "" {
+		authority, err := proxy.NewAuthority(cfg.AirlockCACertFile, cfg.AirlockCAKeyFile, options)
+		if err != nil {
+			// Named by the two variables an operator sets, since what the refusal is about is
+			// the files they name.
+			return nil, fmt.Errorf("BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE: %w", err)
+		}
+		slog.Info("proxy certificate authority", "source", "mounted", "release_roots", len(releaseRoots))
+		return authority, nil
+	}
+	pool := proxy.Pool{Name: cfg.ProxyCAPool, Endpoint: cfg.ProxyTestCAURL}
+	if pool.Endpoint == "" {
+		pool.Token = &secrets.OwnGoogleCredential{}
+	}
+	renewBefore := proxy.IntermediateRenewBefore
+	if cfg.ProxyTestRenewalMargin != nil {
+		renewBefore = *cfg.ProxyTestRenewalMargin
+	}
+	authority := proxy.NewPoolAuthority(options)
+	slog.Info("proxy certificate authority", "source", "pool", "pool", cfg.ProxyCAPool, "renew_before", renewBefore.String(),
+		"release_roots", len(releaseRoots))
+	go authority.Intermediates(ctx, pool, renewBefore)
+	return authority, nil
+}
+
+// readProxyReleaseRoots is BROKER_PROXY_RELEASE_ROOTS_FILE's roots, none for an empty path. A
+// file that cannot be read, holds no PEM certificate, holds a block of any other kind - a key
+// among them, which would otherwise ride in every release - or a certificate that is no
+// certificate authority refuses the boot, naming the setting.
+func readProxyReleaseRoots(path string) ([]*x509.Certificate, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("BROKER_PROXY_RELEASE_ROOTS_FILE: %w", err)
+	}
+	var roots []*x509.Certificate
+	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("BROKER_PROXY_RELEASE_ROOTS_FILE %s: block %d is a %s, and the file holds root certificates alone", path, len(roots)+1, block.Type)
+		}
+		root, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("BROKER_PROXY_RELEASE_ROOTS_FILE %s: certificate %d: %w", path, len(roots)+1, err)
+		}
+		if !root.IsCA {
+			return nil, fmt.Errorf("BROKER_PROXY_RELEASE_ROOTS_FILE %s: certificate %d (%s) is no certificate authority", path, len(roots)+1, root.Subject)
+		}
+		roots = append(roots, root)
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("BROKER_PROXY_RELEASE_ROOTS_FILE %s: holds no PEM certificate", path)
+	}
+	return roots, nil
+}
+
+// boundHosts is every host a kind or inline dpop binding of rules binds, each once, in rules'
+// order: the hosts the proxy signs a leaf for, which its certificate must be able to sign for.
+func boundHosts(rules proxyrules.Rules) []string {
+	var hosts []string
+	add := func(names []string) {
+		for _, host := range names {
+			if !slices.Contains(hosts, host) {
+				hosts = append(hosts, host)
+			}
+		}
+	}
+	for _, kind := range rules.Kinds {
+		add(kind.Hosts)
+	}
+	for _, binding := range rules.Names {
+		if binding.Inline != nil {
+			add(binding.Inline.Hosts)
+		}
+	}
+	return hosts
 }
 
 // airlockTestResolver is BROKER_AIRLOCK_TEST_RESOLVE as the proxy's Resolve: the address the
@@ -1385,23 +1488,6 @@ func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscall
 	return mux
 }
 
-// airlockCACertificatePEM is the certificate every airlock release hands a command: the
-// authority's own certificate, encoded here from the certificate this process signs with. A
-// deployment with no airlock has no authority and answers "".
-//
-// It is encoded rather than read from BROKER_AIRLOCK_CA_CERT_FILE because that file is whatever
-// an operator mounted: a PEM holding the certificate and its private key together is a file the
-// authority accepts - tls.LoadX509KeyPair takes the certificate block and leaves the rest - and
-// a reader that answered the file's bytes would put that key in every release, with which any
-// host's certificate could be signed and would be trusted by every command the broker released
-// to. What a command needs is the one certificate it verifies the proxy by, and that is this.
-func airlockCACertificatePEM(ca *proxy.Authority) string {
-	if ca == nil {
-		return ""
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Certificate().Raw}))
-}
-
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
@@ -1409,10 +1495,11 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
 // login acts for, and, for each google-service-account secret, the one account the deployment
 // binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
-// request signed, or until its session ends. caCertificate is the airlock's authority, read at
-// boot: a name its secret's proxy tag puts behind a kind of the profiles file is released as
-// placeholders (the machine reads the airlock's rules from the live policy), and every such
-// release carries the proxy's URL and this certificate. retry is the one retry policy and
+// request signed, or until its session ends. A name its secret's proxy tag puts behind a kind of
+// the profiles file is released as placeholders (the machine reads the airlock's rules from the
+// live policy), and every such release carries the proxy's URL and the authority's roots as they
+// are at that release (ReleaseRoots), since a pod on a pool learns its root from its first
+// intermediate. retry is the one retry policy and
 // process-wide retry budget of the three minters that call an upstream over HTTP (main's is
 // secrets.NewRetry on the process's registry, which broker_mint_attempts_total is counted on), so
 // a GitHub brownout that spends the budget leaves a Google mint's failure unretried too: each
@@ -1421,7 +1508,7 @@ func airlockCACertificatePEM(ca *proxy.Authority) string {
 // names a Legion pod's issue's assignee, whose Inbox lists that pod's request for a shared secret.
 // groupReader is the broker's one reader of group members (newGroupReader), which the machine's
 // decisions, revokes and lists and its chain check ask who is a member of a group.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), ca *proxy.Authority, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
@@ -1461,9 +1548,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
 		// endpoint and retry. A github-installations token has no give-back: it is the token the
 		// secret stores, which every other release of it hands over too.
-		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
-		AirlockProxyURL:      cfg.AirlockProxyURL,
-		AirlockCACertificate: caCertificate,
+		GiveBacks:       map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
+		AirlockProxyURL: cfg.AirlockProxyURL,
+		ProxyRoots:      ca.ReleaseRoots,
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
