@@ -55,6 +55,8 @@ export function checkStateSentence(payload: CheckStateChangedEventPayload): stri
   }
   const reason = payload.reason === "" ? "" : ` (${payload.reason})`;
   return `check ${payload.check} reads ${payload.state}${reason} at ${head}`;
+}
+
 /**
  * A delivery receipt's line, a message's and a comment mention's alike. A queued attempt reads as
  * queued, a queued repeat included: the listener holds it for a session that is not running. Any

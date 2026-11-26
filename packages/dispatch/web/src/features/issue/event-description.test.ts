@@ -603,6 +603,8 @@ test("the issue log line for a check's state at a head, and for a head's set of 
       })
     )
   ).toEqual([`Head ${checkStateHead} of #70 has no check`]);
+});
+
 // A delete appends one failed receipt per send of its post it ended, with its own words. That
 // receipt is no failed send: the line says the post's delete ended the send, as the Activity
 // tab's does, while any other failure still reads as failed.
