@@ -166,7 +166,8 @@ func (e *accessEpoch) stamp() (moves uint64, kept bool) {
 // SetRosterRefresh sets what refreshes the stored listener answer before a read of which rooms a
 // person still reads (readableRooms, through refreshRosterForReader): the session content rule,
 // which a session's documents follow, reads a listener list only from a stored answer that has
-// not passed its expires_at. The API sets it once, as it mounts the sockets.
+// not passed its expires_at. At this slice only tests set it: slice S3c-issues' API sets it once,
+// as it mounts the sockets.
 func (s *Service) SetRosterRefresh(refresh func(context.Context)) {
 	s.rosterRefresh.Store(&refresh)
 }

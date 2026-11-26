@@ -6,7 +6,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 )
 
-// RouteProbe is one route-table row as e2e/acceptance/project-access.sh (c-private-unseen) probes
+// RouteProbe is one route-table row as a driver that walks the table (cmd/routeprobes) probes
 // it: the object each wildcard of its pattern is filled with, once with the private project's own
 // object of that kind and once with an id of that kind nobody holds, and the body a write sends
 // with both fills; or, for a row that reads no row a caller's access decides, the private
@@ -28,7 +28,7 @@ type RouteProbe struct {
 	// and empty for every other row. Such a row has no Probe; the driver holds it to its class's
 	// refusal of every caller that is not open, sending Body.
 	NoProject string `json:"no_project,omitempty"`
-	// Classes is a GET row's read classes, as readClasses gives them, and absent for a write. A
+	// Classes is a GET row's read classes, as readSources gives them, and absent for a write. A
 	// row whose only class is none reads no row a caller's access decides, so it answers every
 	// caller alike, and the answer for the private project's own object can rightly differ from
 	// the answer for an id nobody holds: the driver fills it with the private project's objects
@@ -37,7 +37,7 @@ type RouteProbe struct {
 }
 
 // RouteProbes is every row of the route table, test hooks included, in table order, with its
-// Probe: a GET row's from readClasses, a write row's and its body from writeProbes. A row whose
+// Probe: a GET row's from readSources, a write row's and its body from writeProbes. A row whose
 // Probe no table gives answers a null Probe. internal/dispatch/api/cmd/routeprobes prints it as
 // JSON for the driver, which therefore reads the table the server mounts rather than a list of
 // its own.

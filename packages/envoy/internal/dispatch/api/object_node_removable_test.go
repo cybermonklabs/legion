@@ -49,7 +49,7 @@ func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
 			if err != nil {
 				return errShapeRefused{err}
 			}
-			artifact, err := loadArtifactRowByID(ctx, tx, model.ServerReader, id)
+			artifact, err := loadArtifactRowByID(ctx, tx, everyReader, id)
 			if err != nil {
 				return err
 			}

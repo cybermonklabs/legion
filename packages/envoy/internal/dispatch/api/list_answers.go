@@ -186,18 +186,16 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 
 // keepsListAnswerFor reports whether a list answer read for who may be kept here and handed to the
 // next reader whose request names the same key, and whether such a reader may be handed one. The
-// answer's bytes turn on what who sees: the sessions a comment's mentions and deliveries name and
-// the references an event's payload and its backlink counts name are left out or counted by the
-// access clauses, and those read rows of their own beside the viewer - a session's pairs, its
-// listener record, the fill marker, its reached projects - which move with no write to the list
-// and so with no move of its validator, while the key names only the viewer itself
-// (commentListViewOf, keptViewOf). A session that becomes hidden from alice after she read a list
-// would then be handed back to her from the kept bytes. So while a project is private no answer is
-// kept for a reader that does not see every object (seesEveryObject), and every such read builds
-// its own; a reader that sees every object reads every object whatever those rows hold, and keeps
-// as before. A deployment that holds no private project keeps every answer as before (R9), as
-// does a nil viewer's, which reads nothing of any project. What this costs the readers it holds
-// back is measured by TestAKeptListServesNoReaderWhoseViewMovedUnderIt's report.
+// answer's bytes turn on what who sees: the references an event's payload and its backlink counts
+// name are counted by the access clauses, and those read rows of their own beside the viewer - a
+// session's pairs, its listener record, the fill marker, its reached projects - which move with no
+// write to the list and so with no move of its validator, while the key names only the viewer
+// itself (keptViewOf). A session that becomes hidden from alice after she read a list would then
+// be handed back to her from the kept bytes. So while a project is private no answer is kept for a
+// reader that does not see every object (seesEveryObject), and every such read builds its own; a
+// reader that sees every object reads every object whatever those rows hold, and keeps as before.
+// A deployment that holds no private project keeps every answer as before (R9), as does a nil
+// viewer's, which reads nothing of any project.
 func keepsListAnswerFor(who model.Actor) bool {
 	return seesEveryObject(who) || who.Viewer == nil || !who.Viewer.AnyPrivate
 }
