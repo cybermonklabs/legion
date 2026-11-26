@@ -488,11 +488,11 @@ check "and says how many forms it ran and found" \
   "$(contains "$gen_out" '^shell_reader_forms: [0-9]* forms for each of 3 readers; bash runs the client in [1-9][0-9]* (release), [1-9][0-9]* (guard) and [1-9][0-9]* (stderr, .*); 0 regression(s); [0-9]* missed by this tree, 0 of them unlisted; ')"
 # The stderr reader reads by the line and knows no control flow, so it names a loose call in some
 # forms where bash keeps the client's stdout in (an uncalled function, `if false`, a multi-line
-# substitution, a function `timeout` cannot run). It may name no more than it did when this bound
-# was set (253 of 1449 forms): a change that makes it refuse more correct steps fails here, and a
-# change to the generator's forms resets the bound to what it then names.
+# substitution, a non-arithmetic `$((` derailer, a runner by path). It may name no more than it did
+# when this bound was set (1647 of 8397 forms): a change that makes it refuse more correct steps
+# fails here, and a change to the generator's forms resets the bound to what it then names.
 over=$(printf '%s\n' "$gen_out" | sed -n 's/.*the stderr reader names a loose call in \([0-9]*\) forms.*/\1/p')
-check "and the stderr reader over-reads in no more than 253 forms" "$([ -n "$over" ] && [ "$over" -le 253 ] && echo true || echo "false: $over")"
+check "and the stderr reader over-reads in no more than 1647 forms" "$([ -n "$over" ] && [ "$over" -le 1647 ] && echo true || echo "false: $over")"
 mkdir -p "$work/gen-control/scripts"
 cp "$script_dir/shell_reader_forms.py" "$script_dir/check-log-guard.sh" "$work/gen-control/scripts/"
 cp "$repo/.github/shell-reader-misses.tsv" "$work/gen-control/"

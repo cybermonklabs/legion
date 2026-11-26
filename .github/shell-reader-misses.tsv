@@ -31,12 +31,19 @@ trap-fires/*	stderr	a ci_log_guard_stderr call in a string a trap runs is text t
 */array-read	stderr	read -ra fills the array at run time from its input, which this reader does not read as a call
 */array-element-assigned-after-decoy	stderr	the call is assembled from an array's values and an element assignment (a[0]=ci_log_guard_stderr), which this reader, reading a call only where the step writes it, does not assemble
 */array-element-negative	release	a negative array index (a[-2]=cmd) is arithmetic the reader does not evaluate
-*/array-element-negative	guard	a negative array index (a[-2]=curl) is arithmetic the reader does not evaluate
 */array-element-arithmetic	release	an arithmetic array index (a[1-1]=cmd) is not a numeric index the reader reads
 */array-element-arithmetic	guard	an arithmetic array index (a[1-1]=curl) is not a numeric index the reader reads
-*/array-element-appended	release	an element append (a[0]+=cmd) concatenates text into an array value the reader does not model
-*/array-element-appended	guard	an element append (a[0]+=curl) concatenates text into an array value the reader does not model
 */alias-compound-text	release	an alias text with a shell operator (cd . && bunx) holds more than one command, which this reader does not split as shell
 */alias-compound-text	guard	an alias text with a shell operator (cd . && curl) holds more than one command, which this reader does not split as shell
 */alias-after-reserved	release	an alias after a reserved word (if b) is outside this reader's alias command position
 */alias-after-reserved	guard	an alias after a reserved word (if b) is outside this reader's alias command position
+path/*/ionice/*	release	a command behind a runner other than env, exec and time, reached by path (ionice), is the runner's to this check, which accepts that pass-through (its header: xargs, nohup)
+path/*/nice/*	release	a command behind a runner other than env, exec and time, reached by path (nice), is the runner's to this check, which accepts that pass-through (its header: xargs, nohup)
+path/*/nohup/*	release	a command behind a runner other than env, exec and time, reached by path (nohup), is the runner's to this check, which accepts that pass-through (its header: xargs, nohup)
+path/*/setsid/*	release	a command behind a runner other than env, exec and time, reached by path (setsid), is the runner's to this check, which accepts that pass-through (its header: xargs, nohup)
+path/*/unshare/*	release	a command behind a runner other than env, exec and time, reached by path (unshare), is the runner's to this check, which accepts that pass-through (its header: xargs, nohup)
+path/*/xargs/*	release	a command behind xargs, reached by path, is the pass-through this check's header accepts
+*/array-element-arithmetic	stderr	an arithmetic array index (a[1-1]=ci_log_guard_stderr) is not a numeric index this reader reads
+nonarithmetic/eval-*	stderr	a ci_log_guard_stderr call in a string eval runs is text to this reader, which reads a call only where the step writes it
+nonarithmetic/trap-fires/*	stderr	a ci_log_guard_stderr call in a string a trap runs is text to this reader, which reads a call only where the step writes it
+path/*/flock/interpreter-path	stderr	a call flock runs through its -c string is not one this by-line reader follows
