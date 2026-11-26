@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -684,13 +685,19 @@ func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 // test releases it (releaseRestartAtGiveUp), so an install that returns only after that release
 // waited for the restart to return.
 //
-// Install returns within installReturnsWithin of its start, less only the time the machine held
-// its systemctl calls between install's exec of each and the call's first line
-// (systemctlStart.held): the kernel and the stand-in spend that time, install cannot cause it, and
-// a loaded machine can stretch it past any bound. Every other part of the span is install's own,
-// so an install that spends that long before its restart, or anywhere else, fails every run, as
-// it failed main's. The restart's own call is not counted: its timeout runs from before install
-// execs it, so a late start of it holds install up no longer.
+// Install returns within installReturnsWithin of its start, less the time the machine held some
+// of its systemctl calls between install's exec of each and the call's first line
+// (systemctlStart.held): the kernel and the stand-in spend that time, and a loaded machine can
+// stretch it past any bound. Only the calls of a fixed set are taken off, each at most as many
+// times as the set names it (outlivedRestartCalls): the calls a correct install makes here but the
+// restart. Install chooses how many calls it makes, so a call past the set, held time and all, is
+// install's own, and so is every other part of the span: an install that spends past the bound,
+// on more calls or anywhere else, fails as it failed main's, with only the set's held time taken
+// off. Each call's held time is also read only to the tick, and half a tick high on average under
+// gVisor, whose /proc/uptime rounds to the tick where Linux's truncates while starttime truncates
+// on both: summed over calls install chooses, that half tick grows with their number, and over the
+// set it stays within a few ticks. The restart's own call is not in the set: its timeout runs from
+// before install execs it, so a late start of it holds install up no longer.
 func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	r := newInstallRig(t)
 	shortenRestartTimeout(t)
@@ -707,16 +714,18 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	if released() {
 		t.Fatalf("install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", err)
 	}
+	taken := maps.Clone(outlivedRestartCalls)
 	var held time.Duration
 	for _, call := range r.starts() {
-		if !call.restart() {
+		if taken[call.args] > 0 {
+			taken[call.args]--
 			held += call.held()
 		}
 	}
 	if own := took - held; own > installReturnsWithin {
-		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held its systemctl calls %s between install's exec of each and its first line", own, installReturnsWithin, took, held)
+		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held the calls of outlivedRestartCalls %s between install's exec of each and its first line", own, installReturnsWithin, took, held)
 	} else if took > installReturnsWithin {
-		t.Logf("install returned %s after its start, past %s, of which the machine held its systemctl calls %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, held, own)
+		t.Logf("install returned %s after its start, past %s, of which the machine held the calls of outlivedRestartCalls %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, held, own)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
 		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
@@ -732,6 +741,19 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 // stand-in that answers at once. An install that waited on the restart past its timeout returns
 // past it.
 const installReturnsWithin = 10 * time.Second
+
+// outlivedRestartCalls are the systemctl calls, by the arguments the rig's systemctl records, that
+// a correct install makes in TestInstallUndrainsWhenTheRestartOutlivesItsTimeout, with how many
+// times it makes each, the restart left out: it checks the unit is active, reloads and enables the
+// unit it wrote, reads the main process before the restart and after it, and reads the unit's job.
+// Their number is the row's, not install's, so the held time the row takes off is at most theirs.
+var outlivedRestartCalls = map[string]int{
+	"--user is-active " + helper.UnitName:                       1,
+	"--user daemon-reload":                                      1,
+	"--user enable --now " + helper.UnitName:                    1,
+	"--user show --property=MainPID --value " + helper.UnitName: 2,
+	"--user show --property=Job --value " + helper.UnitName:     1,
+}
 
 // TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued: killing systemctl at the timeout
 // leaves systemd's restart job queued for the unit. An undrain then would let a session register
