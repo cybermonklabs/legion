@@ -2,9 +2,11 @@ package testnats
 
 import (
 	"bytes"
+	"fmt"
 	"maps"
 	"net"
 	"net/url"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +29,10 @@ type Proxy struct {
 	closing  sync.Once
 	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
 	rate int
+	// replyDrop, when set by DropFirstReplyForRequests, drops one response to an API request whose
+	// subject has its prefix. Each proxy connection records its own request inboxes, while this shared
+	// counter makes the proxy drop one answer total.
+	replyDrop *replyDrop
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -49,6 +55,84 @@ type Proxy struct {
 
 // ProxyOption configures a Proxy.
 type ProxyOption func(*Proxy)
+
+// replyDrop is the one reply a proxy may discard, shared by every connection it relays. mu guards
+// dropped and each connection's recorded reply inboxes (replyDropConnection.replies).
+type replyDrop struct {
+	prefix  []byte
+	armed   <-chan struct{}
+	mu      sync.Mutex
+	dropped int
+}
+
+// DropFirstReplyForRequests drops the first response to a request whose subject starts with
+// prefix, once armed is closed. Requests sent before that are not recorded, so a constructor's
+// initial API reads cannot consume the drop intended for the operation under test. DroppedReplies
+// reports whether it fired.
+func DropFirstReplyForRequests(prefix string, armed <-chan struct{}) ProxyOption {
+	return func(p *Proxy) {
+		p.replyDrop = &replyDrop{prefix: []byte(prefix), armed: armed}
+	}
+}
+
+// DroppedReplies reports how many replies DropFirstReplyForRequests discarded.
+func (p *Proxy) DroppedReplies() int {
+	if p.replyDrop == nil {
+		return 0
+	}
+	p.replyDrop.mu.Lock()
+	defer p.replyDrop.mu.Unlock()
+	return p.replyDrop.dropped
+}
+
+// replyDropConnection is the protocol state one proxied NATS connection needs to arm and fire a
+// reply drop. The two streams are touched by their one relay direction alone.
+type replyDropConnection struct {
+	drop     *replyDrop
+	sent     protocolStream
+	received protocolStream
+	// replies are the reply inboxes of the matching requests this connection sent once the drop was
+	// armed: the server answers each on this connection. drop.mu guards it, as the client-to-server
+	// reader adds to it while the server-to-client reader reads it.
+	replies map[string]struct{}
+}
+
+// recordRequest records the reply inbox of line, a client's complete control line, once the drop
+// is armed, when line is a PUB or an HPUB with a reply inbox on a subject the drop's prefix starts.
+func (c *replyDropConnection) recordRequest(line []byte) {
+	select {
+	case <-c.drop.armed:
+	default:
+		return
+	}
+	// PUB <subject> <reply-to> <#bytes> and HPUB <subject> <reply-to> <#header bytes> <#total bytes>
+	// name a reply inbox; without one, each has a field fewer.
+	fields := bytes.Fields(line)
+	request := (len(fields) == 4 && string(fields[0]) == "PUB") || (len(fields) == 5 && string(fields[0]) == "HPUB")
+	if !request || !bytes.HasPrefix(fields[1], c.drop.prefix) {
+		return
+	}
+	c.drop.mu.Lock()
+	c.replies[string(fields[2])] = struct{}{}
+	c.drop.mu.Unlock()
+}
+
+// drops reports whether line, a server's complete control line, begins the one reply the proxy
+// discards: the first MSG or HMSG on a reply inbox this connection recorded.
+func (c *replyDropConnection) drops(line []byte) bool {
+	fields := bytes.Fields(line)
+	if len(fields) < 4 || (string(fields[0]) != "MSG" && string(fields[0]) != "HMSG") {
+		return false
+	}
+	c.drop.mu.Lock()
+	defer c.drop.mu.Unlock()
+	if _, recorded := c.replies[string(fields[1])]; !recorded || c.drop.dropped > 0 {
+		return false
+	}
+	c.drop.dropped++
+	fmt.Fprintf(os.Stderr, "testnats reply drop fired: response on %s discarded\n", fields[1])
+	return true
+}
 
 // ProxyLatency holds every chunk read from either side for half of rtt before writing it on, in
 // the order it was read, so a connection through the proxy sees rtt added to each round trip and
@@ -176,8 +260,12 @@ func (p *Proxy) join(client net.Conn) {
 		p.untrack(client)
 		return
 	}
-	go p.relay(server, client, false)
-	p.relay(client, server, true)
+	var replies *replyDropConnection
+	if p.replyDrop != nil {
+		replies = &replyDropConnection{drop: p.replyDrop, received: protocolStream{fromServer: true}, replies: map[string]struct{}{}}
+	}
+	go p.relay(server, client, false, replies)
+	p.relay(client, server, true, replies)
 }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
@@ -224,7 +312,7 @@ const proxyReadBuffer = 64 << 10
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
 // too.
-func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
+func (p *Proxy) relay(dst, src net.Conn, serverToClient bool, replies *replyDropConnection) {
 	defer p.untrack(dst, src)
 	type chunk struct {
 		data []byte
@@ -243,7 +331,20 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 			p.pass(serverToClient, reader)
 			read, err := src.Read(buffer)
 			if read > 0 {
-				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
+				var data []byte
+				switch {
+				case replies == nil:
+					data = bytes.Clone(buffer[:read])
+				case serverToClient:
+					// filterMessages returns bytes of its own, which the next read does not overwrite.
+					data = replies.received.filterMessages(buffer[:read], replies.drops)
+				default:
+					replies.sent.observe(buffer[:read], replies.recordRequest)
+					data = bytes.Clone(buffer[:read])
+				}
+				if len(data) > 0 {
+					queue <- chunk{data: data, due: time.Now().Add(p.delay)}
+				}
 				if p.rate > 0 {
 					time.Sleep(time.Duration(read) * time.Second / time.Duration(p.rate))
 				}

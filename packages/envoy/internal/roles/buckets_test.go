@@ -52,6 +52,43 @@ func bucketsRigConn(t *testing.T) (*roles.Buckets, *store.Registry, *session.Ses
 	return roles.NewBuckets(client, roles.Windows{}), registry, sessions, conn
 }
 
+// TestBucketsRetryTheirFirstOpenWhenReplyIsLost proves Dispatch's holder reader reaches a role
+// claim when the first STREAM.INFO opening that bucket loses its reply. A handover acknowledges
+// the kept copy independently of this read, so leaving it unanswered would let a later event
+// overtake that copy at the holder.
+func TestBucketsRetryTheirFirstOpenWhenReplyIsLost(t *testing.T) {
+	_, url := testnats.Start(t)
+	writer := testnats.Connect(t, url)
+	registry, err := store.Open(t.Context(), writer)
+	if err != nil {
+		t.Fatalf("open the role registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	if _, err := registry.SetRole("ses_holder", "test-machine", "reviewer", false); err != nil {
+		t.Fatalf("claim reviewer: %v", err)
+	}
+
+	armed := make(chan struct{})
+	proxy := testnats.StartProxy(t, url, testnats.DropFirstReplyForRequests("$JS.API.STREAM.INFO.KV_"+bus.RoleClaimBucket, armed))
+	client, err := bus.Connect([]string{proxy.URL()})
+	if err != nil {
+		t.Fatalf("connect holder reader through the reply-dropping proxy: %v", err)
+	}
+	t.Cleanup(client.Close)
+	close(armed)
+
+	claim, err := roles.NewBuckets(client, roles.Windows{}).RoleClaim(context.Background(), "reviewer")
+	if dropped := proxy.DroppedReplies(); dropped != 1 {
+		t.Fatalf("the role-bucket open reply drop fired %d times, want once", dropped)
+	}
+	if err != nil {
+		t.Fatalf("read reviewer after its first role-bucket open reply was lost: %v", err)
+	}
+	if claim.HolderSessionID != "ses_holder" {
+		t.Fatalf("read reviewer after its first role-bucket open reply was lost = holder %q, want %q", claim.HolderSessionID, "ses_holder")
+	}
+}
+
 // Before any bucket exists a role has no claim; once one does, Buckets reads the claim a listener
 // wrote, and a bare session id an earlier build stored.
 func TestBucketsReadAClaimAsTheRegistryWroteIt(t *testing.T) {
