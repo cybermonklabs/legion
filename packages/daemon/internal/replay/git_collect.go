@@ -115,9 +115,10 @@ type GitCollected struct {
 // timeline gives that a read of the window's log names (MergeStateRead: its head and its recorded
 // head); and, from "read" at the read's time, each such head the timeline does not give. Each
 // distinct head is written once, at its earliest time. A pull request GitHub answers 404 Not Found
-// for is a pull-not-found missing input, and a timeline page or event that does not read, a
-// force push that names no commit among them, a timeline-unread one; any other refusal fails the
-// run.
+// for is a pull-not-found missing input, one GitHub still refuses to read after the reader's tries
+// with its 422 of a pull request whose diff it cannot compute for now (tooManyFiles) a pull-unread
+// one, whose timeline is not read, and a timeline page or event that does not read, a force push
+// that names no commit among them, a timeline-unread one; any other refusal fails the run.
 //
 // The git phase reads no GitHub API. It clones the repository once, where cfg.Clones holds no
 // clone of it, as git clone --filter=blob:none --no-checkout --bare of cfg.Branch alone, from
@@ -412,18 +413,22 @@ func (c *gitCollector) githubHeld(number int) bool {
 // readPull reads the pull request number of repository from GitHub: the pull request, whose merge
 // it writes where it merged into the branch as a commit the merges file holds, and its timeline,
 // whose heads it writes (selectHeads); with the missing inputs of what did not read. A pull
-// request or a timeline GitHub answers 404 Not Found for is none, and a missing input; any other
-// refusal is the read's failure.
+// request or a timeline GitHub answers 404 Not Found for is none, and a missing input, and so is a
+// pull request GitHub still refuses to read after the reader's tries with its 422 of too many
+// files changed (tooManyFiles), whose timeline is then not read; any other refusal is the read's
+// failure.
 func (c *gitCollector) readPull(ctx context.Context, reader githubReader, repository *url.URL, number int) (*GitPull, []GitMissing, error) {
-	notFound := func(what string, err error) (*GitPull, []GitMissing, error) {
-		return nil, []GitMissing{{PR: number, Reason: GitPullNotFound, Detail: fmt.Sprintf("%s of %s#%d: %v", what, c.cfg.Repo, number, err)}}, nil
+	unread := func(reason, what string, err error) (*GitPull, []GitMissing, error) {
+		return nil, []GitMissing{{PR: number, Reason: reason, Detail: fmt.Sprintf("%s of %s#%d: %v", what, c.cfg.Repo, number, err)}}, nil
 	}
 	var refusal *githubRefusal
 	detail, err := reader.pullRequest(ctx, repository, number)
-	if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
-		return notFound("the pull request", err)
-	}
-	if err != nil {
+	switch {
+	case errors.As(err, &refusal) && refusal.status == http.StatusNotFound:
+		return unread(GitPullNotFound, "the pull request", err)
+	case tooManyFiles(err):
+		return unread(GitPullUnread, "the pull request", err)
+	case err != nil:
 		return nil, nil, fmt.Errorf("the pull request: %w", err)
 	}
 	if detail.Base.Ref == "" {
@@ -437,7 +442,7 @@ func (c *gitCollector) readPull(ctx context.Context, reader githubReader, reposi
 	first.RawQuery = url.Values{"per_page": {"100"}}.Encode()
 	pages, err := reader.pages(ctx, first)
 	if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
-		return notFound("the timeline", err)
+		return unread(GitPullNotFound, "the timeline", err)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("the timeline: %w", err)

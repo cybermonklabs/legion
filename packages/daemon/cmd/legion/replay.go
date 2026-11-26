@@ -210,7 +210,10 @@ GitHub's merge event, the merged_at of the pull request GitHub records as merged
 suffix " (#<n>)" names or from those GitHub lists for the commit, and keeps that pull request
 ("pr") with "event": true; a replay's conflict draw reads it to leave a stretch's own merge out
 of its count. A commit GitHub records no such merge of keeps its committer's time, an estimate,
-with no "event" and no "pr", whatever its subject names. The commits so placed in [--from, --to)
+with no "event" and no "pr", whatever its subject names. So does a commit whose pull request
+GitHub still refuses to read after the tries, with its 422 of too many files changed, where the
+pull requests GitHub lists for the commit give nothing to match it by either: the summary line
+counts those, and a run again later can place them. The commits so placed in [--from, --to)
 are kept. The listing reaches commits committed from a day before --from alone, so a commit
 committed earlier and merged in the span is not read. The token is read from the environment
 variable --github-token-env names, and is never printed. ` + githubShareHelp + ` Run it once for
@@ -242,13 +245,15 @@ each base branch the window's pull requests name.`,
 			fmt.Fprintf(stderr, "legion replay collect-merges: the environment variable %s holds no token\n", *tokenEnv)
 			return 1
 		}
-		merges, err := replay.CollectMerges(ctx, replay.MergesConfig{Repo: *repo, Branch: *branch, From: span[0], To: span[1],
+		collected, err := replay.CollectMerges(ctx, replay.MergesConfig{Repo: *repo, Branch: *branch, From: span[0], To: span[1],
 			Token: token, API: *api, Window: *out, Reserve: *reserve, Rate: *rate})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay collect-merges: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "legion replay collect-merges: wrote %d first-parent commits of %s %s into %s\n", len(merges), *repo, *branch, *out)
+		fmt.Fprintf(stdout, "legion replay collect-merges: wrote %d first-parent commits of %s %s into %s; "+
+			"commits walked at their committer's time because GitHub would not read their pull request: %d\n",
+			len(collected.Merges), *repo, *branch, *out, collected.Unread)
 		return 0
 	})
 	return cmd

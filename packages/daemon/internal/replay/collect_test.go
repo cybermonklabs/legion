@@ -651,12 +651,13 @@ func collectCaptured(t *testing.T) collectRun {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	run.merges, err = CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: capturedBranch,
+	merges, err := CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: capturedBranch,
 		From: time.Date(2026, time.November, 20, 4, 56, 30, 0, time.UTC), To: time.Date(2026, time.November, 20, 6, 0, 0, 0, time.UTC),
 		Token: stubGitHubToken, API: githubServer.URL, Window: run.out, Wait: wait})
 	if err != nil {
 		t.Fatalf("CollectMerges: %v", err)
 	}
+	run.merges = merges.Merges
 	run.queued, err = CollectQueue(context.Background(), QueueConfig{Repo: "cybermonklabs/legion", Token: stubGitHubToken, API: timelineServer.URL,
 		Window: run.out, Wait: wait})
 	if err != nil {

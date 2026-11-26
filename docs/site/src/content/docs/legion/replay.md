@@ -327,6 +327,8 @@ A commit's committer date can come well before that, for example where a merge q
 To find the pull request, `collect-merges` first reads the one that the first line of the commit's message names with GitHub's squash suffix ` (#<n>)` (`GET /repos/<owner>/<name>/pulls/<n>`), and takes it where GitHub's record matches the commit.
 Where it does not match, or GitHub answers `404 Not Found`, or the message names none, it reads the pull requests that GitHub lists for the commit (`GET /repos/<owner>/<name>/commits/<sha>/pulls`), so that a merge commit, whose message has no suffix, finds its pull request too.
 Where that list leaves out a pull request's `merge_commit_sha`, it reads that pull request whole.
+Where GitHub still refuses to read a pull request whole after the tries below, with a `422` whose message says `too many files changed`, `collect-merges` matches that pull request by its entry in the list.
+Where the list gives nothing to match that pull request by, the commit keeps its committer date, with no `event` and no `pr`, and the command's summary line counts it, so run the command again later to place it.
 It reads nothing of a commit that the walk does not reach.
 A commit whose merge GitHub records keeps that pull request as `pr`, and its line says `"event": true`.
 A commit whose merge GitHub does not record, or records for more than one pull request, keeps its committer date, which is an estimate and no merge event, and its line has no `event` and no `pr`, whatever its message names.
@@ -339,7 +341,7 @@ The listing reaches only the commits that were committed from a day before `--fr
 A commit that was committed before that and merged inside the span, such as one that a merge queue held for more than a day, is missing from the history that `collect-merges` writes.
 The checks of the walk's end read committer dates, as the listing does, so they do not find such a commit.
 
-A read that GitHub refuses for now, with a 5xx or no answer, is tried again with a growing wait of about a minute in all.
+A read that GitHub refuses for now, with a 5xx, with no answer, or with a `422 Unprocessable Entity` whose message says `too many files changed`, is tried again with a growing wait of about a minute in all.
 A read that GitHub's rate limit refuses is tried again after the wait that GitHub names, as [GitHub's REST documentation](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) asks.
 That is a 429, or a 403 that carries `x-ratelimit-remaining: 0` or a `retry-after`, or whose message names the secondary rate limit.
 A `retry-after` of N seconds waits N seconds.
@@ -461,7 +463,7 @@ Each line of the file is one JSON object, in this order:
   A head that git did not read has no `tip`, `mergeBase`, `paths` or `verdicts`.
 
 - `{"kind":"missing","pr","head","base","reason","detail"}`: each input that the collector could not get, sorted by `pr`, `head`, `base` and `reason`, with `pr` 0 for a commit of the base branch.
-  `reason` is `pull-not-found`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
+  `reason` is `pull-not-found`, `pull-unread`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
   A missing input is never written as a clean verdict.
   A verdict that git cannot give ends the head's verdicts, since each later one would rest on it.
 
@@ -470,6 +472,7 @@ The GitHub phase reads, with `GET` alone, each pull request (`GET /repos/<owner>
 It writes each head whose time falls in the window's reach, span or run-out, and the head that stood at the reach's start: the latest at or before it, a force push before a commit of the same second.
 It also writes each head that a read of a merge state in the window's log names, as its head or as the head that the record stood at.
 It handles GitHub's refusals as `collect-merges` does ([Add the merges of each base branch](#add-the-merges-of-each-base-branch)), but for a `404 Not Found` of a pull request, which is a `pull-not-found` missing input.
+A pull request that GitHub still refuses to read after the tries, with the `422` whose message says `too many files changed`, is a `pull-unread` missing input: `collect-git` writes no pull line of it and reads no timeline of it, and a run again reads it again.
 A timeline page or event that does not read, a force push that names no commit among them, is a `timeline-unread` missing input: the collector never guesses a head.
 
 The git phase reads no GitHub API.
