@@ -4097,7 +4097,7 @@ begin child-reentered
 # The control, on the same claim and the same start path: the operator suspends the parked planner,
 # which takes the daemon's suspension over (`suspendedBy: operator`), and child 2 is set to todo once
 # more. The planning start now waits (`outbox row waits`, naming the suspension that holds until the
-# operator resumes the claim), the planner stays suspended by the operator at the same generation,
+# operator resumes the agent), the planner stays suspended by the operator at the same generation,
 # and no rule resumes it. The operator's resume then relaunches it, the waiting start gives it the
 # run's planning task, and child 2 is parked a last time, so the later checkpoints find it as
 # child-release left it, its planner suspended by the daemon.
@@ -4140,7 +4140,7 @@ set_status "$child2" todo
 held_start_waits() {
   tail -n "+$((held_planner_mark + 1))" "$daemon_log" | jq -R -e --arg issue "$child2" \
     'fromjson? | select(.msg == "outbox row waits" and .kind == "supervise" and .issue == $issue
-      and ((.error // "") | contains("the suspension holds until the operator resumes the claim")))' >/dev/null
+      and ((.error // "") | contains("the suspension holds until the operator resumes the agent")))' >/dev/null
 }
 on_issue "$child2" until_true 600 "$child2's planning start to wait for the operator-suspended planner" held_start_waits
 held_planner_still() {

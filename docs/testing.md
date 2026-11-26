@@ -69,6 +69,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
 
+- A test that needs `packages/envoy`'s notification stream full fills it with `internal/testnats`'s `FillStream`: `internal/bus/bustest`'s `FillStream` outside package bus, which passes it the bus's stream and subjects that stream captures, and `testnats.FillStream` itself in package bus, which cannot import `bustest`.
+  It publishes until the stream's own count, its info's bytes against its byte limit, leaves less room than a one-byte fill message takes, so the stream refuses every message the test then sends whose stored size (subject, headers and payload) is no smaller, every envelope among them. It measures that size from a one-byte message the stream stored alone, by the sequences around it, so another writer into the stream does not skew it.
+  A refusal alone does not show the stream full: a three-copy stream's leader counts the message it last acknowledged as still in flight until it has finished applying it, a moment after the acknowledgement, so the publish that follows can be refused while the stream has room for it (nats-server 2.15.1). A fill that stopped at such a refusal left room for the role forward its test expected refused, and the stream stored the forward (dispatch://INFRA-3904).
+  It does not fill a stream with no byte limit, which fails the test, and a test that reads back what a fill stored keeps a loop of its own, as the single-server `TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage` does.
+
 - A test that counts the client connections an in-process test NATS server took, open and closed, or reads when each opened and closed, takes `packages/envoy/internal/testnats`'s `Server.Connections`.
   One read of `/connz?state=all` can leave out a connection that has just closed, or list it twice: nats-server takes a closing connection out of its open list in the close, and saves its closed record from a goroutine of its own. `Connections` reads until the listing names each connection the server counted (`total_connections`) once, and `connections_test.go` holds it to that.
   It lists client connections alone, not leaf nodes, routes or gateways; it reads an in-process `*testnats.Server`, not a container; on a server that has dropped closed records past `max_closed_clients` it fails where `testwait.Until` ends, 30 s before the test binary's deadline; and it waits for no connection that has not been made yet, so a test that counts an operation's connections waits for that operation first.
@@ -146,6 +151,17 @@ itself, whose tests import its sources by relative path.
   spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
   which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
   damage shows only where it is hardest to read.
+
+- Hand a child whose `HOME` the test replaces, and a stand-in that runs the real program, the
+  program itself: `realHostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
+  scope, before any directory of the test's own goes first on `PATH`, never `name` from `PATH`. On
+  a machine where `name` on `PATH` is a mise shim, the shim reads its configuration from the
+  child's `HOME` and from the directories above the child's working directory. Under a `HOME` of
+  the test's own it refuses the real home's config as untrusted, or finds no version, and exits 1
+  before the program runs; behind a stand-in of the same name first on `PATH` it falls back to the
+  stand-in, which runs the shim again, and mise stops with "shim fallback recursion detected".
+  `realHostTool` takes what `mise which` names for a shim, or the program the shim would fall back
+  to, and skips the directory a stand-in lives in when it is given one.
 
 - `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
   of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
@@ -654,6 +670,38 @@ comment names. A test that asserts which deadline a wait meets sets a `clocktest
 runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
 others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
 by 2026-11-25.
+
+## A test in Dispatch's smaller packages runs beside the others
+
+Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
+  `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
+  `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+- `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
+  `internal/testport`, `internal/textcheck`;
+- `natsversion`, `natsversion/cmd/natsfloor`.
+
+The ten of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
+`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
+(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+A test stays serial when it, or a helper it calls, changes something the whole test process
+shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
+through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
+variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `HeartbeatInterval`,
+`PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
+`syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
+bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
+on a correct product or pass with the defect present; the comment names the span. A wait for an
+event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
+and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
+marker in these packages: a new test with neither the call nor the comment runs alone for no
+reason.
 
 ## Go's package deadline
 

@@ -70,6 +70,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"BasePush":                    BasePush{},
 		"DaemonBooted":                DaemonBooted{},
 		"CutoverMergerRepair":         CutoverMergerRepair{},
+		"MergeHoldsChanged":           MergeHoldsChanged{},
 		"ListenerWake":                ListenerWake{},
 	}
 	for name, fact := range namesOne {
