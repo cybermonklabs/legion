@@ -118,21 +118,21 @@ func TestNoMessageOfADaemonThreadIsAConversationNode(t *testing.T) {
 		}
 		return items
 	}
-	whole, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at)
+	whole, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at, "")
 	if err != nil {
 		t.Fatalf("ConversationNodes(CORE-1) = %v", err)
 	}
 	if items := itemsOf("ConversationNodes", whole); !slices.Equal(items, passing) {
 		t.Errorf("ConversationNodes = %v, want %v: the messages of the person's thread but the daemon's reply, and none of the daemon's thread", items, passing)
 	}
-	paged, err := ConversationPageNodes(ctx, tx, model.Actor{}, "CORE-1", at, CommentPage{})
+	paged, err := ConversationPageNodes(ctx, tx, model.Actor{}, "CORE-1", at, CommentPage{}, "")
 	if err != nil {
 		t.Fatalf("ConversationPageNodes(CORE-1) = %v", err)
 	}
 	if items := itemsOf("ConversationPageNodes", paged); !slices.Equal(items, passing) {
 		t.Errorf("ConversationPageNodes = %v, want %v", items, passing)
 	}
-	headed, read, err := ConversationPageNodesOfHeads(ctx, tx, model.Actor{}, "CORE-1", at, CommentPage{}, &HeadTree{})
+	headed, read, err := ConversationPageNodesOfHeads(ctx, tx, model.Actor{}, "CORE-1", at, CommentPage{}, &HeadTree{}, "")
 	if err != nil || !read {
 		t.Fatalf("ConversationPageNodesOfHeads(CORE-1) read %t, %v; want the page of no comment read off the head rows", read, err)
 	}

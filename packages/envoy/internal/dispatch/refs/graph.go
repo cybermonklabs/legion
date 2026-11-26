@@ -18,9 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// excerptRunes bounds the head of an item's text shown beside an edge.
-const excerptRunes = 240
-
 // Query selects one node's edges. Direction "in" reads edges pointing at the node (Kind, ID
 // are its to_kind, to_id: ref_key for artifacts); "out" reads edges it writes (from_kind,
 // from_id: the uuid for artifacts). Kinds narrows edge types; Since keeps mentions whose
@@ -38,6 +35,9 @@ const excerptRunes = 240
 // A reply whose answers names the comment its replies_to names is listed once, by replies_to,
 // wherever replies_to is listed.
 type Query struct {
+	// ServerURL is the deployment the caller reads, whose dashboard URLs an edge's excerpt is cut
+	// around as references (itemExcerpt).
+	ServerURL string
 	Direction string
 	Kind      string
 	ID        string
@@ -607,23 +607,24 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			}
 			edge.Block = &block.GraphNode
 		}
-		edge.Excerpt = excerptOf(node)
+		edge.Excerpt = excerptOf(node, query.ServerURL)
 		edges = append(edges, edge)
 	}
 	return edges, nil
 }
 
-// excerptOf is the excerpt an edge at node shows: its name (resolvedNode.name), a block's stored
-// excerpt with its block id and the head of any other node's own text, and nil for a node that
-// has no text.
-func excerptOf(node resolvedNode) *model.GraphExcerpt {
+// excerptOf is the excerpt an edge at node shows: its name under serverURL (resolvedNode.name), a
+// block's stored excerpt with its block id - or a finding's text, read whole from the store, which
+// holds no excerpt of it, and so cut at the read - and the head of any other node's own text, and
+// nil for a node that has no text.
+func excerptOf(node resolvedNode, serverURL string) *model.GraphExcerpt {
 	switch {
 	case node.BlockID != "":
-		// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
-		// document's mention shows.
-		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
+		// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
+		// mention shows; name cuts a finding's whole text the same way.
+		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(serverURL)}
 	case node.text != "":
-		return &model.GraphExcerpt{Text: node.name()}
+		return &model.GraphExcerpt{Text: node.name(serverURL)}
 	}
 	return nil
 }
@@ -916,15 +917,16 @@ type ExcerptedNode struct {
 // a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
 // with the words a reader recognises it by. What it answers and what it leaves out is Nodes'. The
 // targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
-// is its ref_key, as in TargetNames.
-func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]ExcerptedNode, error) {
+// is its ref_key, as in TargetNames; serverURL is the deployment the caller reads, whose
+// dashboard URLs each excerpt is cut around as references (excerptOf).
+func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]ExcerptedNode, error) {
 	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
 	nodes := make(map[Target]ExcerptedNode, len(resolved))
 	for key, node := range resolved {
-		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)}
+		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)}
 	}
 	return nodes, nil
 }
@@ -946,12 +948,12 @@ type TargetName struct {
 // TargetNames is the words each of targets is named by where who is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title, a block's text and any other node's own text, each
-// cut to the bound an edge's excerpt is cut to (resolvedNode.name), which is what GET
-// /api/v1/references already shows beside an edge at that node. The targets are addressed as
-// the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key. A comment
-// or a message, and a block of one, carries its post's marks beside its name (TargetName). A
-// deleted post's node stands, with the empty body its delete left, so its name is "" beside its
-// delete mark.
+// cut as an edge's excerpt is cut (resolvedNode.name), which is what GET /api/v1/references
+// already shows beside an edge at that node; serverURL is the deployment whose dashboard URLs
+// are references, so no cut splits one. The targets are addressed as the to side of an edge
+// addresses them (TargetOf), so an artifact's id is its ref_key. A comment or a message, and a
+// block of one, carries its post's marks beside its name (TargetName). A deleted post's node
+// stands, with the empty body its delete left, so its name is "" beside its delete mark.
 //
 // One entry per target that resolves for who, as Nodes resolves it: a target with no entry is
 // one nothing addresses now — its node was deleted or is gone, or its kind is one this build
@@ -968,7 +970,7 @@ type TargetName struct {
 // statement per kind, not per target; a block of a comment or a message that resolves to
 // nothing, whose post targets does not name too, costs one statement more per kind of post,
 // which reads whether its post was deleted.
-func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]TargetName, error) {
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]TargetName, error) {
 	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
@@ -976,7 +978,7 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 	names := make(map[Target]TargetName, len(resolved))
 	for key, node := range resolved {
 		names[Target{Kind: key[0], ID: key[1]}] = TargetName{
-			Name: node.name(), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
+			Name: node.name(serverURL), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
 		}
 	}
 	if err := deletedPostBlocks(ctx, q, who, targets, names); err != nil {
@@ -1048,10 +1050,11 @@ func deletedPostBlocks(ctx context.Context, q Queryer, who model.Actor, targets 
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
-// excerpt, already cut. wholeText says a read of the node's own address answers that text whole
-// as the node's Text (Node), which an interaction's loader says of a run's words
-// (spec requirement r-interaction): an edge at the run cuts them at excerptRunes, and
-// the run's own address answers every word of them.
+// excerpt, already cut, and a finding's (graphstore.KindLensBlock) its whole text, since the store
+// holds no excerpt of a finding (loadReasoningNodes). wholeText says a read of the node's own
+// address answers that text whole as the node's Text (Node), which an interaction's loader says
+// of a run's words (spec requirement r-interaction): an edge at the run cuts them at excerptRunes,
+// and the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
 	text      string
@@ -1059,13 +1062,19 @@ type resolvedNode struct {
 	wholeText bool
 }
 
-// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
-// block's text is its stored excerpt, already cut to BlockExcerptRunes.
-func (n resolvedNode) name() string {
-	if n.BlockID != "" {
+// name is the words shown for the node in place of its text: its own text's first excerptRunes
+// runes, cut where no reference crosses the cut (itemExcerpt; serverURL is the deployment whose
+// dashboard URLs are references). A block's text is its stored excerpt, already cut by
+// BlockExcerpt. A finding's is its whole text, read from the store, which holds no excerpt of it,
+// so it is cut here, at the read, as BlockExcerpt cuts a block's stored excerpt.
+func (n resolvedNode) name(serverURL string) string {
+	switch {
+	case n.Kind == graphstore.KindLensBlock:
+		return BlockExcerpt(n.text, serverURL)
+	case n.BlockID != "":
 		return n.text
 	}
-	return text.HeadRunes(n.text, excerptRunes)
+	return itemExcerpt(n.text, serverURL)
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
@@ -1346,7 +1355,8 @@ func BlockNodesAndRows(ctx context.Context, q Queryer, who model.Actor, ids []st
 	err := readBlockNodeRows(ctx, q, who, ids, false, func(row blockNodeRow) {
 		blocks[row.node.ID] = row.block
 		if row.seen {
-			nodes[row.node.ID] = ExcerptedNode{Node: row.node.GraphNode, Excerpt: excerptOf(row.node)}
+			// A block's excerpt is its stored one, which no deployment's URLs cut again (name).
+			nodes[row.node.ID] = ExcerptedNode{Node: row.node.GraphNode, Excerpt: excerptOf(row.node, "")}
 		}
 	})
 	if err != nil {

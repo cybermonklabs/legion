@@ -93,7 +93,7 @@ func TestTheCensusHoldsAnAuthoredNodesPlaceAndItsAuthors(t *testing.T) {
 			t.Fatalf("begin %s: %v", what, err)
 		}
 		defer tx.Rollback(ctx)
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, checks, refs.OneVersion(checks, version, at), markdown, blocks, nil, pointers, refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, checks, refs.OneVersion(checks, version, at), markdown, blocks, nil, pointers, "", refs.TypedFacts{})
 		if err != nil || !won {
 			t.Fatalf("%s: won %t, %v", what, won, err)
 		}
@@ -252,7 +252,7 @@ func censusPass(t *testing.T, database *store.Store, what string, pass func(ctx 
 // blockIndex is a pass of the block index alone over versions of artifact.
 func blockIndex(artifact string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
 	return func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, "", refs.TypedFacts{})
 		if err == nil && !won {
 			err = errLostFence
 		}
@@ -315,7 +315,7 @@ func typedIndex(artifact string, number int, at time.Time, version renderedVersi
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, version.markdown, version.blocks, version.located, version.pointers, facts)
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, version.markdown, version.blocks, version.located, version.pointers, "https://dispatch.example", facts)
 		if err == nil && !won {
 			err = errLostFence
 		}

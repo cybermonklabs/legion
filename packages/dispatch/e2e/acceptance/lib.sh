@@ -399,3 +399,99 @@ another_project() {
   want_status 201 "$1" "create the project $other_project, whose default assignee is $2"
   pass "$1" "created the project $other_project, whose default assignee is $2"
 }
+
+# The leases a driver holds to keep this head's own index off what the driver leaves owed, the
+# ones cmd/dispatch's holdBlockIndexLease (block_index_lease_test.go) holds, in its order: the
+# block-index pass's (docs.BlockIndexLease) and the reference forms drain's (docs.RefsFormsLease),
+# which indexes a document through the block index's own index (docs.Service.drainFormsDocument),
+# so a hold of the block index alone would see a document it left owed indexed by the drain all
+# the same. Each is taken under the first key every loop lease is taken with, the four bytes of
+# "LOOP" (leaseNamespace in packages/envoy/internal/dispatch/duty/exclusive.go), and
+# duty.Exclusive takes a lease before every pass of its loop and skips the pass where another
+# session holds it. index_lease_seconds is how long the session holding a lease sleeps, a hang
+# guard alone, since give_index_lease ends that session as soon as the driver gives the lease
+# back, and index_lease_wait the seconds hold_index_leases waits for a lease and give_index_lease
+# for its grant to go. None is readonly: lib-baseline.sh sources this file again.
+index_lease_namespace=1280266064
+index_leases=(block-index refs-forms)
+index_lease_seconds=3600
+index_lease_wait=300
+# The pid of the psql session holding each lease, by the lease's name.
+declare -A index_lease_pids=()
+
+# index_lease_session NAME: the application_name of the psql session this driver holds the lease
+# NAME on, which give_index_lease reads its grant by in pg_locks.
+index_lease_session() { printf 'e2e-lease-%s-%d' "$1" "$$"; }
+
+# hold_index_leases SECTION: takes every lease of index_leases, in that order, each on a psql
+# session of this driver's own, and waits until that session holds it: pg_advisory_lock queues
+# behind a pass that holds the lease, which gives it back when the pass ends. A lease not held
+# inside index_lease_wait seconds, or a session that stops, fails SECTION. A lease is a session
+# lock, so each session holds its lease until give_index_lease ends it, one lease at a time where
+# the driver names one: this is holdBlockIndexLease in shell, and a driver that then reads the
+# block index's own work gives its lease back alone and the drain's once that reading ends, as
+# that helper's giveBackIndex does.
+hold_index_leases() {
+  local section="$1" name deadline=$((SECONDS + index_lease_wait))
+  for name in "${index_leases[@]}"; do
+    : >"$work/lease-$name"
+    PGAPPNAME="$(index_lease_session "$name")" env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE \
+      psql "$database_url" -X -Atq -v ON_ERROR_STOP=1 -o /dev/null >/dev/null 2>"$work/lease-$name" <<SQL &
+select pg_advisory_lock($index_lease_namespace, hashtext('$name'));
+\\warn the $name lease is held
+select pg_sleep($index_lease_seconds);
+SQL
+    index_lease_pids[$name]=$!
+    until grep -q "the $name lease is held" "$work/lease-$name"; do
+      kill -0 "${index_lease_pids[$name]}" 2>/dev/null ||
+        fail "$section" "hold the $name lease" "psql stopped: $(head -c 300 "$work/lease-$name")"
+      ((SECONDS < deadline)) ||
+        fail "$section" "hold the $name lease" "it was not given up inside ${index_lease_wait}s: $(head -c 300 "$work/lease-$name")"
+      sleep 0.2
+    done
+  done
+  pass "$section" "this driver holds the ${index_leases[*]} leases, so neither this head's block index nor its forms drain runs a pass"
+}
+
+# drop_index_leases [NAME…]: ends the session holding each lease NAME names, or every lease this
+# driver holds, and reads nothing, for a driver's cleanup; a lease this driver does not hold is
+# passed over. SIGINT makes the psql holding a lease cancel its sleep, which ON_ERROR_STOP turns
+# into its end, and the session's end frees the lock; a kill of the sleeping psql would instead
+# leave the backend holding the lease until its sleep returned.
+drop_index_leases() {
+  local name
+  local -a names=("$@")
+  ((${#names[@]} > 0)) || names=("${index_leases[@]}")
+  for name in "${names[@]}"; do
+    [[ -n "${index_lease_pids[$name]:-}" ]] || continue
+    kill -INT "${index_lease_pids[$name]}" 2>/dev/null || true
+    wait "${index_lease_pids[$name]}" 2>/dev/null || true
+    unset 'index_lease_pids[$name]'
+  done
+}
+
+# give_index_lease SECTION [NAME…]: gives back each lease NAME names, or every lease this driver
+# holds (drop_index_leases), and waits until pg_locks holds no grant of it for the session that
+# held it, since the backend frees the lock a moment after psql has gone; past index_lease_wait
+# seconds it fails SECTION.
+give_index_lease() {
+  local section="$1" name deadline
+  shift
+  local -a names=("$@")
+  ((${#names[@]} > 0)) || names=("${index_leases[@]}")
+  drop_index_leases "${names[@]}"
+  deadline=$((SECONDS + index_lease_wait))
+  for name in "${names[@]}"; do
+    while :; do
+      query "$section" "read whether this driver's session still holds the $name lease" "
+        select count(*) from pg_locks l join pg_stat_activity a on a.pid = l.pid
+        where a.application_name = '$(index_lease_session "$name")' and l.locktype = 'advisory' and l.granted
+          and l.classid = $index_lease_namespace and l.objid = hashtext('$name')::oid and l.objsubid = 2"
+      [[ "$answer" != 0 ]] || break
+      ((SECONDS < deadline)) ||
+        fail "$section" "give the $name lease back" "this driver's session still holds it ${index_lease_wait}s after psql ended"
+      sleep 0.2
+    done
+  done
+  pass "$section" "this driver gave the ${names[*]} lease(s) back"
+}

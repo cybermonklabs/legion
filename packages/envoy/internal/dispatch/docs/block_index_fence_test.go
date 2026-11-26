@@ -403,7 +403,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	// The stale pass runs on to its commit, and the fence refuses it.
 	const staleVersion = 1
 	before := highestTuple(t, database)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Fatalf("begin the control pass: %v", err)
 	}
 	defer controlTx.Rollback(ctx)
-	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}

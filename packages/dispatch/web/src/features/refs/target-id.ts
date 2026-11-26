@@ -14,8 +14,20 @@ import type { DispatchReferenceRoute } from "./routes";
 /** What a reference resolves to for display: the record whose title, excerpt, or author the
  * reader is shown. An issue's spec/log/activity/children/artifacts tabs all resolve to the issue
  * itself; an ask or comment nested under a project document resolves to that item, not the
- * document; a block of a document, a comment or a message (`#b-`) resolves to that block. */
-export type ReferenceTargetKind = "issue" | "document" | "block" | "ask" | "comment" | "message";
+ * document; a block of a document, a comment or a message (`#b-`) resolves to that block. The
+ * last four are no record at all: a component of a project's architecture, and the three
+ * parties - an agent's session, a role and a person - which the graph stores nothing for. */
+export type ReferenceTargetKind =
+  | "issue"
+  | "document"
+  | "block"
+  | "ask"
+  | "comment"
+  | "message"
+  | "component"
+  | "session"
+  | "role"
+  | "person";
 
 export function referenceTargetKind(route: DispatchReferenceRoute): ReferenceTargetKind {
   if ("block" in route && route.block !== undefined) {
@@ -28,7 +40,12 @@ export function referenceTargetKind(route: DispatchReferenceRoute): ReferenceTar
     case "ask":
     case "comment":
     case "message":
+    case "component":
+    case "role":
+    case "person":
       return route.kind;
+    case "agent-session":
+      return "session";
     case "artifact":
     case "agent-artifact":
       return "document";
@@ -40,8 +57,10 @@ export function referenceTargetKind(route: DispatchReferenceRoute): ReferenceTar
 /** The target id the server's graph stores a reference to `route` under, as Go's `text.TargetID`
  *  writes it: an ask's, a comment's or a message's id, a document's `<key or project>/<slug>`
  *  (`spec` for an issue's spec) or `agent/<session id>/<slug>`, a document block's `#<block id>`
- *  after its document's, a comment's or message's block's `<item kind>/<item id>#<block id>`, and
- *  an issue's key for the issue and each of its tabs. A version or a pin is no part of it. */
+ *  after its document's, a comment's or message's block's `<item kind>/<item id>#<block id>`,
+ *  a component's `<project>/<id>`, and an issue's key for the issue and each of its tabs. A
+ *  version or a pin is no part of it. A party's is its own name, which the graph stores no edge
+ *  under; it is read only to hold a party reference to the same bound as any other. */
 function routeTarget(route: DispatchReferenceRoute): string {
   const block = "block" in route && route.block !== undefined ? `#${route.block.id}` : "";
   const item = itemOfBlock(route);
@@ -61,6 +80,14 @@ function routeTarget(route: DispatchReferenceRoute): string {
     case "comment":
     case "message":
       return route.id;
+    case "component":
+      return `${route.project}/${route.id}`;
+    case "agent-session":
+      return route.session;
+    case "role":
+      return route.role;
+    case "person":
+      return route.login;
     default:
       return route.key;
   }

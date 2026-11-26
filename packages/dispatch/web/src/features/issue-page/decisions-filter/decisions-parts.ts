@@ -1,18 +1,18 @@
-import type { Actor, IssueDecisions, DecisionEntry as ReadEntry } from "../../../api/types";
+import type {
+  Actor,
+  CommentWithTrees,
+  DisplayTree,
+  IssueDecisions,
+  DecisionEntry as ReadEntry,
+} from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { isDecisionEntry } from "../../issue/decision-entries";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
+import type { TextSource } from "../../refs/text-references";
 import { type ChangeComment, inReviewList } from "../decision-review";
-import {
-  drawnLine,
-  firstLineOf,
-  lineWords,
-  type ParentLine,
-  type TreeAsk,
-  type TreeNode,
-} from "../issue-tree";
-import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
+import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
+import { type DecisionState, isReader } from "../page-words";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
@@ -94,8 +94,9 @@ export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
 export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
-  /** Its first line, as R1 cuts a row's: the page draws one line for it here. */
-  readonly line: string;
+  /** The statement, whose one line a row projects from its words, as R1 cuts a row's
+   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. */
+  readonly node: TreeNode;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
   /** Whether the decision changed after it first named the statement and the statement has not
@@ -123,11 +124,22 @@ interface EntryBase {
   readonly shapes: readonly ShapedStatement[];
 }
 
+/** That a person declined an ask, with the note they wrote where they wrote one. */
+export interface AskDeclined {
+  readonly by: Actor;
+  /** What the person wrote as they declined, as stored; absent where they wrote nothing. */
+  readonly note?: string;
+  /** The record `note` is: the ask, on this issue. */
+  readonly source: TextSource;
+  /** The server's reading of `note`, where the asks read sent one. */
+  readonly tree?: DisplayTree;
+}
+
 /** One ask of the filter: an open question, or a closed one. */
 export interface AskEntry extends EntryBase {
   /** The person who declined the question, with the note they wrote where they wrote one;
    *  absent for every ask that was not declined. */
-  readonly declined?: { readonly by: Actor; readonly note?: string };
+  readonly declined?: AskDeclined;
   readonly kind: "ask";
 }
 
@@ -145,6 +157,10 @@ export interface DecisionChange {
   readonly id: string;
   /** The comment's address in the conversation. */
   readonly path: string;
+  /** The record `body` is: the comment, on this issue. */
+  readonly source: TextSource;
+  /** The server's reading of `body`, where the comments read sent one. */
+  readonly tree?: DisplayTree;
 }
 
 /** One decision of the filter. */
@@ -219,8 +235,9 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
  * (`presetView`), whose nodes are the ones the filter by words kept and the one the address
  * names. `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
  * a tie resolves to the node it names however its address is written. `changes` is the change
- * a person asked of each decision, by the decision's address (`decisionChanges`), and `reader`
- * who is reading, which is what tells their own decisions from other people's.
+ * a person asked of each decision, by the decision's address (`decisionChanges`), with the
+ * server's reading of its body where the comments read sent one, and `reader` who is reading,
+ * which is what tells their own decisions from other people's.
  */
 export function decisionsParts({
   asks,
@@ -234,7 +251,7 @@ export function decisionsParts({
 }: {
   /** The issue's asks, for how each closed one was closed. */
   readonly asks: readonly DecisionsAsk[] | undefined;
-  readonly changes?: ReadonlyMap<string, ChangeComment>;
+  readonly changes?: ReadonlyMap<string, ChangeComment & Pick<CommentWithTrees, "body_tree">>;
   readonly decisions: IssueDecisions | undefined;
   /** The issue's key, which a change's address in the conversation is built with. */
   readonly issueKey: string;
@@ -284,11 +301,21 @@ export function decisionsParts({
         continue;
       }
       const note = closing?.reason ?? "";
-      const declined = node.state === "declined" && closing !== undefined;
+      const declined: AskDeclined | undefined =
+        node.state === "declined" && closing !== undefined
+          ? {
+              by: closing.actor,
+              source: { id: askId, issue: issueKey, kind: "ask" },
+              ...(note === "" ? {} : { note }),
+              ...(note === "" || closing.reason_tree === undefined
+                ? {}
+                : { tree: closing.reason_tree }),
+            }
+          : undefined;
       decidedBy(node.answer?.by ?? closing?.actor).push({
         ...base,
         ...timeOf(node.answer?.at ?? closing?.at ?? node.at),
-        ...(declined ? { declined: { by: closing.actor, ...(note === "" ? {} : { note }) } } : {}),
+        ...(declined === undefined ? {} : { declined }),
         kind: "ask",
         shapes,
       });
@@ -326,6 +353,8 @@ export function decisionsParts({
               editedAt: asked.edited_at,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
+              source: { id: asked.id, issue: issueKey, kind: "comment" },
+              ...(asked.body_tree === undefined ? {} : { tree: asked.body_tree }),
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),
@@ -383,38 +412,13 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
     if (!placed.has(node.id)) {
       placed.set(node.id, {
         node,
-        ...(above === undefined || above === root
-          ? {}
-          : {
-              parent: {
-                id: above.id,
-                line: lineOf(above),
-                // The parent's own address, which makes a parent's line with words the link a
-                // reader follows to it (R18); a wordless parent is its kind word, with no link.
-                ...(above.reference === undefined ? {} : { reference: above.reference }),
-                // A comment's or a message's marks, which its child's row draws with the line
-                // (INFRA-1523, R2 and R3).
-                ...(above.deletedAt === undefined ? {} : { deletedAt: above.deletedAt }),
-                ...(above.deletedBy === undefined ? {} : { deletedBy: above.deletedBy }),
-                ...(above.editedAt === undefined ? {} : { editedAt: above.editedAt }),
-                type: above.type,
-              },
-            }),
+        ...(above === undefined || above === root ? {} : { parent: parentLineOf(above) }),
       });
     }
     for (const child of node.children) walk(child, node);
   };
   walk(root, undefined);
   return placed;
-}
-
-/** A node's one line, as every one-line drawing of a node is cut (R1, `issue-tree.ts`'s
- *  `ParentLine.line`): the first line of its first block's words (`lineWords`), drawn as
- *  `drawnLine` reads it, and the page's word for its kind where those hold none, never its id
- *  (R22). */
-function lineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** The id of every node `view` holds. */
@@ -474,7 +478,7 @@ function shapesOf(
     const held = shapes.get(node.id);
     shapes.set(node.id, {
       id: node.id,
-      line: lineOf(node),
+      node,
       ...pathOf(node),
       stale: link.stale || held?.stale === true,
     });

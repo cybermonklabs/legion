@@ -7,11 +7,16 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
     # packages/contracts/src is no read of this gate's: which of its modules this job compiles is
     # what its two tsc programs list, so the changes job lists them into the filter's listed block
     # and check-ts-filters.sh holds the block to them (ci_ts_programs.py, LISTED).
+    # why: .github/ci-notes/ci.md#dispatch_ui-the-script-whose-references-arm-lists-the-references-lanes-spec-files
+    (".github/scripts/dispatch-browser-shard-suite.sh", f"`packages/dispatch/e2e/reference-lane.ts#referencesLaneFiles` reads the spec files out of its `references)` arm, at the URL of `packages/dispatch/e2e/reference-lane.ts#LANE_SCRIPT`, for the reading walk and surface list tests that {at('dispatch-ui', 'Test dispatch dashboard')} runs"),
+    # why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
+    (".github/ci-gates/dispatch-references.py", f"`packages/dispatch/web/src/features/refs/surface-lists.test.ts#referenceFilter` reads the dispatch_references filter's hand-kept patterns out of it, at the path `packages/dispatch/web/src/features/refs/surface-lists.test.ts#REFERENCE_GATE` names, patterns every covered box's file must match, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{FIX}/live/**", "`packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts#fixtures/live/` and `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#fixtures/live/` import the frames under it"),
     (f"{FIX}/decision-blocks/**", "`packages/dispatch/web/src/features/doc/decision-blocks.test.ts#fixture` and `packages/dispatch/web/src/features/inbox/AskCard.test.tsx#decisionBlockFixture` read the fixtures under it"),
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "`packages/dispatch/web/src/features/doc/schema.ts#manifest`, `packages/dispatch/web/src/features/refs/markdown-engine.test.ts#manifest` and `packages/dispatch/web/src/features/doc/ProofDocument.admission.test.tsx#manifest` import blocks.json, and `packages/proof-editor/tests/manifest-schema.test.ts#manifest`, `packages/proof-editor/tests/block-schema-fixture.ts#serverBlockSchema` and `packages/proof-editor/tests/nested-directive.test.ts#serverBlockSchema` read it; `packages/proof-editor/tests/ask-concurrent-edit.test.ts#serverBlockNodeTypes` reads block-node-types.json of the same directory"),
     (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read by `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, the second the new URL of its path, for the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
     (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "`packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts#TABLE_PATH` reads it, and this job runs that suite: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
+    (f"{ENVOY}/internal/dispatch/text/testdata/head-refs.json", f"`packages/dispatch/web/src/features/refs/head-refs.test.ts#HEAD_ROWS` reads it at a new URL: the head table the Go text package's HeadRefs is held to as well, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
     (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json", "read at module load by packages/dispatch/e2e/visual-guard.ts, the new URL of SHOT_READS_FILE, which e2e/__tests__/visual-guard.test.ts, a test this job runs, imports: the routes a visual row's page may read"),
     (f"{ENVOY}/scripts/fixtures/shell-quote.json", "`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#quoteCases` reads it at a new URL"),
     ("packages/contracts/schemas/dispatch-openapi.json",
@@ -38,7 +43,7 @@ GATE = gate("dispatch_ui", "dispatch-ui", reads=reads(
                      "above import, and `packages/dispatch/e2e/read-token-live.ts#brokerCredential` imports "
                      "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                      "(check-ts-filters.sh measures it)")
-  + bun_job("dispatch-ui"))
+  + dispatch_api_types(at("dispatch-ui", "Typecheck dispatch dashboard")) + bun_job("dispatch-ui"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter dispatch_ui held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),
 ])

@@ -70,8 +70,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // say nothing. A read that stands failed holds nothing either, and the outline says so over
   // its rows (`failed`). Under a words filter the line that nothing holds the words waits on the
   // names as well (`namesHeld`), and the outline draws nothing in the line's place until they are
-  // held. With no filter on the line reads no words, and does not wait on the names.
-  const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  // held. With no filter on the line reads no words, and does not wait on the names. What the
+  // page publishes of its batched names read the tree hands its rows and crumbs in the render
+  // that draws them (`published`), so none of them reads a reference the page asks for.
+  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
+    useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -235,6 +238,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             more={more}
             older={older}
             onEditing={onEditing}
+            published={published}
             readsHeld={readsHeld}
             readsSettled={readsSettled && !pages.reading && !graphOut}
             {...(request === undefined ? {} : { request })}

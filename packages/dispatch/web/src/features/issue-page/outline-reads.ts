@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, MessageRead } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
@@ -12,6 +13,7 @@ import {
   issueAskThreadsQuery,
   issueCommentsQuery,
   issueMessagesQuery,
+  type NamesFailure,
   useIssueTree,
 } from "./useIssueTree";
 
@@ -65,10 +67,18 @@ export interface OutlineReads {
    *  (`useIssueTree`). A tree read refused before it first answered draws a line of its own
    *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). Empty while no line stands. */
   readonly failed: readonly FailedRead[];
+  /** The names' line alone while it stands (`IssueTreeView.namesFailure`), the last of `failed`:
+   *  one line in the outline's words with its Retry, which a view the stage draws in the
+   *  outline's place draws over its own lines, and the one empty list (`NO_FAILED_READS`) while
+   *  none stands. */
+  readonly names: readonly FailedRead[];
   /** Whether the names the tree is built from are held (`IssueTreeView.namesHeld`), which the
    *  line that nothing holds a words filter's words waits on (`slots/body.tsx`), as it waits on
    *  the reads the tree is built from (`readsHeld`). */
   readonly namesHeld: boolean;
+  /** What the page publishes of its batched names read (`IssueTreeView.published`), which the
+   *  outline hands its rows in the render that draws them (`IssueTree`'s `published`). */
+  readonly published: PublishedReferences;
   /** The reads of the issue's conversation, each undefined until it has answered, which tell a
    *  turn the outline leaves out (`useAddressFallback`), and whether each of the six reads the
    *  tree is built from beside the tree read - the coverage, the decisions, the results, the
@@ -198,6 +208,27 @@ function failedLines(
   });
 }
 
+/** The names' line while it stands (`IssueTreeView.namesFailure`), in the outline's words: the
+ *  outline's and a view's, both through `useOutlineReads`, drawn by one rule. One value for
+ *  as long as the names' failure says the same, and the one empty list while none stands. */
+function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRead[] {
+  return useMemo(
+    (): readonly FailedRead[] =>
+      namesFailure === undefined
+        ? NO_FAILED_READS
+        : [
+            {
+              ...namesFailure,
+              bringsQuestions: false,
+              key: "names",
+              message: STATE_LINES.names_unreadable,
+              placesRows: false,
+            },
+          ],
+    [namesFailure]
+  );
+}
+
 /**
  * The issue's tree, the reads the outline waits on, and the line of each that stands failed, the
  * names' as the tree says it (`failed`): for whatever draws or lands on the outline, and for the
@@ -234,6 +265,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     namesFailure,
     namesHeld,
     pending,
+    published,
     root,
   } = useIssueTree(issue);
   const key = issue.key;
@@ -260,21 +292,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     },
     queries: queriesOf(six),
   });
-  const names = useMemo(
-    (): readonly FailedRead[] =>
-      namesFailure === undefined
-        ? NO_FAILED_READS
-        : [
-            {
-              ...namesFailure,
-              bringsQuestions: false,
-              key: "names",
-              message: STATE_LINES.names_unreadable,
-              placesRows: false,
-            },
-          ],
-    [namesFailure]
-  );
+  const names = useNamesLine(namesFailure);
   const failed = useMemo(
     () => (own.failed.length + names.length === 0 ? NO_FAILED_READS : [...own.failed, ...names]),
     [names, own.failed]
@@ -289,7 +307,9 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   return {
     blocksOf,
     failed,
+    names,
     namesHeld,
+    published,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,
     readsSettled: own.settled && !pending,

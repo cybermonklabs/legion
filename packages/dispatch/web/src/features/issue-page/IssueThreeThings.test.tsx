@@ -10,6 +10,7 @@ import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTarget } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -19,6 +20,7 @@ import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { Publisher, publishedTree } from "./projection-fixture";
 import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
@@ -106,9 +108,13 @@ function bullets(
   look: "contents" | "spec" = "contents",
   root: TreeNode = treeNode(KEY, "issue", { children: summary === undefined ? [] : [summary] })
 ): { labels: string[]; lines: string[]; unmount: () => void } {
+  const published = publishedTree(root);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head look={look} root={root} specHeld={!reading} summary={summary} />
+      <ReferenceNamesProvider>
+        <Publisher published={published} />
+        <Head look={look} root={root} specHeld={!reading} summary={summary} />
+      </ReferenceNamesProvider>
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -423,7 +429,12 @@ test("a summary sentence that cites a block draws the block's name, not its addr
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
         chips: [
-          { answered: true, gone: false, name: "the whole issue in one reading", ref: cited },
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "the whole issue in one reading" },
+            ref: cited,
+          },
         ],
       }),
     ],
@@ -456,7 +467,14 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -484,7 +502,14 @@ test("a summary with no sentence end that cites a labelled statement draws it as
       summary,
       treeNode(blockNodeId("spec", "r1"), "requirement"),
       treeNode(blockNodeId("decisions", "d1"), "decision", {
-        chips: [{ answered: true, gone: false, name: "R1. Every node is whole", ref: cited }],
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            reading: { words: "R1. Every node is whole" },
+            ref: cited,
+          },
+        ],
       }),
     ],
   });
@@ -770,6 +795,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
               holdsEscape={false}
               isClosed={false}
               onEditing={() => {}}
+              published={publishedTree(root)}
               reveal={undefined}
               root={root}
               rootRow

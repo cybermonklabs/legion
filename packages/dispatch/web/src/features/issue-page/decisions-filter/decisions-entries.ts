@@ -5,7 +5,6 @@ import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
-import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
@@ -182,9 +181,8 @@ export function useDecisionsEntries({
     [decisions, comments, issue]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
-  // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   // Each write-up of an answered question the tree holds, by its node's id, with the question it
   // restates: a `reading` node at its first placement in the reading order, which is where the
   // tree places it (`placements`), under an ask that holds an answer, the ask the tree read

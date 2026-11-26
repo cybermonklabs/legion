@@ -1,4 +1,4 @@
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tree";
 
 /**
  * How much of the issue's tree is drawn. Pure, over the model `issue-tree.ts` builds, so the
@@ -166,11 +166,12 @@ export function withEveryFoldUndone(opened: OpenedBranches): OpenedBranches {
   return opened.closed.size === 0 ? opened : { closed: new Set(), pages: opened.pages };
 }
 
-/** What a folded node's row draws of its words: its text to its first sentence end, or to the
- *  first line's limit, cut at a word (R11's first-line rule, `firstLineOf`), cut from the words
- *  every one-line drawing of a node is cut from (`lineWords`). */
+/** A folded node's one line as plain words: its text to its first sentence end, or to the first
+ *  line's limit, cut at a word (R11's first-line rule, `firstLineOf`), cut from the words its
+ *  reading opens with (`lineWordsRaw`). The row draws the same line through the shared
+ *  projection (`node-line.tsx`'s `FirstLine`), which also names each reference in it. */
 export function foldedLine(node: Pick<TreeNode, "text" | "tree">): string {
-  return drawnLine(firstLineOf(lineWords(node)));
+  return drawnLine(firstLineOf(lineWordsRaw(node)));
 }
 
 /** How many levels a row at `level` is indented, the tree's first row at none: one a level up

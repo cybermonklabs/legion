@@ -29,24 +29,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		query += ` and issue_key is null`
 	}
 	query += ` order by created_at, id`
-	rows, err := s.deps.Store.Pool.Query(r.Context(), query, project)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	artifacts, err := collectArtifacts(rows)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, artifactPointers(artifacts), artifactVersionsStatement); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	reads := artifactReads(artifacts, reader)
-	reader.resolve()
-	WriteJSON(w, http.StatusOK, reads)
+	s.writeArtifactList(w, r, query, project)
 }
 
 func (s *server) uploadProjectArtifact(w http.ResponseWriter, r *http.Request) {

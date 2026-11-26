@@ -456,7 +456,7 @@ function measureClamp(element: HTMLElement, top: number): Clamp | undefined {
 }
 
 /** The blocks of the words `element` holds: the paragraphs, lists and pictures of a text drawn
- *  from its reading, and the one paragraph of a text drawn as stored. */
+ *  from its reading, and otherwise the first element the words hold. */
 function blocksOf(element: HTMLElement): Element[] {
   const drawn = element.querySelector(".dispatch-markdown");
   if (drawn !== null && drawn.children.length > 0) return [...drawn.children];

@@ -60,6 +60,7 @@ func stepRunsOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // it and starts testing's, which stays open. The control is the same issue with its plan rows
 // kept: task a's step 1 ends passed with the move, naming the same read, and nothing is logged.
 func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
+	t.Parallel()
 	const offWalk = "workflow: a run on no step of the walk of its run is ended"
 	for _, dropped := range []bool{true, false} {
 		name := "the plan rows dropped by the way back"
@@ -125,6 +126,7 @@ func TestARunOnNoStepOfItsWalkEndsAtTheNextSettle(t *testing.T) {
 // for its children applies and starts no retro. Each control is the same issue with its rows
 // kept, which its plan holds.
 func TestAHoldWhosePlanRowsTheWayBackDroppedIsAPlainHold(t *testing.T) {
+	t.Parallel()
 	for _, dropped := range []bool{false, true} {
 		suffix := ": control, rows kept"
 		if dropped {

@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { parsePath } from "react-router-dom";
 
+import type { DisplayTree } from "../../../api/types";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
-import { outlineRowPath, storeLinkPath } from "./store-link";
+import { outlineRowPath, placedStorePath, placeStoreLinks, storeLinkPath } from "./store-link";
 
 /** The page of the issue CORE-1, as the router holds it. */
 const PAGE = { pathname: "/issues/CORE-1", search: "" };
@@ -82,5 +83,61 @@ test("outlineRowPath builds the row's path with buildIssuePath", () => {
             ["node", readId],
           ]
     );
+  }
+});
+
+/** A paragraph of one text run, `text`, under the link marks `marks`. */
+function linked(text: string, ...marks: readonly { href: string; title?: string }[]): DisplayTree {
+  return {
+    content: [
+      {
+        marks: marks.map((attrs) => ({ attrs, type: "link" })),
+        text,
+        type: "text",
+      },
+    ],
+    type: "paragraph",
+  };
+}
+
+// A link to a store address that `storeLinkPath` places is written as a link to nothing that holds
+// the row's path as its title, which the body's reference pass leaves alone; every other link is
+// left as it is, so the body draws it as it always did, and a tree with no such link is returned
+// as it came.
+test("placeStoreLinks writes only a placed store link as a link to nothing", () => {
+  const risk = `dispatch://risk/${RISK}`;
+  const path = outlineRowPath("CORE-1", RISK);
+  expect(placeStoreLinks(linked("Failover", { href: risk, title: path }), PAGE)).toEqual(
+    linked("Failover", { href: "", title: path })
+  );
+  const unplaced: readonly DisplayTree[] = [
+    // An author's own title, and none.
+    linked("Approve", { href: risk, title: "/issues/OTHER-1?node=x" }),
+    linked("Approve", { href: risk }),
+    // A link that is no link to a store address.
+    linked("Spec", { href: "dispatch://CORE-1/spec", title: path }),
+    linked("Site", { href: "https://example.com/x", title: path }),
+    // A text with no link.
+    { text: "Failover", type: "text" },
+  ];
+  for (const tree of unplaced) expect(placeStoreLinks(tree, PAGE)).toBe(tree);
+  // The same link on a page that is no issue's is placed nowhere.
+  const tree = linked("Failover", { href: risk, title: path });
+  expect(placeStoreLinks(tree, { pathname: "/inbox", search: "" })).toBe(tree);
+});
+
+// The path a placed link opens is the title it holds, taken only where it is an issue's outline at
+// a node's `?node=`, as `outlineRowPath` writes it.
+test("placedStorePath takes only a row's outline path", () => {
+  const path = outlineRowPath("CORE-1", RISK);
+  expect(placedStorePath(path)).toBe(path);
+  for (const title of [
+    "",
+    "/issues/CORE-1",
+    `${buildIssuePath({ key: "CORE-1", kind: "spec" })}?node=${RISK}`,
+    outlineRowPath("CORE-1", RISK, "failover"),
+    "https://example.com/?node=x",
+  ]) {
+    expect(placedStorePath(title), title).toBe(undefined);
   }
 });

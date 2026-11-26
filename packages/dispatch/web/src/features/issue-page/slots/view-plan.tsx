@@ -18,6 +18,7 @@ import { useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
+import { usePublishViewParents } from "./view-parents";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -38,9 +39,15 @@ export function ViewPlanSlot({
   const address = issueAddress(route, search, hash, spec?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its bars and steps draw waits on those names.
   const {
     blocksOf,
+    names,
+    published,
     readsSettled: outlineSettled,
     refused: refusedLines,
     root,
@@ -139,6 +146,9 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
+  // The other statements a step serves are named by the page's names, which the whole plan's view
+  // names where only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(whole.parents);
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
   // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
@@ -174,9 +184,11 @@ export function ViewPlanSlot({
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
           planBlocks={planBlocks.data}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

@@ -35,7 +35,7 @@ import { useAgentText } from "../../refs/AgentName";
 import { standsFailed } from "../../refs/reference-target";
 import {
   buildReferencePath,
-  type DispatchReferenceRoute,
+  type PagedReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
@@ -869,9 +869,12 @@ function Quote({ decision }: { decision: SpecDecision }): ReactNode {
   );
 }
 
-/** Where the link to a decision goes: its node's own address, where the model holds one. */
-function routeOf(decision: SpecDecision | undefined): DispatchReferenceRoute | undefined {
-  return decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+/** Where the link to a decision goes: its node's own address, where the model holds one and it
+ *  names a page: a person has none (`PagedReferenceRoute`), so such an address is no link. */
+function routeOf(decision: SpecDecision | undefined): PagedReferenceRoute | undefined {
+  const route =
+    decision?.reference === undefined ? undefined : parseNodeReference(decision.reference);
+  return route?.kind === "person" ? undefined : route;
 }
 
 /** One part of a line `dotted` draws. */

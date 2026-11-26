@@ -22,6 +22,7 @@ import {
 } from "../verification-filter/VerificationFilterBody";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
+import { usePublishViewParents } from "./view-parents";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
 export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
@@ -31,8 +32,12 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { blocksOf, readsSettled, refused, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its rows draw waits on those names.
+  const { blocksOf, names, published, readsSettled, refused, root } = useOutlineReads(issue);
   // Whether the read that holds the Verification document's blocks runs, from an observer of its
   // own (`useBlocksRunning`): under this filter its own view read.
   const running = useBlocksRunning(issue.key, "verification");
@@ -48,6 +53,9 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
+  // The other statements a check serves are named by the page's names, which the view names where
+  // only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(view.parents);
   // The view with no words query, where a query is typed (`queryTyped`, the body's one rule): what
   // the issue holds whatever the query left of it. A query of spaces alone draws as no query does;
   // with none typed the body reads the view itself, and nothing is built a second time.
@@ -81,6 +89,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
+          namesLine={names}
+          published={published}
           reads={reads}
           view={view.root}
           whole={whole}

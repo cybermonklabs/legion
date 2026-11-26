@@ -1,3 +1,4 @@
+import type { DisplayTree } from "../../../api/types";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
 
@@ -6,15 +7,20 @@ import { storeAddressReference } from "../../refs/store-address";
  * `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`, and a finding's
  * `dispatch://lens/<uuid>#b-<id>`. No route names one (`refs/store-address.ts`). Where the tree
  * read holds the node and a step drafted its row, the words read it by the node's name, in a link
- * mark that holds the store address as its `href` and the path of the node's row as its `title`;
- * the row's link pass (`RowText.tsx`'s `DrawnText`) takes that path as the link's address only
- * where `storeLinkPath` answers it.
+ * mark that holds the store address as its `href` and the path of the node's row as its `title`.
+ * The body's reference pass reads a `dispatch://` address no route names as the words its author
+ * wrote, and a link to the row's path as a link to its issue, so before the words are painted
+ * `placeStoreLinks` writes each such link `storeLinkPath` can place as a link to nothing that
+ * holds the path as its title, and the row's link pass (`RowText.tsx`'s `DrawnText`) takes that
+ * path as the link's address (`placedStorePath`). A link it cannot place is left to the pass,
+ * which draws it as its words.
  *
  * `RowText.tsx` loads on today's pages, so this file imports nothing from the issue page's model
  * or its word lists: of the files outside `lenses/`, only `refs/routes.ts` and
- * `refs/store-address.ts`, which today's pages load already. `RowText.tsx` takes `storeLinkPath`
- * from here; `StoreKind`, `storeKindOf` and `storeAddressOf` are exported for the step that drafts
- * a store address's link in a row's words, and no file imports them yet.
+ * `refs/store-address.ts`, which today's pages load already. `RowText.tsx` takes
+ * `placeStoreLinks` and `placedStorePath` from here; `StoreKind`, `storeKindOf` and
+ * `storeAddressOf` are exported for the step that drafts a store address's link in a row's words,
+ * and no file imports them yet.
  */
 
 /** The kinds of node a store address in a row's words names, as the tree names them. */
@@ -42,6 +48,59 @@ export function storeLinkPath(href: string, title: string, page: PageAddress): s
   if (issueKey === undefined) return undefined;
   const readId = new URLSearchParams(title.slice(query + 1)).get("node");
   return readId !== null && namesNode(address, readId) && title === outlineRowPath(issueKey, readId)
+    ? title
+    : undefined;
+}
+
+/** A mark of a display tree, as far as a link's two attributes are read. */
+interface TreeMark {
+  readonly type: string;
+  readonly attrs?: { readonly href?: unknown; readonly title?: unknown };
+}
+
+/** `mark`, a link to a store address that `storeLinkPath` places on `page`, written as a link to
+ *  nothing that holds the node's row path as its title; any other mark as it is. */
+function placedMark(mark: TreeMark, page: PageAddress): TreeMark {
+  const { href, title } = mark.attrs ?? {};
+  if (mark.type !== "link" || typeof href !== "string" || typeof title !== "string") return mark;
+  const path = storeLinkPath(href, title, page);
+  return path === undefined ? mark : { ...mark, attrs: { ...mark.attrs, href: "", title: path } };
+}
+
+/**
+ * `tree` with each link to a store address that `storeLinkPath` places on `page` written as a
+ * link to nothing whose title is the node's row path (`placedStorePath`), so the body's reference
+ * pass, which would draw the address as its words or a link to the path as one to its issue,
+ * leaves it to `RowText.tsx`'s link pass. `tree` itself, the same object, where it holds none: a
+ * reading drawn again over the same words is painted once.
+ */
+export function placeStoreLinks(tree: DisplayTree, page: PageAddress): DisplayTree {
+  let placed = tree;
+  const marks = tree.marks as readonly TreeMark[] | undefined;
+  if (Array.isArray(marks)) {
+    const written = marks.map((mark) => placedMark(mark, page));
+    if (written.some((mark, at) => mark !== marks[at])) placed = { ...placed, marks: written };
+  }
+  const content = tree.content as readonly DisplayTree[] | undefined;
+  if (Array.isArray(content)) {
+    const inside = content.map((child) => placeStoreLinks(child, page));
+    if (inside.some((child, at) => child !== content[at])) placed = { ...placed, content: inside };
+  }
+  return placed;
+}
+
+/**
+ * The path a link `placeStoreLinks` wrote opens, read from its `title` back on the page: the
+ * title where it is the outline of an issue at the `?node=` of a node (`outlineRowPath`), else
+ * undefined. The row's link pass reads only links to nothing (`href=""`), so a title an author
+ * wrote on a link of any address is never taken.
+ */
+export function placedStorePath(title: string): string | undefined {
+  const query = title.indexOf("?");
+  if (query === -1) return undefined;
+  const issueKey = parseIssuePath(title.slice(0, query), title.slice(query))?.key;
+  const readId = new URLSearchParams(title.slice(query + 1)).get("node");
+  return issueKey !== undefined && readId !== null && title === outlineRowPath(issueKey, readId)
     ? title
     : undefined;
 }

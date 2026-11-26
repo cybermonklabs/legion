@@ -2293,6 +2293,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_LEGION_STATUS_SCOPE": func(t *testing.T) {
+			// on turns the refusal on and is handed to the router, which passes it to the API's
+			// dependencies (routes.BuildAppContext). The router shows no dependencies, so the case
+			// checks the hand-off to it, as the DISPATCH_NATS_DISABLED case does. Unset and off
+			// leave it off. Any other value refuses the boot and names the value, so a misspelt on
+			// never leaves the refusal off in silence.
+			boot := resolveWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "on"})
+			if !boot.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: LegionStatusScope false")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: the router is handed LegionStatusScope = false, want true")
+			}
+			for name, overrides := range map[string]map[string]string{
+				"unset": {},
+				"off":   {"DISPATCH_LEGION_STATUS_SCOPE": "off"},
+			} {
+				boot := resolveWith(t, overrides)
+				if boot.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: LegionStatusScope true", name)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: the router is handed LegionStatusScope = true, want false", name)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "yes"}, `DISPATCH_LEGION_STATUS_SCOPE="yes"`)
+		},
 		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
 			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
 			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the

@@ -10,7 +10,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
-import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
+import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 
 /**
  * `blockId` is the block's own identity rather than one of its schema attributes, so it is the
@@ -29,18 +29,19 @@ function attributeValue(value: unknown): string {
  * path as its `href`, and the reference itself as `data-dispatch-href`, which is how a link
  * drawn inside a document reaches the router and the hover card (`ProofDocument`'s click
  * handler and `RefPreview`'s trigger, the same pair `pictureView` writes for). A pointer that
- * names nothing is the text it is.
+ * names nothing, or names something with no page of this dashboard - a person (R5) - is the
+ * text it is.
  */
 function pointerLink(reference: string): DOMOutputSpec {
   const route = parseNodeReference(reference);
   if (route === undefined) {
     return ["span", {}, reference];
   }
-  return [
-    "a",
-    { "data-dispatch-href": reference, href: buildReferencePath(route) },
-    shortForm(route),
-  ];
+  const href = referenceHref(route);
+  if (href === undefined) {
+    return ["span", {}, shortForm(route)];
+  }
+  return ["a", { "data-dispatch-href": reference, href }, shortForm(route)];
 }
 
 /** One attribute the header draws: its name, and the children its value draws as - a spec per

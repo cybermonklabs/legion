@@ -27,23 +27,24 @@ import {
   pageQuietText,
   textMutedOnCanvas,
 } from "../../../theme/classes";
-import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import {
+  type KnownReferences,
+  namesBlockByLine,
+  PublishedReferenceNames,
+  type PublishedReferences,
+  useKnownReferences,
+} from "../../refs/reference-names";
+import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
-import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
+import { chipName, heldBy, type NodeChip, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
-import { chipWords } from "../node-row-chip";
-import type { FailedRead } from "../outline-reads";
+import { lineOrKindWord, useNodeLine } from "../node-line";
+import type { FailedRead, OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
-import {
-  CONTROL_LABELS,
-  NODE_TYPE_NAMES,
-  PLAN_WORDS,
-  PRESET_NAMES,
-  STATE_LINES,
-} from "../page-words";
+import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
@@ -136,12 +137,22 @@ export type PlanReads =
  */
 export function PlanFilterBody({
   emptyLine,
+  namesLine,
   plan,
   planBlocks,
+  published,
   reads,
   root,
   ...tree
 }: ComponentProps<typeof IssueTree> & {
+  /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
+   *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  none while they do not stand failed. Every reference the bars, the chips and the steps draw
+   *  waits on those names (`published`), so while they stand failed each is drawn as its address
+   *  or as nothing; the line says why. The body draws it over the tree after the lines of its
+   *  own reads (`reads`), as the outline draws it after the lines of the reads its rows come
+   *  from. */
+  namesLine: OutlineReads["names"];
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn. */
@@ -150,6 +161,12 @@ export function PlanFilterBody({
    *  read is out (`slots/view-plan.tsx`, from `useIssueTree`'s `blocksOf("plan")`): the plan's
    *  own order (`writtenOrder`). */
   planBlocks: readonly Pick<ArtifactBlock, "id">[] | undefined;
+  /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
+   *  which the body hands every row it draws, the chart's and the steps', in the render that
+   *  draws it (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a
+   *  reference the page is asking for waits on the page's answer from a row's first render,
+   *  rather than being read again by the row (R8). */
+  published: PublishedReferences;
   /** How the plan's and the spec's blocks reads stand, which the body draws its tasks after. */
   reads: PlanReads;
 }): ReactNode {
@@ -226,9 +243,20 @@ export function PlanFilterBody({
   // switch, having nothing to switch between, and draws its own tree (below), with the line the
   // slot hands on (`emptyLine`) once the reads have answered.
   const empty = inView.size === 0;
-  // Each read that failed before it first answered, which the body says over the tree in the
-  // order the slot hands them on.
+  // The lines the body says over the tree: each read that failed before it first answered, in
+  // the order the slot hands them on, then the names' line (`namesLine`), as the outline draws
+  // it after the lines of the reads its rows come from (`outline-reads.ts`'s `useOutlineReads`).
   const unreadable = reads.state === "failed" ? reads.failed : [];
+  const failedLines = [
+    ...unreadable.map(({ failure, read, retry, retrying }) => ({
+      failure,
+      key: read,
+      message: UNREADABLE_LINES[read],
+      retry,
+      retrying,
+    })),
+    ...namesLine,
+  ];
   // Whether the empty tree says the view holds no task: once the reads have answered, in the
   // slot's line, which describes the tree.
   const saysEmpty = empty && answered && emptyLine !== undefined;
@@ -250,23 +278,23 @@ export function PlanFilterBody({
           },
     [leaves]
   );
-  return (
+  const drawnBody = (
     <div
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
       data-plan-body=""
     >
-      {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order the slot hands them on, over the
-          tree (`FailedReadLine`). The stage the view is drawn in keeps the focus in the view when
-          a line leaves with the focus in it, and hands a focus on the empty tree to a Retry or to
-          the rows once they come (`slots/stage.tsx`). */}
-      {unreadable.map(({ failure, read, retry, retrying }) => (
-        <div className="mb-2.5" data-plan-unreadable={read} key={read}>
+      {/* Each line, one in the page's words with a Retry that asks its read alone again, over
+          the tree (`FailedReadLine`), each in an element that names its read. The stage the view
+          is drawn in keeps the focus in the view when a line leaves with the focus in it, and
+          hands a focus on the empty tree to a Retry or to the rows once they come
+          (`slots/stage.tsx`). */}
+      {failedLines.map((line) => (
+        <div className="mb-2.5" data-plan-unreadable={line.key} key={line.key}>
           <FailedReadLine
-            failure={failure}
-            message={UNREADABLE_LINES[read]}
-            onRetry={retry}
-            retrying={retrying}
+            failure={line.failure}
+            message={line.message}
+            onRetry={line.retry}
+            retrying={line.retrying}
           />
         </div>
       ))}
@@ -337,7 +365,12 @@ export function PlanFilterBody({
           ))}
           {/* The tree takes the address's node only while the view has not: drawn after a
               press of the switch, it leaves the focus on the button pressed. */}
-          <IssueTree {...tree} focusReveal={tree.focusReveal && landing} root={ordered} />
+          <IssueTree
+            {...tree}
+            focusReveal={tree.focusReveal && landing}
+            published={published}
+            root={ordered}
+          />
         </>
       ) : (
         <PlanChart
@@ -346,11 +379,13 @@ export function PlanFilterBody({
           inView={inView}
           land={landing ? revealed : undefined}
           onLanded={setTaken}
+          readings={published.readings}
           reveal={revealed}
         />
       )}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
 }
 
 /** What the body says of each read that failed before it first answered: the outline's own
@@ -396,41 +431,70 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
 }
 
 /** The task's one line, the line the page draws for it wherever it draws one and the label of
- *  its bar, by the page's one-line rule: the first line of the words of its first block that
- *  holds any (`lineWords`), so a heading is never run into the paragraph after it, drawn with an
- *  ellipsis where the cut falls inside a sentence (`drawnLine`). It is the line the outline's
- *  row draws for the same task under "Steps" (`NodeRow.tsx`) and the tree's name of a `needs`
- *  chip pointing at it (`buildIssueTree`), so the switch changes the drawing alone. A task that
- *  holds no words is named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its
- *  id, as a parent's line under a filter is (`presets.ts`'s `parentLineOf`). The marks say whose
- *  words the line is, and the tree's name of a `needs` chip pointing at the task: the author's,
- *  or the page's own for a task that holds none, since both are then its kind's word. */
-function taskLine(task: TreeNode): {
+ *  its bar: the node's own one line, read as the outline reads the same node's folded line
+ *  (`node-line.tsx`'s `useNodeLine`): its first block that holds words, so a heading is never
+ *  run into the paragraph after it, cut by R1's first-line rule with an ellipsis where the cut
+ *  falls inside a sentence, and a reference in it read by its target's name once the page's
+ *  batched read names it and as the words its author wrote until then (R8), as the task's row
+ *  under Steps reads it, so the switch changes the drawing alone. It is the node's own line, not
+ *  a title over one record: the line the names store projects beside the task's name, in which a
+ *  reference reads as its short form, names the task in a `needs` chip pointing at it
+ *  (`chipLine`), as a tie's chip names it under Steps. A task that holds no words is named by the
+ *  page's word for its kind, never by its id (`lineOrKindWord`), and every task by nothing until
+ *  the projection answers, one pre-paint commit on a page whose engine is loaded. The marks say
+ *  whose words the line is: the author's, or the page's own for a task that holds none. `reads`
+ *  draws nothing, and the caller mounts it where it draws the line. */
+function useTaskLine(task: TreeNode): {
   readonly marks: Readonly<Record<string, string>>;
+  readonly reads: ReactNode;
   readonly words: string;
 } {
-  const words = lineWords(task);
-  return words === ""
-    ? { marks: pageChrome, words: NODE_TYPE_NAMES[task.type] }
-    : { marks: authorText, words: drawnLine(firstLineOf(words)) };
+  const { line, reads } = useNodeLine(task, { surface: "plan-task-line" });
+  return {
+    marks: line === "" ? pageChrome : authorText,
+    reads,
+    words: lineOrKindWord(line, task.type),
+  };
 }
 
-/** One task of a cycle, by its own first line, as the link a reader follows to it: in no tab
- *  order of its own where the line is a row of the chart (`CycleLine`). */
+/** The words the chart names a chip's target by - a need's, and a statement's a step serves - as
+ *  a tie's chip names it (`NodeRow.tsx`'s `Chip`): a block whose words the chip's reading holds by
+ *  the line the names store projects from that reading (`namesBlockByLine`,
+ *  `KnownReferences.lines`), and any other target by the name the store holds for it - a task or
+ *  a statement whose words hold none by the page's word for its kind (`tree-drafts.ts`'s
+ *  `treeContext`) - each cut as a chip cuts it (`chipName`). Nothing for a chip the tree has not
+ *  named (no `reading`), and nothing while the store holds no name for it. The reading list's
+ *  `node-row-chip` (`DISPATCH_READING_SURFACES`) says why a chip draws its words so. */
+function chipLine(
+  chip: Pick<NodeChip, "reading" | "ref"> | undefined,
+  { lines, names }: KnownReferences
+): string {
+  if (chip?.reading === undefined) return "";
+  const route = parseNodeReference(chip.ref);
+  const name = namesBlockByLine(route, chip.reading) ? lines.get(chip.ref) : names.get(chip.ref);
+  return name === undefined ? "" : chipName(route, name);
+}
+
+/** One task of a cycle, by its own first line, as the link a reader follows to it where its
+ *  address names a page (`referenceHref`): in no tab order of its own where the line is a row of
+ *  the chart (`CycleLine`). */
 function TaskLink({ inChart, task }: { inChart: boolean; task: TreeNode }): ReactNode {
   const route = task.reference === undefined ? undefined : parseNodeReference(task.reference);
-  const line = taskLine(task);
-  return route === undefined ? (
+  const href = route === undefined ? undefined : referenceHref(route);
+  const line = useTaskLine(task);
+  return href === undefined ? (
     <span className="min-w-0 break-words" {...line.marks}>
+      {line.reads}
       {line.words}
     </span>
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-hair underline-offset-[3px] ${pageMutedText}`}
       {...(inChart ? { tabIndex: -1 } : {})}
-      to={buildReferencePath(route)}
+      to={href}
       {...line.marks}
     >
+      {line.reads}
       {line.words}
     </Link>
   );
@@ -514,6 +578,7 @@ function PlanChart({
   inView,
   land,
   onLanded,
+  readings,
   reveal,
 }: {
   entries: readonly PlanEntry[];
@@ -528,6 +593,9 @@ function PlanChart({
   land: string | undefined;
   /** Says the address's node has taken the focus. */
   onLanded: (id: string) => void;
+  /** How the page names each target its batched read answered (`PublishedReferences.readings`),
+   *  which a step's row names the statement it is drawn under by (`BarRow`). */
+  readings: PublishedReferences["readings"];
   /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
 }): ReactNode {
@@ -859,6 +927,7 @@ function PlanChart({
               focused={focused === place.key}
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
+              readings={readings}
               tabStop={tabStop === place.key}
             />
           )
@@ -998,6 +1067,7 @@ function BarRow({
   end,
   focused,
   onFocus,
+  readings,
   tabStop,
 }: {
   bar: PlanBar;
@@ -1005,39 +1075,68 @@ function BarRow({
   end: number;
   focused: boolean;
   onFocus: () => void;
+  /** How the page names each target its batched read answered (`PublishedReferences.readings`):
+   *  the reading the statement the row is drawn under is named by, as the tree's chip of it would
+   *  carry it (`issue-tree.ts`'s `targetNaming`). */
+  readings: PublishedReferences["readings"];
   tabStop: boolean;
 }): ReactNode {
   const task = bar.task;
-  const line = taskLine(task);
+  const known = useKnownReferences();
+  const line = useTaskLine(task);
   // How wide one unit of the chart is, as a percentage of its column.
   const unit = 100 / end;
   const ref = useRef<HTMLDivElement | null>(null);
   const press = useRowOnScreen(ref, focused);
+  // The statements the task serves, each a chip: the parent the filter draws as no row, where it
+  // is a statement, and each statement the task is also under. The parent is drawn as a chip
+  // beside those, not as a row's text line, so it is named as they are and not through
+  // `node-line.tsx`'s `NodeParentLine`, which draws a parent as the text line of a row: each as
+  // the row's needs are named (`chipLine`), so as a tie's chip names it - by the line the names
+  // store projects from the reading the page published for it where that reading holds words,
+  // and by the page's word for its kind where it holds none - a reference inside the line read
+  // as its short form, since a name inside a name resolves nothing. The tree draws the parent no
+  // chip, so the parent is named by its address and the reading the page published for it
+  // (`readings`), which is the reading the tree's chip of it carries. One the store holds no
+  // name for yet, one the page published no reading for, and a parent the model gives no
+  // address, are named by nothing, as a chip draws nothing until its name comes.
+  //
   // Each chip's React key, unique within the task and the same on every render. Two chips of one
-  // task can carry the same words, or the same reference: the server refuses a pointer named
-  // twice only by its raw value, so two written differently can name one statement. A chip is
-  // keyed by its reference, or by its words where it has none, each under its kind, and a repeat
-  // of that key by the count of chips before it that hold it: `ref:` or `words:` begins the first,
-  // and a count and a space begin each repeat, so no repeat takes another chip's key.
+  // task can carry the same reference: the server refuses a pointer named twice only by its raw
+  // value, so two written differently can name one statement. A chip is keyed by its reference,
+  // which every chip drawn has, and a repeat of that key by the count of chips before it that
+  // hold it: `ref:` begins the first, and a count and a space begin each repeat, so no repeat
+  // takes another chip's key.
   const keyed = new Map<string, number>();
+  const parent = task.parentLine;
   const serves = [
-    ...(task.parentLine === undefined || task.parentLine.type !== "requirement"
+    ...(parent?.type !== "requirement" || parent.reference === undefined
       ? []
-      : [{ line: task.parentLine.line, reference: task.parentLine.reference }]),
-    ...task.alsoUnder
-      .filter((chip) => chip.name !== "")
-      .map((chip) => ({ line: chip.name, reference: chip.ref })),
-  ].map((one) => {
-    const base = one.reference === undefined ? `words:${one.line}` : `ref:${one.reference}`;
-    const before = keyed.get(base) ?? 0;
-    keyed.set(base, before + 1);
-    return { ...one, key: before === 0 ? base : `${before} ${base}` };
-  });
-  // The needs the row names, each by the words of its chip. `planChart` reads each need from one
-  // of the task's `needs` chips, so every need has its chip; one with no words is drawn as none.
+      : [{ reading: readings.get(parent.reference), ref: parent.reference }]),
+    ...task.alsoUnder,
+  ]
+    .flatMap((chip) => {
+      const line = chipLine(chip, known);
+      return line === ""
+        ? []
+        : [{ line, reference: chip.ref, route: parseNodeReference(chip.ref) }];
+    })
+    .map((one) => {
+      const base = `ref:${one.reference}`;
+      const before = keyed.get(base) ?? 0;
+      keyed.set(base, before + 1);
+      return { ...one, key: before === 0 ? base : `${before} ${base}` };
+    });
+  // The needs the row names, each by the words of its chip (`chipLine`), in the marks that say
+  // whose words they are: the author's where the names store projects the needed task's line,
+  // and the page's own where it names that task by its kind's word, since it holds no words.
+  // `planChart` reads each need from one of the task's `needs` chips, so every need has its chip;
+  // one with no words is drawn as none.
   const needs = bar.needs.flatMap((needed) => {
-    const words = chipWords(needsChip(task, needed)?.name ?? "");
-    return words === "" ? [] : [{ needed, words }];
+    const words = chipLine(needsChip(task, needed), known);
+    const marks =
+      needed.reference !== undefined && known.lines.has(needed.reference) ? authorText : pageChrome;
+    return words === "" ? [] : [{ marks, needed, words }];
   });
   return (
     <div
@@ -1062,6 +1161,7 @@ function BarRow({
           data-node-words=""
           {...line.marks}
         >
+          {line.reads}
           {line.words}
         </p>
         <p
@@ -1074,8 +1174,8 @@ function BarRow({
           {needs.length === 0 ? null : (
             <>
               <span {...pageChrome}>· {PLAN_WORDS.needs}</span>
-              {needs.map(({ needed, words }) => (
-                <span data-plan-need={needed.id} key={needed.id} {...taskLine(needed).marks}>
+              {needs.map(({ marks, needed, words }) => (
+                <span data-plan-need={needed.id} key={needed.id} {...marks}>
                   {words}
                 </span>
               ))}
@@ -1097,7 +1197,7 @@ function BarRow({
         data-plan-serves=""
       >
         {serves.map((one) => {
-          const route = one.reference === undefined ? undefined : parseNodeReference(one.reference);
+          const href = one.route === undefined ? undefined : referenceHref(one.route);
           // The chip is a box of its own, `data-plan-serve` for either kind, which draws its
           // border and padding and wraps a long first word inside the column rather than run past
           // it. A linked chip's link inside it draws none: below 1280 px a
@@ -1108,19 +1208,19 @@ function BarRow({
           // anywhere on the chip opens the statement, where a press on its edge would land on the
           // row and give the row the focus.
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
-          return route === undefined ? (
+          return href === undefined ? (
             <span className={look} data-plan-serve="" key={one.key} {...authorText}>
-              {chipWords(one.line)}
+              {one.line}
             </span>
           ) : (
             <span className={`relative ${look}`} data-plan-serve="" key={one.key}>
               <Link
                 className="dispatch-inline-link after:absolute after:-inset-px after:content-['']"
                 tabIndex={-1}
-                to={buildReferencePath(route)}
+                to={href}
                 {...authorText}
               >
-                {chipWords(one.line)}
+                {one.line}
               </Link>
             </span>
           );

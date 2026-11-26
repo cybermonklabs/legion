@@ -32,8 +32,8 @@
 #            409 after a comment cites U.
 #   depth    The rule holds two levels down, and reads the moved node's whole subtree (L5).
 #   rowless  A document node whose row has gone counts as removable: V's row is deleted by SQL as
-#            main's removal deletes it, under the block-index lease, and the move under V's node is
-#            409 PARENT_DOCUMENT_REMOVABLE, not 404.
+#            main's removal deletes it, under the block-index lease and the forms drain's, and the
+#            move under V's node is 409 PARENT_DOCUMENT_REMOVABLE, not 404.
 #   state    A requirement with a plan node set overtaken leaves the coverage gaps and the plan view.
 #   outline  The outline's moves through PATCH alone, chaining each answer's placement_seq; the text
 #            passes keep every stored place; the input refusals; the route rows.
@@ -41,12 +41,12 @@
 #   request  An open approval request on the spec query node names the version the drain writes.
 #
 # Inputs: DATABASE_URL (the database the server serves, on this machine: the driver reads the store
-# through psql, deletes V's rows there and holds the block-index lease there), DISPATCH_URL (the
-# server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read here and never printed),
-# PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the login the server's dev sign-in route
-# signs in: `alice`). `envoy-dispatch` of this head is on PATH, for the census. Each unmet input is
-# exit 2. The agent bearer closes every issue the driver made when the run ends, also when a check
-# fails.
+# through psql, deletes V's rows there and holds the block-index and forms drain leases there),
+# DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (the agent bearer, read here and
+# never printed), PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the login the server's dev
+# sign-in route signs in: `alice`). `envoy-dispatch` of this head is on PATH, for the census. Each
+# unmet input is exit 2. The agent bearer closes every issue the driver made when the run ends, also
+# when a check fails.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the script exits 1. It prints no SKIP line. The
@@ -105,15 +105,11 @@ work_dir
 tree_init
 
 keys=()
-lease_pid=""
 moves=0
 cleanup() {
   local code=$? issue
   trap - EXIT INT TERM
-  if [[ -n "$lease_pid" ]]; then
-    kill "$lease_pid" 2>/dev/null || true
-    wait "$lease_pid" 2>/dev/null || true
-  fi
+  drop_index_leases
   for issue in "${keys[@]}"; do
     close_issue "$issue"
   done
@@ -720,14 +716,11 @@ pass "$section" "the refusals of L5 name L5, U's node and U, and not the require
 section=rowless
 rp_upload "$section" "$key" "V $stamp" ""
 readonly v_doc="$rp_doc" v_ref="$rp_ref" v_node="artifact/$rp_ref"
-# The lease of the block index's tick, held on a psql session of the driver's own, so no tick and no
-# sweep of one states V's node gone while the move reads it.
-coproc lease { env -u PGHOSTADDR psql "$database_url" -X -q -At 2>&1; }
-lease_pid="$lease_PID"
-printf "select pg_try_advisory_lock(1280266064, hashtext('block-index'));\n" >&"${lease[1]}"
-read -r -t 60 held <&"${lease[0]}" || fail "$section" "take the block-index lease" "the psql session answered nothing"
-[[ "$held" == t ]] || fail "$section" "take the block-index lease" "pg_try_advisory_lock answered '$held': a tick holds it"
-pass "$section" "the driver holds the block-index lease"
+# The block index's lease and the reference forms drain's (lib.sh's hold_index_leases), held on
+# psql sessions of the driver's own, so no tick, no sweep of one and no pass of the drain, which
+# indexes a document through the block index's own index, states V's node gone while the move
+# reads it.
+hold_index_leases "$section"
 psql_run "$section" "delete V's rows as main's removal deletes them" -v doc="$v_doc" <<'SQL'
 begin;
 delete from artifact_versions where artifact_id = :'doc'::uuid;
@@ -748,10 +741,7 @@ want_value "$section" "V's node is live and no artifacts row stands at its addre
   "select (select state from graph_nodes where kind = 'artifact' and id = '$v_ref') || '|' || (select count(*) from artifacts where ref_key = '$v_ref')"
 # With no row, the loader names V's node by the address the move gave, and V by its ref_key.
 rp_refused "$section" person "$key" "$r9" "$v_node" 409 PARENT_DOCUMENT_REMOVABLE "$r9" requirement "$v_ref"
-exec {lease[1]}>&-
-wait "$lease_pid" 2>/dev/null || true
-lease_pid=""
-pass "$section" "the driver released the block-index lease"
+give_index_lease "$section"
 
 # --- state: a dead branch stops counting as open ------------------------------------------------------
 
