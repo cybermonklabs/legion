@@ -2,13 +2,13 @@
 
 Read it when you reply on, list or resolve a review thread, or judge a bot's finding.
 With no reviewer step, the implementer lists unresolved bot threads before each completion, including retro;
-it replies to and resolves each it fixes or declines, and records it in `Threads`.
+it replies to and resolves each it fixes, declines or, at retro, reports with `report_defect`, and records it in `Threads`.
 It names each declined thread to the task's architect, by node id with its reason, in its completion summary when it implements.
 It names them at retro in the Dispatch message of `skill://legion-retro` step 5, since a retro summary holds two sentences.
 At retro it answers the threads it finds; a run still going may open more, so retro's message names each such run (`skill://legion-retro` step 5).
 
 - Reply on each thread you answer, one disposition reply per thread:
-  the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, the reviewer's reason in its own words.
+  the implementer's `Fixed in <commit>: <one line>`, `Declined: <reason>` or, at retro, `Reported as defect <id>: <one line>`, and the reviewer's reason in its own words.
   No reply resolves anything.
 
 - Only the pull request's author can resolve its threads, and the implementer opens every Legion pull request.
