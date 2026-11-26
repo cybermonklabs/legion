@@ -113,7 +113,7 @@ func TestAReplacementWithAHeldSuspensionSuspendsTheClaimChargingNothing(t *testi
 //
 // The negative control is the wake's turn making its own generic take-back (runWake with no
 // wake.takeBack): the task is then taken back with no out-of-memory mark.
-func TestTakeBackOfAParkedDisplacementKeepsItsOutOfMemoryNote(t *testing.T) {
+func TestTakeBackOfADelayedDisplacementKeepsItsOutOfMemoryNote(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})

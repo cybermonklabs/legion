@@ -1091,7 +1091,7 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 // The negative control is the take-back made at the park again (replaceNow's interrupted ahead
 // of the launch): the task is then taken back while the old process still runs, which this test
 // reads at the pending task after the park.
-func TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn(t *testing.T) {
+func TestDelayedRelaunchKeepsTheTakeUntilTheWakesTurn(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate, currentPlugin)
 	h.reach(StateReady)
@@ -1130,7 +1130,7 @@ func TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn(t *testing.T) {
 // taken under the id the store holds. A claim that dropped the take in memory while the store
 // kept it would answer the worker's next take from a record nobody holds, and serve no run for
 // the turn the worker is about to start. (A launch the pacing parks makes no take-back there:
-// TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn.)
+// TestDelayedRelaunchKeepsTheTakeUntilTheWakesTurn.)
 func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, 0)
@@ -2367,7 +2367,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
 	h.wantPrompts(0)
-	h.wantParkedLaunchRan(replaced)
+	h.wantDelayedLaunchRan(replaced)
 	if p := h.pending(); p.Task != task || p.taken() {
 		t.Fatalf("the task is %+v, want %q untaken: it goes to the process this launch starts", p, task)
 	}
@@ -2486,7 +2486,7 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantParkedLaunchRan(replaced)
+	h.wantDelayedLaunchRan(replaced)
 	if p := h.pending(); p.Task != task || p.ID == owed.ID || p.Number == owed.Number || p.ProviderErrorRetries != 0 {
 		t.Fatalf("the task is %+v, want the operator's %q queued in place of the owed one, with a ladder of its own", p, task)
 	}
@@ -2516,7 +2516,7 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 // The negative control is the drop test removed from runParkedLaunchNow: the queue then drops the
 // task and queues the operator's, answered success, while the launch stays parked and the task
 // waits out the paced turn, which this test reads at the state and the runtime's starts.
-func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow(t *testing.T) {
+func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheDelayedLaunchNow(t *testing.T) {
 	const task = "look at the production check"
 	holds := true
 	h := pacedHarness(t, wakeRate, func(d *Deps) {
@@ -2538,7 +2538,7 @@ func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantParkedLaunchRan(replaced)
+	h.wantDelayedLaunchRan(replaced)
 	if lines := h.logs.lines("the issue has left the phase this task was queued for; it is dropped rather than taken",
 		"task=1", "delivery=outbox:7"); len(lines) != 1 {
 		t.Fatalf("logged %v, want the take's drop line once for task 1", lines)
@@ -2571,7 +2571,7 @@ func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow
 // The negative control is the retirement removed from runParkedLaunchNow: the queue then retires
 // the task and queues the operator's, answered success, while the launch stays parked and the
 // task waits out the paced turn, which this test reads at the state and the runtime's starts.
-func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testing.T) {
+func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheDelayedLaunchNow(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate, currentPlugin)
 	h.manualTakes()
@@ -2598,7 +2598,7 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantParkedLaunchRan(replaced)
+	h.wantDelayedLaunchRan(replaced)
 	if lines := h.logs.lines("supervise: the pending task's turn has run, so the operator's task takes its place",
 		fmt.Sprintf("taken=%d", ran.Number), "delivery="+ran.ID); len(lines) != 1 {
 		t.Fatalf("logged %v, want the retirement of task %d once", lines, ran.Number)
@@ -2634,7 +2634,7 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 // replacement ran before the recheck, the wake was taken off the machine, and the refusal ended
 // the decision before the row that queues the task: the claim then holds no pending task and no
 // wake, which this test reads at the pending task.
-func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t *testing.T) {
+func TestAnOperatorsDeliveryOverADelayedLaunchTheLifecycleRefusesChangesNothing(t *testing.T) {
 	const task = "look at the production check"
 	for _, tc := range []struct {
 		name string
@@ -2742,7 +2742,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t
 			store.refuse = false
 			h.must(RequestDeliver{Claim: h.token, Task: task})
 
-			h.wantParkedLaunchRan(replaced)
+			h.wantDelayedLaunchRan(replaced)
 			if lines := h.logs.lines(tc.gives); len(lines) != 1 {
 				t.Fatalf("logged %v, want task %d giving way once, at the retry", lines, held.Number)
 			}
@@ -2803,11 +2803,11 @@ func TestAnOperatorsDeliveryOverAnOverturnedRefreshWakeIsQueuedWhereTheLifecycle
 	}
 }
 
-// wantParkedLaunchRan holds that an operator's task ran the launch parked over the claim's process
+// wantDelayedLaunchRan holds that an operator's task ran the launch parked over the claim's process
 // where it arrived (runParkedLaunchNow): the claim is launching, its second start replaced the
 // process the gate left running, replaced, no wake waits any more, and the wake line says the
 // pacing did not decide when the launch ran.
-func (h *harness) wantParkedLaunchRan(replaced runtime.Locator) {
+func (h *harness) wantDelayedLaunchRan(replaced runtime.Locator) {
 	h.t.Helper()
 	h.wantState(StateLaunching)
 	h.wantStarts(h.token, 2)

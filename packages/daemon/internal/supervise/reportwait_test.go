@@ -664,7 +664,7 @@ func TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound(t *testing.T) {
 // hold keeps R5's second wait from arming (claimHold); while the take's turn runs, the hold's mark
 // left by the run given the take (heldForReport) spends the wake into the hold.
 func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testing.T) {
-	parkedUnderAHold := func(t *testing.T) (h *harness, number, g uint64, due time.Time) {
+	delayedUnderAHold := func(t *testing.T) (h *harness, number, g uint64, due time.Time) {
 		t.Helper()
 		h = pacedHarness(t, wakeRate, currentPlugin, withWaits)
 		h.manualTakes()
@@ -682,7 +682,7 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 		return h, number, h.worker.sequence + 1, due
 	}
 	t.Run("after a put-back", func(t *testing.T) {
-		h, number, g, due := parkedUnderAHold(t)
+		h, number, g, due := delayedUnderAHold(t)
 		h.reportOf(g, 0)
 
 		h.advance(due.Sub(h.clock.Now()))
@@ -700,7 +700,7 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 		h.wantCalls("Resume", 0)
 	})
 	t.Run("while the take's own turn runs", func(t *testing.T) {
-		h, number, g, due := parkedUnderAHold(t)
+		h, number, g, due := delayedUnderAHold(t)
 		h.must(StreamTurnStart{Claim: h.token})
 		h.reportOf(g, 0)
 		h.wantTakesTurnStanding(number, "after the report of the run given the take, its own turn running,")

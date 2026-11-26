@@ -51,15 +51,15 @@ func (s *stopTransaction) stopsOfClaim(token claim.Token) []claimStop {
 // The negative control is the head this test was written at, where the pause's stop names a
 // deadline of now: a second past the wake's turn the take is already taken back and the claim
 // suspended.
-func TestTakeWhoseReportMissesItsBoundUnderAPausedParkedRelaunchIsTakenBackBeforeTheSuspension(t *testing.T) {
-	for _, parked := range parkedReplacements {
-		t.Run(parked.name+"'s turn under the pause", func(t *testing.T) {
+func TestTakeWhoseReportMissesItsBoundUnderAPausedDelayedRelaunchIsTakenBackBeforeTheSuspension(t *testing.T) {
+	for _, delayed := range delayedReplacements {
+		t.Run(delayed.name+"'s turn under the pause", func(t *testing.T) {
 			h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), currentPlugin, withWaits)
 			h.manualTakes()
 			h.reach(StateReady)
 			number := h.takeOf("implement the plan")
 			h.must(StreamTurnStart{Claim: h.token})
-			parked.raise(h)
+			delayed.raise(h)
 			waiting := h.wantWaitingWake(WakeLaunch)
 			h.mustQuiet(StreamTurnEnd{Claim: h.token})
 			h.wantState(StateIdle)
@@ -70,7 +70,7 @@ func TestTakeWhoseReportMissesItsBoundUnderAPausedParkedRelaunchIsTakenBackBefor
 			h.advance(time.Second)
 
 			if p := h.pending(); p.Number != number || !p.taken() || p.Interrupted {
-				t.Fatalf("under the pause, a second past the parked relaunch's turn, before the report of task %d's turn came, the claim is %s holding %+v: want the take standing for its report",
+				t.Fatalf("under the pause, a second past the delayed relaunch's turn, before the report of task %d's turn came, the claim is %s holding %+v: want the take standing for its report",
 					number, h.state(), p)
 			}
 			h.wantState(StateIdle)

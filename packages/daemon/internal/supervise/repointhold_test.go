@@ -132,10 +132,10 @@ func TestTakeUnderAHeldStaleAddressRelaunchOverAViewNotWholeIsRelaunchedUncharge
 	}
 }
 
-// parkedReplacement is a replacement of the claim's live process raised during its take's turn,
+// delayedReplacement is a replacement of the claim's live process raised during its take's turn,
 // which the wake pacing parks (launchReplacing, reserveWake): raise raises it, the pacing held by
 // another claim's launch reserved just before.
-type parkedReplacement struct {
+type delayedReplacement struct {
 	name  string
 	raise func(h *harness)
 }
@@ -148,20 +148,20 @@ func pacingBusy(h *harness) {
 	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
 }
 
-var parkedReplacements = []parkedReplacement{
-	{"a parked repoint", func(h *harness) {
+var delayedReplacements = []delayedReplacement{
+	{"a delayed repoint", func(h *harness) {
 		h.t.Helper()
 		pacingBusy(h)
 		h.observe(runtime.StaleAddress)
 	}},
-	{"a parked stall backstop", func(h *harness) {
+	{"a delayed stall backstop", func(h *harness) {
 		h.t.Helper()
 		started := h.clock.Now()
 		h.advance(time.Second)
 		pacingBusy(h)
 		h.must(StallBackstop{Claim: h.token, Bound: time.Millisecond, Deadline: started.Add(time.Millisecond), Step: h.store.step(h.token)})
 	}},
-	{"a parked unanswered-hello relaunch", func(h *harness) {
+	{"a delayed unanswered-hello relaunch", func(h *harness) {
 		h.t.Helper()
 		h.must(StreamClosed{Claim: h.token})
 		h.helloOf(true, true)
@@ -180,16 +180,16 @@ var parkedReplacements = []parkedReplacement{
 // The negative control is the merge b031e2e2: the wake's turn takes the task back as a cut turn
 // and relaunches at once (launchWake), so the claim is launching at that turn, which this test
 // reads before the report.
-func TestTakeWhoseTurnEndedBeforeAParkedReplacementsTurnHoldsThatReplacementForItsReport(t *testing.T) {
-	for _, parked := range parkedReplacements {
-		t.Run(parked.name, func(t *testing.T) {
+func TestTakeWhoseTurnEndedBeforeADelayedReplacementsTurnHoldsThatReplacementForItsReport(t *testing.T) {
+	for _, delayed := range delayedReplacements {
+		t.Run(delayed.name, func(t *testing.T) {
 			h := pacedHarness(t, wakeRate, currentPlugin)
 			h.manualTakes()
 			h.reach(StateReady)
 			number := h.takeOf("implement the plan")
 			h.must(StreamTurnStart{Claim: h.token})
 			kept := h.locator()
-			parked.raise(h)
+			delayed.raise(h)
 			waiting := h.wantWaitingWake(WakeLaunch)
 			h.wantStarts(h.token, 1)
 			h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -333,7 +333,7 @@ func TestTakeWhoseTurnEndedIsRelaunchedAtOnceWhereTheDaemonAPIsAddressMoved(t *t
 		h.wantTakenBackWithItsNote(number)
 		h.wantTakenOnceMore(number, relaunchedAndTaken)
 	})
-	t.Run("a repoint parked during the take's turn", func(t *testing.T) {
+	t.Run("a repoint delayed during the take's turn", func(t *testing.T) {
 		h := pacedHarness(t, wakeRate, currentPlugin)
 		h.manualTakes()
 		h.reach(StateReady)

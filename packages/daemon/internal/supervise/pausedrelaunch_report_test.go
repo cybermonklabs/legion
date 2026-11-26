@@ -20,7 +20,7 @@ import (
 // written at, 087ec137, where the second case fails: a second past the wake's turn the claim is
 // suspended with the task taken back, Interrupted set. The first case passes there, and shows the
 // rule the second breaks.
-func TestTakeWhoseTurnEndedWaitsForItsReportUnderAPausedParkedRelaunch(t *testing.T) {
+func TestTakeWhoseTurnEndedWaitsForItsReportUnderAPausedDelayedRelaunch(t *testing.T) {
 	t.Run("the pause's own stop row", func(t *testing.T) {
 		h, flag, _ := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), currentPlugin)
 		h.manualTakes()
@@ -39,14 +39,14 @@ func TestTakeWhoseTurnEndedWaitsForItsReportUnderAPausedParkedRelaunch(t *testin
 		h.wantFinishedOnce(finishedByReport)
 		h.wantState(StateSuspended)
 	})
-	for _, parked := range parkedReplacements {
-		t.Run(parked.name+"'s turn under the pause", func(t *testing.T) {
+	for _, delayed := range delayedReplacements {
+		t.Run(delayed.name+"'s turn under the pause", func(t *testing.T) {
 			h, flag, _ := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), currentPlugin)
 			h.manualTakes()
 			h.reach(StateReady)
 			number := h.takeOf("implement the plan")
 			h.must(StreamTurnStart{Claim: h.token})
-			parked.raise(h)
+			delayed.raise(h)
 			waiting := h.wantWaitingWake(WakeLaunch)
 			h.mustQuiet(StreamTurnEnd{Claim: h.token})
 			h.wantState(StateIdle)
@@ -56,7 +56,7 @@ func TestTakeWhoseTurnEndedWaitsForItsReportUnderAPausedParkedRelaunch(t *testin
 			h.advance(time.Second)
 
 			if p := h.pending(); p.Number != number || !p.taken() || p.Interrupted {
-				t.Fatalf("under the pause, a second past the parked relaunch's turn, before the report of task %d's turn came, the claim is %s holding %+v: want the take standing for its report",
+				t.Fatalf("under the pause, a second past the delayed relaunch's turn, before the report of task %d's turn came, the claim is %s holding %+v: want the take standing for its report",
 					number, h.state(), p)
 			}
 			h.mustReport(nil)
