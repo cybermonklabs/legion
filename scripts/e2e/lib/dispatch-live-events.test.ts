@@ -29,7 +29,10 @@ function scratch(): string {
 async function run(
   ...args: string[]
 ): Promise<{ code: number; stderr: string; stdout: unknown[] }> {
+  // A cache of the row's own, so the private-project state no row reads is another's or the
+  // machine's.
   const child = Bun.spawn([process.execPath, probe, ...args], {
+    env: { ...process.env, XDG_CACHE_HOME: scratch() },
     stderr: "pipe",
     stdout: "pipe",
   });
@@ -410,6 +413,68 @@ test("the live event probe authenticates with a bearer file and exits at its tim
   expect(result.stderr).toBe("");
   expect(result.stdout).toEqual([]);
 });
+
+// The socket's upgrade carries Dispatch-Private-Projects, which Bun's WebSocket shows none of, so a
+// personal token is checked with one whoami before the socket opens: a token naming a private
+// project reads no event, and one naming none opens the feed as before.
+for (const [name, whoami, opened] of [
+  [
+    "a personal token naming a private project is refused before the socket opens",
+    { private_projects: ["PRIV"] },
+    false,
+  ],
+  ["a personal token naming no private project opens the feed after one whoami", {}, true],
+] as const) {
+  test(name, async () => {
+    const directory = scratch();
+    const bearerFile = join(directory, "bearer");
+    const token = `dsp_${fixtureSecret("priv")}`;
+    writeFileSync(bearerFile, `${token}\n`, { mode: 0o600 });
+    const asked: string[] = [];
+    let upgrades = 0;
+    const server = Bun.serve({
+      fetch(request, srv) {
+        const path = new URL(request.url).pathname;
+        asked.push(path);
+        if (path === "/api/v1/whoami") {
+          return request.headers.get("authorization") === `Bearer ${token}`
+            ? Response.json({ kind: "agent", projects: ["PRIV"], ...whoami })
+            : new Response("forbidden", { status: 403 });
+        }
+        if (path !== "/ws/live") return new Response("not found", { status: 404 });
+        upgrades += 1;
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket) {
+          socket.send(JSON.stringify({ since: "0", sub: "events", type: "events_start" }));
+        },
+      },
+    });
+    servers.push(server);
+
+    const result = await run(
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--bearer-file",
+      bearerFile,
+      "--timeout",
+      "0.1"
+    );
+
+    expect(asked[0]).toBe("/api/v1/whoami");
+    expect(asked.filter((path) => path === "/api/v1/whoami")).toHaveLength(1);
+    expect(upgrades).toBe(opened ? 1 : 0);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      opened
+        ? ""
+        : "dispatch-live-events: private_project_refused: PRIV is private; its sessions run only in its own cluster namespace\n"
+    );
+  });
+}
 
 // INFRA-292's production check: the probe starts its feed where a page does, at whoami's
 // event_head, and a write committed after whoami answered and before the socket opened reaches it.

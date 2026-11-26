@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The channel server, the Codex server and the session and Codex hooks make their Dispatch
+    client with `checkedDispatchClient`, so a call whose personal token names a private project is
+    refused (`private_project_refused`) and Dispatch's answer never reaches the session. With no
+    private project, the calls send what they sent before.

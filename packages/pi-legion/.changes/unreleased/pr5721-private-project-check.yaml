@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The Legion tool's Dispatch reads use `checkedDispatchClient`, and the skill-scenario tools'
+    reads of Dispatch go through `checkedDispatchFetch`, so a personal token that names a private
+    project is refused (`private_project_refused`) and gets nothing Dispatch answered. With no
+    private project, they send what they sent before.

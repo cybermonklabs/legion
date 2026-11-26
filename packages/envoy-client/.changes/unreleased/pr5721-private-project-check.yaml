@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+    `checkedDispatchClient` makes every production `DispatchClient`, with the private-project
+    check on (`private-check.ts`): a personal (`dsp_`) token whose `GET /api/v1/whoami` names a
+    private project gets nothing Dispatch answered (`PrivateProjectRefused`,
+    `private_project_refused: <KEY> is private; its sessions run only in its own cluster namespace`),
+    and a check whose whoami gets no answer through the client's write retry policy fails closed
+    (`PrivateDispatchUnanswered`). Each answer is judged by its `Dispatch-Private-Projects` header
+    first: `0` is returned as it came, so with no private project the requests are as before; `1`,
+    or a header-less 2xx while no `0` is trusted, is held while the check runs. A `1` holds until
+    Dispatch's own `0` has lasted 6 minutes, a `0` is trusted for 5 minutes, and only an answer
+    carrying the header changes that state, which the user's processes share in
+    `${XDG_CACHE_HOME:-$HOME/.cache}/agent-private/state/`. With the state `1`, a write with a
+    personal token waits for the check before it is sent. A broker credential is admitted without
+    whoami, and a request with no credential makes none. `checkedDispatchFetch` runs the same check
+    on a request a caller sends itself, and `checkDispatchSocket` checks a personal token before a
+    socket opens. The `dispatch` command exits 2 on the refusal.

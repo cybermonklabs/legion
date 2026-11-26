@@ -1,6 +1,10 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
 import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
+import {
+  checkDispatchSocket,
+  checkedDispatchFetch,
+} from "../../../packages/envoy-client/src/private-check";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";
@@ -177,9 +181,10 @@ async function secretFrom(file: string, flag: string, what: string): Promise<str
  *  without one is named through `bodyForText`, one line with the credential sent redacted, since
  *  whatever answered can echo it back. */
 async function whoamiHead(options: Options): Promise<string> {
-  const response = await fetch(new URL("/auth/whoami", options.url), {
-    headers: options.authorization,
-  });
+  const response = await checkedDispatchFetch(options.url.origin)(
+    new URL("/auth/whoami", options.url).toString(),
+    { headers: options.authorization }
+  );
   const text = await response.text();
   let body: unknown = null;
   try {
@@ -398,6 +403,13 @@ async function watch(options: Options): Promise<boolean> {
 async function main(argv: readonly string[]): Promise<number> {
   try {
     const options = await optionsFrom(argv);
+    // The socket's upgrade says whether a project is private, and Bun's WebSocket shows none of
+    // its headers, so a personal token is checked before the socket opens: one whoami, and a
+    // token that names a private project reads no event (`checkDispatchSocket`).
+    const refused = await checkDispatchSocket(options.url.origin, options.authorization);
+    if (refused !== undefined) {
+      throw new Error(`GET /api/v1/whoami answered ${refused.status}, so the feed was not opened`);
+    }
     if (!options.fromWhoami) return (await watch(options)) ? 0 : 1;
     const since = await whoamiHead(options);
     if (options.subscribeAfterMs > 0) {

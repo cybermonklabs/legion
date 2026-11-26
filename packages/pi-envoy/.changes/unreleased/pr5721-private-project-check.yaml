@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The session's Dispatch tools, AskGate's reads and the AskGate report make their Dispatch
+    client with `checkedDispatchClient`, so a call whose personal token names a private project
+    fails with `private_project_refused` and Dispatch's answer never reaches the session. With no
+    private project, the calls send what they sent before.

@@ -1286,6 +1286,44 @@ Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: â€
 Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: â€¦` and exits 1, because Dispatch
 serves no read at a past time yet.
 
+### The private-project check
+
+Production code makes every `DispatchClient` with `checkedDispatchClient`, which takes the
+constructor's arguments and turns on `privateCheck` (`private-check.ts`); `new DispatchClient`
+without it behaves as before, and only tests make one that way.
+`src/__tests__/dispatch-client-inventory.test.ts` fails on any other construction outside tests,
+and on a production file that holds a Dispatch API path and sends a request itself without
+`checkedDispatchFetch`, opens a socket itself without `checkDispatchSocket`, or reaches neither
+checked name nor a reader module that does.
+
+Each answer is judged by its own `Dispatch-Private-Projects` header first. `0` is returned as it
+came, so with no private project every command sends the requests it sent before. `1` holds the
+answer while the check runs. An answer with no header is no answer of Dispatch's (a proxy's 502, a
+hop's 401): a non-2xx is returned as it came, and a 2xx is returned only under a trusted `0` and
+held otherwise. Only an answer that carries the header changes the state, which is kept per
+Dispatch URL in memory and in `${XDG_CACHE_HOME:-$HOME/.cache}/agent-private/state/<sha256 of the
+URL>`, shared by the user's processes and written through a rename: a `1` holds with no expiry
+until Dispatch's own `0` has lasted more than 6 minutes, and a `0` is trusted for 5 minutes after
+the last answer that carried it. A directory that cannot be written keeps the state in the
+process.
+
+The check asks `GET /api/v1/whoami` with the request's own personal (`dsp_`) token and remembers
+the answer per token, by its SHA-256, in the process alone: a refusal for 24 hours, an admission
+for 5 minutes. A whoami that names a project in `private_projects` throws `PrivateProjectRefused`
+(`private_project_refused: <KEY> is private; its sessions run only in its own cluster namespace`)
+and the held answer is dropped unread; a whoami answered 401 or 403 is the request's own answer; a
+whoami with no answer through the client's write retry policy throws `PrivateDispatchUnanswered`.
+A whoami answered 404 is a Dispatch that does not serve the lists: under no `1`, the held answer is
+returned as it came, with one warning per process naming the URL, and under a `1` the 404 is no
+answer. A broker credential (`DPoP`) is admitted without whoami, since the broker mints a token
+naming a private project only for that project's own pods, and a request with no credential makes
+no whoami. No variable and no local file admits a token. With the state `1`, a write with a
+personal token waits for the check before it is sent, and a read runs the check beside its
+request. `checkedDispatchFetch` runs the same check on one request a caller sends itself, asking
+whoami once, so the caller's own retry is the request's retry policy, and `checkDispatchSocket`
+checks a personal token with one whoami before a socket opens, since Bun's WebSocket shows none of
+the upgrade's headers. The `dispatch` command exits 2 on the refusal.
+
 ### The `dispatch` command
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin

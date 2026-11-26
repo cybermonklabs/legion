@@ -355,6 +355,22 @@ export class PrivateCheck {
     return await this.#settle(response, this.#check(bearer, signal));
   }
 
+  /**
+   * The check of the personal token `headers` present, asked now whatever the state, for a
+   * request whose answer this process cannot judge: a WebSocket's upgrade carries the header, and
+   * Bun's WebSocket shows none of it. It throws the refusal, answers whoami's own 401 or 403, or
+   * undefined once the token is admitted. Any other credential, and none, is admitted unasked.
+   */
+  async before(
+    headers: RequestInit["headers"],
+    signal: AbortSignal
+  ): Promise<Response | undefined> {
+    const bearer = personalBearer(headers);
+    if (bearer === undefined) return undefined;
+    const outcome = await this.#check(bearer, signal);
+    return "answer" in outcome ? outcome.answer : undefined;
+  }
+
   /** The shared state now: this process's, with the user's other processes' merged in. */
   async state(): Promise<State> {
     return stateOf(await this.#read(), this.#now());
@@ -576,4 +592,24 @@ export function checkedDispatchFetch(
       init.signal ?? new AbortController().signal,
       () => fetchImpl(input, init)
     );
+}
+
+/**
+ * The check of a socket to the Dispatch at `baseUrl` (`/ws/live`, `/ws/doc/`) that a caller opens
+ * itself with `headers`, run before it opens (`PrivateCheck.before`): a personal token naming a
+ * private project throws `PrivateProjectRefused` and the socket is never opened; whoami's own 401
+ * or 403 is answered for the caller to refuse by; undefined admits the socket. It asks one whoami
+ * for a personal token, whatever Dispatch answered before, since no answer of the socket's can
+ * be read; any other credential asks nothing.
+ */
+export async function checkDispatchSocket(
+  baseUrl: string,
+  headers: RequestInit["headers"],
+  fetchImpl: DispatchFetch = fetch,
+  settings: PrivateCheckSettings = {}
+): Promise<Response | undefined> {
+  return await new PrivateCheck(baseUrl, fetchImpl, settings).before(
+    headers,
+    new AbortController().signal
+  );
 }

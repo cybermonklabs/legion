@@ -23,14 +23,14 @@ const TEST_SEGMENTS: Readonly<Record<string, true>> = {
 /**
  * The files under a test segment that dial production Dispatch, and so are held to both rules:
  * the production check of Dispatch's keyed writes (scripts/e2e/README.md, "lib/dispatch-keyed-
- * comment.ts"), which posts a comment on production with an operator's bearer. Every other file
- * of the `e2e` trees dials a stack of its own run (packages/dispatch/e2e truncates the database
- * of the server it names) or, `scripts/e2e/lib/dispatch-live-events.ts`, reads production only
- * through the live socket as the fallback of a stage proof's audit for a Dispatch build without
- * `GET /api/v1/events/log`, whose upgrade's header Bun's WebSocket does not expose to a check.
+ * comment.ts"), which posts a comment on production with an operator's bearer, and the live
+ * event probe (lib/dispatch-live-events.ts), which a stage proof's audit runs on production's
+ * `/ws/live` with the operator's bearer. Every other file of the `e2e` trees dials a stack of its
+ * own run (packages/dispatch/e2e truncates the database of the server it names).
  */
 const PRODUCTION_UNDER_TEST_SEGMENTS: Readonly<Record<string, true>> = {
   "scripts/e2e/lib/dispatch-keyed-comment.ts": true,
+  "scripts/e2e/lib/dispatch-live-events.ts": true,
 };
 
 /** The trees rule 2 leaves out, each for its reason. */
@@ -45,13 +45,12 @@ const OUTSIDE_RULE_2: readonly { readonly tree: string; readonly why: string }[]
 ];
 
 /**
- * The one file rule 2 leaves out by name: approve-check's scan presents only broker tokens
- * (`Authorization: DPoP`), which the check admits without asking anything, so the check would
- * change nothing it sends or reads; and it loads no part of envoy-client by design, so the gate
- * that runs it keeps its narrow read (packages/envoy/scripts/approve/dispatch-env.ts).
+ * The files rule 2 leaves out by name, each with its reason, which the test reads: a file named
+ * here must still be in the tree and still import no envoy-client module, or the test fails.
  */
-const OUTSIDE_RULE_2_FILES: Readonly<Record<string, true>> = {
-  "packages/envoy/scripts/approve/scan.ts": true,
+const OUTSIDE_RULE_2_FILES: Readonly<Record<string, string>> = {
+  "packages/envoy/scripts/approve/scan.ts":
+    "approve-check's scan presents only broker tokens (`Authorization: DPoP`), which the check admits without asking anything, and loads no part of envoy-client on purpose, so the gate that runs it keeps its narrow read (packages/envoy/scripts/approve/dispatch-env.ts)",
 };
 
 /** The one Dispatch reader of each of their trees, whose importers it reads for. */
@@ -69,6 +68,7 @@ const API_PATH = /\/api\/v1\/|\/ws\/live|\/ws\/doc\//;
 const CHECKED_NAMES: Readonly<Record<string, true>> = {
   checkedDispatchClient: true,
   checkedDispatchFetch: true,
+  checkDispatchSocket: true,
 };
 
 const ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -101,14 +101,16 @@ function scriptKind(path: string): ts.ScriptKind {
 
 /** One file read for the two rules: its text with every comment blanked (line breaks kept, so a
  *  match's line is the file's), the span of the factory where it declares it, the checked names
- *  it imports, whether it sends a request itself (a call of `fetch`, or of `checkedDispatchFetch`),
- *  and every module it imports. */
+ *  it imports, whether it sends a request itself (a call of `fetch`, or of `checkedDispatchFetch`)
+ *  or opens a socket itself (a `new …WebSocket(…)`), and every module it imports. */
 interface ReadFile {
   readonly code: string;
   readonly factory: { readonly start: number; readonly end: number } | undefined;
   readonly importsChecked: boolean;
   readonly importsCheckedFetch: boolean;
+  readonly importsCheckedSocket: boolean;
   readonly sendsItself: boolean;
+  readonly opensSocket: boolean;
   readonly imported: readonly string[];
 }
 
@@ -121,7 +123,9 @@ function readSource(path: string, text: string): ReadFile {
   let factory: ReadFile["factory"];
   let importsChecked = false;
   let importsCheckedFetch = false;
+  let importsCheckedSocket = false;
   let sendsItself = false;
+  let opensSocket = false;
   const imported: string[] = [];
   const visit = (node: ts.Node): void => {
     note(ts.getLeadingCommentRanges(text, node.getFullStart()));
@@ -138,6 +142,13 @@ function readSource(path: string, text: string): ReadFile {
           : undefined;
       if (callee === "fetch" || callee === "checkedDispatchFetch") sendsItself = true;
     }
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text.endsWith("WebSocket")
+    ) {
+      opensSocket = true;
+    }
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       imported.push(node.moduleSpecifier.text);
       const clause = node.importClause;
@@ -148,6 +159,7 @@ function readSource(path: string, text: string): ReadFile {
           if (element.isTypeOnly || CHECKED_NAMES[name] !== true) continue;
           importsChecked = true;
           if (name === "checkedDispatchFetch") importsCheckedFetch = true;
+          if (name === "checkDispatchSocket") importsCheckedSocket = true;
         }
       }
     }
@@ -163,7 +175,16 @@ function readSource(path: string, text: string): ReadFile {
     at = end;
   }
   code += text.slice(at);
-  return { code, factory, importsChecked, importsCheckedFetch, sendsItself, imported };
+  return {
+    code,
+    factory,
+    importsChecked,
+    importsCheckedFetch,
+    importsCheckedSocket,
+    sendsItself,
+    opensSocket,
+    imported,
+  };
 }
 
 /** The repository path an import of `specifier` from `from` names, for a relative import: with
@@ -182,8 +203,9 @@ interface Scan {
   /** How many constructions the factory itself holds. */
   readonly inFactory: number;
   /** Rule 2: each file that holds a Dispatch API path and reaches no check: one that sends a
-   *  request itself without importing `checkedDispatchFetch`, or any other that imports neither
-   *  checked name nor a reader module that does. */
+   *  request itself without importing `checkedDispatchFetch`, one that opens a socket itself
+   *  without importing `checkDispatchSocket`, or any other that imports no checked name nor a
+   *  reader module that does. */
   readonly unchecked: readonly string[];
   /** Whether rule 2 found a path in the client itself. */
   readonly clientHoldsAPath: boolean;
@@ -216,18 +238,20 @@ function scan(listed: readonly string[], read: (path: string) => string): Scan {
     if (!API_PATH.test(file.code)) continue;
     if (path === FACTORY_FILE) clientHoldsAPath = true;
     if (OUTSIDE_RULE_2.some(({ tree }) => path.startsWith(tree))) continue;
-    if (OUTSIDE_RULE_2_FILES[path] === true) continue;
+    if (Object.hasOwn(OUTSIDE_RULE_2_FILES, path)) continue;
     holdingPaths.push({ path, file });
   }
   const unchecked: string[] = [];
   for (const { path, file } of holdingPaths) {
-    // A request the file sends itself is checked only by `checkedDispatchFetch`: the factory or
-    // a reader it imports checks only the requests they send.
-    if (file.sendsItself) {
-      if (!file.importsCheckedFetch)
-        unchecked.push(`${path} sends a request itself without checkedDispatchFetch`);
-      continue;
+    // A request or a socket the file opens itself is checked only by the check it calls: the
+    // factory or a reader it imports checks only the requests they send.
+    if (file.opensSocket && !file.importsCheckedSocket) {
+      unchecked.push(`${path} opens a socket itself without checkDispatchSocket`);
     }
+    if (file.sendsItself && !file.importsCheckedFetch) {
+      unchecked.push(`${path} sends a request itself without checkedDispatchFetch`);
+    }
+    if (file.sendsItself || file.opensSocket) continue;
     if (file.importsChecked) continue;
     const readers = file.imported.flatMap((specifier) => importedPath(path, specifier));
     if (
@@ -288,6 +312,30 @@ describe("every production request to Dispatch goes through the private-project 
       console.log(
         `dispatch-client inventory: ${result.files} production files, ${result.inFactory} construction in ${FACTORY}`
       );
+    },
+    SCAN_MS
+  );
+
+  test("each file left out of rule 2 by name is still there, and still loads no envoy-client module", () => {
+    for (const [path, why] of Object.entries(OUTSIDE_RULE_2_FILES)) {
+      expect(LISTED, `${path} is left out because ${why}`).toContain(path);
+      const { imported } = readSource(path, fromDisk(path));
+      expect(
+        imported.filter((specifier) => specifier.includes("envoy-client")),
+        `${path} is left out because ${why}`
+      ).toEqual([]);
+    }
+  });
+
+  test(
+    "a socket opened without checkDispatchSocket is named",
+    () => {
+      const probe = "scripts/e2e/lib/dispatch-live-events.ts";
+      const unchecked = fromDisk(probe).replace(/\n {2}checkDispatchSocket,/, "");
+      expect(unchecked).not.toContain("\n  checkDispatchSocket,");
+      expect(scanWith({ [probe]: unchecked })).toEqual([
+        `rule 2: ${probe} opens a socket itself without checkDispatchSocket`,
+      ]);
     },
     SCAN_MS
   );
