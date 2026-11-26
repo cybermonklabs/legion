@@ -29,6 +29,16 @@ while the broker serves none of the demo secrets below. Its profiles file names 
 broker binds no proxy port and the banner's `proxy:` line says `none`.
 One of the two alone is refused (exit 2).
 
+Set `DEV_BROKER_ONEPASSWORD_VAULT` (a vault id, as `op vault list` prints it) and
+`DEV_BROKER_ONEPASSWORD_TOKEN_FILE` (a file holding the token of a service account with
+`read_items` on that vault) together to give the broker that 1Password vault as its store, under
+the title prefix `agent-secrets-`, at a daily budget of 900 requests or
+`DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS`, with no memory secrets file. `agent-secrets secret` then
+writes the vault under `OP_SERVICE_ACCOUNT_TOKEN`, or else as your own `op` is signed in, while the
+broker serves none of the demo secrets below, and the profiles file names no profile, as on GCP.
+One of the two alone, the budget alone, and either beside the `DEV_BROKER_GCP_*` settings are
+refused (exit 2).
+
 ## Start the stack
 
 With Docker the command is the script alone; this run used a Postgres server of its own:
@@ -371,8 +381,9 @@ The path is this run's `$DEV_BROKER_DIR/memory-secrets.json`. This create ran in
 the session registered above, so its reread was not signed by a session of the stack and the line
 says `rereading`; the line it printed after (`...`) says the broker's view was not checked, and
 why. Inside that session the reread is signed and the line says `serving`. Every form, in order,
-against a fresh stack of its own: `packages/envoy/scripts/store-forms-check.sh --store memory`
-([scripts/README.md](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/scripts/README.md#store-forms-checksh)).
+against a fresh stack of its own: `packages/envoy/scripts/store-forms-check.sh --store memory`;
+`--store gcp` and `--store onepassword` run the same forms on those stores, under the settings
+above ([scripts/README.md](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/scripts/README.md#store-forms-checksh)).
 
 An edit of the file by hand is a write too. Add a secret of `ada@example.com`'s to it, here with
 `jq`:

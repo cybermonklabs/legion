@@ -266,10 +266,11 @@ type Config struct {
 	// registry (internal/cipher/secretstore/backends): aws-secrets-manager (the default when unset,
 	// AWS Secrets Manager with the agent-secrets key in AWS KMS), gcp-secret-manager (Google Cloud
 	// Secret Manager with the agent-secrets key in Cloud KMS, read under Application Default
-	// Credentials: on GKE, Workload Identity for the broker's ServiceAccount, with no key file), or
-	// memory (the development store, for local runs and tests alone: the JSON file
-	// BROKER_MEMORY_SECRETS_FILE names). It decides BROKER_SECRETS_PREFIX's form and which of the
-	// stores' own variables is required; a variable of another store is refused.
+	// Credentials: on GKE, Workload Identity for the broker's ServiceAccount, with no key file),
+	// onepassword (one 1Password vault, BROKER_ONEPASSWORD_VAULT, read with a service account token
+	// at a daily budget of requests), or memory (the development store, for local runs and tests
+	// alone: the JSON file BROKER_MEMORY_SECRETS_FILE names). It decides BROKER_SECRETS_PREFIX's form
+	// and which of the stores' own variables is required; a variable of another store is refused.
 	Secrets secretstore.Config
 	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, whose kinds say which
 	// hosts a credential of each kind may reach and in which headers, and which names each

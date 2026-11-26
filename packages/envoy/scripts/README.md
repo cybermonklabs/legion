@@ -806,23 +806,28 @@ check of the CLI and the broker reading the same store:
 packages/envoy/scripts/store-forms-check.sh --store memory
 DEV_BROKER_GCP_PREFIX=projects/<number>/secrets/<id prefix> DEV_BROKER_GCP_KMS_KEY_NAME=<key name> \
   packages/envoy/scripts/store-forms-check.sh --store gcp
+DEV_BROKER_ONEPASSWORD_VAULT=<vault id> DEV_BROKER_ONEPASSWORD_TOKEN_FILE=<token file> \
+  packages/envoy/scripts/store-forms-check.sh --store onepassword
 ```
 
 It starts `dev-broker.sh` in that store's mode, takes its banner's exports, and with the
 `agent-secrets` the stack built runs, on a fresh name `STORE_CHECK_<hex>`: `secret create` (the
 value piped in), `show`, `list --json`, `set`, `retag --tier human`, `delete` and `restore`. A
 write's row passes when the form exits 0 and prints the broker's answer to the reread it asked
-for; `show` and `list --json` must name the secret. It prints `PASS <row>` or `FAIL <row>: <why>`
-per form and `store-forms-check: <n> rows ran, <m> passed`, and exits 0 only when all seven
-passed; a stack that printed no banner runs no row and exits 1. `--control vanished` removes the
-secret behind the CLI's back after `create` (memory: from the file the broker follows; gcp:
-`gcloud secrets delete`), and the run must then fail on `show`. The GCP run leaves its secret
-deleted in Secret Manager's own sense (an expire time 30 days out); `gcloud secrets delete`
-removes it outright.
-`store-forms-check.test.sh` holds it to four controls behind stand-ins for `dev-broker.sh` and
-`agent-secrets` on `PATH`, which `envoy-go-checks` runs as "Isolation test for
-store-forms-check.sh": a full pass, a failed `show`, a banner without its exports, and the
-vanished control.
+for; `show` and `list --json` must name the secret. On 1Password, which has no call that restores
+an item, the `restore` row passes on the form's refusal naming the 1Password app's Archive. It
+prints `PASS <row>` or `FAIL <row>: <why>` per form and `store-forms-check: <n> rows ran, <m>
+passed`, and exits 0 only when all seven passed; a stack that printed no banner runs no row and
+exits 1. `--control vanished` removes the secret behind the CLI's back after `create` (memory: from
+the file the broker follows; gcp: `gcloud secrets delete`; onepassword: `op item delete`, for
+good), and the run must then fail on `show`. The GCP run leaves its secret deleted in Secret
+Manager's own sense (an expire time 30 days out); `gcloud secrets delete` removes it outright. The
+1Password run leaves its item in the vault's Archive, where a person deletes it in the 1Password app.
+`store-forms-check.test.sh` holds it to eight controls behind stand-ins for `dev-broker.sh`,
+`agent-secrets` and `op` on `PATH`, which `envoy-go-checks` runs as "Isolation test for
+store-forms-check.sh": a full pass, a failed `show`, a banner without its exports, the vanished
+control, and on 1Password a full pass with `restore` refused, a `restore` that succeeds failing its
+row, the vault and token file unset (exit 2), and the vanished control through `op`.
 
 ## aws-moto-check.sh
 

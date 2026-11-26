@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/store-forms-check.sh --store memory|gcp [--control vanished]
+# packages/envoy/scripts/store-forms-check.sh --store memory|gcp|onepassword [--control vanished]
 #
 # Runs every secret form of agent-secrets against a running broker on one store, the surface check
 # of the CLI and the broker reading the same store. It starts dev-broker.sh in that store's mode
 # (memory: the default; gcp: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME, which the
-# caller sets, under whatever Google credential the caller's environment gives agent-secrets),
-# waits for its banner, takes the banner's exports, and with the agent-secrets the stack built runs,
-# on a fresh name STORE_CHECK_<hex>, in order:
+# caller sets, under whatever Google credential the caller's environment gives agent-secrets;
+# onepassword: DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE, which the caller
+# sets, the forms signing in as 1Password's own tools do, OP_SERVICE_ACCOUNT_TOKEN or the caller's
+# op), waits for its banner, takes the banner's exports, and with the agent-secrets the stack
+# built runs, on a fresh name STORE_CHECK_<hex>, in order:
 #
 #   create (the value piped in), show, list --json, set, retag --tier human, delete, restore
 #
@@ -14,13 +16,16 @@
 # it reports the broker's answer to the reread of the name it asked for
 # (POST /v1/secrets/NAME/reread): `broker: serving NAME from `, `broker: NAME is deleted in `
 # after delete, or `broker: rereading NAME from ` where the broker could not be asked with a
-# session and answered 202; on show, the secret; on list --json, the secret in its array. It asks
+# session and answered 202; on show, the secret; on list --json, the secret in its array. On a
+# 1Password vault, which has no call that restores an item, the restore row passes on the form's
+# refusal naming the 1Password app's Archive, and the run leaves the item there, archived. It asks
 # no reread of its own: the broker holds rereads to a budget (secretstore.DefaultRereadBudget), and
 # a second reread per write would spend it on the check rather than on the forms.
 #
 # --control vanished removes the secret behind the CLI's back after create (memory: from the
-# memory secrets file the broker follows; gcp: `gcloud secrets delete`), and the run must then fail
-# on show: a check that still passes there reads no store at all.
+# memory secrets file the broker follows; gcp: `gcloud secrets delete`; onepassword: `op item
+# delete`, which deletes the item for good), and the run must then fail on show: a check that
+# still passes there reads no store at all.
 #
 # It prints one `PASS <row>` or `FAIL <row>: <why>` per form and then
 # `store-forms-check: <n> rows ran, <m> passed`, and exits 0 only when all seven rows ran and
@@ -28,12 +33,12 @@
 # stack when it ends.
 #
 # Needs bash and jq, what dev-broker.sh needs (go, a Postgres: DEV_BROKER_POSTGRES_URL or Docker),
-# and, for --store gcp --control vanished, gcloud. dev-broker.sh and agent-secrets are taken from
-# PATH where a test puts stand-ins there, else from this directory and the stack.
+# and, for --control vanished, gcloud on gcp and op on onepassword. dev-broker.sh, agent-secrets and
+# op are taken from PATH where a test puts stand-ins there, else from this directory and the stack.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-usage="usage: store-forms-check.sh --store memory|gcp [--control vanished]"
+usage="usage: store-forms-check.sh --store memory|gcp|onepassword [--control vanished]"
 
 store=""
 control=""
@@ -54,9 +59,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$store" in
-memory | gcp) ;;
+memory | gcp | onepassword) ;;
 *)
-  echo "store-forms-check: --store must be memory or gcp; $usage" >&2
+  echo "store-forms-check: --store must be memory, gcp or onepassword; $usage" >&2
   exit 2
   ;;
 esac
@@ -68,8 +73,16 @@ if [ "$store" = gcp ] && { [ -z "${DEV_BROKER_GCP_PREFIX:-}" ] || [ -z "${DEV_BR
   echo "store-forms-check: --store gcp needs DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME" >&2
   exit 2
 fi
-if [ "$store" = memory ]; then
+if [ "$store" = onepassword ] && { [ -z "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ] || [ -z "${DEV_BROKER_ONEPASSWORD_TOKEN_FILE:-}" ]; }; then
+  echo "store-forms-check: --store onepassword needs DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE" >&2
+  exit 2
+fi
+# The stack runs on the one store asked for: dev-broker.sh refuses the settings of two.
+if [ "$store" != gcp ]; then
   unset DEV_BROKER_GCP_PREFIX DEV_BROKER_GCP_KMS_KEY_NAME
+fi
+if [ "$store" != onepassword ]; then
+  unset DEV_BROKER_ONEPASSWORD_VAULT DEV_BROKER_ONEPASSWORD_TOKEN_FILE DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS
 fi
 
 work="$(mktemp -d)"
@@ -187,6 +200,9 @@ if [ "$control" = vanished ]; then
     project="${project%%/*}"
     gcloud secrets delete "$id" --project "$project" --quiet >/dev/null
     ;;
+  onepassword)
+    op item delete "agent-secrets-$(echo "$name" | tr '[:upper:]_' '[:lower:]-')" --vault "$DEV_BROKER_ONEPASSWORD_VAULT" >/dev/null
+    ;;
   esac
   echo "store-forms-check: control vanished: removed $name behind the CLI's back" >&2
 fi
@@ -213,7 +229,16 @@ write_row retag "broker: serving $name from " retag "$name" --tier human
 write_row delete "broker: $name is deleted in " delete "$name"
 
 : >"$work/restore.in"
-write_row restore "broker: serving $name from " restore "$name"
+if [ "$store" = onepassword ]; then
+  form restore restore "$name"
+  if [ "$(cat "$work/restore.exit")" = 1 ] && grep -qF "from the 1Password app's Archive" "$work/restore.err"; then
+    pass restore
+  else
+    fail restore "a 1Password vault has no restore, so the form must refuse naming the 1Password app's Archive: $(why restore)"
+  fi
+else
+  write_row restore "broker: serving $name from " restore "$name"
+fi
 
 # The secret this run made is left deleted, so a run leaves nothing a broker serves.
 : >"$work/cleanup.in"

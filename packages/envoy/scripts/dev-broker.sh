@@ -184,6 +184,15 @@
 # prefix. Unset, the stack is the memory one above. One set without the other is a usage error
 # (exit 2).
 #
+# DEV_BROKER_ONEPASSWORD_VAULT (a vault id) and DEV_BROKER_ONEPASSWORD_TOKEN_FILE (the file holding
+# a service account token that may read that vault), set together, make the broker's store that
+# 1Password vault (BROKER_SECRETS_STORE=onepassword) under the title prefix agent-secrets-, with no
+# memory secrets file, at a daily budget of DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS requests, 900
+# where it is unset: `agent-secrets secret` forms then write that vault, signed in as 1Password's own
+# tools sign in, OP_SERVICE_ACCOUNT_TOKEN or the person's op, while the broker serves none of the demo
+# secrets below. One of the two set without the other, the budget without the vault, and a vault
+# beside the DEV_BROKER_GCP_* settings are each a usage error (exit 2).
+#
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
 # that server through psql, which is given the URL without its password and the password in
 # PGPASSWORD (scripts/lib/pg-url.sh), and without it, it starts the dispatch-pg container through
@@ -225,6 +234,22 @@ if { [ -n "${DEV_BROKER_GCP_PREFIX:-}" ] && [ -z "${DEV_BROKER_GCP_KMS_KEY_NAME:
   echo "dev-broker: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME are set together or not at all" >&2
   exit 2
 fi
+# The 1Password store's settings are checked before anything is created too: the vault and the
+# token file mean nothing apart, the budget nothing without them, and the GCP settings choose
+# another store.
+if { [ -n "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ] && [ -z "${DEV_BROKER_ONEPASSWORD_TOKEN_FILE:-}" ]; } ||
+  { [ -z "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ] && [ -n "${DEV_BROKER_ONEPASSWORD_TOKEN_FILE:-}" ]; }; then
+  echo "dev-broker: DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE are set together or not at all" >&2
+  exit 2
+fi
+if [ -n "${DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS:-}" ] && [ -z "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ]; then
+  echo "dev-broker: DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS is the budget of a broker on a 1Password vault, and DEV_BROKER_ONEPASSWORD_VAULT is not set" >&2
+  exit 2
+fi
+if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ] && [ -n "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ]; then
+  echo "dev-broker: DEV_BROKER_GCP_* and DEV_BROKER_ONEPASSWORD_* each choose the broker's store: set one of them" >&2
+  exit 2
+fi
 # The proxied GitHub's address and the broker to start in place of a build are checked before
 # anything is created too (the header): a stack that came up without the one, or on a broker
 # nobody meant, would answer a check for some other stack than the one it asked for.
@@ -243,10 +268,15 @@ BROKER_BIN="$BIN_DIR/broker"
 MEMORY_SECRETS_FILE="$WORK_DIR/memory-secrets.json"
 # The namespace the demo secrets sit under, and the store the broker reads them from: the memory
 # store over that file. DEV_BROKER_GCP_* replaces both with a Secret Manager prefix and a Cloud
-# KMS key name, and the store with Secret Manager (the header).
+# KMS key name, and the store with Secret Manager; DEV_BROKER_ONEPASSWORD_* with a title prefix
+# and a 1Password vault (the header). Either is a real store, which this script tells from the
+# memory one by SECRETS_STORE.
 SECRETS_STORE="memory"
 SECRETS_PREFIX="example/agent-secrets/"
 SECRETS_KMS_KEY_NAME=""
+ONEPASSWORD_VAULT=""
+ONEPASSWORD_TOKEN_FILE=""
+ONEPASSWORD_DAILY_REQUESTS=""
 STORE_LINE="the memory secrets file below (BROKER_SECRETS_STORE=memory)"
 if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ]; then
   SECRETS_STORE="gcp-secret-manager"
@@ -255,6 +285,15 @@ if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ]; then
   MEMORY_SECRETS_FILE=""
   STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME; the broker serves none of the demo secrets below"
 fi
+if [ -n "${DEV_BROKER_ONEPASSWORD_VAULT:-}" ]; then
+  SECRETS_STORE="onepassword"
+  SECRETS_PREFIX="agent-secrets-"
+  ONEPASSWORD_VAULT="$DEV_BROKER_ONEPASSWORD_VAULT"
+  ONEPASSWORD_TOKEN_FILE="$DEV_BROKER_ONEPASSWORD_TOKEN_FILE"
+  ONEPASSWORD_DAILY_REQUESTS="${DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS:-900}"
+  MEMORY_SECRETS_FILE=""
+  STORE_LINE="onepassword vault $ONEPASSWORD_VAULT under $SECRETS_PREFIX, $ONEPASSWORD_DAILY_REQUESTS requests a day; the broker serves none of the demo secrets below"
+fi
 BROKER_LOG="$WORK_DIR/broker.log"
 OPERATOR_FILE="$WORK_DIR/operator"
 # The profiles file (the header), and the front the broker's proxy is named by before it binds:
@@ -262,9 +301,9 @@ OPERATOR_FILE="$WORK_DIR/operator"
 PROFILES_FILE="$WORK_DIR/profiles.json"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
-# The front the broker's own API sits behind under DEV_BROKER_GCP_*, bound before the broker and
-# pointed at its port once it logs it: with a real store the broker refuses a BROKER_PUBLIC_URL
-# of port 0, which is what the memory stack uses.
+# The front the broker's own API sits behind on a real store (DEV_BROKER_GCP_* or
+# DEV_BROKER_ONEPASSWORD_*), bound before the broker and pointed at its port once it logs it: with a
+# real store the broker refuses a BROKER_PUBLIC_URL of port 0, which is what the memory stack uses.
 API_FRONT_JSON="$WORK_DIR/api-front.json"
 API_FRONT_LOG="$WORK_DIR/api-front.log"
 API_BACKENDS="$WORK_DIR/api-backends"
@@ -536,8 +575,8 @@ CA_KEY_FILE="$(stand .ca_key_file)"
 # behind the kind of that name (the header). The service-owned ones
 # are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
 # registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
-# the App's PEM is escaped once and correctly. Under DEV_BROKER_GCP_* no file is written: the
-# demo secrets sit under the memory store's prefix, which the GCP store's policy would refuse. ---
+# the App's PEM is escaped once and correctly. On a real store no file is written: the demo secrets
+# sit under the memory store's prefix, which a real store's policy would refuse. ---
 if [ -n "$MEMORY_SECRETS_FILE" ]; then
   jq -n \
     --arg prefix "$SECRETS_PREFIX" \
@@ -576,9 +615,9 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # permissions are each profile's ask, which the broker cuts to what the installation holds at
 # every mint: DEMO_GITHUB_APP's write set leaves out what the stand's own map does not hold (issues,
 # workflows, statuses at write), so even a stack driven with no DEV_BROKER_GITHUB_PERMISSIONS
-# names a cut in its release. Under DEV_BROKER_GCP_* the file declares no kind and names no
-# profile, as the store holds no secret of this stack's: the demo github-app secrets are not there
-# for a profile to name. ---
+# names a cut in its release. On a real store the file declares no kind and names no profile, as
+# the store holds no secret of this stack's: the demo github-app secrets are not there for a
+# profile to name. ---
 if [ -z "$MEMORY_SECRETS_FILE" ]; then
   printf '{"profiles": []}\n' >"$PROFILES_FILE"
 else
@@ -683,7 +722,7 @@ echo "dev-broker: starting the proxy's front..." >&2
 PROXY_FRONT_PID=$!
 await "the proxy's front" 30 "$PROXY_FRONT_LOG" 'front listening addr=' "$PROXY_FRONT_PID"
 PROXY_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
-# Under DEV_BROKER_GCP_* the broker's store is a real one, so its start is a production start:
+# On a real store (DEV_BROKER_GCP_* or DEV_BROKER_ONEPASSWORD_*) the start is a production start:
 # a BROKER_PUBLIC_URL of port 0 and the airlock's test settings are refused with any store but
 # the memory one. A second front, bound here as the proxy's is and pointed at the broker's own
 # port once the broker logs it, gives that start a public URL with a real port.
@@ -739,6 +778,9 @@ BROKER_SECRETS_STORE="$SECRETS_STORE" \
 BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
 BROKER_SECRETS_KMS_KEY_NAME="$SECRETS_KMS_KEY_NAME" \
 BROKER_MEMORY_SECRETS_FILE="$MEMORY_SECRETS_FILE" \
+BROKER_ONEPASSWORD_VAULT="$ONEPASSWORD_VAULT" \
+BROKER_ONEPASSWORD_TOKEN_FILE="$ONEPASSWORD_TOKEN_FILE" \
+BROKER_ONEPASSWORD_DAILY_REQUESTS="$ONEPASSWORD_DAILY_REQUESTS" \
 BROKER_DRAIN_SECONDS=0 \
 BROKER_LISTEN_ADDR="$LISTEN_ADDR" \
 BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
@@ -827,7 +869,7 @@ METRICS_URL="http://${LOGGED_ADDR}/metrics"
 # The proxy's port, which the broker binds with the API's and logs between the two lines above,
 # so by now its line is there; the front is pointed at it, and rereads its backends file when it
 # changes. The broker binds it only when its profiles file declares a kind or holds a dpop block
-# (config.AirlockSubjects), and the file under DEV_BROKER_GCP_* does neither (the profiles file's
+# (config.AirlockSubjects), and the file on a real store does neither (the profiles file's
 # header), so the line is waited for only then; a broker that logged none for such a file never
 # bound the proxy its kinds need.
 PROXY_BANNER="none  (the profiles file declares no kind and holds no dpop block, so the broker binds no proxy port)"

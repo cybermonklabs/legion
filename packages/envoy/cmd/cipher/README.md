@@ -62,9 +62,10 @@ machine in
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
 session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with
 `agent-secrets secret list|show|create|set|retag|delete|restore`, which calls the broker's own
-store (AWS Secrets Manager or GCP Secret Manager, or, on a local stack, the memory store's file the
-broker's settings name as `memory_secrets_file`) under whatever credential its environment gives
-it - the store's own IAM decides what that credential may do; the memory store takes none - and
+store (AWS Secrets Manager, GCP Secret Manager or a 1Password vault, or, on a local stack, the
+memory store's file the broker's settings name as `memory_secrets_file`) under whatever credential
+its environment gives it - the store's own permissions decide what that credential may do; the
+memory store takes none - and
 then asks the broker to reread each secret written, so the change
 is served at once; those forms need no helper and no session. On GCP, `secret create` makes the
 secret, empty and with its tags, before it asks for the value, so a store that refuses the create
@@ -500,9 +501,14 @@ the command finds: on AWS, the AWS SDK's own order, in the broker's account (acc
 Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS`
 names, else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or
 `CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials file, else the active gcloud
-account, else the metadata server. The memory store of a local stack takes no sign-in: the forms
+account, else the metadata server; on 1Password, a service account's token in
+`OP_SERVICE_ACCOUNT_TOKEN`, through the 1Password SDK, else whatever your own `op` is signed in as
+(`OP_ACCOUNT` chooses among its accounts), every value given to `op` on its standard input and
+never among its arguments. The memory store of a local stack takes no sign-in: the forms
 write the file the broker's settings name, which names no person, so `--owner me` is refused
-there and the owner is named outright. Each store opens through the store registry, and a broker
+there and the owner is named outright. On 1Password `secret delete` moves the item to the vault's
+Archive, and `secret restore` refuses, since neither the SDK nor `op` has a call that restores an
+item: restore it from the 1Password app's Archive. Each store opens through the store registry, and a broker
 whose settings name a store this build does not hold is refused before any store is called. A
 source that is present but broken stops the command, and so
 does a profile variable that names a profile the AWS config does not hold; every form prints the

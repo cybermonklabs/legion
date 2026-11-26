@@ -353,15 +353,18 @@ func main() {
 	// production/agent-secrets/); with gcp-secret-manager,
 	// projects/<project number>/secrets/<secret-id prefix>- (for example
 	// projects/000000000000/secrets/agent-secrets-), the project by its number, since Secret
-	// Manager answers every resource name with the number. The broker serves every secret under
-	// it that carries an owner and a tier tag (Secret Manager: annotation) and is encrypted with
-	// the agent-secrets key, and rereads them every five minutes.
+	// Manager answers every resource name with the number; with onepassword, an item title prefix
+	// of lowercase letters, digits and hyphens ending in "-", at most 64 bytes (for example
+	// cipher-). The broker serves every secret under it that carries an owner and a tier tag
+	// (Secret Manager: annotation; 1Password: a field of the item's section titled cipher) and is
+	// encrypted with the agent-secrets key (on 1Password, every item of the vault is on its key),
+	// and rereads them every five minutes.
 
 	// The secret store, opened by its registry entry and logged with how it signs in, so an
 	// operator reads it from the log: the AWS SDK's credential chain, Application Default
-	// Credentials, or the memory secrets file. It is handed the broker's database, where a store
-	// keeps what every replica counts together (the 1Password store's daily request budget), and
-	// the broker's clock.
+	// Credentials, the 1Password service account token file, or the memory secrets file. It is
+	// handed the broker's database, where a store keeps what every replica counts together (the
+	// 1Password store's daily request budget), and the broker's clock.
 	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets, secretstore.OpenEnv{Log: slog.Default(), Database: st.SecretStoreDatabase(), Now: time.Now})
 	fatal(err)
 	if opened.Close != nil {

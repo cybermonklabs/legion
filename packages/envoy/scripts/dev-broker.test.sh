@@ -321,6 +321,7 @@ echo "fake broker jobs: job-accounts=${BROKER_EXCHANGE_JOB_ACCOUNTS:-} job-workf
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-} public-url=${BROKER_PUBLIC_URL:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} memory-secrets=${BROKER_MEMORY_SECRETS_FILE:-}" >&2
+echo "fake broker onepassword: vault=${BROKER_ONEPASSWORD_VAULT:-} token-file=${BROKER_ONEPASSWORD_TOKEN_FILE:-} daily-requests=${BROKER_ONEPASSWORD_DAILY_REQUESTS:-}" >&2
 echo "fake broker airlock: profiles=${BROKER_PROFILES_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_PROFILES_FILE:-}" ]] && jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
@@ -627,7 +628,8 @@ assert_instance_isolated() {
   # AWS key is set: the memory store refuses a variable of another store.
   local workdir signin_file
   workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
-  if ! grep -qF "fake broker: store=memory prefix=example/agent-secrets/ key-arn= key-name= memory-secrets=${workdir}/memory-secrets.json" "$log_file"; then
+  if ! grep -qF "fake broker: store=memory prefix=example/agent-secrets/ key-arn= key-name= memory-secrets=${workdir}/memory-secrets.json" "$log_file" \
+    || ! grep -qxF "fake broker onepassword: vault= token-file= daily-requests=" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's broker is not started on the memory store over its own file" >&2
     exit 1
@@ -1216,3 +1218,70 @@ for refused in "DEV_BROKER_PROXIED_GITHUB_IP=10.0.0.9" "DEV_BROKER_BROKER_BIN=${
   fi
 done
 printf 'PASS: a DEV_BROKER_PROXIED_GITHUB_IP outside loopback and a DEV_BROKER_BROKER_BIN that is no executable file are refused with exit 2 before anything is created\n'
+
+# --- DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE give the broker that
+# 1Password vault as its store, read with the token file's service account under the title prefix
+# agent-secrets-, at a daily budget of 900 requests or DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS,
+# with no memory secrets file, a profiles file naming none, a real public URL and none of the
+# airlock's test settings, and the banner says so. ---
+onepassword_vault="vault0000000000000000000aa"
+onepassword_token="${temporary_dir}/onepassword-token"
+printf 'a-token-for-the-test\n' >"$onepassword_token"
+for budget in "" 500; do
+  want_budget="${budget:-900}"
+  DEV_BROKER_ONEPASSWORD_VAULT="$onepassword_vault" DEV_BROKER_ONEPASSWORD_TOKEN_FILE="$onepassword_token" \
+    DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS="$budget" \
+    run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
+  if ! wait_for_ready "$log1"; then
+    cat "$log1" >&2
+    echo "FAIL: a DEV_BROKER_ONEPASSWORD_* run never reached ready" >&2
+    exit 1
+  fi
+  op_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
+  if ! grep -qF "fake broker: store=onepassword prefix=agent-secrets- key-arn= key-name= memory-secrets=" "$log1" \
+    || ! grep -qxF "fake broker onepassword: vault=${onepassword_vault} token-file=${onepassword_token} daily-requests=${want_budget}" "$log1" \
+    || [[ -e "${op_workdir}/memory-secrets.json" ]] \
+    || [[ "$(jq -c . "${op_workdir}/profiles.json" 2>/dev/null || true)" != '{"profiles":[]}' ]] \
+    || grep -qE 'fake broker: metrics-listen=[^ ]* public-url=[^ ]*:0$' "$log1" \
+    || ! grep -qE 'fake broker airlock: .* upstream_ca= resolve=\[\] dial_allow=\[\]' "$log1" \
+    || ! grep -qE 'fake broker: .* github= *$' "$log1" \
+    || ! grep -qF "  secret store:        onepassword vault ${onepassword_vault} under agent-secrets-, ${want_budget} requests a day; the broker serves none of the demo secrets below" "$log1" \
+    || grep -qF "a-token-for-the-test" "$log1"; then
+    cat "$log1" >&2
+    echo "FAIL: a DEV_BROKER_ONEPASSWORD_* run (budget '${budget}') does not start its broker on that vault, with the token file, a budget of ${want_budget}, no memory secrets file and a profiles file naming none, and say so without the token" >&2
+    exit 1
+  fi
+  kill -TERM "${instance_pid[1]}"
+  wait "${instance_pid[1]}" 2>/dev/null || true
+  instance_pid[1]=""
+done
+printf 'PASS: DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE start the broker on that vault, at 900 requests a day or DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS, with no memory secrets file and a profiles file naming no profile\n'
+
+# --- Either of the vault and the token file alone, a budget with no vault, and a 1Password vault
+# beside the GCP settings are each refused with exit 2 before anything is created. ---
+for refused in "DEV_BROKER_ONEPASSWORD_VAULT=${onepassword_vault}|DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE are set together or not at all" \
+  "DEV_BROKER_ONEPASSWORD_TOKEN_FILE=${onepassword_token}|DEV_BROKER_ONEPASSWORD_VAULT and DEV_BROKER_ONEPASSWORD_TOKEN_FILE are set together or not at all" \
+  "DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS=500|DEV_BROKER_ONEPASSWORD_DAILY_REQUESTS is the budget of a broker on a 1Password vault, and DEV_BROKER_ONEPASSWORD_VAULT is not set"; do
+  : >"$docker_calls1"
+  refused_status=0
+  env "${refused%%|*}" PATH="${fake_bin_dir}:${PATH}" \
+    DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_calls1" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_calls1" \
+    bash "$driver" >"$log1" 2>&1 || refused_status=$?
+  if [[ "$refused_status" -ne 2 ]] || ! grep -qF "dev-broker: ${refused#*|}" "$log1" || [[ -s "$docker_calls1" ]]; then
+    cat "$log1" >&2
+    echo "FAIL: ${refused%%|*} alone exited ${refused_status}; want 2 with the refusal and nothing created" >&2
+    exit 1
+  fi
+done
+: >"$docker_calls1"
+both_status=0
+env DEV_BROKER_ONEPASSWORD_VAULT="$onepassword_vault" DEV_BROKER_ONEPASSWORD_TOKEN_FILE="$onepassword_token" \
+  DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" PATH="${fake_bin_dir}:${PATH}" \
+  DEV_BROKER_TEST_DOCKER_CALL_FILE="$docker_calls1" DEV_BROKER_TEST_CURL_CALL_FILE="$curl_calls1" \
+  bash "$driver" >"$log1" 2>&1 || both_status=$?
+if [[ "$both_status" -ne 2 ]] || ! grep -qF "dev-broker: DEV_BROKER_GCP_* and DEV_BROKER_ONEPASSWORD_* each choose the broker's store: set one of them" "$log1" || [[ -s "$docker_calls1" ]]; then
+  cat "$log1" >&2
+  echo "FAIL: the GCP and the 1Password settings together exited ${both_status}; want 2 with the refusal and nothing created" >&2
+  exit 1
+fi
+printf 'PASS: either DEV_BROKER_ONEPASSWORD_* setting alone, a budget with no vault, and a vault beside the GCP settings are refused with exit 2 before anything is created\n'
