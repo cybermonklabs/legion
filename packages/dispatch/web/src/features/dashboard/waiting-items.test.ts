@@ -18,6 +18,7 @@ import issueBody from "./fixtures/issue.json";
 import myRepliesBody from "./fixtures/my-replies.json";
 import {
   type NodeStateRead,
+  requestedDocument,
   type WaitingIssue,
   type WaitingReads,
   waitingItems,
@@ -350,6 +351,37 @@ describe("the item table", () => {
       replies: repliesOf([COMMENT, DAEMON], 9),
     };
     expect(waitingItems(reads).length).toBe(7);
+  });
+});
+
+/** The captured approval request, its ask on `artifactId` and its approval naming `slug`. */
+function requestNaming(artifactId: string | null, slug: string): IssueAskRow {
+  const named = APPROVAL.approval_artifact;
+  if (named === undefined) throw new Error("the captured approval request names no slug");
+  return { ...APPROVAL, approval_artifact: { ...named, slug }, artifact_id: artifactId };
+}
+
+// The document an approval request is on, which the header's approval control for it is drawn on
+// (`requestedDocument`), as `main`'s count read it (`waitingOnReader`'s `approvals`): the ask's
+// own document, else the one its approval names by slug, else the spec.
+describe("the document an approval request is on", () => {
+  test("a request with no artifact_id and no slug the issue holds is on the spec", () => {
+    expect(APPROVAL.artifact_id).toBeNull();
+    expect(requestedDocument(requestNaming(null, "plan-md"), ISSUE)).toBe(
+      ISSUE.primary_artifact_id
+    );
+    const { approval_artifact: _named, ...unnamed } = APPROVAL;
+    expect(requestedDocument(unnamed, ISSUE)).toBe(ISSUE.primary_artifact_id);
+  });
+
+  test("a request whose ask names an artifact_id is on that document, whatever slug it names", () => {
+    expect(requestedDocument(requestNaming(VERIFICATION_ID, "spec"), ISSUE)).toBe(VERIFICATION_ID);
+  });
+
+  test("a request with no artifact_id is on the issue's document its approval names by slug", () => {
+    const slug = VERIFICATION?.slug;
+    if (slug === undefined) throw new Error("the captured issue holds no Verification document");
+    expect(requestedDocument(requestNaming(null, slug), ISSUE)).toBe(VERIFICATION_ID);
   });
 });
 

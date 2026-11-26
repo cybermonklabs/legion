@@ -19,7 +19,7 @@ import {
   pageWaitingBg,
   pageWaitingChip,
 } from "../../theme/classes";
-import { useWaitingItems } from "../dashboard/useWaitingItems";
+import { requestedDocument, useWaitingItems } from "../dashboard/useWaitingItems";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
@@ -85,19 +85,13 @@ export function IssuePropertiesRow({
   // events that name its key, never by its age (`EVENT_FRESH`), and none is the issue's whole
   // comments list: a Change is matched to its decision by its anchor, with no blocks read.
   const waiting = useWaitingItems(issue.key).items;
-  // The document each approval request that waits on the reader is on, by artifact id: the
-  // ask's own, else the one its approval names by slug, else the issue's spec. The header's
-  // approval control for each carries Approve and Request changes, and is where the count puts
-  // the focus when nothing else waits. A stale approval is no request and moves no control.
+  // The document each approval request that waits on the reader is on, by artifact id
+  // (`requestedDocument`): the ask's own, else the one its approval names by slug, else the
+  // issue's spec. The header's approval control for each carries Approve and Request changes, and
+  // is where the count puts the focus when nothing else waits. A stale approval is no request and
+  // moves no control.
   const requested = waiting.flatMap((item) =>
-    item.kind === "approval"
-      ? [
-          item.ask.artifact_id ??
-            issue.artifacts?.find((artifact) => artifact.slug === item.ask.approval_artifact?.slug)
-              ?.id ??
-            issue.primary_artifact_id,
-        ]
-      : []
+    item.kind === "approval" ? [requestedDocument(item.ask, issue)] : []
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
