@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -170,10 +169,6 @@ type Deps struct {
 	// the Dispatch client the token exchange asks. Nil is a broker with no Dispatch to ask, which
 	// holds nobody.
 	Hold *hold.Gate
-	// Exchange is the token exchange's entries, the one set cmd/cipherd builds from its exchange
-	// settings and gives the OAuth provider. GET /v1/person-access counts the entries that name a
-	// person (exchange.Set.EntriesNaming). Nil is a broker with no entries, which names nobody.
-	Exchange *exchange.Set
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
 	//

@@ -170,8 +170,8 @@ var proofAlgorithmNames = func() []string {
 }()
 
 // Caller is who a verified token names, whether that token only reads, and whether it holds the
-// scope legion-status: what a writer is recorded under and the Google account its credential
-// records, and nothing else the broker's answer carries. It never carries the token.
+// scope legion-status: what a writer is recorded under, and whether Dispatch holds its person, and
+// nothing else the broker's answer carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -210,35 +210,19 @@ type Caller struct {
 	// and the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
-	// AccountIssuer and AccountSubject are the Google account the token's credential records at
-	// the broker (Introspection's AccountIssuer and AccountSubject): the person token that made
-	// the sign-in the token was minted under, or the account that approved the machine login it
-	// was exchanged from. Both are empty for a token recording none: a token naming no person (a
-	// read-only one among them), and one whose sign-in or machine login was made before the
-	// broker recorded accounts. Whoever mounts this check decides whether that account may still
-	// act for Person.
-	AccountIssuer  string
-	AccountSubject string
 	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
 	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
 	// the answer and keeps it as long as it keeps any affirmative answer
-	// (AffirmativeCacheTTL). Dispatch reads it after its own revocation and admission checks,
-	// and the Envoy listener after its own checks, and each refuses a held caller 401
-	// MEMBERSHIP_HELD.
+	// (AffirmativeCacheTTL). The Envoy listener reads it after its own checks and refuses a held
+	// caller 401 MEMBERSHIP_HELD; Dispatch does not read it yet.
 	Held bool
 	// NotHeldUntil is the broker's introspection answer's `not_held_until`
 	// (Introspection.NotHeldUntil): when its answer that Person is not held stops being good, the
 	// deadline an IAP deployment's Dispatch put on it. The zero time for an answer naming none, a
 	// held one and every answer outside IAP. The Verifier keeps a not-held answer no later than
-	// it, and Dispatch and the Envoy listener refuse a not-held caller as unavailable once it is not
-	// after the Verifier's clock (Verifier.Lapsed).
+	// it, and the Envoy listener refuses a not-held caller as unavailable once it is not after the
+	// Verifier's clock (Verifier.Lapsed); Dispatch does not read it yet.
 	NotHeldUntil time.Time
-	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
-	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
-	// machine login it was exchanged from. The zero time for a token naming no person and for one
-	// minted before the broker recorded it. Whoever mounts this check holds a token recording no
-	// account to it.
-	CredentialCreatedAt time.Time
 	// Cut is the past time a read-only token reads at, which its trade asked for (the answer's
 	// as_of, oauthwire.FormAsOf), in UTC; it is the zero time for a token that names no cut. Only a
 	// token narrowed to reading carries one: an answer that names a cut in any other shape, the

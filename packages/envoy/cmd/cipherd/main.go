@@ -761,7 +761,6 @@ func main() {
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
 		Hold:                   holdGate,
-		Exchange:               exchangePolicy,
 		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string, moved []string) {
 			// This pod reread the name itself and merged what it read (the reread route's

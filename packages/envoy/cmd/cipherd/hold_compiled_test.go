@@ -73,7 +73,7 @@ type holdPlace struct {
 }
 
 // holdPlaces is every place a wiring line of the hold in main reaches: each place main hands the
-// gate to, and the person-access route Dispatch asks at a sign-out. A wiring line of the hold that
+// gate to. A wiring line of the hold that
 // main gains is one more row: the place, the line, whether it hands the place the gate, and a
 // probe that reads the place through the binary; a setting that line reads goes in holdRig.env.
 func holdPlaces() []holdPlace {
@@ -85,14 +85,12 @@ func holdPlaces() []holdPlace {
 		{name: "introspection (POST /v1/oauth/introspect as Dispatch)", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).introspectTheSessionToken},
 		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", gated: true, probe: (*holdRig).decideOnThePage},
 		{name: "an airlock request", wiring: "proxy.Options's Hold: holdGate", gated: true, probe: (*holdRig).askThroughTheAirlock},
-		{name: "the person-access route (GET /v1/person-access as Dispatch)", wiring: "api.Deps's Exchange: exchangePolicy", probe: (*holdRig).countExchangeEntries},
 		{name: "a device-code redemption of a person Dispatch answers with no deadline", wiring: "hold.Config's RequireDeadline: cfg.HoldRequiresDeadline", deadline: true, probe: (*holdRig).redeemWithNoDeadline},
 	}
 }
 
 // The two pod accounts the token exchange lists (BROKER_EXCHANGE_ACCOUNTS), one acting for each
-// person, so exactly one entry of the exchange names each of them, which is what the person-access
-// route counts.
+// person.
 const (
 	adaExchangeAccount = "system:serviceaccount:example-ns:example-ada-worker"
 	bobExchangeAccount = "system:serviceaccount:example-ns:example-bob-worker"
@@ -491,24 +489,6 @@ func (r *holdRig) askThroughTheAirlock(t *testing.T, p *holdPerson) holdAnswer {
 	return holdAnswer{answeredNeither, said}
 }
 
-// countExchangeEntries is Dispatch asking what p holds that outlives their browser (GET
-// /v1/person-access): served when the answer names p and counts the one exchange entry that names
-// them. The route asks no hold, so it answers alike whether the broker holds p or not.
-func (r *holdRig) countExchangeEntries(t *testing.T, p *holdPerson) holdAnswer {
-	t.Helper()
-	status, body := r.client.UI(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(p.login), nil)
-	said := fmt.Sprintf("GET /v1/person-access answered %d %s, where one exchange entry names %s", status, strings.TrimSpace(string(body)), p.login)
-	var answer struct {
-		Person          string `json:"person"`
-		ExchangeEntries *int   `json:"exchange_entries"`
-	}
-	if status == http.StatusOK && json.Unmarshal(body, &answer) == nil && answer.Person == p.login &&
-		answer.ExchangeEntries != nil && *answer.ExchangeEntries == 1 {
-		return holdAnswer{answeredServed, said}
-	}
-	return holdAnswer{answeredNeither, said}
-}
-
 // expectAtEachPlace drives every place for p through the broker booted now and fails t, naming the
 // place and the line of main that wires it, at each that does not answer as it should: held where
 // the line hands the place the gate and the broker holds p, refused as uncheckable at the deadline
@@ -551,8 +531,7 @@ func verbOf(outcome string) string {
 // the gate to, a session route, a launcher route, a token exchange, a device-code redemption, an
 // approval-page decision and an airlock request, and its introspection reports her token held,
 // while bob is served at each and his token is not held. With BROKER_PROJECT_ACCESS_URL unset, the
-// same broker serves her at each, and its boot log says the hold is off. At every boot, the
-// person-access route Dispatch asks at a sign-out counts the one exchange entry that names each.
+// same broker serves her at each, and its boot log says the hold is off.
 // With BROKER_HOLD_REQUIRES_DEADLINE set, as an IAP deployment's broker sets it, the broker refuses
 // a person Dispatch answers with no deadline as one whose hold it cannot decide, and each refusal of
 // a held person says the Workspace Directory ends the hold.
@@ -570,7 +549,7 @@ func verbOf(outcome string) string {
 // words, bob is served, and a colleague Dispatch answers with no deadline is refused.
 //
 // Each place's control deletes the line of main.go that wires it (holdPlaces' wiring): a gated
-// place then serves ada at the second boot, the person-access route counts no entry, the deadline
+// place then serves ada at the second boot, the deadline
 // rule's place serves the colleague at the fourth, and this test fails naming that place and that
 // line.
 func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {

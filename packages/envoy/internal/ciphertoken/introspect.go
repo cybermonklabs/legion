@@ -113,30 +113,23 @@ func cutOf(answer Introspection) (time.Time, error) {
 // answer's cut, which sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller
 // accepted, and sessionCaller lets a read-only answer through only with its switch set, which
 // only a verifier that serves one sets, so a Caller marked read-only is one such a verifier
-// accepted. The account the token's credential records, and when that credential was made, are
-// carried too, which the cache keeps with the rest of the answer. So is held: a held answer is
-// still a live one, kept in the cache as any other for AffirmativeCacheTTL, and each reader
-// refuses a held Caller after its own checks. And so is not_held_until, the deadline of a
-// not-held answer, which the cache keeps the answer no later than (answerCache.remember) and each
-// reader refuses a Caller past (Verifier.Lapsed).
+// accepted. So is held: a held answer is still a live one, kept in the cache as any other for
+// AffirmativeCacheTTL, and each reader refuses a held Caller after its own checks. And so is
+// not_held_until, the deadline of a not-held answer, which the cache keeps the answer no later
+// than (answerCache.remember) and each reader refuses a Caller past (Verifier.Lapsed).
 // LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
 // shapeOf reads it and with no slice built, since this too runs on every request a verifier
 // decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
-		Session:        answer.Session,
-		Person:         answer.Person,
-		Service:        answer.Service,
-		Projects:       slices.Clone(answer.Projects),
-		ProjectScope:   oauthwire.BaseProjectScope(answer.ProjectScope),
-		ReadOnly:       shape == shapeReadOnly,
-		Cut:            cut,
-		AccountIssuer:  answer.AccountIssuer,
-		AccountSubject: answer.AccountSubject,
-		Held:           answer.Held,
-	}
-	if answer.CredentialCreatedAt > 0 {
-		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
+		Session:      answer.Session,
+		Person:       answer.Person,
+		Service:      answer.Service,
+		Projects:     slices.Clone(answer.Projects),
+		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
+		ReadOnly:     shape == shapeReadOnly,
+		Cut:          cut,
+		Held:         answer.Held,
 	}
 	if answer.NotHeldUntil > 0 {
 		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()

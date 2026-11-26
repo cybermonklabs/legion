@@ -98,9 +98,8 @@ type revokePersonSignInBody struct {
 
 // requirePerson refuses a request naming no person, as requireApprover does for the routes whose
 // subject is a decision's approver. It is a word of its own because the routes that call it name
-// no approver at all: the person sign-ins list and its revoke, the revoke of a replaced account
-// and the count of what a person holds (GET /v1/person-access) each read or end what one person
-// holds, and that person is the one the request names.
+// no approver at all: the person sign-ins list and its revoke, and the revoke of a replaced
+// account, each read or end what one person holds, and that person is the one the request names.
 func requirePerson(w http.ResponseWriter, login string) bool {
 	if record.CanonicalLogin(login) == "" {
 		writeError(w, http.StatusBadRequest, "PERSON_REQUIRED", "person is required")

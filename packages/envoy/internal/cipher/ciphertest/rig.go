@@ -205,7 +205,6 @@ type rigConfig struct {
 	projects projectaccess.Access
 	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
 	holdRequiresDeadline bool
-	personSignIns        *personSignInConfig
 	profiles             string
 	edge                 bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
@@ -252,21 +251,12 @@ type ProviderOption func(*providerConfig)
 type providerConfig struct {
 	// accessLifetime is how long the access tokens the provider issues live; zero is fifteen
 	// minutes, as main sets it where BROKER_ACCESS_TOKEN_SECONDS is unset.
-	accessLifetime      time.Duration
-	projectAccess       projectaccess.Access
-	hold                *hold.Gate
-	google              *oidctest.Issuer
-	machineAccount      string
-	machineCredentials  oauth.MachineCredentials
-	personSignInRecords oauth.PersonSignIns
-	// exchange is the token exchange's entries NewRig built and gives the API too; nil has
-	// NewOAuthProvider build its own (newExchangeSet).
+	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
+	hold           *hold.Gate
+	// exchange is the token exchange's entries NewRig built and gives the request machine too; nil
+	// has NewOAuthProvider build its own (newExchangeSet).
 	exchange *exchange.Set
-}
-
-type personSignInConfig struct {
-	google         *oidctest.Issuer
-	machineAccount string
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -325,16 +315,6 @@ func WithProjectAccess(access projectaccess.Access) Option {
 // no gate, so the rule would rule nothing and hold nobody.
 func WithHoldRequiresDeadline() Option {
 	return func(c *rigConfig) { c.holdRequiresDeadline = true }
-}
-
-// WithPersonSignIns lets the rig accept Google person trades from machineAccount. NewRig binds
-// the option to the broker command's own writers (enroll.Service.MachineCredentials and
-// enroll.PersonSignIns) once its enrollment service exists, so a successful trade creates the
-// same launcher credential and person-sign-in rows as the broker command.
-func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
-	return func(c *rigConfig) {
-		c.personSignIns = &personSignInConfig{google: google, machineAccount: machineAccount}
-	}
 }
 
 // WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
@@ -491,19 +471,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	// The token exchange's entries, built once and given to both the OAuth provider and the API
-	// (Deps.Exchange, which GET /v1/person-access counts), as main gives both the one set.
-	google, machineAccount := config.personSignIns != nil, ""
-	if google {
-		machineAccount = config.personSignIns.machineAccount
-		// BROKER_VM_SERVICES, the one map main gives the enrollment service and the request
-		// machine: the service newExchangeSet's Google entry names. Without it no launcher
-		// credential a trade mints for this machine, a person's sign-in's among them,
-		// authenticates at a launcher route (enroll.Service.AuthenticateLauncher).
-		vmServices := map[string]string{machineAccount: "leaver-machine"}
-		enr.VMServicesByAccount, reqMachine.VMServicesByAccount = vmServices, vmServices
-	}
-	entries := newExchangeSet(t, google, machineAccount)
+	// The token exchange's entries, built once and given to both the OAuth provider and the request
+	// machine, as main gives both the one set.
+	entries := newExchangeSet(t)
 	// The request machine reads a credential's project from the same entries the exchange mints
 	// from, and asks Dispatch about projects on the one client, as main gives it both
 	// (requests.Machine.Exchange and Projects).
@@ -522,14 +492,6 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.projectAccess = config.projectAccess
 			c.hold = gate
-		})
-	}
-	if signIns := config.personSignIns; signIns != nil {
-		providerOptions = append(providerOptions, func(c *providerConfig) {
-			c.google = signIns.google
-			c.machineAccount = signIns.machineAccount
-			c.machineCredentials = enr.MachineCredentials()
-			c.personSignInRecords = enroll.PersonSignIns()
 		})
 	}
 	if config.projects != nil {
@@ -561,7 +523,6 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
 		Hold:     gate,
-		Exchange: entries,
 	}
 	api.Register(mux, deps)
 	if config.edge {
@@ -603,28 +564,11 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
-const (
-	// GoogleMachineAudience is the audience a machine's metadata identity token carries when the
-	// rig accepts a Google machine or a person signing in on that machine.
-	GoogleMachineAudience = "legion-broker-google-machine"
-	// PersonSignInAudience is the audience of the person's Google device-flow identity token.
-	PersonSignInAudience = "legion-broker-person-sign-in"
-)
-
-const personSignInDomain = "example.com"
-
 // newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/cipherd
 // builds from its exchange settings: the four accounts and the one workflow the Rig's constants
-// name, and, for a rig that accepts Google person trades (google), the Google entry for
-// machineAccount on the sign-in domain.
-func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.Set {
+// name.
+func newExchangeSet(t *testing.T) *exchange.Set {
 	t.Helper()
-	var machines []exchange.GoogleEntry
-	signInDomain := ""
-	if google {
-		machines = []exchange.GoogleEntry{{Account: machineAccount, Service: "leaver-machine"}}
-		signInDomain = personSignInDomain
-	}
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
@@ -634,8 +578,10 @@ func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		machines,
-		signInDomain,
+		nil,
+		// The rig lists no machine, so there is no box a person could have signed in on and no
+		// domain to hold one to.
+		"",
 	)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -672,7 +618,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	}
 	policy := config.exchange
 	if policy == nil {
-		policy = newExchangeSet(t, config.google != nil, config.machineAccount)
+		policy = newExchangeSet(t)
 	}
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
@@ -684,16 +630,6 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		Projects:   config.projectAccess,
 		Hold:       config.hold,
-	}
-	if config.google != nil {
-		googleKeys, err := oidc.NewKeys(context.Background(), config.google.URL())
-		if err != nil {
-			t.Fatalf("Google keys: %v", err)
-		}
-		exchangeConfig.Google = oauth.IssuerConfig{Issuer: config.google.URL(), Audience: GoogleMachineAudience, Keys: googleKeys}
-		exchangeConfig.MachineCredentials = config.machineCredentials
-		exchangeConfig.PersonAudience = PersonSignInAudience
-		exchangeConfig.PersonSignIns = config.personSignInRecords
 	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
