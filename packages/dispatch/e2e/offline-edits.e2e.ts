@@ -74,6 +74,20 @@ async function waitForPersistedTyping(
     .toBeGreaterThanOrEqual(text.length);
 }
 
+/** Waits until `page` holds the document: its editor shows INITIAL's paragraph. A row that severs
+ *  the transport and holds its reconnect waits for this first. The connection dot is not enough:
+ *  it reads "connected" from the first frame the server sends (`@hocuspocus/provider`'s
+ *  `resolveConnectionAttempt`), the server's SyncStep1, which holds no document, and the admission
+ *  and the SyncStep2 that mounts the editor come after it. The firefox leg of "unsent edits are
+ *  named, then cleared ..." severed on the dot alone and failed its first attempt in merge-group
+ *  runs 44997871801 and 45774962243 of main, waiting 45 s for the editor. The trace of the second
+ *  run shows the page connected with no editor yet, and the admission and the SyncStep2 reaching
+ *  the route only as the row severed it: neither reached the page, and with the reconnect held
+ *  the page never received the document. */
+async function waitForDocument(page: Parameters<typeof documentTransport>[0]): Promise<void> {
+  await expect(documentEditor(page)).toContainText("Original paragraph.");
+}
+
 // @webkit @firefox: IndexedDB-backed recovery, here an edit the store holds across a reload.
 test("an edit typed while the document transport is down survives a reload @webkit @firefox", async ({
   browser,
@@ -86,6 +100,7 @@ test("an edit typed while the document transport is down survives a reload @webk
     const transport = await documentTransport(page);
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();
@@ -118,6 +133,7 @@ test("unsent edits are named, then cleared after acknowledgement and a connected
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();
@@ -163,6 +179,7 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
       expect(connectedDot(firstPage)).toHaveText("connected"),
       expect(connectedDot(secondPage)).toHaveText("connected"),
     ]);
+    await Promise.all([waitForDocument(firstPage), waitForDocument(secondPage)]);
 
     firstTransport.hold();
     secondTransport.hold();
@@ -205,6 +222,7 @@ test("read-only admission preserves edits until a later read-write reload", asyn
     const transport = await documentTransport(page);
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();
