@@ -1,6 +1,8 @@
 import { retriesUnderKey } from "@legion/contracts";
 import type { Locator, Page, Request } from "@playwright/test";
 
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
+
 /** In-app navigation, as a link does: a reload would drop a send with the page. */
 export async function navigateInApp(page: Page, path: string): Promise<void> {
   await page.evaluate((to) => {
@@ -132,10 +134,6 @@ export async function pasteFile(field: Locator, name: string, text: string): Pro
     { name, text }
   );
 }
-
-/** A 1x1 PNG, the smallest picture a browser draws. */
-export const ONE_PIXEL_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 /** Pastes a PNG named `name` into `field`, as the clipboard hands a screenshot to it (the same
  *  explicit `DataTransfer` as `pasteFile`). */
