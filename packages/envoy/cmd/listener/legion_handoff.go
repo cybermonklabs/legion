@@ -115,7 +115,7 @@ type legionHandedOff struct {
 // MsgId is published again until the stream names that copy, answered duplicate, or ctx ends
 // (publishPastInProcess).
 func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*legionHandedOff, error) {
-	if h == nil || target.optedOut || target.envelope.Source == "envoy" {
+	if !h.mayHandOff(target) {
 		return nil, nil
 	}
 	agent, err := h.answeringAgent(ctx, target)
@@ -168,6 +168,14 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject),
 		slog.Bool("duplicate", handoff.ack.Duplicate))
 	return &handoff, nil
+}
+
+// mayHandOff reports whether handOffToLegion can hand target off at all, before any read: this
+// listener has a hand-off, the body did not opt out with "handoff": false, and the source is not
+// envoy. A caller that pays a read of its own before a hand-off asks it first, so a message that
+// can never be handed off pays nothing (roleSend.noHolder).
+func (h *legionHandoff) mayHandOff(target legionHandoffTarget) bool {
+	return h != nil && !target.optedOut && target.envelope.Source != "envoy"
 }
 
 // answerHandedOff makes *item, the envelope a route built for its request, the answer of handed,

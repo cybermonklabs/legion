@@ -313,6 +313,20 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 // publish failed is answered as any publish the bus refused is. The hand-off costs the sender what
 // its publish stored (senderCharge.published).
 //
+// No read can take a hand-off back, so noHolder hands off only once a resolution from the role
+// bucket stream's leader finds no live holder either (missConfirmed). result is a resolution over
+// direct gets of the role's claim (sendToRole), and on a replicated bucket a direct get can answer
+// the claim as it stood before a takeover, naming the previous holder, which is not live: a
+// hand-off on it would give the daemon of that holder's role a message the session that took the
+// role never receives. A leader resolution that names a live holder, and one that did not answer,
+// hand off nothing, and the message is answered below from result, as such a miss was answered
+// before the hand-off existed: kept, while this send's keep flag asks for it, by the keep that
+// hands the lane to whoever holds the role now after a leader resolution of its own
+// (handOverKeptRole), so a session that took the role receives it at once. The confirmation is
+// asked only of a message the hand-off can take at all (legionHandoff.mayHandOff: this listener
+// has a hand-off, the body did not opt out, the source is not envoy), so a publish that can never
+// be handed off pays no leader read.
+//
 // A role the registry holds no entry for, and one whose project does not answer, hand off
 // nothing, so the message is kept below as it was before the hand-off existed (INFRA-514).
 //
@@ -343,18 +357,19 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 // newest agent is not released the wake raised after the hand-off rather than before it changes
 // nothing.
 func (s *roleSend) noHolder(result roles.Resolution) {
-	handed, err := s.d.handoff.handOffToLegion(s.ctx, legionHandoffTarget{
-		envelope: s.item, roleToken: s.role, optedOut: s.optedOut,
-	})
-	switch {
-	case err != nil:
-		s.record.charge.published(bus.StoredAck{}, err)
-		s.refused(err)
-		return
-	case handed != nil:
-		s.record.charge.published(handed.ack, nil)
-		s.handedOff(handed)
-		return
+	target := legionHandoffTarget{envelope: s.item, roleToken: s.role, optedOut: s.optedOut}
+	if s.d.handoff.mayHandOff(target) && s.missConfirmed() {
+		handed, err := s.d.handoff.handOffToLegion(s.ctx, target)
+		switch {
+		case err != nil:
+			s.record.charge.published(bus.StoredAck{}, err)
+			s.refused(err)
+			return
+		case handed != nil:
+			s.record.charge.published(handed.ack, nil)
+			s.handedOff(handed)
+			return
+		}
 	}
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
@@ -373,6 +388,18 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		outcome = sendUnclaimed
 	}
 	s.settle(outcome)
+}
+
+// missConfirmed reports whether the role still has no live holder when its holder is resolved
+// again with each claim read from the role bucket stream's leader (leaderRoleClaims), within the
+// send's window and roleHolderReadTimeout, whichever ends first: the confirmation noHolder asks
+// for before a hand-off. A resolution that names a live holder, or that did not answer, confirms
+// nothing.
+func (s *roleSend) missConfirmed() bool {
+	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	defer cancel()
+	confirmed, err := roles.ResolveHolder(ctx, leaderRoleClaims{s.d.registry}, roleHolderSessions{s.d.sessions}, s.role)
+	return err == nil && confirmed.State != roles.Live
 }
 
 // handedOff answers 200 with the envelope and the stopped Legion agent its daemon was handed it

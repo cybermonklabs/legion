@@ -35,7 +35,7 @@ func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolde
 	claimRole(t, rig.deps, holder, role)
 	client := rig.harness.client
 
-	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	got := sendMarkedByDispatch(t, rig.mux, principal, agent, role, "what did the review find?")
 	if count, _ := handoffs(t, client, agent); count != 0 {
 		t.Errorf("the stream holds %d hand-offs for %s, want none: %s holds %s live, so the message is its", count, agent, holder, role)
 	}
@@ -68,7 +68,7 @@ func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *
 	}
 	client := rig.harness.client
 
-	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	got := sendMarkedByDispatch(t, rig.mux, principal, agent, role, "what did the review find?")
 	if got.status != http.StatusOK || got.Recipient != agent || got.Kept {
 		t.Fatalf("a send marked with %s to its stopped session %s while %s's claim of the role has lapsed: status %d, body %s; want 200 handed off to %s, nothing kept",
 			role, agent, holder, got.status, got.raw, agent)
@@ -104,7 +104,7 @@ func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOf
 	failed := failTheNextSessionReadOf(t, rig.harness.sessions, holder)
 	client := rig.harness.client
 
-	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	got := sendMarkedByDispatch(t, rig.mux, principal, agent, role, "what did the review find?")
 	if !failed.Load() {
 		t.Fatalf("no read of %s in the session bucket failed, so this send did not meet a failed lookup of it", holder)
 	}

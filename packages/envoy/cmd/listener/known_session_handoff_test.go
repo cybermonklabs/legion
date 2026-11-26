@@ -142,11 +142,11 @@ type markedSendAnswer struct {
 	KeptUntil int64  `json:"kept_until"`
 }
 
-// sendMarkedByDispatch sends one message to target marked with role through the rig's /v1 routes,
-// as Dispatch's send for a route to role arrives behind apiAuth: from principal, which the rig
-// names as Dispatch's (useDispatchPrincipal) and the request's context carries as apiAuth verified
-// it (withVerifiedPrincipal), with Dispatch's own source and no source session.
-func sendMarkedByDispatch(t *testing.T, rig *knownSessionRig, principal, target, role, message string) markedSendAnswer {
+// sendMarkedByDispatch sends one message to target marked with role through the /v1 routes mux
+// holds, as Dispatch's send for a route to role arrives behind apiAuth: from principal, which the
+// routes' deps name as Dispatch's (useDispatchPrincipal) and the request's context carries as
+// apiAuth verified it (withVerifiedPrincipal), with Dispatch's own source and no source session.
+func sendMarkedByDispatch(t *testing.T, mux *http.ServeMux, principal, target, role, message string) markedSendAnswer {
 	t.Helper()
 	encoded, err := json.Marshal(map[string]any{
 		"target_session": target, "role": role, "source": "dispatch", "message": message,
@@ -157,7 +157,7 @@ func sendMarkedByDispatch(t *testing.T, rig *knownSessionRig, principal, target,
 	request := postJSON("/v1/messages/send", string(encoded))
 	request = request.WithContext(withVerifiedPrincipal(request.Context(), principal))
 	recorder := httptest.NewRecorder()
-	rig.mux.ServeHTTP(recorder, request)
+	mux.ServeHTTP(recorder, request)
 	answer := markedSendAnswer{status: recorder.Code, raw: recorder.Body.String()}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the marked send's answer %s: %v", answer.raw, err)
@@ -192,7 +192,7 @@ func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 	client := rig.harness.client
 	subject := contracts.LegacyAgentSubject(agent)
 
-	handed := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	handed := sendMarkedByDispatch(t, rig.mux, principal, agent, role, "what did the review find?")
 	if handed.status != http.StatusOK || handed.Recipient != agent || handed.State != "" || handed.Kept {
 		t.Fatalf("a send marked with the role %s to its stopped newest session: status %d, body %s; want 200 handed off to %s with no state and nothing kept",
 			role, handed.status, handed.raw, agent)
@@ -210,7 +210,7 @@ func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 	}
 
 	stateAnswering(t, agents, false)
-	kept := sendMarkedByDispatch(t, rig, principal, agent, role, "are you back?")
+	kept := sendMarkedByDispatch(t, rig.mux, principal, agent, role, "are you back?")
 	if kept.status != http.StatusAccepted || !kept.Kept || kept.KeptUntil == 0 || kept.Recipient != agent {
 		t.Fatalf("control: the same send once the project does not answer: status %d, body %s; want 202 kept for the role's next holder",
 			kept.status, kept.raw)

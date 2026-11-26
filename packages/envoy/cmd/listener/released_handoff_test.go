@@ -183,7 +183,7 @@ func TestReleasedRolesMarkedSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T)
 	client := rig.harness.client
 	wakes := reportWakes(t, rig.deps)
 
-	handed := sendMarkedByDispatch(t, rig, principal, released, role, "what did the plan leave out?")
+	handed := sendMarkedByDispatch(t, rig.mux, principal, released, role, "what did the plan leave out?")
 	if handed.status != http.StatusOK || handed.Recipient != released || handed.State != "" || handed.Kept {
 		t.Fatalf("a send marked with the role %s to its released newest agent: status %d, body %s; want 200 handed off to %s with no state and nothing kept",
 			role, handed.status, handed.raw, released)
@@ -202,7 +202,7 @@ func TestReleasedRolesMarkedSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T)
 	requireNoWake(t, wakes, wakeKindRole, role)
 
 	unheld := legionagents.RoleToken("infra", "INFRA-210", "planner")
-	kept := sendMarkedByDispatch(t, rig, principal, "ses_unheld_marked", unheld, "who plans this?")
+	kept := sendMarkedByDispatch(t, rig.mux, principal, "ses_unheld_marked", unheld, "who plans this?")
 	if kept.status != http.StatusAccepted || !kept.Kept || kept.KeptUntil == 0 {
 		t.Fatalf("control: a send marked with the role %s the registry holds no entry for: status %d, body %s; want 202 kept for its first holder",
 			unheld, kept.status, kept.raw)
