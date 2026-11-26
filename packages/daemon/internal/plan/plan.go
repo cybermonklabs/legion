@@ -278,7 +278,43 @@ func CanMoveBack(from, to phase.Phase) bool {
 }
 
 // movesBackPairs is MovesBackPairs, built at its first read.
-var movesBackPairs = sync.OnceValue(func() []string {
+var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(mostSteps) })
+
+// mostSteps is the most steps of a task movesBackPairs reads.
+const mostSteps = 3
+
+// movesBackPairsOf is each pair of phase.MovePairs, in its order, whose to stands before its from
+// on the Line of some task of at most most steps that Supported and Validate take (eachTakenTask).
+func movesBackPairsOf(most int) []string {
+	found := map[string]bool{}
+	eachTakenTask(most, func(steps []Step) {
+		line := Line(steps)
+		for at, from := range line {
+			for _, to := range line[:at] {
+				found[phase.Pair(from, to)] = true
+			}
+		}
+	})
+	pairs := make([]string, 0, len(found))
+	for _, pair := range phase.MovePairs() {
+		if found[pair] {
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+}
+
+// stepKeys is the keys eachTakenTask gives a step: none, the owner's, and one key that every step
+// given it shares. A key changes no phase a step runs as (RunsAs reads the role alone), so it
+// changes the moves of a line only through whether the checks take its task, and these three give
+// three steps every way to be one agent or several, the owner among them.
+var stepKeys = []string{"", "owner", "a"}
+
+// eachTakenTask calls take with the steps of each task of 1 to most steps that Supported and
+// Validate take, each step of one of Legion's five roles or of two roles of a deployment, with
+// each key of stepKeys. A role may stand at any number of those steps: the two checks alone judge
+// which steps, and which repeats of a role, a task takes.
+func eachTakenTask(most int, take func(steps []Step)) {
 	roles := slices.Clone(builtinRoles)
 	for _, name := range []string{"deployment-a", "deployment-b"} {
 		roles = append(roles, RoleDef{Name: name, Type: TypeTesting})
@@ -287,35 +323,20 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	for _, role := range roles {
 		d.Roles[role.Name] = role
 	}
-	found := map[string]bool{}
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
 		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
-			line := Line(steps)
-			for at, from := range line {
-				for _, to := range line[:at] {
-					found[phase.Pair(from, to)] = true
-				}
-			}
+			take(steps)
+		}
+		if len(steps) == most {
+			return
 		}
 		for _, role := range roles {
-			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
-				continue
+			for _, key := range stepKeys {
+				choose(append(slices.Clone(steps), Step{Role: role.Name, Key: key}))
 			}
-			step := Step{Role: role.Name}
-			if role.Name == "acceptance" {
-				step.Key = "owner" // Supported takes acceptance with this key alone
-			}
-			choose(append(slices.Clone(steps), step))
 		}
 	}
 	choose(nil)
-	pairs := make([]string, 0, len(found))
-	for _, pair := range phase.MovePairs() {
-		if found[pair] {
-			pairs = append(pairs, pair)
-		}
-	}
-	return pairs
-})
+}
