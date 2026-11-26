@@ -168,10 +168,11 @@ The Bun test scripts that run a package's files side by side name their worker c
 run 4,096 tasks, that failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27
 rows of pi-legion's (threads refused with EAGAIN). On CI's 4-CPU runners eight workers take no
 longer than four: `test:web` 100 s against 101 s, `test:harness` 78 s against 113 s (medians of
-three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count, and a count alone does
-not keep it under such a limit on a large machine: most of its tasks are the Oh My Pi processes
-its tests start, and each one sizes its thread pools to the machine's CPU count, so four workers
-reached 3,211 tasks on that machine and eight reached the limit.
+three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count. Most of its tasks are
+the Oh My Pi processes its tests start, and Oh My Pi sizes each of its thread pools to the
+machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp-harness.ts`,
+`ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
+on a 64-CPU machine and holds 40 with the pools set.
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS

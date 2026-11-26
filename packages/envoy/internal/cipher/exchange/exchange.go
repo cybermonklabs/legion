@@ -1,9 +1,9 @@
 // Package exchange decides what a verified subject token entitles its holder to write in
 // Dispatch: the claims a minted Dispatch access token carries — the session that is writing, the
 // person it acts for or the service it is, and its list of projects, either the one its
-// operator's entry names, the whole list a job's entry names, or the ones a trade acting as its
-// person asked for, or none at all for a token that only reads — and, beside them, the principal
-// the session name belongs to.
+// operator's entry names, the whole list a job's entry names, the one a restricted member's
+// machine login asked for, or the ones a trade acting as its person asked for, or none at all for
+// a token that only reads — and, beside them, the principal the session name belongs to.
 //
 // It is the policy half of the RFC 8693 token exchange and nothing else. It verifies no token,
 // reads no configuration, takes no clock and makes no call: it is handed entries someone else
@@ -29,7 +29,8 @@
 //     the Workspace domain decides the person and that same machine entry decides the box they
 //     may sign in from;
 //   - a dev box session's machine credential, which no entry lists, because the person is the
-//     approver the credential already records.
+//     approver the credential already records, and which is held to one project when Dispatch
+//     calls that person a restricted member, a fact its caller asks Dispatch and hands in.
 //
 // An entry of the first three kinds that names a job list (JobProjects) names no person: the
 // job's own identity writes. Its token names that identity as its service — the account subject,
@@ -56,6 +57,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -73,8 +75,10 @@ import (
 // (ErrNoActorToken), mint the machine's token on a Compute Engine instance or unpin its entry
 // (ErrNoComputeEngine), run the machine where its entry allows (ErrMachineNotAllowed), of a
 // registration, leave an entry that fixes a session alone (ErrSessionFixed), ask for no project
-// but those an operator's entry gives (ErrProjectsFixed), or ask for no project at all for a
-// token that names no person and no job list (ErrProjectsNoPerson).
+// but those an operator's entry gives (ErrProjectsFixed), ask for no project at all for a token
+// that names no person and no job list (ErrProjectsNoPerson), ask for exactly one project for a
+// restricted member's machine login (ErrRestrictedOneProject), or say what kind of member a
+// machine login's approver is (ErrApproverKindUnknown).
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
 	ErrNoPodBinding      = errors.New("exchange: the subject token is bound to no pod")
@@ -90,7 +94,46 @@ var (
 	ErrSessionFixed      = errors.New("exchange: the entry fixes the session name its tokens carry")
 	ErrProjectsFixed     = errors.New("exchange: the request names projects other than the one its entry gives")
 	ErrProjectsNoPerson  = errors.New("exchange: a token that names no person names no project")
+	// ErrRestrictedOneProject is a restricted member's machine login asking for no project or for
+	// several: its token is held to exactly one (Machine).
+	ErrRestrictedOneProject = errors.New("exchange: a restricted member's machine login names exactly one project")
+	// ErrApproverKindUnknown is a machine login's decision made with no word on what kind of
+	// member its approver is (ApproverUnknown), which no caller of this package means to make.
+	ErrApproverKindUnknown = errors.New("exchange: the machine login's approver is of no member kind the decision was told")
 )
+
+// ApproverKind is what Dispatch calls a machine login's approver, which the provider asks before
+// Machine decides (internal/cipher/oauth): the one fact about a person that changes what that
+// person's machine is given. Its zero value is no answer, which Machine refuses, so a caller that
+// forgot to ask can never be read as having been told the person is unrestricted.
+type ApproverKind int
+
+const (
+	// ApproverUnknown is the zero value, which no decision answers.
+	ApproverUnknown ApproverKind = iota
+	// ApproverUnrestricted is a full member, a person Dispatch holds no row for, and every
+	// approver of a broker that checks no project against Dispatch: the machine acts as its
+	// person, as it always has.
+	ApproverUnrestricted
+	// ApproverRestricted is a person an access list admitted from outside the deployment's
+	// sign-in domain, who sees only the projects that name them: their machine is held to one of
+	// them, named, for at most RestrictedLifetime.
+	ApproverRestricted
+)
+
+// RestrictedLifetime is the longest a restricted member's machine-login token lives, whatever
+// BROKER_ACCESS_TOKEN_SECONDS says when that is longer: 270 seconds. It bounds how long a person
+// taken off a project's access list keeps a token for it, with no revoke at all: every trade names
+// the project and is checked against Dispatch (projectaccess.Visible), so the last token minted
+// for it is minted on a check that read the broker's earlier answer that they see the project, at
+// most projectaccess.CacheTTL (30 s) after the removal, and since its lifetime counts from that
+// check's return and not from its mint (oauthstore.ExchangeSession.StartAccessLifetime), it ends
+// at most 30 + 270 = 300 seconds after the removal; the edge listener's live check closes its
+// socket within 25 seconds more, so the person keeps nothing of the project past 325 seconds
+// (TestARestrictedTokenEndsWithinTheBound holds the sum). Dispatch's revocation of the member's
+// machine logins, which it pays after the removal commits, ends their refresh and their tokens
+// sooner, never later.
+const RestrictedLifetime = 270 * time.Second
 
 // MaxSessionBytes is the longest session name a request may carry. A session name is written into
 // every record the token's writes produce and read back in a dashboard, so it is bounded; 200
@@ -121,17 +164,19 @@ const (
 	// refuses the token: a Claims built by anything but this package's constructors has decided
 	// nothing, and 'no project named' must not read as 'no oversight'.
 	ProjectScopeUnset ProjectScope = iota
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person, or
-	// as the account itself for an account entry naming no person, and Claims.Projects holds the
-	// entry's one project, or none for an account entry naming none. It is also a job entry's
-	// whose list names one project (JobProjects): such a token names the job as its service and
-	// no person, and Claims.Projects holds that one project, never none.
+	// ProjectScopeNamed is a token held to one project: one an operator's entry mapped, which acts
+	// for the entry's person, or as the account itself for an account entry naming no person,
+	// Claims.Projects holding the entry's one project or none for an account entry naming none;
+	// a job entry's whose list names one project (JobProjects), which names the job as its
+	// service and no person, Claims.Projects holding that one project, never none; and a
+	// restricted member's machine login's, which acts for that member, Claims.Projects holding
+	// the one project its trade asked for (Machine).
 	ProjectScopeNamed
 	// ProjectScopePerson is a token that acts as its person: Claims.Projects holds the projects
 	// its trade asked for, none or more, which the exchange holds to what Dispatch says that
 	// person may see before it mints (internal/cipher/oauth). It is what a person's own
-	// credential gets, and what a machine whose entry names neither a person nor a job list gets,
-	// with no project.
+	// credential gets, a restricted member's machine login apart, and what a machine whose entry
+	// names neither a person nor a job list gets, with no project.
 	ProjectScopePerson
 	// ProjectScopeNone is a token that may write no project and names none: it holds the OAuth
 	// scope oauthwire.ScopeRead and nothing else, so it reads only the routes a resource server
@@ -345,7 +390,7 @@ func ReadSubject(subject string) Subject {
 func (s ProjectScope) String() string {
 	switch s {
 	case ProjectScopeNamed:
-		return "the one project its entry names"
+		return "the one project it is held to"
 	case ProjectScopePerson:
 		return "the projects its person may see that it names"
 	case ProjectScopeNone:
@@ -383,11 +428,12 @@ type Claims struct {
 	// entry's alone.
 	Scope ProjectScope
 	// Projects is the token's list of projects, sorted, each once: the entry's one project for a
-	// ProjectScopeNamed token (none for an account entry naming none), for a ProjectScopePerson
-	// token the projects its trade asked for, nil for none, for a job entry's token its entry's
-	// whole list whatever the trade asked for (one project under ProjectScopeNamed, the private
-	// projects under ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token,
-	// which names no project. The slice is this Claims' own.
+	// ProjectScopeNamed token (none for an account entry naming none) and a restricted member's
+	// machine login's one project, for a ProjectScopePerson token the projects its trade asked
+	// for, nil for none, for a job entry's token its entry's whole list whatever the trade asked
+	// for (one project under ProjectScopeNamed, the private projects under ProjectScopePublic, nil
+	// for none), and nil for a ProjectScopeNone token, which names no project. The slice is this
+	// Claims' own.
 	Projects []string
 	// Job is whether a job entry made this decision, which grant sets from the entry's job list
 	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
@@ -439,6 +485,11 @@ type Claims struct {
 	// and an introspection answers it (oauth.ClaimMachine), beside the RFC 8693 'act' claim the
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
+	// Lifetime is the longest the minted token may live, and is zero for every decision but a
+	// restricted member's machine login's, whose token lives at most RestrictedLifetime; zero
+	// leaves the broker's own BROKER_ACCESS_TOKEN_SECONDS. Like Principal it is no claim of the
+	// minted token: the provider shortens the token's expiry to it, never lengthens it.
+	Lifetime time.Duration
 }
 
 // Reservation is a session name an entry fixes and the principal it belongs to. The broker holds
@@ -1309,14 +1360,26 @@ func personClaims(token map[string]any) oidc.Claims {
 // machine logged in again, keeps its name, and one person's dev box cannot write under another's
 // session name or under one an entry fixes.
 //
-// The token acts as its person, and says so: its scope is ProjectScopePerson, and it carries the
-// projects the trade asked for. A machine credential is a person's own identity on their own
-// machine, as their browser cookie and their personal token are: the person reaches whichever
-// projects they may reach, and the list says which of them this session works on, which the
-// exchange holds to what Dispatch says that person may see before it mints. Naming the scope is
-// what keeps a reader of an introspection answer from mistaking an empty list for a token no
-// project check applies to.
-func (s *Set) Machine(credential, approver, session string, projects []string) (Claims, error) {
+// A full member's token acts as its person, and says so: its scope is ProjectScopePerson, and it
+// carries the projects the trade asked for. A machine credential is a person's own identity on
+// their own machine, as their browser cookie and their personal token are: the person reaches
+// whichever projects they may reach, and the list says which of them this session works on, which
+// the exchange holds to what Dispatch says that person may see before it mints. Naming the scope
+// is what keeps a reader of an introspection answer from mistaking an empty list for a token no
+// project check applies to. kind is ApproverUnrestricted for that person, and for one Dispatch
+// holds no row for.
+//
+// A restricted member's token is held to one project instead (kind ApproverRestricted): an
+// outside person's agents act in the one project they work on and in nothing of the person's
+// own. Its scope is ProjectScopeNamed, which a resource server gives no scope of a person's own
+// (Dispatch's minting of personal tokens and its approvals among them), and it carries exactly
+// the one project the trade asked for, which the exchange then holds to what Dispatch says that
+// person sees; a trade asking for none or for several is refused, ErrRestrictedOneProject. It
+// lives at most RestrictedLifetime.
+//
+// A kind nobody decided (ApproverUnknown) is refused, ErrApproverKindUnknown, never read as
+// either.
+func (s *Set) Machine(credential, approver, session string, projects []string, kind ApproverKind) (Claims, error) {
 	if strings.TrimSpace(credential) == "" {
 		return Claims{}, fmt.Errorf("%w: the subject token names no machine credential id, so it is not a machine login's token", ErrClaimMissing)
 	}
@@ -1327,7 +1390,20 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 	if err != nil {
 		return Claims{}, err
 	}
-	return Claims{Session: name, Person: approver, Scope: ProjectScopePerson, Projects: slices.Clone(projects), Principal: PersonPrincipal(approver)}, nil
+	claims := Claims{Session: name, Person: approver, Projects: slices.Clone(projects), Principal: PersonPrincipal(approver)}
+	switch kind {
+	case ApproverUnrestricted:
+		claims.Scope = ProjectScopePerson
+	case ApproverRestricted:
+		if len(projects) != 1 {
+			return Claims{}, fmt.Errorf("%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
+				ErrRestrictedOneProject, approver, len(projects))
+		}
+		claims.Scope, claims.Lifetime = ProjectScopeNamed, RestrictedLifetime
+	default:
+		return Claims{}, fmt.Errorf("%w: %s's machine login was decided with member kind %d", ErrApproverKindUnknown, approver, int(kind))
+	}
+	return claims, nil
 }
 
 // The four spellings of a principal, each led by its kind so that no account, workflow, Google
