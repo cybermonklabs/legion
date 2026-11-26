@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -153,7 +154,14 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
 		}
-		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
+		// PLANT (verdict run, not for merge): the checkout is bounded by the runner's
+		// slow-command budget, in place of its own bound.
+		bound := request.checkoutBound()
+		if _, armed := plantSet("checkout-runner-budget"); armed {
+			fmt.Fprintf(os.Stderr, "PLANT checkout-runner-budget fired: %s in place of %s\n", run.Timeout(), bound)
+			bound = run.Timeout()
+		}
+		_, err = runCheckedInWithin(ctx, run, workspace, bound, []string{"jj", "sparse", "reset"})
 		release()
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
