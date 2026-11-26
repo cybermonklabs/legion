@@ -626,8 +626,13 @@ turn.** A content filter is often stochastic, so pi-legion climbs one ladder
    `LEGION_CYBER_POLICY_RETRY_MESSAGE`, by default "The provider's content filter blocked your
    last response. Continue the task, and do not reproduce exploit code, payloads or credentials
    verbatim; describe them instead."
-3. It compacts the session and sends the request from the summary. The newest turn group, which
-   holds the refused request, is summarized too, so the request no longer carries the refused text.
+3. It compacts the session into a text summary written by the session's model (Oh My Pi's `soft`
+   method, whatever `compaction.methodOrder` says, since provider-native compaction and
+   snapcompact keep the refused text) and sends the request from the summary. The newest turn
+   group, which holds the refused request, is summarized too, so the request no longer carries
+   the refused text; the summary request itself carries it once more. A session with nothing to
+   compact, as a new one is at the shipped `compaction.keepRecentTokens` of 20000, gets the turn
+   Oh My Pi resumes after the empty compaction instead, which sends the request again as it was.
 4. It sends the request again on the first model below the session's own in its
    `retry.fallbackChains` whose family is the same as the session model's family. For an OpenAI
    model, that is an OpenAI model. A model whose family Oh My Pi cannot tell (a gateway's alias
@@ -641,13 +646,25 @@ My Pi gives the plugin's settle handler 30 seconds; a larger value is cut to 250
 Set these variables, and the message, in `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env`.
 Each rung's request goes as input from outside the session, so Oh My Pi's hold ends for that one
 request, and the next refusal starts the hold again. A compaction whose own summary is refused
-counts as a refused rung. The bound is one pass per refusal: each rung once, and no refusal starts
+counts as a refused rung, and the fourth rung comes next. A compaction that fails for another
+reason sends the request again as it was, and one that is stopped ends the pass. A rung whose
+settle handler runs past 28 seconds changes nothing and sends nothing, because Oh My Pi stops
+waiting for it at 30. The bound is one pass per refusal: each rung once, and no refusal starts
 another pass until a model answers. The daemon's prompt stays open through the pass, so its
 result is the result of the last rung that ran. If a rung succeeds, the agent continues its work
 and the daemon gets no refusal. Only when the last rung is refused does the refusal reach the
 daemon, with its code, as described below. Two kinds of turn get no pass, and their refusal
 reaches the daemon at once: a refused reply that carries tool calls, and a turn that ends while a
 background job's result is due.
+
+**A pane whose ladder has compacted once runs no background compaction for the rest of its
+process.** To summarize the newest turn group, the ladder registers a `session_before_compact`
+handler at its first compaction. Oh My Pi runs no speculative or background compaction while any
+such handler is registered, and it has no way to remove one, so from then on that pane's
+threshold compactions run in the foreground and hold the turn while they summarize. Only a pane
+whose session model is OpenAI's, refused three times in a row, reaches that rung; no other pane
+changes. The ladder has no setting that turns it off: the daemon's hold of a claim failed under
+`cyber_policy`, described below, stays the backstop.
 
 **Keep the fallback chain of an OpenAI role inside the OpenAI family.** Oh My Pi itself walks the
 chain on a `cyber_policy` refusal before the plugin sees the turn: when a model of another family

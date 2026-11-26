@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { CompactionPreparation, HostModel } from "@legion/pi-shared/pi-types";
+import type {
+  CompactionPreparation,
+  HostModel,
+  SessionBeforeCompactEvent,
+} from "@legion/pi-shared/pi-types";
 import {
   CYBER_POLICY_CONTINUE,
   CYBER_POLICY_RETRY_ENTRY,
@@ -37,13 +41,32 @@ const SETTINGS: CyberPolicyLadderSettings = {
 const WEAKER: HostModel = { provider: "openai", id: "gpt-5.4-mini", identity: { class: "openai" } };
 
 interface Ctx {
-  compact?: (options: { readonly origin?: "outside" | "inside" }) => Promise<void>;
+  compact?: (options: {
+    readonly origin?: "outside" | "inside";
+    readonly mode?: "soft" | "remote" | "snapcompact";
+  }) => Promise<void>;
 }
 
-function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" } = {}) {
+/** An error of the name Oh My Pi's own rejection of a compaction carries. */
+function named(name: string, message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+function rig(
+  options: {
+    weaker?: HostModel;
+    compact?: "ok" | "fails" | "absent";
+    /** Runs inside `stepDownTo`, before it answers. */
+    duringStep?: () => void;
+  } = {}
+) {
   const calls: string[] = [];
   const waits: number[] = [];
   const warnings: string[] = [];
+  /** The handlers the ladder registered on `session_before_compact`. */
+  const beforeCompact: Array<(event: SessionBeforeCompactEvent) => void> = [];
   let failCompaction: ((error: Error) => void) | undefined;
   let finishCompaction: (() => void) | undefined;
   const ctx: Ctx =
@@ -51,7 +74,7 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
       ? {}
       : {
           compact: (compactOptions) => {
-            calls.push(`compact ${compactOptions.origin}`);
+            calls.push(`compact ${compactOptions.origin} ${compactOptions.mode}`);
             const { promise, resolve, reject } = Promise.withResolvers<void>();
             finishCompaction = resolve;
             failCompaction = reject;
@@ -78,12 +101,14 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
     sameFamilyFallback: async () => options.weaker,
     stepDownTo: async (_ctx, model) => {
       calls.push(`step ${model.provider}/${model.id}`);
+      options.duringStep?.();
       return true;
     },
     wait: async (ms, signal) => {
       waits.push(ms);
       return signal?.aborted !== true;
     },
+    registerBeforeCompact: (handler) => void beforeCompact.push(handler),
     log: { debug: () => undefined, warn: (message) => void warnings.push(message) },
   });
   const signal = new AbortController().signal;
@@ -93,7 +118,9 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
     calls,
     waits,
     warnings,
-    stop: (message: unknown) => ladder.settle({ last_assistant_message: message, signal }, ctx),
+    beforeCompact,
+    stop: (message: unknown, stopSignal: AbortSignal = signal) =>
+      ladder.settle({ last_assistant_message: message, signal: stopSignal }, ctx),
     failCompaction: (error: Error) => failCompaction?.(error),
     finishCompaction: () => finishCompaction?.(),
   };
@@ -179,7 +206,7 @@ describe("one pass of the ladder", () => {
       "outside false",
       "outside false",
       "outside false",
-      "compact outside",
+      "compact outside soft",
       "step openai/gpt-5.4-mini",
       "outside false",
     ]);
@@ -220,13 +247,24 @@ describe("one pass of the ladder", () => {
     expect(pane.waits).toEqual([15_000, 25_000, 15_000]);
   });
 
-  test("an aborted reply, as the compaction's own abort leaves, does not end the pass", async () => {
+  test("the compaction's own abort of the turn it was asked from does not end the pass", async () => {
+    const pane = rig();
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    pane.ladder.turnEnded({ role: "assistant", stopReason: "aborted" });
+    pane.finishCompaction();
+    await settle();
+    // The resumed turn's refusal climbs the next rung, and with none left the pass is spent.
+    expect(await pane.stop(refused())).toBeUndefined();
+    expect(pane.waits).toEqual([15_000, 25_000, 25_000]);
+  });
+
+  test("any other abort ends the pass, so the next refusal starts again at the retry", async () => {
     const pane = rig();
     await pane.stop(refused());
     pane.ladder.turnEnded({ role: "assistant", stopReason: "aborted" });
-    expect(await pane.stop(refused())).toMatchObject({
-      additionalContext: DEFAULT_CYBER_POLICY_MESSAGE,
-    });
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits).toEqual([15_000, 15_000]);
   });
 
   test("another provider error and a clean end are no refusal and climb nothing", async () => {
@@ -247,6 +285,16 @@ describe("one pass of the ladder", () => {
       )
     ).toBeUndefined();
     expect(pane.calls).toEqual([]);
+  });
+
+  test("a rung whose settle pass ends during the model switch ends no hold", async () => {
+    const interrupt = new AbortController();
+    const pane = rig({ weaker: WEAKER, compact: "absent", duringStep: () => interrupt.abort() });
+    await pane.stop(refused(), interrupt.signal);
+    await pane.stop(refused(), interrupt.signal);
+    // The weaker model's rung: the pass is aborted while the model switches.
+    expect(await pane.stop(refused(), interrupt.signal)).toBeUndefined();
+    expect(pane.calls).toEqual(["outside false", "outside false", "step openai/gpt-5.4-mini"]);
   });
 
   test("a host with no compaction for extensions passes over the compacted rung", async () => {
@@ -300,7 +348,37 @@ describe("a compaction that fails", () => {
 
     // No turn is started for the old session's pass, and the new session's first refusal starts
     // its own pass at the retry.
-    expect(pane.calls.at(-1)).toBe("compact outside");
+    expect(pane.calls.at(-1)).toBe("compact outside soft");
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits.at(-1)).toBe(15_000);
+  });
+
+  test("with nothing to compact starts no turn: the turn Oh My Pi resumes is the rung's request", async () => {
+    const pane = rig({ weaker: WEAKER });
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    pane.failCompaction(
+      named("ManualCompactionNoOpError", "Nothing to compact (session too small)")
+    );
+    await settle();
+
+    expect(pane.calls.at(-1)).toBe("compact outside soft");
+    // The resumed turn is refused: the pass goes on to its last rung, and only once.
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.calls.slice(-2)).toEqual(["step openai/gpt-5.4-mini", "outside false"]);
+    expect(await pane.stop(refused())).toBeUndefined();
+    expect(pane.calls.filter((call) => call.startsWith("inside"))).toEqual([]);
+  });
+
+  test("that someone stopped ends the pass and starts no turn", async () => {
+    const pane = rig({ weaker: WEAKER });
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    pane.failCompaction(named("CompactionCancelledError", "Compaction cancelled"));
+    await settle();
+
+    expect(pane.calls.at(-1)).toBe("compact outside soft");
+    // The pass is over: the next refusal starts a new one at the retry.
     expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
     expect(pane.waits.at(-1)).toBe(15_000);
   });
@@ -364,17 +442,38 @@ describe("the ladder's compaction", () => {
     });
   });
 
-  test("widens only a compaction the ladder started", async () => {
+  test("registers its session_before_compact handler at its first compaction, and once", async () => {
     const pane = rig();
-    const untouched = preparation();
-    pane.ladder.beforeCompact({ preparation: untouched, branchEntries: [{ id: "leaf" }] });
-    expect(untouched).toEqual(preparation());
+    // Until the ladder compacts, no handler is registered: Oh My Pi's background compaction runs.
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    expect(pane.beforeCompact).toHaveLength(0);
+    await pane.ladder.request([], pane.ctx);
+    expect(pane.beforeCompact).toHaveLength(1);
 
+    pane.failCompaction(named("CompactionCancelledError", "Compaction cancelled"));
+    await settle();
     for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
     await pane.ladder.request([], pane.ctx);
+    expect(pane.beforeCompact).toHaveLength(1);
+  });
+
+  test("widens only a compaction the ladder started", async () => {
+    const pane = rig();
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    const widen = (event: SessionBeforeCompactEvent) => {
+      for (const handler of pane.beforeCompact) handler(event);
+    };
     const widened = preparation();
-    pane.ladder.beforeCompact({ preparation: widened, branchEntries: [{ id: "leaf" }] });
+    widen({ preparation: widened, branchEntries: [{ id: "leaf" }] });
     expect(widened.firstKeptEntryId).toBe("leaf");
     expect(widened.recentMessages).toEqual(["refused"]);
+
+    // Once the ladder's compaction is over, the host's own compactions are left as prepared.
+    pane.finishCompaction();
+    await settle();
+    const untouched = preparation();
+    widen({ preparation: untouched, branchEntries: [{ id: "leaf" }] });
+    expect(untouched).toEqual(preparation());
   });
 });

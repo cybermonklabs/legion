@@ -164,9 +164,14 @@ export interface SessionContext {
    * `origin: "outside"` ends the session's cyber-policy hold first, as a person's `/compact` does
    * (`session/agent-session.ts:9369-9373` there). Its synchronous part aborts the agent, so a
    * caller inside a hook the agent loop awaits stops that loop's request before it is sent.
-   * Absent on a host that predates it.
+   * `mode` replaces the configured `compaction.methodOrder` for this one compaction: `soft` is a
+   * text summary by the session's model (`session/compact-modes.ts:16, 40-57` there). Absent on a
+   * host that predates it.
    */
-  readonly compact?: (options: { readonly origin?: "outside" | "inside" }) => Promise<void>;
+  readonly compact?: (options: {
+    readonly origin?: "outside" | "inside";
+    readonly mode?: "soft" | "remote" | "snapcompact";
+  }) => Promise<void>;
   /** The host's own `ModelRegistry` (`packages/coding-agent/src/config/model-registry.ts` at the
    * pinned tag), as far as this package reads it. Every member is optional, as the neighbouring
    * host declarations are: a host build that exposes none still satisfies the type, and the

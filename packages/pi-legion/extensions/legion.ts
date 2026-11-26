@@ -334,6 +334,12 @@ export default function legionExtension(pi: PiApi): void {
     sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
     stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
     wait: (delayMs, signal) => delay(delayMs, true, { signal }).catch(() => false),
+    // At the ladder's first compaction only: with any handler registered Oh My Pi runs no
+    // background compaction, and it has no way to remove one.
+    registerBeforeCompact: (handler) =>
+      pi.on("session_before_compact", async (event, context) => {
+        if (await modelFallbackSession(context)) handler(event);
+      }),
     log: logger,
   });
 
@@ -844,12 +850,6 @@ export default function legionExtension(pi: PiApi): void {
       withoutRepeatedWorkspaceRecreatedNotice(ladderKept ?? event.messages, resentNoticeId) ??
       ladderKept;
     return messages === undefined ? undefined : { messages };
-  });
-
-  // The cyber_policy ladder's own compaction summarizes the newest turn group too.
-  pi.on("session_before_compact", async (event, context) => {
-    if (!(await modelFallbackSession(context))) return;
-    cyberPolicyLadder.beforeCompact(event);
   });
 
   // The host walked this session's own fallback chain: the plugin owns the return, since the

@@ -51,11 +51,13 @@ function replies(text: string, id: string): Response {
   });
 }
 
-/** One request the stand-in gateway served: its model, whether it was a compaction's summary, and
- * its own messages as role and text, cache markers and the date reminder left out. */
+/** One request the stand-in gateway served: its model, whether it was a compaction's summary and
+ * whether it carried an image, and its own messages as role and text, cache markers and the date
+ * reminder left out. */
 interface Served {
   readonly model: string;
   readonly summary: boolean;
+  readonly images: boolean;
   readonly conversation: readonly string[];
 }
 
@@ -97,14 +99,24 @@ const TASK = "Do the cyber task.";
  * Runs a root architect's pane (`runLegionPane`, a Legion claim, so the ladder runs) whose
  * gateway answers each request with `answer`. Every wait of the ladder is 0 here; their lengths
  * are the unit tests' (`src/cyber-policy-ladder.test.ts`). `warmUps` are answered prompts sent
- * first, so a compaction has history to summarize; the keep budget is small for the same reason.
+ * first, so a compaction has history to summarize; the keep budget is small for the same reason,
+ * unless `shipped` leaves every compaction setting at what a deployment runs.
  */
 async function ladderPane(options: {
   readonly answer: (served: Served, nth: number) => Response;
   readonly chain?: boolean;
   readonly warmUps?: number;
+  /** How many times each warm-up repeats its sentence; 60 by default. */
+  readonly warmUpLength?: number;
   /** Refuse the compaction's summary requests too, so the compacted rung fails. */
   readonly refuseSummaries?: boolean;
+  /** No `compaction:` settings: Oh My Pi's own `keepRecentTokens` and `methodOrder`, as a
+   * deployed pane runs them. */
+  readonly shipped?: boolean;
+  /** The models take images, so snapcompact is a method the host could run. */
+  readonly images?: boolean;
+  /** How long the pane stays up after its last prompt settled, so a late send would be served. */
+  readonly lingerMs?: number;
 }): Promise<LadderPane> {
   const { binary, nats } = setup();
   const served: Served[] = [];
@@ -112,7 +124,7 @@ async function ladderPane(options: {
   const turnOutcomes: Record<string, unknown>[] = [];
   const warmUps = Array.from(
     { length: options.warmUps ?? 0 },
-    (_, n) => `Warm-up ${n}: ${"Read the notes and say done. ".repeat(60)}`
+    (_, n) => `Warm-up ${n}: ${"Read the notes and say done. ".repeat(options.warmUpLength ?? 60)}`
   );
   await runLegionPane(
     binary,
@@ -124,7 +136,7 @@ async function ladderPane(options: {
       issue: "LADDER-1",
       nats,
       prompt: [...warmUps, TASK],
-      providers: PROVIDERS,
+      providers: PROVIDERS.map((provider) => ({ ...provider, images: options.images === true })),
       config: [
         "retry:",
         "  modelFallback: true",
@@ -132,9 +144,9 @@ async function ladderPane(options: {
         ...(options.chain === true
           ? ["  fallbackChains:", "    standin/gpt-5.5: [standin/gpt-5.4-mini]"]
           : []),
-        "compaction:",
-        "  keepRecentTokens: 100",
-        "  methodOrder: [soft]",
+        ...(options.shipped === true
+          ? []
+          : ["compaction:", "  keepRecentTokens: 100", "  methodOrder: [soft]"]),
       ],
       env: {
         LEGION_CYBER_POLICY_RETRY_WAIT_MS: "0",
@@ -147,6 +159,17 @@ async function ladderPane(options: {
           promptResults.push(frame as Record<string, unknown>);
         }
       },
+      // A send that should not happen has no event to await, so the pane stays up a real while
+      // after its last prompt, long enough for a ladder whose waits are 0 to make one.
+      ...(options.lingerMs === undefined
+        ? {}
+        : {
+            whileUp: () => {
+              const { promise, resolve } = Promise.withResolvers<void>();
+              setTimeout(resolve, options.lingerMs);
+              return promise;
+            },
+          }),
       answer: (url, body) => {
         if (url.pathname === "/legion/v1/claims/turn-outcome") {
           turnOutcomes.push(body);
@@ -159,6 +182,7 @@ async function ladderPane(options: {
         const turn: Served = {
           model: String(body.model ?? ""),
           summary: isSummarization(request),
+          images: JSON.stringify(body.messages ?? null).includes('"type":"image"'),
           conversation: conversation(request),
         };
         served.push(turn);
@@ -350,4 +374,62 @@ test.skipIf(skip)(
     expect(pane.turnOutcomes.filter((report) => report.code === "cyber_policy")).toHaveLength(1);
   },
   180_000
+);
+
+test.skipIf(skip)(
+  "under the shipped compaction settings a new session has nothing to compact: the resumed turn is the third rung, one pass runs, and nothing is sent after",
+  async () => {
+    const pane = await ladderPane({
+      shipped: true,
+      chain: true,
+      lingerMs: 3_000,
+      answer: () => refuses(),
+    });
+
+    // At the shipped keepRecentTokens a new session has nothing to compact: Oh My Pi resumes the
+    // turn, and that request is the third rung's; the fourth goes to the weaker model. The pane
+    // stayed up after the refusal settled, and the gateway took nothing more.
+    const task = pane.turns().filter(onTask);
+    expect(task.map((turn) => turn.model)).toEqual([
+      "gpt-5.5",
+      "gpt-5.5",
+      "gpt-5.5",
+      "gpt-5.5",
+      "gpt-5.4-mini",
+    ]);
+    expect(pane.served.some((turn) => turn.summary)).toBe(false);
+    expect(taskResult(pane)).toMatchObject({ status: "error", error: { code: "cyber_policy" } });
+    expect(pane.turnOutcomes.filter((report) => report.code === "cyber_policy")).toHaveLength(1);
+  },
+  180_000
+);
+
+test.skipIf(skip)(
+  "under the shipped compaction methods on a model that takes images, the compacted rung is a text summary without the refused task",
+  async () => {
+    let refusals = 0;
+    const pane = await ladderPane({
+      shipped: true,
+      images: true,
+      // More history than the shipped keepRecentTokens of 20,000 keeps, so there is something
+      // to compact.
+      warmUps: 3,
+      warmUpLength: 1_500,
+      answer: (turn, nth) => {
+        if (!onTask(turn) || refusals >= 3) return replies("Done.", `msg_${nth}`);
+        refusals += 1;
+        return refuses();
+      },
+    });
+
+    // The shipped methodOrder would pick snapcompact, which draws the history as images; the
+    // ladder asks for a text summary instead.
+    expect(pane.served.some((turn) => turn.summary)).toBe(true);
+    expect(pane.served.filter((turn) => turn.images)).toEqual([]);
+    const resumed = pane.turns().at(-1);
+    expect(resumed?.conversation.some((line) => line.includes("SUMMARY"))).toBe(true);
+    expect(resumed?.conversation.some((line) => line.includes(TASK))).toBe(false);
+    expect(taskResult(pane)).toMatchObject({ status: "completed" });
+  },
+  240_000
 );
