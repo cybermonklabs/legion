@@ -1873,12 +1873,12 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
-// (privateNameRules). All are set before the records' wake can reach the outbox
-// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
-// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
-// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// (queueMergeStateFollow). The outbox's writes through GitHub's REST API (internal/ghbranch) run
+// the private-name rules boot compiled (privateNameRules). All are set before the records' wake
+// can reach the outbox (outboxWake). Whether an issue still holds its workspace, which a
+// repository kept for an unrecorded issue is answered while (keptRepository), is read from the
+// runtime (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename pass
+// under, the outbox's podEnded, which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
