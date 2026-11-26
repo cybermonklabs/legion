@@ -121,9 +121,11 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	q.expect(shimwire.TypeHelloAck)
 	short.next()
 	quiet := short.conn()
+	// The peer answers nothing, so the negotiation ahead of the prompt is what runs out, and no
+	// prompt frame was written.
 	err := awaitResult(t, async(func() error { return quiet.Prompt(context.Background(), "delivery-1", "verify #41") }))
-	if !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("Prompt with no answer = %v, want ErrNoAnswer", err)
+	if !errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, runtime.ErrPromptUnanswered) {
+		t.Fatalf("Prompt whose negotiation got no answer = %v, want runtime.ErrNoAnswer and not runtime.ErrPromptUnanswered: no prompt was written", err)
 	}
 }
 
@@ -226,7 +228,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
+			isCase: func(err error) bool {
+				return errors.Is(err, runtime.ErrNoAnswer) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {
@@ -238,7 +242,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				p.expect(shimwire.TypePrompt)
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) },
+			isCase: func(err error) bool {
+				return errors.Is(err, context.DeadlineExceeded) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "OMP refuses the negotiation ahead of the prompt",
 			drive: func(h *harness, p *peer) error {

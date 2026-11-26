@@ -49,12 +49,18 @@ var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working
 // transport loss, it sends that operator to the wrong side of the daemon.
 var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
 
-// ErrNoAnswer is a request whose answer did not arrive within its wait: the transport's silence,
-// which is no answer of either kind. The supervisor reads it apart from every other transport
-// failure for one send, the one a compaction held: Oh My Pi parks a prompt that reaches it while
-// a handoff runs and answers it only once the handoff ends, so that send's wait can run out with
-// its prompt still on its way to its turn (internal/supervise's keepHeldPrompt).
+// ErrNoAnswer is a request whose answer did not arrive within the RPC timeout
+// (worker_rpc_timeout_seconds), the bound the shipped client puts on every request on the worker
+// stream (worker-rpc.ts:407-421): the transport's silence, which is no answer of either kind.
 var ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
+
+// ErrPromptUnanswered is a prompt whose frame reached the worker stream and whose answer did not
+// come within its wait. It is the one no-answer of a send that says the prompt went out: an
+// adoption, an identity mint or a protocol negotiation that times out comes before the prompt is
+// written, and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was
+// handed and answer it only later — it parks a prompt that reaches it while a handoff runs until
+// the handoff ends — so the prompt this names may still run.
+var ErrPromptUnanswered = errors.New("the prompt was written and no answer came within its wait")
 
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
 // `success: false` — read from the error in err's chain that carries them, or "" when none does.
@@ -118,8 +124,9 @@ type Conn interface {
 	// written to customInstructions, and returns when it answers or bound runs out. It never
 	// asks for Oh My Pi's `compact`, whose summary request Anthropic refuses for a long Claude
 	// session (dispatch://INFRA-5798). Nil is a session shortened. A handoff Oh My Pi refused —
-	// one asked for in a turn, a session with nothing to hand off, a model call that failed — or
-	// answered with no document is a refusal carrying the reason (RefusalReason); every other
+	// one asked for in a turn, a session with nothing to hand off, a model call that failed —
+	// answered with no document, or answered with a result that is not an object, is a refusal
+	// carrying the reason (RefusalReason), and the session is not reported shortened; every other
 	// error is transport.
 	Compact(ctx context.Context, customInstructions string, bound time.Duration) error
 	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares

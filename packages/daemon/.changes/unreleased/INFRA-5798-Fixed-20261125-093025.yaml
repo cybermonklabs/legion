@@ -1,10 +1,10 @@
 kind: Fixed
 body: |-
   `legion claims compact` and the controller's `compact` now shorten a claim's Oh My Pi session
-  with Oh My Pi's `handoff` request, not its `compact` request. Anthropic refused the summary
-  request that `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`, 6 of 6
-  times in dispatch://INFRA-1484's replay), and accepted the `handoff` request for the same
-  session (0 of 3 refused). The handoff writes its document as the session's compaction entry,
+  with Oh My Pi's `handoff` request, not its `compact` request. Anthropic refuses the summary
+  request that `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`), and
+  accepts the `handoff` request for the same session. The handoff writes its document as the
+  session's compaction entry,
   method `handoff`, on the same session, and the daemon never falls back to `compact`. The answer
   is the same `{compacted, reason}`: Oh My Pi's own words for a handoff it refused (`Cannot hand
   off while a response is in progress`, `Nothing to hand off (already compacted)`), `Oh My Pi
@@ -14,9 +14,12 @@ body: |-
   the compaction is asked for is now sent once: the handoff aborts no turn, so the daemon no
   longer takes the task back and sends it again after the compaction. A prompt that reaches Oh My
   Pi while the handoff runs is sent once too: Oh My Pi parks it until the handoff ends, so the
-  daemon keeps a send whose wait ran out under the handoff as the task's prompt, and that prompt's
-  turn confirms the task whether it starts before or after the compaction's end. No prompt goes
-  out under an id whose result already came, even where the write of the task's new id failed.
+  daemon keeps a send whose prompt it wrote and whose wait ran out under the handoff as the task's
+  prompt, and that prompt's turn confirms the task whether it starts before or after the
+  compaction's end. A send that runs out before its prompt is written, such as an adoption of the
+  working copy that times out, sent nothing: the task stays owed, no other turn confirms it, and it
+  goes at the next send. No prompt goes out under an id whose result already came, even where the
+  write of the task's new id failed.
   A claim in a turn is still refused `CLAIM_IN_A_TURN`, now with the reason that Oh My Pi refuses
   a compaction's handoff in that turn. A pod of an older release needs nothing new: its shim
   forwards the `handoff` line to Oh My Pi as it forwarded `compact`.

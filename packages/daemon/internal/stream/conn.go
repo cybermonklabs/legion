@@ -27,10 +27,6 @@ var (
 	// ErrClosed is the transport failing under a request: the connection closed before the
 	// answer came, or a write to it failed. It is never an acknowledgement and never a refusal.
 	ErrClosed = errors.New("worker stream closed")
-	// ErrNoAnswer is a request whose answer did not arrive within the RPC timeout
-	// (worker_rpc_timeout_seconds) — the bound the shipped client puts on every request
-	// (worker-rpc.ts:407-421). It is runtime.ErrNoAnswer, which the supervisor reads.
-	ErrNoAnswer = runtime.ErrNoAnswer
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
@@ -164,7 +160,10 @@ func (c *Conn) Negotiate(ctx context.Context) error {
 // Prompt hands OMP a task and returns on its acknowledgement — which is not delivery: OMP
 // answers `{success:true}` before the turn starts, and the turn is observed on Events(). OMP
 // refusing the prompt is a *RefusedError that is runtime.ErrPromptRefused; every other failure —
-// ErrClosed, ErrNoAnswer, the context, a refused negotiation — is transport and is not.
+// ErrClosed, runtime.ErrNoAnswer, the context, a refused negotiation — is transport and is not.
+// A wait that runs out after the prompt's frame was written is runtime.ErrPromptUnanswered as
+// well as its own cause: the prompt went out, and Oh My Pi may still run it. A negotiation that
+// times out comes before that write and is not.
 func (c *Conn) Prompt(ctx context.Context, deliveryID, message string) error {
 	if deliveryID == "" {
 		return fmt.Errorf("worker-stream: %s: a prompt needs a delivery id, the one thing the shim dedupes a retry on", c.claim)
@@ -174,6 +173,10 @@ func (c *Conn) Prompt(ctx context.Context, deliveryID, message string) error {
 	}
 	id := deliveryID + promptIDSeparator + rand.Text()
 	_, err := c.call(ctx, shimwire.Prompt{ID: id, DeliveryID: deliveryID, Message: message}, id, deliveryID)
+	if errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, context.DeadlineExceeded) {
+		// request ends with no answer only from its wait, after it wrote the frame.
+		return fmt.Errorf("%w: %w", runtime.ErrPromptUnanswered, err)
+	}
 	return err
 }
 
@@ -250,23 +253,23 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 // as the handoff's result object or null (`case "handoff"` in
 // packages/coding-agent/src/modes/rpc/rpc-mode.ts of cybermonklabs/oh-my-pi at the pinned tag):
 //
-//   - an object is a session shortened, and nil here: `{}` for a handoff the daemon asks for, since
-//     the pinned Oh My Pi saves the document to a file only for a handoff it starts itself, and
-//     `{savedPath}` where it saved one;
+//   - any object is a session shortened, and nil here: `{}` for a handoff the daemon asks for,
+//     since the pinned Oh My Pi saves the document to a file only for a handoff it starts itself,
+//     and `{savedPath}` where it saved one. No member of the object is read, since the daemon uses
+//     none;
 //   - null, or no data, is a handoff that made no document and committed nothing, so the session
 //     did not change: a *RefusedError of the handoff carrying the daemon's sentence for it, since
 //     Oh My Pi gave none (noHandoffReason);
-//   - anything else — a boolean, a number, a string, an array, an object whose savedPath is not a
-//     string — is an answer the daemon cannot read, so it claims no change of the session either:
-//     a *RefusedError of the handoff saying so (unreadHandoffReason).
+//   - anything that is not an object — a boolean, a number, a string, an array — is an answer the
+//     daemon cannot read, so it claims no change of the session either: a *RefusedError of the
+//     handoff saying so (unreadHandoffReason).
 //
 // The two refusals are the existing refusal (RefusedError), so the caller reads their words as it
 // reads Oh My Pi's own (runtime.RefusalReason), and a compaction that did not shorten the session
-// resets nothing (internal/supervise's compactEnded).
+// resets nothing (internal/supervise's compactEnded): a null or unread answer read as a success
+// would report a session shortened that may not be, and reset the claim's run of provider errors.
 func (c *Conn) handoffResult(data json.RawMessage) error {
-	var result *struct {
-		SavedPath *string `json:"savedPath"`
-	}
+	var result map[string]json.RawMessage
 	if len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, &result); err != nil {
 			c.log.Warn("worker-stream: the handoff's result is not an object; the session is not reported shortened",
@@ -467,7 +470,7 @@ func (c *Conn) request(ctx context.Context, frame shimwire.Frame, id, deliveryID
 	if err := c.write(frame); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeoutCause(ctx, bound, ErrNoAnswer)
+	ctx, cancel := context.WithTimeoutCause(ctx, bound, runtime.ErrNoAnswer)
 	defer cancel()
 	select {
 	case got := <-answer:

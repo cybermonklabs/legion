@@ -1809,16 +1809,18 @@ func (m *Machine) settle(ctx context.Context) error {
 	return m.retirePending(ctx)
 }
 
-// sendUnproven is whether the pending task's confirmation rests on its own send still in flight
-// alone: a turn took the task for its own while that send was out (turnAnswers), no prompt of the
-// task is acknowledged, and no prompt's successful result has said a turn ran the task
-// (Machine.ranTask). Only the send's outcome can say whether the prompt went out at all, so such a
-// confirmation retires nothing (settle), and a let-go that fences the outcome out takes it back
-// (letGo). It is the one reading of an unproven send both make.
+// sendUnproven is whether the pending task's confirmation is in doubt (confirmationInDoubt, which
+// reads the pending task, its confirmation and the successful result) and rests on nothing Oh My
+// Pi admitted: no acknowledged prompt of the task is outstanding, and either the task's own send is
+// still in flight or only held prompts are outstanding (awaitedPrompt's two states). A turn took the
+// task for its own on the strength of a send whose answer has not come, so it may have been another
+// input's. Such a confirmation retires nothing (settle), and a let-go, which fences out the answer
+// that would settle it, takes it back (letGo). It is the one reading of that rule both make.
 func (m *Machine) sendUnproven() bool {
-	p := m.claim.Pending
-	return p != nil && !p.ConfirmedAt.IsZero() && m.send != nil && m.send.id == p.ID &&
-		!m.awaitsResult() && m.ranTask != p.ID
+	if !m.confirmationInDoubt() || slices.ContainsFunc(m.outstanding, func(o awaitedPrompt) bool { return !o.held }) {
+		return false
+	}
+	return m.awaitsResult() || m.send.id == m.claim.Pending.ID
 }
 
 // promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
@@ -2100,23 +2102,11 @@ func (d *Delivery) credit(news []byte) {
 // acknowledgement can come twice for one prompt, and the agent read what the send the shim
 // forwarded carried. Every send under one id carries the same news (currentNews takes a new id for
 // a new rendering), so keeping the first is that rule's backstop.
-//
-// A prompt held behind a handoff that is acknowledged now — the shim answering its send again
-// from its record (noTurn) — is acknowledged from here on, and keeps the news it was held with.
 func (m *Machine) awaitResult(id string, news []byte) {
-	if at := slices.IndexFunc(m.outstanding, func(o awaitedPrompt) bool { return o.id == id }); at >= 0 {
-		m.outstanding[at].held = false
+	if m.outstandingPrompt(id) {
 		return
 	}
 	m.outstanding = append(m.outstanding, awaitedPrompt{id: id, news: news})
-}
-
-// sendWaitRanOut is whether a send ended because its wait ran out with no answer: the stream's own
-// bound (runtime.ErrNoAnswer) or the send's deadline (startSend), which are the same RPC timeout,
-// so either can end the send first. Every other end is an answer, or a transport that failed
-// outright: a closed connection, a write that failed.
-func sendWaitRanOut(err error) bool {
-	return errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // keepHeldPrompt keeps the prompt of a send the compaction held, whose wait ran out with no
@@ -2347,11 +2337,12 @@ func (m *Machine) moveTelling(from, to string) bool {
 
 // confirmationInDoubt is whether the pending task's confirmation is one a let-go cannot vouch for:
 // it stands while the send of the task's prompt is in flight (Machine.send) or a prompt of the
-// task still waits on its result (awaitsResult), and no prompt's successful result has said a
-// turn ran the task (Machine.ranTask). untellInFlight states the rule and why; this is its one
-// reading, which letGo makes for the confirmation and interrupted for the claim's handshake, so
-// the result, the confirmation and the telling always agree. It reads the send and the prompts
-// outstanding, so it is read before the let-go forgets them (letGo, forgetSend; interrupted).
+// task still waits on its result (awaitsResult), acknowledged or held (awaitedPrompt), and no
+// prompt's successful result has said a turn ran the task (Machine.ranTask). untellInFlight states
+// the rule and why; this is its one reading, which recordEnd makes for the telling, interrupted for
+// the claim's handshake and sendUnproven for the confirmation, so the result, the confirmation and
+// the telling always agree. It reads the send and the prompts outstanding, so it is read before
+// the let-go forgets them (letGo, forgetSend; interrupted).
 func (m *Machine) confirmationInDoubt() bool {
 	p := m.claim.Pending
 	return p != nil && !p.ConfirmedAt.IsZero() && m.ranTask != p.ID && (m.send != nil || m.awaitsResult())

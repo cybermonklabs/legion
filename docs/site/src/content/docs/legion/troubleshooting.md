@@ -845,8 +845,9 @@ no agent to ask; for the project's own controller claim, which `--fresh-session`
 whose keeper does nothing while it is stored working, it names
 `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
 A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
-answered with no document is printed with its reason, and whatever task the claim owed has gone
-again all the same.
+answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
+result that is not an object. The daemon cannot say if the session changed.`), is printed with
+its reason, and whatever task the claim owed has gone again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
 left refused, and for a claim stored working that no process stands behind, which the compaction

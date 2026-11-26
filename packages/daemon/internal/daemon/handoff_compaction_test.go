@@ -463,6 +463,14 @@ func TestTheAnswerOfAHandoffSaysWhetherTheSessionWasShortened(t *testing.T) {
 			want: api.CompactResponse{Compacted: true},
 		},
 		{
+			// Any object is a result: the daemon reads none of its members.
+			name: "success with an object whose savedPath is no string",
+			answer: func(id string) shimwire.Response {
+				return shimwire.Response{ID: id, Command: handoffType, Success: true, Data: json.RawMessage(`{"savedPath":3}`)}
+			},
+			want: api.CompactResponse{Compacted: true},
+		},
+		{
 			name: "success with data true",
 			answer: func(id string) shimwire.Response {
 				return shimwire.Response{ID: id, Command: handoffType, Success: true, Data: json.RawMessage(`true`)}

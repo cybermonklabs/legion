@@ -1566,15 +1566,19 @@ type Machine struct {
 	// never prompted — so the delivery's life ends at its result rather than at any agent_end
 	// (turnEnded, resultPending).
 	//
-	// acked and ackedInTurn add an id, with the news of the approved design that prompt carried,
-	// which a confirmation of that prompt's turn credits (turnAnswers, turnNews). A result or a
-	// refusal naming one removes it, and the result of a prompt that ran a turn ends the wait for
-	// them all (promptResulted); the wait for a turn that runs out (noTurn) takes the task back and
-	// keeps its prompt here. The sweep's answer that the agent is in no prompt empties it
-	// (askTurnOver); a compaction does not, since it is Oh My Pi's handoff, which aborts no turn
-	// (compactStart). letGo, retirePending — and with it queue, when a newer task takes the pending
-	// one's place — and interrupted empty it too, since what it waits on goes with the process or the
-	// task. Each of those empties it through forgetOutstanding.
+	// Each entry is in one of two states, and the two prove different things (awaitedPrompt):
+	// acknowledged, which acked and ackedInTurn add (takeAck), and held, which keepHeldPrompt adds
+	// for a send the compaction held whose prompt frame was written and whose answer did not come
+	// (runtime.ErrPromptUnanswered). An entry is added with the news of the approved design its
+	// prompt carried, which a confirmation of that prompt's turn credits (turnAnswers, turnNews). A
+	// result or a refusal naming one removes it, and the result of a prompt that ran a turn ends the
+	// wait for them all (promptResulted). The wait for a turn that runs out (noTurn) takes the task
+	// back and keeps an acknowledged prompt here, and removes a held one before it sends that prompt
+	// again under its id, taking nothing back. The sweep's answer that the agent is in no prompt
+	// empties it (askTurnOver); a compaction does not, since it is Oh My Pi's handoff, which aborts
+	// no turn (compactStart). letGo, retirePending — and with it queue, when a newer task takes the
+	// pending one's place — and interrupted empty it too, since what it waits on goes with the
+	// process or the task. Each of those empties it through forgetOutstanding.
 	//
 	// It is memory only: a daemon restarted inside a late turn's wait restores the claim with no
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
@@ -1926,16 +1930,26 @@ type sending struct {
 	generation uint64
 }
 
-// awaitedPrompt is one prompt of the pending task that Oh My Pi acknowledged and has not yet
-// reported the end of (Machine.outstanding): its delivery id, and the news of the approved design
-// it carried, as its first acknowledgement recorded it (awaitResult).
+// awaitedPrompt is one prompt of the pending task that reached Oh My Pi and that Oh My Pi has not
+// yet reported the end of (Machine.outstanding): its delivery id, the news of the approved design
+// it carried as the entry's first writer recorded it (awaitResult, keepHeldPrompt), and which of the
+// two states it is in.
 //
-// held marks the one prompt that is outstanding with no acknowledgement: a send the compaction
-// held whose wait ran out (heldPrompt). The pinned Oh My Pi parks a prompt that reaches it while
-// a handoff runs, and admits and acknowledges it only once the handoff ends, so the send's
-// deadline can pass with the prompt still on its way to its turn. Its turn confirms the task as an
-// acknowledged prompt's does (turnAnswers), but a wait for that turn that runs out charges it
-// nothing: nothing says Oh My Pi ever took it (noTurn).
+// An acknowledged entry (held false) is a prompt Oh My Pi admitted. It runs one admitted prompt at
+// a time, so the session's next turn is that prompt's: a turn that starts is the task's
+// (turnAnswers), its confirmation stands until the prompt's result, and a let-go leaves it
+// confirmed (sendUnproven).
+//
+// A held entry (held true) is a prompt whose frame the daemon wrote while a compaction held the
+// send, and whose answer did not come within the send's wait (keepHeldPrompt,
+// runtime.ErrPromptUnanswered). The pinned Oh My Pi parks a prompt that reaches it while a handoff
+// runs, and admits and acknowledges it only once the handoff ends, so the prompt is on its way to
+// its turn but not admitted. A turn that starts is taken for the task's as for an acknowledged
+// entry, but a confirmation that rests on held entries alone is unproven: nothing yet says the turn
+// was not another input's, so a let-go takes it back (sendUnproven), and a wait for its turn that
+// runs out charges it nothing (noTurn). No path acknowledges a held entry: the acknowledgement Oh
+// My Pi writes after the handoff reaches no request (stream's Conn.answer), and noTurn removes the
+// entry before it sends the prompt again.
 type awaitedPrompt struct {
 	id   string
 	news []byte
@@ -4588,10 +4602,12 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // (unsentNews). The copy goes in memory here and, where it changed, reaches the store at the next
 // write of the delivery, which settle makes before the next decision (unsaved).
 //
-// A confirmation that rests on the task's own send alone (sendUnproven) is taken back here, before
-// the send is forgotten. Only that send's outcome could say whether the prompt went out at all
+// A confirmation that rests on a send whose answer has not come (sendUnproven) — the task's own
+// send still in flight, or held prompts alone — is taken back here, before the send and the
+// prompts outstanding are forgotten. Only that answer could say whether the turn was the task's
 // (turnAnswers, settle): the turn may have been an Envoy notice's while the send was still adopting
-// the working copy. Once the send is forgotten its outcome is fenced out (fenceOutcome), so a
+// the working copy, or while Oh My Pi still held the prompt. Once the send is forgotten its outcome
+// is fenced out (fenceOutcome), so a
 // confirmation left standing would be retired as served by the settle after the let-go, and a
 // suspension that keeps the task — an operator's, a release's — would resume with nothing to send.
 // Taken back, the task is owed and goes again to the next process: told twice where the turn was

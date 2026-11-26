@@ -2,15 +2,90 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // The rows of this file are one boundary: a prompt of the claim's task and its turn around a
 // compaction, which is Oh My Pi's handoff. The handoff aborts no turn, and the pinned Oh My Pi
 // parks a prompt that reaches it while a handoff runs, admitting and acknowledging it only once the
 // handoff ends. So whatever order the prompt's acknowledgement, its turn, its result and the
-// compaction's end reach the machine in, the task is sent once and its own turn confirms it.
+// compaction's end reach the machine in, the task is sent once and its own turn confirms it — and a
+// send that ends before its prompt was written leaves the task unsent, whatever turn runs.
+
+// unansweredPrompt is what the stream answers a prompt whose frame it wrote and whose answer did
+// not come within its wait (stream's Conn.Prompt).
+var unansweredPrompt = fmt.Errorf("worker-stream: prompt: %w: %w", runtime.ErrPromptUnanswered, runtime.ErrNoAnswer)
+
+// The send of a phase task is still minting the role's identity when the compaction is taken, and
+// the adoption of the working copy that follows runs out its wait: no prompt frame was written.
+// The task is not sent, so it stays owed and unconfirmed (refused): an unrelated turn under the
+// compaction is not taken for its own, since no prompt of it exists, and the idle release that
+// follows keeps the task as it keeps any owed task. Kept as a prompt the handoff held, the task
+// was confirmed by that unrelated turn and retired at the release, never having run.
+func TestASendWhoseAdoptionRunsOutUnderTheHandoffStaysOwedThroughAnotherTurnAndAnIdleRelease(t *testing.T) {
+	h := newHarness(t)
+	minting, minted := make(chan struct{}, 1), make(chan struct{})
+	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
+		select {
+		case minting <- struct{}{}:
+		default:
+		}
+		<-minted
+		return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
+	}
+	h.restart()
+	h.reach(StateReady)
+	h.rt.FailAdoptWorkingCopy(fmt.Errorf("worker-stream: adopt_working_copy: %w", runtime.ErrNoAnswer))
+	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-minting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the send never began minting the role's identity")
+	}
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	close(minted) // the adoption runs out its wait, before any prompt is written
+	h.m.Wait()
+
+	owed := h.pending()
+	if !owed.ConfirmedAt.IsZero() {
+		t.Fatalf("after the adoption ran out the claim holds %+v, want the task unconfirmed", owed)
+	}
+	h.wantPrompts(0)
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	if p := h.claim().Pending; p == nil || p.ID != owed.ID || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("after an unrelated turn the claim holds %+v, want %s owed and unconfirmed: no prompt of it was sent", p, owed.ID)
+	}
+
+	release()
+	if err := <-compacted; err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	h.m.Wait()
+	h.must(RequestSuspend{Claim: testToken, By: SuspendedByReleased})
+	h.wantState(StateSuspended)
+
+	if p := h.claim().Pending; p == nil || p.Task != "the task" || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("after the idle release the claim holds %+v, want the task still owed and unconfirmed", p)
+	}
+	if stored := h.store.load(h.token).Pending; stored == nil || stored.Task != "the task" || !stored.ConfirmedAt.IsZero() {
+		t.Fatalf("after the idle release the store holds %+v, want the task still owed and unconfirmed", stored)
+	}
+	h.wantPrompts(0)
+}
 
 // takeCompactionWithSendInFlight starts a ready claim's send of a task, holds it at a gated
 // connection, and takes the compaction with that send in flight, held at the connection too. It
@@ -66,7 +141,7 @@ func sendRunsOutUnderTheHandoff(t *testing.T, h *harness, gated *gatedConn, sent
 // nothing to take the turn for the task's, and the task stayed unconfirmed through its own turn.
 func TestAPromptHeldPastItsWaitByTheHandoffIsConfirmedByATurnBeforeTheCompactionsEnd(t *testing.T) {
 	h := newHarness(t)
-	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, context.DeadlineExceeded)
+	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, unansweredPrompt)
 	sendRunsOutUnderTheHandoff(t, h, gated, sent)
 
 	h.must(StreamTurnStart{Claim: testToken})
@@ -97,7 +172,7 @@ func TestAPromptHeldPastItsWaitByTheHandoffIsConfirmedByATurnBeforeTheCompaction
 // again at the compaction's end.
 func TestAPromptHeldPastItsWaitByTheHandoffIsSentOnceWhenTheCompactionEndsFirst(t *testing.T) {
 	h := newHarness(t)
-	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, context.DeadlineExceeded)
+	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, unansweredPrompt)
 	sendRunsOutUnderTheHandoff(t, h, gated, sent)
 
 	release()
@@ -133,7 +208,7 @@ func TestAPromptHeldPastItsWaitByTheHandoffIsSentOnceWhenTheCompactionEndsFirst(
 // without a second turn.
 func TestAPromptHeldPastItsWaitWhoseTurnNeverStartsGoesAgainUncharged(t *testing.T) {
 	h := newHarness(t)
-	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, context.DeadlineExceeded)
+	gated, sent, release, compacted := takeCompactionWithSendInFlight(t, h, unansweredPrompt)
 	sendRunsOutUnderTheHandoff(t, h, gated, sent)
 	release()
 	if err := <-compacted; err != nil {
