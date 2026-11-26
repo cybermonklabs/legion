@@ -324,9 +324,11 @@ func seedThrottledPasses(t *testing.T, ctx context.Context, database *store.Stor
 // at a time. At each pause the database holds exactly the rows of the batches before it, so each
 // batch committed before its pause and the next had not begun, and each pause is its batch's rows
 // over the rate: 100 ms for 7 rows and 2/70 s for 2, since the fake clock gives the database's own
-// work no time. The run's first line names the throttle and each pass prints its pace. The control
-// is the same run with no rate: it pauses nowhere, so no reading shows the batches apart, and the
-// same check refuses it.
+// work no time. The run's first line names the throttle and each pass prints its pace, each kind
+// of the object pass and of the project fill among them: the issue's and the document's one row
+// each read at 70 rows a second, which only a pause of 1/70 s after it reads. The control is the
+// same run with no rate: it pauses nowhere, so no reading shows the batches apart, and the same
+// check refuses it.
 func TestTheBackfillWritesBatchesOfItsThrottleAndPausesBetweenThem(t *testing.T) {
 	throttle := Throttle{Batch: 7, Rate: 70}
 	readings, out := throttledRun(t, throttle)
@@ -340,6 +342,11 @@ func TestTheBackfillWritesBatchesOfItsThrottleAndPausesBetweenThem(t *testing.T)
 		"backfill-graph-store: throttle batch=7 rows_per_second=70\n",
 		"backfill-graph-store: pace kind=block rows=23 batches=4 seconds=0.3 rate=70.0 paused=0.3 done=true\n",
 		"backfill-graph-store: pace kind=comment_project rows=9 batches=2 seconds=0.1 rate=70.0 paused=0.1 done=true\n",
+		"backfill-graph-store: pace kind=issue rows=1 batches=1 seconds=0.0 rate=70.0 paused=0.0 done=true\n",
+		"backfill-graph-store: pace kind=artifact rows=1 batches=1 seconds=0.0 rate=70.0 paused=0.0 done=true\n",
+		"backfill-graph-store: pace kind=ask rows=0 batches=0 seconds=0.0 rate=0.0 paused=0.0 done=true\n",
+		"backfill-graph-store: pace kind=message rows=0 batches=0 seconds=0.0 rate=0.0 paused=0.0 done=true\n",
+		"backfill-graph-store: pace kind=block_project rows=0 batches=0 seconds=0.0 rate=0.0 paused=0.0 done=true\n",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("the run printed no line %q:\n%s", line, out)
