@@ -8672,7 +8672,7 @@ describe("executeDispatchTool", () => {
       asksDispatch: dryRunAsksDispatch("dispatch_result", args),
     }).toEqual({
       asked: [],
-      refused: "dispatch dispatch_result's dry run asks Dispatch nothing",
+      refused: "dispatch dispatch_result's dry run runs no command",
       asksDispatch: false,
     });
   });

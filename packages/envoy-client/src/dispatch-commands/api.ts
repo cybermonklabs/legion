@@ -107,6 +107,8 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/results/dry-run", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/results/{id}/retract", commands: ["result"] },
+  // A CI job's result of a check of the spec files (`dispatch result --project`).
+  { method: "POST", pattern: "/api/v1/projects/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/handoffs/{phase}", commands: ["handoff-write"] },
   // The first two also carry the pictures of a comment, an ask or a message (`postWithPictures`,
   // command-context.ts).
