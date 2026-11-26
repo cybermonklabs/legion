@@ -434,7 +434,7 @@ func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	if called == 0 {
 		t.Fatal("the generation ended no old start through the hook")
 	}
-	assertStrings(t, "the deletion after every old start ended", r.deletions(), task)
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 1"})
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
 		t.Fatalf("the old tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
 	}
