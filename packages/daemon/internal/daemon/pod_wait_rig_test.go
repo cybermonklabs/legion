@@ -161,6 +161,13 @@ func (r *idleWakeRig) countPodWaitHeld(issue idleRigIssue) func() int {
 // role's line left out, since the start that waits for the pod makes role's claim the moment the
 // Sandbox has left the store — then for role's claim to register in a new pod of the issue, other
 // than the pod before.
+//
+// The first wait keeps the pod quiet, since the release measures the idle period from the claim
+// rows. It back-dates every claim of the project but role's (quietExcept). The start of role runs
+// in the moment the release takes the pod. A back-date of the new claim made before the wait reads
+// the pod gone would let the idle rule release the new pod as idle at once, so the role would be
+// suspended and never registered in it. A slow poll, as when the package's other tests load the
+// machine, makes that moment wide.
 func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role claim.Role, before string) {
 	r.t.Helper()
 	token := string(r.roleToken(issue, role))
@@ -179,7 +186,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it but "+string(role)+"'s left as it was", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
-			r.quiet()
+			r.quietExcept(claim.Token(token))
 		}
 		if got := others(); !slices.Equal(got, held) {
 			r.t.Fatalf("the claims of %s read\n  %s\nwant the ones it stood at\n  %s\nthis release stops no role and changes no claim",
@@ -194,6 +201,17 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		return r.agents.role(issue.key, string(role)).Registered >= 1 && uid != "" && uid != before &&
 			r.claimOf(issue, role) && idleRigWorking(r.api.claim(claim.Token(token)).State)
 	})
+}
+
+// quietExcept is quiet for every claim of the project but token's: the claim a start makes while
+// the test waits is left with the moment its own rows record.
+func (r *idleWakeRig) quietExcept(token claim.Token) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(context.Background(),
+		`update claims set updated_at = now() - interval '30 minutes'
+		 where project = $1 and token <> $2`, r.project, string(token)); err != nil {
+		r.t.Fatalf("back-date the project's claims but %s: %v", token, err)
+	}
 }
 
 // A pod built before a role of the deployment is kept until main's rule for a pod with no live
