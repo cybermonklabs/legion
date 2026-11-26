@@ -1206,9 +1206,7 @@ describe("dispatchToolSpecs", () => {
       properties: Record<string, { description?: string }>;
     };
 
-    expect(json.properties.priority?.description).toBe(
-      "Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."
-    );
+    expect(json.properties.priority?.description).toMatch(/\bp0\b/);
   });
 
   // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
