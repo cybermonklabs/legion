@@ -581,9 +581,8 @@ func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role 
 func (s *Store) SetResumeQueued(ctx context.Context, project, issue string, role claim.Role, token claim.Token) error {
 	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `update pod_resumes set queued = true
-			where project = $1 and issue = $2 and (claim = $4 or (claim = '' and role = $3)) and first_turn_at is null and closed_at is null
-			and not queued`,
-			project, issue, string(role), string(token))
+			where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null and not queued`,
+			project, issue, string(role))
 		if err != nil {
 			return fmt.Errorf("stop the stuck clock of %s's %s: %w", issue, role, err)
 		}
