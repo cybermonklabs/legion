@@ -1630,10 +1630,11 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 
 // `legion config check` names the ServiceAccount the controller's pod runs as when the file names
 // runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
-// namespace's default where service_account is unset — just before the repository cache's line,
-// and exits 0. A file that names no controller account prints no such line
-// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as every other
-// pod does.
+// namespace's default where service_account is unset — and, while the repository cache's bucket is
+// set, the one a repository cache's pod runs as, just before the repository cache's line, and exits
+// 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as
+// runtime.kubernetes.pod.service_account.
 func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
 	legionState(t)
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1643,6 +1644,8 @@ func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
 			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
 		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
 			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+		{"beside the pods' own account and the cache's", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-cache}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod but a repository cache's runs as legion-worker (runtime.kubernetes.pod.service_account); a repository cache's pod runs as legion-cache (runtime.kubernetes.repository_cache.service_account)\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)

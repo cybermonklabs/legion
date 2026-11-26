@@ -136,8 +136,9 @@ type Tools struct{ GH, Git, JJ, Legion, AgentSecrets string }
 // or the probe's), never an init container, the volumes those mounts name, beside Legion's own, and
 // the ServiceAccount the pods run as, the namespace's default when unset. ControllerServiceAccount
 // is the one the project controller's pod runs as in its place when set (controllerPod's
-// serviceAccount); unset, that pod runs as ServiceAccount like every other. A variable's value
-// reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
+// serviceAccount); unset, that pod runs as ServiceAccount like every issue pod, and a repository
+// cache's pod runs as ServiceAccount too while the cache's bucket is off (RepositoryCache). A
+// variable's value reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
 // (kubeletLiteral). CheckPod refuses a name or path of Legion's own or the worker image's. Its
 // fields are config.PodConfig's, one for one, since the daemon converts the one into the other.
 type Pod struct {
