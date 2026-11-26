@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role-lane forward checks its resolution's age before it publishes (roles.ResolutionTooOld),
@@ -100,6 +101,14 @@ func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderO
 // record a reader sees after a finish is finished, which is what lets a client read a finished
 // record once (bus.Client.TakeoverRecords).
 //
+// The row writes as a pass of this listener does, under the role's guard (roleKeepGuards.hold), so
+// no pass writes the record between the row's read and its writes. The claim's own handover runs
+// its pass on a goroutine of its own (roleSetHandler, runTakenRoleDrain), which can take the guard
+// after the claim is answered: a row that saw the guard free once (crashRig.idle) could read the
+// claim's record before that pass wrote it, and its control then met that write as a move. Held
+// here, the guard waits for a handover that took it first, and holds back one that comes later
+// until the row has finished the record, which no pass writes again (runTakeoverPasses).
+//
 // The control is a write at the subject's newest message, which lands.
 func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 	rig := newCrashRig(t)
@@ -107,10 +116,13 @@ func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 	rig.gone(a)
 	rig.claim(rig.away, a, role)
 	rig.sendTo(a, role, 1, "before the takeover")
-	next := rig.relayed(b, answerDone)
-	_ = next
+	rig.relayed(b, answerDone)
 	rig.claim(rig.mux, b, role)
-	rig.idle(rig.cfg(), role)
+	release, held := rig.cfg().roleKeepDrains.hold(testwait.Context(t), role)
+	if !held {
+		t.Fatalf("role %s's guard was still held when the wait context ended: the claim's handover never ended", role)
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	records, err := rig.harness.client.TakeoverRecords(ctx, role)

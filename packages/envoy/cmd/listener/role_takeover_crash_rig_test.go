@@ -399,7 +399,13 @@ func (rig *crashRig) onlyRecord(role, previous string) crashRecord {
 }
 
 // idle waits until no handover of role holds cfg's guard: a claim's own handover, say, that has
-// not ended yet.
+// not ended yet. It sees the guard free at one moment, and the moment before a handover takes it
+// is such a moment: the claim route starts its handover on a goroutine of its own
+// (roleSetHandler), which can take the guard after the claim is answered and idle has returned.
+// A row that needs the claim's handover ended first waits for something that handover did, such
+// as the copy its pass handed the new holder (crashAwaitEvents); a row that needs no pass to write
+// a record between its read and its writes holds the guard itself
+// (TestAPassCannotWriteOverARecordAnotherPassMoved).
 func (rig *crashRig) idle(cfg listenerDeliveryHandlerConfig, role string) {
 	rig.t.Helper()
 	waitFor(rig.t, 30*time.Second, "no handover of role "+role+" holding the listener's guard", func() bool {
