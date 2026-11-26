@@ -6231,13 +6231,6 @@ async function everyActionSteps(page: Page, place: EveryActionPlace): Promise<vo
     await row(id).focus();
     await page.keyboard.press("x");
   }
-
-  // With two items marked, the bar of selected rows.
-  for (const id of [seed.reply, seed.askBack]) {
-    if (place === "the reading pane") await selectRow(page, id);
-    await row(id).focus();
-    await page.keyboard.press("x");
-  }
   const bar = page.getByRole("toolbar", { name: "Selected rows" });
   await expect(bar, step("x marks two items")).toContainText("2 selected");
   await expectEveryAction(page, await controlNames(bar), (text) =>
