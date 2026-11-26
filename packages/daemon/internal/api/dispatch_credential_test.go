@@ -97,9 +97,14 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	if len(narrowings) != 0 {
-		t.Errorf("a caller stating %d is narrowed: %+v", dispatchCredentialContract, narrowings)
+	// A caller at the contract is told of no strip of the key: the lines it is written are the rows'
+	// above it alone (each entry's band above it), as narrowingsExpected reads them from the table.
+	for _, line := range narrowings {
+		if line.Dropped == "dispatchCredential" {
+			t.Errorf("a caller stating %d is told it was served no dispatchCredential: %+v", dispatchCredentialContract, narrowings)
+		}
 	}
+	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(state, dispatchCredentialContract))
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {

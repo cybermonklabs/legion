@@ -525,10 +525,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.retired {
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
 			}
-			// A pod below strandedTokenContract is served each claim nothing will wake without its
-			// `token`, the key contract 259 added (api's withoutStrandedTokens), which is every pod
+			// A pod below the stranded token's entry is served each claim nothing will wake without
+			// its `token`, the key that entry added (api's withoutStrandedTokens), which is every pod
 			// of this table.
-			if tc.contract < strandedTokenContract {
+			if tc.contract < entryNumber(strandedTokenContract) {
 				strandedWithoutTokens(want)
 			}
 			// A pod below the tasks entry is served each issue without the `tasks` that entry

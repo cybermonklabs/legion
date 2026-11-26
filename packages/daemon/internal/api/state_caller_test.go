@@ -604,7 +604,7 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 			}
 		}
 	}
-	if contract < strandedTokenContract {
+	if contract < entryNumber(strandedTokenContract) {
 		strandedWithoutTokens(served)
 	}
 	if contract < entryNumber(tasksContract) {

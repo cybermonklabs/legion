@@ -263,7 +263,7 @@ func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *test
 		t.Fatalf("the restarted runtime's issue roles %v hold the checker, want it gone with the setting", restarted.issueRoles)
 	}
 
-	if err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+	if _, err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil {
 		t.Fatalf("ReleaseIssue: %v", err)
 	}
 

@@ -73,6 +73,7 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(tasksContract)"),
 	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
