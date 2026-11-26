@@ -211,6 +211,21 @@ type Options struct {
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
 	SkipChecks bool
+	// dispatchPhase makes a run's Dispatch phase in place of requests.JudgeDispatch. Only this
+	// package's tests set it, since it is unexported, so the broker always takes
+	// requests.JudgeDispatch and the wall clock: the worst-case row makes the phase
+	// JudgeDispatch would, with its deadline, but ended only by the run, so that how slowly the
+	// judge takes a read's answer cannot cut the read short (TestTheWorstCaseStillWritesItsJudgedRow).
+	dispatchPhase func(context.Context) (context.Context, context.CancelFunc)
+}
+
+// startDispatchPhase is the run's Dispatch phase: requests.JudgeDispatch, or what a test of this
+// package made in its place (Options.dispatchPhase).
+func (r *Runner) startDispatchPhase(ctx context.Context) (context.Context, context.CancelFunc) {
+	if r.opts.dispatchPhase != nil {
+		return r.opts.dispatchPhase(ctx)
+	}
+	return requests.JudgeDispatch(ctx)
 }
 
 // Runner judges the pending requests a broker hands it. New takes the broker's serving
@@ -432,7 +447,7 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 	// check's, the project check's and the issue's two GETs — runs under one
 	// requests.JudgeDispatch, so however slowly Dispatch answers, the ask read, the model call and
 	// the row's write keep the parts of runBudget the arithmetic gives them.
-	phase, cancel := requests.JudgeDispatch(ctx)
+	phase, cancel := r.startDispatchPhase(ctx)
 	defer cancel()
 
 	// One read of the machine per key answers the next three checks: the policy's outcome,
