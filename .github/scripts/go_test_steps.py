@@ -277,16 +277,16 @@ AUDITED_SCRIPTS = {
         sha256="e8b0c1506f131aa80d4e7f8d2ccd9cc7220ae901e3f41b8bdd72f7fd3b7da8c7",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
-    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
-    # '/internal/textcheck$', matches, with no -tags, -run or -skip. Given `compile`, it builds those
-    # race test binaries and runs none, which ci-caches.yaml's envoy-infra fill alone does, outside
-    # ci.yaml. envoy-infra-build's unit step passes `run`.
+    # `go test -count=1 -race` under .github/scripts/go-test.sh over the packages `go list ./...`
+    # prints less those its EXCLUDE, '/internal/textcheck$', matches, with no -tags, -run or -skip.
+    # Given `compile`, it builds those race test binaries and runs none, which ci-caches.yaml's
+    # envoy-infra fill alone does, outside ci.yaml. envoy-infra-build's unit step passes `run`.
     "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
         module="packages/envoy/infra",
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
+        sha256="50c61cbc6bfd19697fe7c7741afbe268fa9105079868570a53f47c91d32a912d",
     ),
     # It moves into the module its -C names, from the caller's directory (packages/envoy without
     # one), builds a hooked copy of nats-server, and runs one `go test -tags odatrace -race
@@ -303,7 +303,7 @@ AUDITED_SCRIPTS = {
             "-server 2.10.29 ./internal/testnats/hooktest/": f"{FORCED_ORDER} ./internal/testnats/hooktest/",
         },
         modules={"-C packages/daemon ./internal/testnats/": "packages/daemon"},
-        sha256="f8f2270b63a9d3aab43a751f98402c89673dc5bc20e6c78bac99724899a92b38",
+        sha256="5bedf28c08e009d7c6a028458c404ebc9a1b1e896aa228e9712c71c1ef6d75f9",
     ),
     # forced-order.sh's own test, which envoy-go-race's leg 5 runs from packages/envoy with no
     # argument. Of its five cases one gets as far as a go test: forced-order.sh over the fixture

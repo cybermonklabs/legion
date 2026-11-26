@@ -325,7 +325,7 @@ func TestAShimThatCannotReadItsTokenAgainWaitsForItsNextHello(t *testing.T) {
 func TestATokenRequestTheTransportLosesIsRetriedOnTheNextAliveObservation(t *testing.T) {
 	h := newHarness(t)
 	broker := h.withSecrets()
-	h.conn.FailAgentSecretsToken(errors.New("worker-stream: agent-secrets-token: no answer on the worker stream within the RPC timeout"))
+	h.conn.FailAgentSecretsToken(errors.New("worker-stream: agent-secrets-token: no answer on the worker stream within the request's reply deadline"))
 	h.launch()
 	h.helloWithToken(podToken(h.clock.Now().Add(-time.Minute)))
 	h.register()

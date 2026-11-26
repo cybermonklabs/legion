@@ -99,6 +99,8 @@ const otherWriterMaxBytes = 7 << 20
 // context, which every caller bounds by a hang guard, ends it, and no send's own wait does.
 func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) {
 	js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, neverAnswers: true}
+	// A window, not a wait: the server never answers the update, and the step must end when these
+	// 300 ms end, with context.DeadlineExceeded.
 	ctx, cancel := context.WithTimeout(countedReads(t.Context()), 300*time.Millisecond)
 	defer cancel()
 

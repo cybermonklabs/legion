@@ -192,8 +192,8 @@ else:
     "packages/envoy ./cmd/cipher/ ./internal/cipher/api/ ^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestUseCommandOutsideASessionReachesTheMachineSource|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$")"
 check "every unit leg skips all five, the four of cmd/cipher and the one of internal/cipher/api" \
   "$(is "$(py 'ex.shell = lambda script, cwd, what: "(not-run)"
-steps = {step.key[1]: step for step in ex.steps_of(ex.documents())
-         if step.key[0] == ".github/workflows/ci-job-envoy-go.yaml" and step.key[1].startswith("Unit test envoy Go package (leg ")}
+steps = {step.row: step for step in ex.steps_of(ex.documents())
+         if step.key == (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package") and step.row}
 skipping = {name: {test for command in ex.commands_of(step) for test in ex.skip_names(command.skip) or ()}
             for name, step in steps.items()}
 print(len(steps), " ".join(test + ":" + str(sum(test in tests for tests in skipping.values()))

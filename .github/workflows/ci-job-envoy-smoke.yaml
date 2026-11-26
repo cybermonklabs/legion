@@ -53,6 +53,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The two go tests below run under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -134,7 +136,7 @@ jobs:
       # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
       # 80, so the bound is deliberate headroom, not a build budget.
       - name: Container smoke test (testcontainers)
-        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        run: ../../.github/scripts/go-test.sh go test -tags smoke -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
       # The envoy-infra plugin's live tests (packages/envoy/infra/host/live_test.go) apply Pulumi
       # YAML programs with the pinned Pulumi CLI (.github/actions/install-pulumi) against this
@@ -169,7 +171,7 @@ jobs:
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
-        run: go test -tags pulumilive -v -timeout 15m ./host/
+        run: ../../../.github/scripts/go-test.sh go test -tags pulumilive -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
@@ -193,6 +195,12 @@ jobs:
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
           pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-smoke
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

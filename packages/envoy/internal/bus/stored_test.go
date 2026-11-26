@@ -125,6 +125,8 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
 	}
 
+	// A window, not a wait: the silent subscriber must not answer, and 300 ms is how long the
+	// request waits for it before its context ends it.
 	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer silentCancel()
 	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), SessionReplySubject(nats.NewInbox(), "ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {

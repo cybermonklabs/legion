@@ -10,12 +10,15 @@
 # each run in a mode of their own (a plain leg and a race leg) is named under the module's `twice`,
 # with why, and is then in the legs of exactly those two jobs, once in each. Every module names
 # under `unlisted` its plain job, whose last leg runs each package `go list ./...` prints and no
-# place here names, with a warning in every leg: a pull request that adds a package and no line
-# here runs it in that leg, once, and the warning says to give it the leg its time fits.
+# place here names, with a warning in every leg, so a pull request that adds a package and no line
+# here neither fails the merge group nor runs the package nowhere; list every package all the same,
+# in the same change that adds it (docs/testing.md), and a package under a tree of envoy's race lane
+# must be listed in its race leg, which ci_job_reads.py's hold_envoy_legs holds.
 # .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
 # leg's tests run; which readings are errors that stop a leg and which are warnings it works
-# through is written once, in
-# .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
+# through is written in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+# (a package in no place or two, the legs and the matrix, `unlisted`) and
+# #why-internaldaemons-tests-run-in-three-legs (the groups of a split package's tests). A leg sees
 # only its own job, so .github/scripts/ci_job_reads.py's hold_daemon_legs and hold_envoy_legs,
 # which the changes job imports, hold each module's job keys to the jobs whose legs run
 # (daemon-go and daemon-go-race; envoy-go and envoy-go-race) beside `elsewhere`, `unlisted` and
@@ -34,47 +37,43 @@
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
   # daemon-go (.github/workflows/ci-job-daemon-go.yaml, job daemon-go-legs): plain, every package
-  # but the race step's and the text checks. Leg 1 is internal/store's, whose 501 s sets its time,
-  # beside the next three, each on a core of its own; leg 2 is the rest, about 794 s of package
-  # time over four cores, and the steps that run no leg's packages (the race-impossible tests, the
-  # stamped shape gate, the forced-order tests and the Stage 1 proof).
+  # but the race step's and the text checks, in three legs. The step's packages compete for two
+  # things on a runner: its four cores and its one Postgres service. cmd/legion keeps about 2.4
+  # cores busy once its tests run beside each other (#5514); internal/store, internal/workspace,
+  # internal/admit, internal/api and internal/workflow mostly wait on Postgres. Leg 1 is cmd/legion
+  # with three packages that need neither: alone there it took 194.5 s, against 421.1 s beside
+  # internal/store (runs 45737777272 and 45731654069). Leg 2 is internal/store, whose Postgres work
+  # took 407.4 s beside the other Postgres packages and a median 274 s beside three, with the small
+  # packages and the steps that run no leg's packages (the race-impossible tests, the stamped shape
+  # gate, the forced-order tests and the Stage 1 proof). Leg 3 is the rest, internal/workspace the
+  # longest, about 874 s of package time over four cores. Its times are not the four groups' above:
+  # they are the medians of the last ten green merge groups that ran these legs (2026-11-25
+  # 20:27Z-22:55Z: runs 45695186634, 45696132960, 45700055287, 45700222985, 45708557702,
+  # 45711933885, 45712646870, 45713803817, 45715584525 and 45717072988), internal/runtime/sandbox's
+  # of the seven since its tests run in parallel (#5507).
   daemon-go:
     1:
-      - internal/store                          # 501 s
-      - internal/runtime/sandbox                # 299 s
-      - cmd/legion                              # 246 s
-      - internal/workflow                       # 223 s
+      - cmd/legion                              # 432 s
+      - internal/leakguard                      # 54 s
+      - internal/record                         # 25 s
+      - internal/repocache                      # 20 s
     2:
-      - internal/workspace                      # 171 s
-      - internal/admit                          # 134 s
-      - internal/api                            # 90 s
-      - internal/leakguard                      # 51 s
-      - internal/classify                       # 39 s
-      - internal/runtime/tmux                   # 38 s
-      - internal/record                         # 29 s
-      - internal/testnats                       # 28 s
-      - internal/repocache                      # 28 s
-      - internal/shim                           # 24 s
-      - internal/podsafety                      # 20 s
-      - internal/supervise                      # 16 s
-      - internal/capabilities                   # 13 s
-      - internal/modeltoken                     # 12 s
-      - internal/stream                         # 12 s
-      - internal/memoryguard                    # 11 s
-      - internal/cipher                         # 11 s
-      - internal/appauth                        # 10 s
+      - internal/store                          # 274 s
+      - internal/cipher                         # 9 s
       - internal/procgroup                      # 9 s
-      - internal/pause                          # 9 s
-      - internal/claudebridge                   # 9 s
-      - internal/natsauth                       # 8 s
-      - internal/ompsessions                    # 5 s
-      - internal/fixtureenv                     # 4 s
-      - internal/blockers                       # 3 s
+      - internal/natsauth                       # 9 s
+      - internal/claudebridge                   # 8 s
+      - internal/pause                          # 8 s
+      - internal/appauth                        # 8 s
+      - internal/podsafety                      # 7 s
+      - internal/ompsessions                    # 3 s
+      - internal/fixtureenv                     # 2 s
+      - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
-      - internal/testpg/testdb                  # 1 s
-      - internal/projection                     # 1 s
+      - internal/testpg/testdb                  # 2 s
       - internal/testpg                         # 1 s
-      - internal/config                         # 1 s
+      - internal/projection                     # 1 s
+      - internal/config
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -135,6 +134,21 @@ packages/daemon:
       - internal/treelifecycle
       - internal/subreaper
       - internal/startwalk
+    3:
+      - internal/workspace                      # 176 s
+      - internal/runtime/sandbox                # 156 s
+      - internal/workflow                       # 156 s
+      - internal/admit                          # 129 s
+      - internal/api                            # 84 s
+      - internal/runtime/tmux                   # 38 s
+      - internal/classify                       # 38 s
+      - internal/testnats                       # 28 s
+      - internal/supervise                      # 13 s
+      - internal/shim                           # 12 s
+      - internal/memoryguard                    # 12 s
+      - internal/modeltoken                     # 11 s
+      - internal/stream                         # 11 s
+      - internal/capabilities                   # 10 s
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
   # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three
   # legs, a group of its tests each (.github/go-legs/packages/daemon/internal/daemon.yaml), since
@@ -260,6 +274,7 @@ packages/envoy:
       - internal/dispatch/outbox/copyrule       # 2 s
       - internal/dispatch/itemblocks
       - internal/dispatch/auth
+      - internal/dispatch/specgraph/specgraphtest
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s

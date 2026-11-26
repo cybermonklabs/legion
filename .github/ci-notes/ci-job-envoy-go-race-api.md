@@ -51,7 +51,11 @@ group does not hold. A line whose test the package no longer has is held in ever
 or renamed test's line still reads `UNKNOWN` (`packages/envoy/scripts/database-skips.test.sh`,
 control 7).
 
-The `packages/envoy` entry of `.github/go-legs.yaml` names only the two packages these legs and the
-document service's run, with no `elsewhere`: it claims nothing about the module's other packages,
-which run in jobs that do not read the file. So a pull request that adds or removes an envoy
-package, which selects neither lane, cannot leave these legs failing in a later merge group.
+The `packages/envoy` entry of `.github/go-legs.yaml` lists every package of the module in one place:
+a leg of envoy-go, envoy-go-race, envoy-go-race-api or envoy-go-race-docs, or `elsewhere` with the
+job that runs it; and it names under `unlisted` the plain job, envoy-go, whose last leg runs a
+package no place names. So a pull request that adds an envoy package and no line here does not
+fail these legs: every leg warns, and envoy-go's last leg runs the package, once. A pull request
+that removes or renames a package the entry still names does fail them: `go_legs.py` refuses a
+name `go list ./...` no longer prints, in every leg of every job that reads the entry, until the
+line goes with the package.

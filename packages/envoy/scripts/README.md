@@ -575,7 +575,7 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m '-run=^(TestA|TestB)$' ./internal/dispatch/api/
 packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
@@ -596,8 +596,16 @@ run nor counted as a skip. `--count-table` runs every `PACKAGE` and counts the s
 default table's packages among them alone; the others' skips are not counted and they are not
 held to showing a run, but a failure of theirs fails go test and so the count. A run whose
 packages hold none of the table's prints `database_skips=NONE`, not a zero, and passes or fails
-on go test's result. `--report` reads a `go test -json` report instead and runs nothing, and
-refuses the five options that shape a run.
+on go test's result. `-run=PATTERN` adds go test's `-run`, in the one shape `.github/scripts/go_legs.py`
+prints for a leg that runs a group of a package's tests, `^(Name|Name|…)$`, each alternative a
+whole test name: `Test`, `Fuzz` or `Example`, then no whitespace and no regex metacharacter, the
+rule `go_legs.py`'s `TEST_NAME` lists tests by. An `EXPECTED_SKIPS` line whose test the package
+still has (`go test -list .` under the run's flags) and the pattern leaves out is another leg's
+and is not held; a line whose test the package no longer has is held, and reads UNKNOWN, in every
+leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a usage error
+before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
+refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
+`--count-table`, `-run`).
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -625,19 +633,23 @@ and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runn
 loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
 limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
 broker's packages share its `-p` slots with the rest of the leg.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go-skips` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
-that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
-package spelled other than canonically is counted;
+`envoy-go-race-api` runs the Dispatch API through it in three legs, each piping its group's
+`-run=^(…)$` and `./internal/dispatch/api/` into the second line above's options.
+`database-skips.test.sh` holds it to seven controls, which `envoy-go-skips` runs as "Test the
+database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
+`./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
+UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
+none) is UNKNOWN, a failed test fails, a race report filed under a passed subtest is printed, and
+a skip in a package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; with
 `--count-table` a skip planted in a package outside the table is not counted, one planted in the
 table's package among them is, a failure planted outside the table fails the count, and a run
-with no package of the table prints `database_skips=NONE`. It needs a scratch Postgres named by
-both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+with no package of the table prints `database_skips=NONE`; and with `-run`, a run that leaves most
+expected tests out passes, a line for a test the package does not have reads UNKNOWN and is the
+one named, a name with a non-ASCII letter is taken, and three shapes that are no list of whole
+names are refused, as is `-run` beside `--report`. It needs a scratch Postgres named by both
+`BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 

@@ -74,6 +74,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The live tests' go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module
       # versions, so a run whose module files main has already filled restores an entry built from
@@ -103,9 +105,14 @@ jobs:
         run: |
           for pkg in ./core ./seed ./gcp; do
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+            ../../../.github/scripts/go-test.sh go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
           done
         working-directory: packages/envoy/infra
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-infra-go
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -136,6 +143,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The unit step's go test runs under .github/scripts/go-test.sh, through race-unit.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-infra, the entry envoy-infra-go restores, under the same key: ci-caches.yaml's
       # envoy-infra job fills it with both vets and this job's race unit step.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -191,6 +200,11 @@ jobs:
       - name: Unit test envoy-infra
         run: scripts/race-unit.sh run
         working-directory: packages/envoy/infra
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-infra-build
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
