@@ -1,0 +1,7 @@
+/* A comment, which imports nothing: @import "./missing.css"; */
+@import "tailwindcss";
+@import "./base.css";
+
+p {
+  margin: 0;
+}
