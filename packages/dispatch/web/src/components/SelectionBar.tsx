@@ -313,7 +313,15 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     forget();
   }, [again, forget]);
   read.current = finish;
-  useLayoutEffect(finish);
+  // After every commit, with a fresh count of frames: `READINGS` bounds the frames one draw of the
+  // page is read over, and a commit is the page drawing again rather than a frame of this reading,
+  // so the landing is read over the frames of each commit until the reader acts. WebKit draws the
+  // row of a snoozed list's landing again seconds after the rows go, and drops the focus to the
+  // page's body as it does (builds Job `infra-3135-infra-3135-r29p-rb-b9h95`).
+  useLayoutEffect(() => {
+    if (landed.current !== null) readings.current = 0;
+    finish();
+  });
   /** Records a landing, by the row of the mark it is on, and sees it read again as the hand-off's
    *  own landings are. */
   const owe = (
