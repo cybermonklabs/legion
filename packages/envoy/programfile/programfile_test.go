@@ -38,6 +38,28 @@ func TestAProgramWrittenWhileTheProcessForksRuns(t *testing.T) {
 	})
 }
 
+// A program Append adds to runs at once in the same way: each run writes a program's first line
+// with Write, which holds the lock, adds its last with Append and runs it, so the one span a fork
+// beside it could meet the program open for writing in is Append's.
+//
+// Not parallel: its forks are the condition it measures.
+func TestAProgramAppendedToWhileTheProcessForksRuns(t *testing.T) {
+	dir := t.TempDir()
+	testexec.RunsBeside(t, 400, func(i int) error {
+		path := filepath.Join(dir, fmt.Sprintf("program-%d", i))
+		if err := programfile.Write(path, os.O_EXCL, 0o755, strings.NewReader("#!/bin/sh\n")); err != nil {
+			return fmt.Errorf("write the program: %w", err)
+		}
+		if err := programfile.Append(path, strings.NewReader("exit 0\n")); err != nil {
+			return fmt.Errorf("append to the program: %w", err)
+		}
+		if err := exec.Command(path).Run(); err != nil {
+			return fmt.Errorf("run the program: %w", err)
+		}
+		return nil
+	})
+}
+
 // Write gives the file the mode it names whatever the umask, writes what the reader holds, and
 // opens with the caller's flag: os.O_EXCL refuses a file already there and leaves it as it was,
 // and os.O_TRUNC writes over one.
