@@ -339,10 +339,9 @@ func TestProvisionRequiresADefaultBranch(t *testing.T) {
 	}
 }
 
-// Where the one-shot credential goes is every caller's decision, and a request reaches the
-// repository one way, its Source: through a pod's feed with no credential, or from GitHub with the
-// token and a credential directory. A request with no Source, or a GitHub one with no credential
-// directory, is refused before provisioning runs anything or touches the state directory.
+// Where the one-shot credential goes is every caller's decision. A request with no source, or a
+// GitHub source with no credential directory, is refused before provisioning runs anything or
+// touches the state directory.
 func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -351,7 +350,7 @@ func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
 	}{
 		{"a token and no credential directory", func(r *Request) { r.Source = FromGitHub(staticToken("test-installation-token"), "") }, "workspace credential directory is required"},
 		{"no token", func(r *Request) { r.Source = FromGitHub(nil, r.StateDir) }, "workspace provisioning token is required"},
-		{"no way to the repository", func(r *Request) { r.Source = nil }, "workspace request names no way to the repository: FromFeed or FromGitHub"},
+		{"no repository source", func(r *Request) { r.Source = nil }, "workspace request names no repository source"},
 		{"no log", func(r *Request) { r.Log = nil }, "workspace request names no log"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
