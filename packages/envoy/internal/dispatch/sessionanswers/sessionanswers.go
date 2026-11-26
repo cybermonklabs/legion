@@ -30,7 +30,7 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 // (asks.NodeAnswerTuples), as api's askNodeAnswerColumn reads them - and null on an ask it holds
 // otherwise; and the row's own answer where the row names no node, its answer's one record until
 // the boot step's backfill marks it. The node holds no act, so scan lays the row's on it where the
-// row holds the same person's answer at the same time, as asks.NodeAnswer.ApplyTo does.
+// node holds the row's answer (asks.NodeAnswer.Gave), as asks.NodeAnswer.ApplyTo does.
 //
 // It decodes the node's facts in SQL rather than through the decoder every reader in Go shares
 // (asks.NodeAnswer): the one statement of List reads the answers of every ask that reached the
@@ -291,14 +291,14 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 		if err := json.Unmarshal(answer, &current); err != nil {
 			return model.SessionAnswer{}, fmt.Errorf("decode ask %s answer: %w", item.ID, err)
 		}
-		// The node holds no act: the answer carries the row's where the row holds the node's own
-		// answer, the same person's at the same time, as asks.NodeAnswer.ApplyTo lays it.
+		// The node holds no act: the answer carries the row's where the node holds the row's answer
+		// (asks.NodeAnswer.Gave), the one test asks.NodeAnswer.ApplyTo lays the act by.
 		if current.Act == nil && len(rowAnswer) > 0 {
 			var row model.AskAnswer
 			if err := json.Unmarshal(rowAnswer, &row); err != nil {
 				return model.SessionAnswer{}, fmt.Errorf("decode ask %s row answer: %w", item.ID, err)
 			}
-			if row.At.Equal(current.At) && model.CanonicalLogin(row.User) == current.User {
+			if (asks.NodeAnswer{AnsweredAt: &current.At, AnsweredBy: current.User}).Gave(row) {
 				current.Act = row.Act
 			}
 		}

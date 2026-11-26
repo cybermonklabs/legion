@@ -634,9 +634,10 @@ func (n NodeAnswer) ApplyTo(ask *model.Ask) {
 // answered time equal to answer's, and its answered_by names the person node Settle points
 // answered_by at for answer (AnswererOf), none for a person the store cannot key. It is the one
 // test of whether the node holds a row's answer, so every reader that asks it applies one rule to
-// the login: ApplyTo, which carries the row's act onto the node's answer where it holds, and docs'
-// writes on a fleet of one build, which keep the row where an answered row's node does not hold its
-// answer (keptFromItsNode).
+// the login: ApplyTo, which carries the row's act onto the node's answer where it holds; the
+// answers a session was delivered, which carry it so on the node's answer their statement decodes
+// (sessionanswers' scan); and docs' writes on a fleet of one build, which keep the row where an
+// answered row's node does not hold its answer (keptFromItsNode).
 func (n NodeAnswer) Gave(answer model.AskAnswer) bool {
 	return n.AnsweredAt != nil && n.AnsweredAt.Equal(answer.At) && n.AnsweredBy == AnswererOf(answer)
 }
