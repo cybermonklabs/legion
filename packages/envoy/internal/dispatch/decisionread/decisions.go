@@ -69,13 +69,16 @@ func TextSum(text string) string {
 //     document owes its block index is read off the document's newest version, whose markdown
 //     holds it as it stands (walker.changed). A person's words are the ask's question, from its
 //     row: the answer is the ask node's, and no other field restates it.
-//   - Kind, `person` for an ask and `agent` for a decision; Heading, the ask's question or the
-//     decision's first paragraph; Ref, the node's own address; Asks, the ask an agent's decision
-//     settles (from_ask) or the ask itself; Unsure, true where its uncertainty is `high`.
+//   - Kind, `person` for an ask and `agent` for a `decision` block, the node's shape whoever
+//     decided it; Heading, the ask's question or the decision's first paragraph; Ref, the node's
+//     own address; Asks, the ask an agent's decision settles (from_ask) or the ask itself; Unsure,
+//     true where its uncertainty is `high`.
 //   - Replaced, Kept and WaitingReview from the node: the newest kept_by tuple and the
-//     kept_text_sum value, beside decision_keeps' changed_version,
-//     and waiting_review true for an agent's decision unless it is replaced or the kept sum is its
-//     sum as it stands.
+//     kept_text_sum value, beside decision_keeps' changed_version, and the newest decided_by
+//     tuple. waiting_review is true for an agent's decision - a `decision` block whose decided_by
+//     names a session, or names nobody - unless it is replaced or the kept sum is its sum as it
+//     stands. A block whose decided_by names a person is that person's decision (spec R4), which
+//     waits for no review whatever its Keep, as an ask never does.
 //   - ChangedVersion, the version that last changed the decision's own words (refs.DecisionWords),
 //     which a reading added, changed or removed under it does not move: the block's
 //     document_blocks.changed_version, walked back over its
@@ -84,15 +87,19 @@ func TextSum(text string) string {
 //     markdown of the versions the index has not recorded, newest first (walker.changed), and an
 //     ask's words are its question and its options alone, no attribute of its block (ownWords).
 //   - Links, one for each spec node a current `shaped` tuple reaches, FromBlock the node's own
-//     block (the decision's, or the ask's). Event is the tuple's
-//     source_event and CreatedAt its at; TextChangedEvent is the event that wrote the version the
+//     block (the decision's, or the ask's). Event is the tuple's source_event and CreatedAt its at;
+//     CreatedVersion is the version of the decision's document the tuple was written in
+//     (block_refs.created_version); TextChangedEvent is the event that wrote the version the
 //     target's text last changed in (its document_blocks.changed_version) and TextChangedAt that
-//     version's created_at. Two facts are read off those times, each by the two events where both
-//     are held, else by the database's clock. Stale is the release before's rule (staleLink): the
-//     decision's own words last changed (ChangedAt, and the event that recorded that version)
-//     after the tuple was written, and the target's text last changed before they did; false
-//     where either change cannot be read. ChangedSinceTie is R5's (textChangedAfterTie): the
-//     target's text changed after the tuple was written. None of the computed members is stored.
+//     version's created_at. ChangedSinceTie is R5's (textChangedAfterTie): the target's text
+//     changed after the tuple was written, by the two events where both are held, else by the
+//     database's clock. Stale is the release before's rule, which compares text sums
+//     (markStale): the decision's own words as they stand differ from the words its document held
+//     at CreatedVersion, and from the words it held at the version that stood when the target's
+//     text last changed (TextChangedAt). A decision whose words changed and changed back reads
+//     the words it was tied at, and one whose words the target's change followed reads the words
+//     it holds, so neither is stale; a link is not stale where either version cannot be read.
+//     None of the computed members is stored.
 //
 // A node whose stored value does not parse - an uncertainty or a replaced outside its type, or
 // words that do not read back - is left out and logged, and the read goes on with the others. A
@@ -119,9 +126,10 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 		return nil, err
 	}
 	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
-	// changes is, for each decision, its document and the version its words last changed in, which
-	// the walk answers and its links' Stale compares (markStale).
-	var changes []versionKey
+	// stood is, for each decision, the block its words are read off and those words as they
+	// stand, which its links' Stale compares with the words the block held at other versions
+	// (markStale).
+	var stood []staleBasis
 	for index := range nodes {
 		node, found := held[index]
 		// A node that is no decision is left out with no log: the Keep reads the node at whatever
@@ -129,7 +137,7 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 		if !found || !node.isDecision() {
 			continue
 		}
-		decision, err := node.decision(ctx, versions, facts[index], links[index])
+		decision, basis, err := node.decision(ctx, versions, facts[index], links[index])
 		if versions.err != nil {
 			return nil, versions.err
 		}
@@ -139,67 +147,98 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 			continue
 		}
 		decisions = append(decisions, decision)
-		changes = append(changes, versionKey{artifactID: node.artifactID, number: decision.ChangedVersion})
+		stood = append(stood, basis)
 	}
-	if err := markStale(ctx, q, decisions, changes); err != nil {
+	if err := markStale(ctx, q, versions, decisions, stood); err != nil {
 		return nil, err
 	}
 	return decisions, nil
 }
 
-// markStale sets each link's Stale (staleLink) once the walk has answered each decision's own
-// change: its ChangedAt, and the event that recorded the version changes names for it, read in one
-// statement for every decision that holds a link and a change (versionEventRead). changes[i] is
-// decisions[i]'s document and ChangedVersion. A decision with no ChangedAt - its words read in no
-// version the store holds - has no change that can be read, and its links stay fresh.
-func markStale(ctx context.Context, q graphstore.Queryer, decisions []model.Decision, changes []versionKey) error {
-	var asked []int
-	for index, decision := range decisions {
-		if decision.ChangedAt != nil && len(decision.Links) > 0 {
-			asked = append(asked, index)
+// staleBasis is what markStale needs of one decision beyond its links: the document that holds its
+// block, the block's type and id, and the block's own words as they stand (ownWords), held false
+// where the document holds no such block now or its words do not render.
+type staleBasis struct {
+	artifactID, typ, blockID string
+	words                    string
+	held                     bool
+}
+
+// markStale sets each link's Stale, the release before's rule, which compares text sums: the link
+// is stale where the decision's own words as they stand differ from the words its document held
+// at the link's CreatedVersion, the version the tie was written in, and from the words it held at
+// the version that stood when the target's text last changed (TextChangedAt), the newest version
+// of the document written at or before that time. A version of the document is its own, never the
+// version its block last changed in: that version moves when a block is added or removed under
+// the decision, and the words that change and change back leave the sum where it was. The words
+// at the tie are read first, so the time is looked up only for a link whose decision changed
+// since it. A target that changed before the document held a version at all was changed before
+// every change of the decision, which is stale.
+//
+// A version the document does not hold, or whose markdown does not read back, a target the store
+// records no change for, a link written at no version, and a decision whose block is not held now
+// each leave the link as it is: the read marks nothing it cannot read. A version that holds no
+// such block gives no words, which differ from those the block holds now. stood[i] is
+// decisions[i]'s basis.
+func markStale(ctx context.Context, q graphstore.Queryer, versions *walker, decisions []model.Decision, stood []staleBasis) error {
+	type waiting struct{ decision, link int }
+	var asked []waiting
+	var documents []string
+	var times []time.Time
+	for index := range decisions {
+		if !stood[index].held {
+			continue
 		}
+		for at, link := range decisions[index].Links {
+			if link.TextChangedAt == nil || link.CreatedVersion <= 0 {
+				continue
+			}
+			if same, read := versions.sameWords(ctx, stood[index], link.CreatedVersion); !read || same {
+				continue
+			}
+			asked = append(asked, waiting{index, at})
+			documents, times = append(documents, stood[index].artifactID), append(times, *link.TextChangedAt)
+		}
+	}
+	if versions.err != nil {
+		return versions.err
 	}
 	if len(asked) == 0 {
 		return nil
 	}
-	documents, numbers := make([]string, len(asked)), make([]int, len(asked))
-	for at, index := range asked {
-		documents[at], numbers[at] = changes[index].artifactID, changes[index].number
-	}
 	rows, err := q.Query(ctx, `
-		select w.n, `+versionEventRead("doc", "w.number")+`
-		from unnest($1::text[], $2::int[]) with ordinality as w (artifact_id, number, n)
-		join artifacts doc on doc.id = w.artifact_id::uuid
-	`, documents, numbers)
+		select w.n, (select max(v.number) from artifact_versions v
+		             where v.artifact_id = w.artifact_id::uuid and v.created_at <= w.at)
+		from unnest($1::text[], $2::timestamptz[]) with ordinality as w (artifact_id, at, n)
+	`, documents, times)
 	if err != nil {
-		return fmt.Errorf("read the events of the decisions' changes: %w", err)
+		return fmt.Errorf("read the versions of the decisions' documents when their links' targets changed: %w", err)
 	}
 	defer rows.Close()
-	events := make(map[int]int64, len(asked))
+	standing := make([]int, len(asked))
 	for rows.Next() {
 		var n int64
-		var event *int64
-		if err := rows.Scan(&n, &event); err != nil {
-			return fmt.Errorf("read the event of a decision's change: %w", err)
+		var number *int
+		if err := rows.Scan(&n, &number); err != nil {
+			return fmt.Errorf("read the version a decision's document stood at: %w", err)
 		}
-		if event != nil && *event != graphstore.NoEvent {
-			events[asked[n-1]] = *event
+		if number != nil {
+			standing[n-1] = *number
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the events of the decisions' changes: %w", err)
+		return fmt.Errorf("read the versions of the decisions' documents when their links' targets changed: %w", err)
 	}
-	for _, index := range asked {
-		decision := &decisions[index]
-		var event *int64
-		if held, found := events[index]; found {
-			event = &held
+	for at, pending := range asked {
+		stale := &decisions[pending.decision].Links[pending.link].Stale
+		if standing[at] == 0 {
+			*stale = true
+			continue
 		}
-		for at := range decision.Links {
-			decision.Links[at].Stale = staleLink(decision.Links[at], *decision.ChangedAt, event)
-		}
+		same, read := versions.sameWords(ctx, stood[pending.decision], standing[at])
+		*stale = read && !same
 	}
-	return nil
+	return versions.err
 }
 
 // heldNode is what the store holds of one node Decisions reads: the node row, the document that
@@ -316,8 +355,9 @@ type fact struct {
 	seq                int64
 }
 
-// factKinds are the relations and values of a decision node the read takes beside its links.
-var factKinds = []string{refs.TupleFromAsk, refs.TupleKeptBy, refs.ValueKeptTextSum, refs.ValueReplaced, refs.ValueUncertainty}
+// factKinds are the relations and values of a decision node the read takes beside its links,
+// decided_by among them: who decided a `decision` block says whether it waits for review.
+var factKinds = []string{graphstore.TupleDecidedBy, refs.TupleFromAsk, refs.TupleKeptBy, refs.ValueKeptTextSum, refs.ValueReplaced, refs.ValueUncertainty}
 
 // readFacts reads, for each node, the relations and values of factKinds it holds now, in one
 // statement: the newest tuple of each relation (kind and far end) and of each value (kind alone),
@@ -454,28 +494,6 @@ func textChangedAfterTie(link model.DecisionLink) bool {
 	return link.TextChangedAt.After(link.CreatedAt)
 }
 
-// staleLink is the release before's rule for one link, its Stale, which every reader of a link's
-// `stale` reads: the decision's own words changed after it tied the target, and the target's text
-// has not changed since they did. changedAt is when the version that last changed the decision's
-// words was written, and changedEvent the event that recorded it, nil where the store holds none.
-// Each half compares the store's times as textChangedAfterTie does: the two events where both are
-// held, else the database's clock. A target with no recorded change is a change that cannot be
-// read, and the link is not stale, as the release before marked nothing it could not read.
-func staleLink(link model.DecisionLink, changedAt time.Time, changedEvent *int64) bool {
-	if link.TextChangedAt == nil {
-		return false
-	}
-	changedAfterTie := changedAt.After(link.CreatedAt)
-	if changedEvent != nil && link.Event != nil {
-		changedAfterTie = *changedEvent > *link.Event
-	}
-	targetBefore := link.TextChangedAt.Before(changedAt)
-	if changedEvent != nil && link.TextChangedEvent != nil {
-		targetBefore = *link.TextChangedEvent < *changedEvent
-	}
-	return changedAfterTie && targetBefore
-}
-
 // isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a live
 // block node of the `decision` supertag.
 func (node heldNode) isDecision() bool {
@@ -485,12 +503,14 @@ func (node heldNode) isDecision() bool {
 
 // decision is node, a decision (isDecision), in model.Decision's shape, with the values it holds
 // (facts) and its links, or the error that says which stored value of it does not parse. Its
-// words and the version they last changed in come from one walk (walker.changed).
-func (node heldNode) decision(ctx context.Context, versions *walker, facts []fact, links []model.DecisionLink) (model.Decision, error) {
+// words and the version they last changed in come from one walk (walker.changed), whose words
+// as they stand are the basis its links' Stale compares (markStale).
+func (node heldNode) decision(ctx context.Context, versions *walker, facts []fact, links []model.DecisionLink) (model.Decision, staleBasis, error) {
 	decision := model.Decision{
 		NodeKind: node.kind, NodeID: node.id,
 		BlockID: node.blockID, Asks: []string{}, Links: links,
 	}
+	basis := staleBasis{artifactID: node.artifactID, blockID: node.blockID}
 	if decision.Links == nil {
 		decision.Links = []model.DecisionLink{}
 	}
@@ -515,21 +535,24 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 		}
 		// An ask whose block does not read back is still an ask, which settlement flags
 		// `invalid`: its block's row's own version is the one it answers.
+		basis.typ = askType
 		changed, err := versions.changed(ctx, node, askType)
 		switch {
 		case err != nil && !errors.Is(err, errUnreadable):
-			return model.Decision{}, err
+			return model.Decision{}, staleBasis{}, err
 		case err != nil && node.rowVersion != nil:
 			decision.ChangedVersion = *node.rowVersion
 		case err == nil:
 			decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
+			basis.words, basis.held = changed.words, changed.block != nil
 		}
 	} else {
 		decision.Kind = "agent"
 		decision.Ref = refs.BlockRef(documentRef, node.blockID)
+		basis.typ = refs.DecisionSupertag
 		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)
 		if err != nil {
-			return model.Decision{}, err
+			return model.Decision{}, staleBasis{}, err
 		}
 		if changed.block != nil {
 			decision.Text = changed.words
@@ -542,15 +565,20 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 			}
 		}
 		decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
+		basis.words, basis.held = changed.words, changed.block != nil
 	}
 	decision.TextSHA256 = TextSum(decision.Text)
-	var kept *fact
+	var kept, decider *fact
 	keptSum, keptSumHeld := "", false
 	for index, held := range facts {
 		switch held.kind {
 		case refs.TupleFromAsk:
 			if held.toKind == graphstore.KindAsk {
 				decision.Asks = append(decision.Asks, held.toID)
+			}
+		case graphstore.TupleDecidedBy:
+			if decider == nil || held.seq > decider.seq {
+				decider = &facts[index]
 			}
 		case refs.TupleKeptBy:
 			if kept == nil || held.seq > kept.seq {
@@ -564,7 +592,7 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 				decision.Replaced = true
 			case "false":
 			default:
-				return model.Decision{}, fmt.Errorf("replaced holds %q, which is no bool", held.toID)
+				return model.Decision{}, staleBasis{}, fmt.Errorf("replaced holds %q, which is no bool", held.toID)
 			}
 		case refs.ValueUncertainty:
 			switch held.toID {
@@ -572,7 +600,7 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 			case "high":
 				decision.Unsure = true
 			default:
-				return model.Decision{}, fmt.Errorf("uncertainty holds %q, which is none of low, medium and high", held.toID)
+				return model.Decision{}, staleBasis{}, fmt.Errorf("uncertainty holds %q, which is none of low, medium and high", held.toID)
 			}
 		}
 	}
@@ -584,9 +612,12 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 			decision.Kept.ChangedVersion = *node.keptVersion
 		}
 	}
-	decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
+	// A block a person decided is theirs and waits for nobody's review, whatever its Keep; one a
+	// session decided, or that no decided_by names, is an agent's. Kind stays the node's shape.
+	decidedByPerson := decider != nil && decider.toKind == graphstore.KindPerson
+	decision.WaitingReview = decision.Kind == "agent" && !decidedByPerson && !decision.Replaced &&
 		(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
-	return decision, nil
+	return decision, basis, nil
 }
 
 // askType is the block type of an ask's block, whose own words - its question and its options,
@@ -649,6 +680,20 @@ func (w *walker) version(ctx context.Context, artifactID string, number int) ver
 	}
 	w.versions[key] = read
 	return read
+}
+
+// sameWords reports whether the block of basis held, at version number of its document, the words
+// it holds as it stands (basis.words), and whether that version could be read at all: a version
+// the document does not hold, or whose markdown is none or does not read back, is not read. A
+// version that holds no such block, or whose block's words do not render, is read and holds
+// other words than the block holds now. Words are equal where their text sums (TextSum) are.
+func (w *walker) sameWords(ctx context.Context, basis staleBasis, number int) (same, read bool) {
+	version := w.version(ctx, basis.artifactID, number)
+	if version.tree == nil {
+		return false, false
+	}
+	words, _, held := blockWords(version.tree, basis.typ, basis.blockID)
+	return held && words == basis.words, true
 }
 
 // changedWords is what the walk answers of a block: its own words as it stands, the block they

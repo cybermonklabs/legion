@@ -1,0 +1,25 @@
+{
+  "broadcast": "884bd454-3b01-42b6-a042-4d5f2e45eea0",
+  "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
+  "issue": "CORE-1",
+  "issueArtifactSlug": "requirements-md",
+  "machine": "build-host",
+  "person": "alice",
+  "pipelineAt": "2026-10-02T12:00:00Z",
+  "readMarks": {
+    "agents": {
+      "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
+        "bf656d55-34ef-41c3-84fe-aa65af31d65d"
+      ]
+    },
+    "documents": {
+      "a9cc5cfe-a514-4d01-9530-2f92fd35890b": 1
+    }
+  },
+  "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
+  "project": "CORE",
+  "projectDocumentSlug": "runbook",
+  "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
+  "agentSession": "019a5200-0008-7a00-8000-000000000008",
+  "seededAt": "2026-11-26T11:07:13.996Z"
+}

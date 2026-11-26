@@ -105,12 +105,14 @@
 -- runner applies it again (pgmigrate.LockTimeoutAttempts).
 set local lock_timeout = '500ms';
 
+-- kept for one release: agent-dismissed-owed
 create table user_agent_thread_dismissed_owed (
   seq     bigserial primary key,
   root_id uuid not null,
   owed_at timestamptz not null default now()
 );
 
+-- kept for one release: agent-dismissed-owed
 create index user_agent_thread_dismissed_owed_root_id on user_agent_thread_dismissed_owed (root_id);
 
 create function user_agent_thread_dismissed_settle(p_root uuid) returns void language plpgsql as $$
@@ -123,6 +125,7 @@ begin
   where m.id = p_root and m.author->>'kind' = 'user';
   update messages set agent_dismissed_at = v_mark
   where id = p_root and agent_dismissed_at is distinct from v_mark;
+  -- kept for one release: agent-dismissed-owed
   delete from user_agent_thread_dismissed_owed where root_id = p_root;
 end;
 $$;
@@ -143,8 +146,10 @@ begin
         update messages set agent_dismissed_at = null
         where id = old.message_id and agent_dismissed_at is not null
           and author->>'kind' = 'user' and lower(author->>'id') = old.login;
+        -- kept for one release: agent-dismissed-owed
         delete from user_agent_thread_dismissed_owed where root_id = old.message_id;
       else
+        -- kept for one release: agent-dismissed-owed
         insert into user_agent_thread_dismissed_owed (root_id) values (old.message_id);
       end if;
     end if;
@@ -155,6 +160,7 @@ begin
     where id = new.message_id and agent_dismissed_at is distinct from new.dismissed_at
       and author->>'kind' = 'user' and lower(author->>'id') = new.login;
     if found then
+      -- kept for one release: agent-dismissed-owed
       delete from user_agent_thread_dismissed_owed where root_id = new.message_id;
     end if;
   end if;
@@ -165,6 +171,7 @@ $$;
 create trigger user_agent_thread_dismissed_root after insert or update or delete on user_agent_thread_dismissed
   for each row execute function user_agent_thread_dismissed_root();
 
+-- kept for one release: user-threads-triggers
 create or replace function user_agent_thread_dismissed_clear() returns trigger language plpgsql as $$
 declare
   v_root uuid := new.id;

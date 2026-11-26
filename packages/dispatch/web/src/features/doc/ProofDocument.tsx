@@ -450,13 +450,7 @@ export function ProofDocument({
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   // The server's read of the ask the block `blockId` shows (`servedAskOfBlock`).
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOfBlock(
-      asksQuery.data ?? [],
-      liveTextQuery.data,
-      artifact.id,
-      blockId,
-      owner.kind === "issue" ? undefined : owner.project
-    );
+    servedAskOfBlock(asksQuery.data ?? [], liveTextQuery.data, artifact.id, blockId);
   // The server's read of the ask each mounted block shows, by block id, read once per render for
   // the cards below and for the editor's refusal of a reading in an open ask, which reads the
   // answer states at each edit: a ref, so the editor made once reads the latest asks read.

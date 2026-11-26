@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listing, projectArguments } from "../__tests__/playwright-listing";
 import { clockProjectNames, rowsOfListing, stubProjectNames } from "../configurations";
-import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
+import { movedRowNotes, newInTheStubbedLayer, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
 import {
   committedRecordings,
@@ -124,7 +124,7 @@ const movedLines = [
       [
         `\`e2e/${row.file}\``,
         row.title,
-        movedRowNotes[noteKey(row)] ?? unchangedByTheMove,
+        movedRowNotes[noteKey(row)] ?? newInTheStubbedLayer[row.file] ?? unchangedByTheMove,
         stubReason(row.file),
       ],
     ])
@@ -141,6 +141,14 @@ if (strayNotes.length > 0) {
   throw new Error(
     "e2e/stub/moved-row-notes.ts holds a note for these rows, and the listing names no moved " +
       `row of that file and title: delete each entry, or correct its key.\n  ${strayNotes.join("\n  ")}`
+  );
+}
+const stubFiles = new Set(moved.map((row) => row.file));
+const strayFiles = Object.keys(newInTheStubbedLayer).filter((file) => !stubFiles.has(file));
+if (strayFiles.length > 0) {
+  throw new Error(
+    "e2e/stub/moved-row-notes.ts calls these files new in the stubbed layer, and the listing " +
+      `names no stubbed row in them: delete each entry.\n  ${strayFiles.join("\n  ")}`
   );
 }
 
@@ -230,8 +238,9 @@ Each row's third column says what the move did to what it asserts. What a move c
 file the row lives in, the fixture it takes, the server behind it, and the \` @pr\` the title
 gained for the lane axis; usually it touches no line of what the row asserts, which is what
 makes "before and after" a mechanical claim rather than a prose one, and a row where something
-did change says so in that column. The reason a recording can answer it is its file's own
-header.
+did change says so in that column. A row of a file written in the stubbed layer from the start
+never moved, and that column says so instead. The reason a recording can answer it is its file's
+own header.
 
 ${table(["file", "row", "assertion before and after", "why a recording can answer it"], movedLines)}
 

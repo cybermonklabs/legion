@@ -685,8 +685,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
  * tests the rows it holds (`inboxRowsDecidedByDefault`, from the project-default branch of
- * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
- * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
+ * `ownerTargets`). An assignee write needs no such read. A read of the open asks (`openAsksQuery`)
+ * that can hold an ask of the issue - every project's, and the issue's project's - holds every one
+ * the reader can see, so the test against its rows (`inboxRowsOf`) finds each of those reads it
+ * moves. The reader's own asks come from the one read instead, which holds an ask only while it
+ * waits on the reader, and the write's `thread_logins` names the person the issue's asks waited on
+ * before the move and the one they wait on after it, so this rule reads both people's one read
+ * again.
  *
  * `thread_logins` names whose rows the write moved or reprinted - for an issue-less message the
  * thread root's author, which is the person whose Agent row it is, for a hand-on the person it
@@ -1055,7 +1060,8 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (
     event.type === "artifact.version" ||
     event.type === "artifact.created" ||
-    event.type === "artifact.renamed"
+    event.type === "artifact.renamed" ||
+    event.type === "document.retired"
   ) {
     const created = event.type === "artifact.created";
     targets.push({
@@ -1348,6 +1354,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(
       { queryKey: ["artifacts", key] },
       { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
+    return targets;
+  }
+  if (event.type === "document.retired") {
+    // A retirement takes the document out of the issue's document list, summary and Decisions
+    // view, states its artifact node gone (moving the backlink panel), and supersedes any
+    // standing approval on its own read.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact_id] },
+      { exact: true, queryKey: ["decisions", key] },
       issueSummaryOf(key, event),
       referencePanel(issueReference)
     );
@@ -1754,7 +1773,8 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a created,
- *  renamed or removed document's own, an edited or a deleted comment's document's
+ *  renamed or removed document's own, a retired document's (its `ref_key` after the owner's
+ *  `/`), an edited or a deleted comment's document's
  *  (`artifact_slug`, which the read of a deleted comment's event keeps beside its delete marks),
  *  and an edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit
  *  through the ask's own route the one that holds its typed block (`block_artifact`), or for an
@@ -1771,6 +1791,10 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;
+    case "document.retired": {
+      const slash = event.payload.ref_key.indexOf("/");
+      return slash === -1 ? undefined : event.payload.ref_key.slice(slash + 1);
+    }
     case "ask.edited":
       return (
         event.payload.anchor_artifact?.slug ??
@@ -1970,6 +1994,7 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":
+    case "document.retired":
     case "ask.edited":
     case "comment.edited":
     case "comment.deleted":

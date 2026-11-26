@@ -1202,14 +1202,16 @@ function markedPersonPage(page: PersonNodes, post: CorrectedPost): PersonNodes |
 /** A row of a person's page that is the post, once `mark` is written: the edit's time, or the
  *  delete's mark with no first line and no tree of it, as the server answers the row of a deleted
  *  comment or issue message, whose cleared body leaves no first line (`listPersonNodes` in
- *  `api/person_nodes.go`). An edit keeps the first line, as every other copy keeps its words,
+ *  `api/person_nodes.go`), under either of its names: `first_line`, and `title`, the name a page of
+ *  the release before reads. An edit keeps the first line, as every other copy keeps its words,
  *  until a read gives the new ones. */
 function markedPersonNode(row: PersonNode, mark: PostMark): PersonNode {
   if (mark.kind === "edited") {
     return { ...row, edited_at: editedAfter(row.edited_at, mark.at) };
   }
   const { deleted_by: _by, first_line_tree: _tree, ...kept } = row;
-  return { ...kept, ...deletionMarks(mark.deletion), first_line: "" };
+  // kept for one release: person-node-title
+  return { ...kept, ...deletionMarks(mark.deletion), first_line: "", title: "" };
 }
 
 /** A search answer once `post` is corrected: each hit of the post; undefined where none is. */

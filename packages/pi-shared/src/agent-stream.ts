@@ -125,7 +125,7 @@ const ENVOY_CARD = "envoy-message";
  * session (pi-envoy's `handCard` writes it), or answers one (the agent's copy of a person's
  * `!command` report, whose frame the stream already carries tagged with that message): that
  * message's id. Dispatch stores every message it delivers to a session for that session, and the
- * live view draws it from that store (`GET /api/v1/agents/{session_id}/messages`), or from the
+ * live view draws it from that store (`GET /api/v1/agents/{session_id}/conversation`), or from the
  * report's own frame, so such a card is not streamed: the page would show the message twice.
  */
 export interface DispatchMessageCardDetails {
@@ -593,7 +593,7 @@ export class AgentStreamPublisher {
    * away. The `{tokens: 0, contextWindow, percent: null}` answer reports a window and no figure,
    * so it leaves the slot as it is, neither replacing nor clearing it.
    *
-   * The pinned host (Oh My Pi 18.18.6-sami.20261125-001804, `.omp-pin`) answers undefined only
+   * The pinned host (Oh My Pi 18.18.6-sami.20261125-164517, `.omp-pin`) answers undefined only
    * from a runner not yet initialised, never after a good reading, so clearing on it cannot make
    * the ring flicker. A window of zero comes from a model with no window, or from no model, and
    * lasts until the model changes. The `percent: null` guard stays for an older pinned build,

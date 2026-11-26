@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -149,7 +150,9 @@ type meInboxRequest struct {
 	// state is the page's narrowing - unread, inbox or dismissed - or "" for the tuple walk.
 	state string
 	// kinds narrows the answer to the entries of these relation kinds, nil for every kind.
-	kinds    []string
+	kinds []string
+	// limit is the page's size, nil for every entry; under state=dismissed it is never nil, since
+	// parseMeInboxRequest reads an absent one there as one page.
 	limit    *int
 	offset   int
 	cursor   *meInboxCursor
@@ -241,13 +244,25 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 	if request.limit, request.offset, err = parseLimitOffset(query); err != nil {
 		return meInboxRequest{}, err
 	}
-	// The Dismissed view is a pile that only grows, so its read answers one page at a time: with
-	// no limit it answers myRepliesDismissedPage entries, as GET /api/v1/me/replies does, and the
-	// arms are cut to that page before the walk (meInboxDismissedCut). A limit above it is refused
-	// by its key above, as it is in every state.
-	if request.limit == nil && request.state == myRepliesStateDismissed {
-		page := myRepliesDismissedPage
-		request.limit = &page
+	if request.state == myRepliesStateDismissed {
+		// The Dismissed view is the person's whole pile, so it is read a page at a time whatever
+		// the request names: an absent limit is the page GET /api/v1/me/replies?state=dismissed
+		// answered, myRepliesDismissedPage rows, and the page after it is read from next_cursor.
+		// The arms are cut to that page before the walk (meInboxDismissedCut), and a limit above
+		// it is refused by its key above, as it is in every state.
+		if request.limit == nil {
+			page := myRepliesDismissedPage
+			request.limit = &page
+		}
+		// The statement reads the state's rows to offset + limit + 1 (meInboxDismissedLimit), a
+		// sum Postgres takes in bigint, so an offset that would take the sum past the largest
+		// integer is refused here rather than failing the statement with bigint out of range: the
+		// bound listMyReplies keeps on its own offset + limit, with the one row past the page.
+		if through := math.MaxInt - *request.limit - 1; request.offset > through {
+			return meInboxRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY",
+				"offset must be at most %d under state=%s with limit %d, since the page is read to offset + limit + 1",
+				through, myRepliesStateDismissed, *request.limit)
+		}
 	}
 	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
 		cursor, err := parseMeInboxCursor(raw, request.state)
@@ -1905,11 +1920,12 @@ const meInboxDismissedLimit = `case when ` + meInboxKindsParam + `::text[] is nu
 // project (meInboxVisible) here, the owner in the fragment the cut ends - so no row the page would
 // answer lies past a row the cut took and the page dropped. And a request narrowed by relation
 // kind keeps the whole arm, since whether a row holds one of those kinds is the walk's to say,
-// which the cut comes before; no caller sends one to this state. The request always holds a limit
-// under this state, since one it does not name is myRepliesDismissedPage (parseMeInboxRequest), so
-// the cut always takes one page. That the generic plan reads the cut off the index in its order and
-// stops at it, rather than reading the whole arm and sorting it, rests on the arm's other tests as
-// well: an owner's test is in the text only where the request names that owner (meInboxPageRows).
+// which the cut comes before; no caller sends one to this state. Every request of this state
+// carries a limit, an absent one read as one page (parseMeInboxRequest), so with no ?kind= the cut
+// stops at a page. That the generic plan reads the cut off the index in its order and stops at it,
+// rather than reading the whole arm and sorting it, rests on the arm's other tests as well: an
+// owner's test is in the text only where the request names that owner
+// (meInboxPageRows).
 func meInboxDismissedCut(kind, id, moment string) string {
 	return `
 		  and (` + moment + `, ` + id + `) < (coalesce(` + meInboxCursorMoment + `::timestamptz, 'infinity'),

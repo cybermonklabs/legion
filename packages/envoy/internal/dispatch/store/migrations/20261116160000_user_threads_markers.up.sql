@@ -48,6 +48,7 @@
 -- image rollback alone, and the columns left behind are read by nothing of that release.
 alter table user_threads add column marked_version bigint, add column marked_seq bigint;
 
+-- kept for one release: older-writer-unmark
 create function user_threads_unmarked_by_older_writer() returns trigger language plpgsql as $$
 begin
   if current_setting('dispatch.store_marker_writer', true) is distinct from 'on' or pg_trigger_depth() > 1 then
@@ -65,6 +66,7 @@ $$;
 -- function is called, at the depth of the statement that updates the row, so its depth test is
 -- `> 0` where the function body's, called one level deeper, is `> 1`: both say the update runs
 -- inside another trigger.
+-- kept for one release: older-writer-unmark
 create trigger user_threads_store_marker before update on user_threads
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on' or pg_trigger_depth() > 0)

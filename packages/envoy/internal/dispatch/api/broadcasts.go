@@ -619,6 +619,7 @@ func (s *server) queueBroadcastCopy(
 ) error {
 	graphstore.QueueNodes(b, copied.stored.written)
 	nodeKind, nodeAddress := copied.stored.rowNode()
+	// kept for one release: user-threads-triggers
 	b.Queue("", `
 		insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position, created_at, node_kind, node_address, threads_recorded)
 		values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, true)

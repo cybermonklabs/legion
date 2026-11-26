@@ -25,8 +25,11 @@
 #               and hold the page's requests by their paths, and a wait on a path the page no
 #               longer reads fails only in a browser run. A few of its files read a kept route on
 #               purpose and are spared, each by its exact path (callers_spared says why), and its
-#               recorded HARs by their extension. A scratch tree holding a planted read in each of
-#               those forms, and two planted sends, is searched first.
+#               recorded HARs by their extension. The two fallbacks of the release roll are spared
+#               by their file and the one function that holds each, and no other line of those
+#               files is. A scratch tree holding a planted read in each of those forms, two
+#               planted sends, and a read inside and a read outside each spared function, is
+#               searched first.
 #   gone        no tracked file but frozen history names the comparison (its command
 #               `inbox-compare`, its package, its table, its route and page, its types) or the
 #               opt-in (its query key `one=1` and its browser preference `inbox.one_read`); a
@@ -415,6 +418,10 @@ setup_section() {
 # often a regex with escaped slashes as a literal. So the search reads the suite too, beyond the
 # four trees the check names, and spares by path the few of its files that read a route.
 readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packages/pi-envoy/src packages/claude-envoy/src packages/dispatch/e2e)
+# What the search spares. Each entry is a path or a glob, a file spared whole, or a path, a space
+# and the name of a function, of which that function alone is spared, from its declaration through
+# the brace that closes it, and every other line of the file is read.
+#
 # The files of the suite that name a read of the three on purpose, each by its exact path:
 # - inbox-unchanged.e2e.ts reads the base build's GET /api/v1/inbox?assignee= to compare the
 #   head's read of the open asks with it;
@@ -426,14 +433,45 @@ readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packa
 # And the suite's recordings: each HAR under __recordings__ holds the requests a page made when it
 # was recorded, data that calls nothing, and is recorded again against this branch's server before
 # the hand-off. They are spared by their extension, so a script or spec under that directory is
-# still read.
+# still read. And acceptance/root-deletes.txt, the list of what the root's pull request deletes,
+# which names the kept reads it deletes and calls nothing.
+#
+# The two fallbacks of the release roll, each by its file and the one function that holds it, each
+# with its line in root-deletes.txt and a test that drives it against the refusal it answers:
+# - the page's openAsksOfTheReleaseBefore (web/src/api/client.ts), which reads GET /api/v1/inbox
+#   and which openAsksQuery calls only where the read of every project's open asks is refused 400
+#   AUTHOR_SESSION_OR_PROJECT_REQUIRED, as a Dispatch process of the release before refuses it;
+# - `dispatch inbox`'s inboxReadOfTheReleaseBefore (envoy-client/src/dispatch-commands/session.ts),
+#   which reads GET /api/v1/inbox and GET /api/v1/me/replies only where the server answers
+#   GET /api/v1/me/inbox with no route.
+# Each one's test answers the reads it makes as a server of the release before answers them, so it
+# names them and calls nothing: it is a file of its own, which holds that test alone, spared by its
+# exact path and deleted with its fallback (web/src/api/open-asks-release-before.test.ts and
+# envoy-client/src/__tests__/dispatch-inbox-release-before.test.ts).
 readonly callers_spared=(
-  ':(exclude)packages/dispatch/e2e/inbox-unchanged.e2e.ts'
-  ":(exclude)$self"
-  ':(exclude)packages/dispatch/e2e/acceptance/one-inbox-kinds.sh'
-  ':(exclude)packages/dispatch/e2e/__tests__/stub-recording.test.ts'
-  ':(exclude)packages/dispatch/e2e/__recordings__/*.har'
+  'packages/dispatch/e2e/inbox-unchanged.e2e.ts'
+  "$self"
+  'packages/dispatch/e2e/acceptance/one-inbox-kinds.sh'
+  'packages/dispatch/e2e/__tests__/stub-recording.test.ts'
+  'packages/dispatch/e2e/__recordings__/*.har'
+  'packages/dispatch/e2e/acceptance/root-deletes.txt'
+  'packages/dispatch/web/src/api/client.ts openAsksOfTheReleaseBefore'
+  'packages/dispatch/web/src/api/open-asks-release-before.test.ts'
+  'packages/envoy-client/src/dispatch-commands/session.ts inboxReadOfTheReleaseBefore'
+  'packages/envoy-client/src/__tests__/dispatch-inbox-release-before.test.ts'
 )
+# callers_spared parted: the files spared whole, as the pathspecs that leave them out of the
+# search, and the functions spared, each `<path> <function>`.
+callers_excluded=()
+callers_functions=()
+for spared in "${callers_spared[@]}"; do
+  if [[ "$spared" == *" "* ]]; then
+    callers_functions+=("$spared")
+  else
+    callers_excluded+=(":(exclude)$spared")
+  fi
+done
+readonly callers_excluded callers_functions
 # Each path the three reads answer at, in every way a caller writes it: a literal, a template, a
 # route pattern or a glob; a regex, its slashes escaped (`\/`, or `\\/` in the string a RegExp is
 # built from); string pieces joined by `+` ("/api/v1/" + "inbox"); or the segment list
@@ -464,12 +502,53 @@ readonly names_a_send='\bPOST\b|["'"'"']post["'"'"']|\.post\(|createAgentMessage
 readonly names_a_read='\bGET\b|["'"'"']get["'"'"']|\.get\(|\.read\(|#json\("GET"'
 readonly a_comment='^[[:space:]]*(//|\*|/\*|#)'
 
-# callers_in ROOT: every read of the three paths under ROOT's five trees, the spared files aside,
-# one `path:line: <read>` each. A comment line names a path and calls nothing; a hit of the
-# sessions' path is a send, and no read, where the send's words stand near it.
+# spared_span ROOT PATH NAME: prints `FIRST LAST`, the lines of PATH under ROOT from the first
+# declaration of the function NAME - a `function` of that name, or a method of a class, at any
+# indentation - through the line that closes it, which is that declaration's own indentation
+# followed by `}` and nothing else. An overload's declarations stand above its body, inside that
+# span. It prints nothing and fails where PATH is not there, declares no such function, leaves it
+# unclosed, or declares it again outside that span: a spare that no longer names one function
+# spares no line.
+spared_span() {
+  local root="$1" path="$2" name="$3"
+  [[ -f "$root/$path" ]] || return 1
+  awk -v name="$name" '
+    BEGIN { declared = "^[ \t]*((export|async|static|private|public|protected)[ \t]+)*(function[ \t]+)?" name "[ \t]*[(<]" }
+    $0 ~ declared {
+      if (first == 0) {
+        first = NR
+        match($0, /^[ \t]*/)
+        closing = substr($0, 1, RLENGTH) "}"
+      } else if (last != 0) {
+        stray = 1
+      }
+      next
+    }
+    first != 0 && last == 0 && $0 == closing { last = NR }
+    END {
+      if (first == 0 || last == 0 || stray) exit 1
+      print first, last
+    }
+  ' "$root/$path"
+}
+
+# callers_in ROOT: every read of the three paths under ROOT's five trees, the spared files and
+# functions aside, one `path:line: <read>` each. A comment line names a path and calls nothing; a
+# hit of the sessions' path is a send, and no read, where the send's words stand near it. A spared
+# function ROOT does not declare once is a finding of its own, `path:0: ...`.
 callers_in() {
-  local root="$1" hits file line text read from
-  hits="$(grep_tree "$root" -e "$path_inbox" -e "$path_replies" -e "$path_messages" -- "${caller_trees[@]}" "${callers_spared[@]}")" ||
+  local root="$1" hits file line text read from spared path name span opens closes within
+  local -a spans=()
+  for spared in "${callers_functions[@]}"; do
+    path="${spared% *}"
+    name="${spared##* }"
+    if span="$(spared_span "$root" "$path" "$name")"; then
+      spans+=("$path $span")
+    else
+      printf '%s:0: callers_spared spares the function %s, which this file does not declare once and close\n' "$path" "$name"
+    fi
+  done
+  hits="$(grep_tree "$root" -e "$path_inbox" -e "$path_replies" -e "$path_messages" -- "${caller_trees[@]}" "${callers_excluded[@]}")" ||
     return 1
   [[ -n "$hits" ]] || return 0
   while IFS= read -r hit; do
@@ -478,6 +557,15 @@ callers_in() {
     text="${line#*:}"
     line="${line%%:*}"
     [[ ! "$text" =~ $a_comment ]] || continue
+    within=0
+    for span in "${spans[@]}"; do
+      read -r path opens closes <<<"$span"
+      if [[ "$file" == "$path" && "$line" -ge "$opens" && "$line" -le "$closes" ]]; then
+        within=1
+        break
+      fi
+    done
+    [[ "$within" == 0 ]] || continue
     if grep -qE "$path_inbox" <<<"$text"; then
       read="GET /api/v1/inbox"
     elif grep -qE "$path_replies" <<<"$text"; then
@@ -547,6 +635,33 @@ export async function plantedSend(page: Page) {
 TS
   # A script beside the recordings, which their sparing by extension still reads.
   printf '%s\n' 'await fetch("/api/v1/inbox");' >"$plant/packages/dispatch/e2e/__recordings__/planted-caller.ts"
+  # Each spared function, in a file at its path, beside another function of that file that reads
+  # one of the paths too: the search spares the read inside the spared function and finds the one
+  # outside it, so it spares by function and not by file. The page's is a method of a class, and
+  # the command's a function with an overload above its body.
+  mkdir -p "$plant/packages/dispatch/web/src/api" "$plant/packages/envoy-client/src/dispatch-commands"
+  cat >"$plant/packages/dispatch/web/src/api/client.ts" <<'TS'
+export class PlantedClient {
+  openAsksOfTheReleaseBefore(query: { readonly project?: string }) {
+    return this.read("/api/v1/inbox", {}, query);
+  }
+
+  plantedRead() {
+    return this.read("/api/v1/inbox", {});
+  }
+}
+TS
+  cat >"$plant/packages/envoy-client/src/dispatch-commands/session.ts" <<'TS'
+function inboxReadOfTheReleaseBefore(client: Client, state: "inbox", error: unknown): Promise<unknown>;
+async function inboxReadOfTheReleaseBefore(client: Client, state: string, error: unknown) {
+  if (state === "inbox") return await client.readRoute(`/api/v1/inbox?${new URLSearchParams({ assignee: "me" })}`);
+  return await client.readRoute(`/api/v1/me/replies?${new URLSearchParams({ kind: "reply,agent" })}`);
+}
+
+export async function plantedRead(client: Client) {
+  return await client.readRoute("/api/v1/me/replies?kind=reply,agent");
+}
+TS
   found="$(callers_in "$plant")" || fail "$section" "search the scratch tree" "git grep failed"
   local want
   local -a wants=(
@@ -563,6 +678,8 @@ TS
     "packages/dispatch/e2e/planted-caller.e2e.ts:7: GET /api/v1/me/replies"
     "packages/dispatch/e2e/planted-caller.e2e.ts:8: GET /api/v1/agents/{session_id}/messages"
     "packages/dispatch/e2e/__recordings__/planted-caller.ts:1: GET /api/v1/inbox"
+    "packages/dispatch/web/src/api/client.ts:7: GET /api/v1/inbox"
+    "packages/envoy-client/src/dispatch-commands/session.ts:8: GET /api/v1/me/replies"
   )
   for want in "${wants[@]}"; do
     [[ "$found" == *"$want:"* ]] ||
@@ -570,11 +687,11 @@ TS
   done
   [[ "$(grep -c . <<<"$found")" == "${#wants[@]}" ]] ||
     fail "$section" "the search finds the ${#wants[@]} planted reads in the scratch tree, and nothing else" "it found: $found"
-  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch tree of the five trees - plain, in a template, in a segment list, regex-escaped, joined by +, as a glob and as a route pattern - and not the two planted sends or anything else"
+  pass "$section" "the search finds the ${#wants[@]} planted reads in a scratch tree of the five trees - plain, in a template, in a segment list, regex-escaped, joined by +, as a glob, as a route pattern and in a function of a file beside a spared one - and not the two planted sends, the reads inside the two spared functions or anything else"
 
   found="$(callers_in "$repo")" || fail "$section" "search the five trees" "git grep failed"
   [[ -z "$found" ]] || fail "$section" "no read of the three paths in ${caller_trees[*]}" "$found"
-  pass "$section" "no read of GET /api/v1/inbox, GET /api/v1/me/replies or GET /api/v1/agents/{session_id}/messages in ${caller_trees[*]}, the spared files aside"
+  pass "$section" "no read of GET /api/v1/inbox, GET /api/v1/me/replies or GET /api/v1/agents/{session_id}/messages in ${caller_trees[*]}, the spared files and functions aside"
 }
 
 # --- gone: the comparison and the opt-in ----------------------------------------------------------

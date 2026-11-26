@@ -46,10 +46,9 @@ import { referencesLaneFiles } from "../../../../e2e/reference-lane";
  * however many components hand it on. The one excuse is a row whose text reaches the page with
  * no tree (`UNTREED_ROWS`), named by its id: a live turn and its reasoning, a write the server
  * has not stored (a held message, and the draft a broadcast's send row draws until Dispatch has
- * made the broadcast), a GitHub body, a suggestion's two sides, which `margin/ThreadCard.tsx` -
- * main's own mounts - draws inside a diff, where the renderer writes characters and parses
- * nothing, and the words of a spec block a decision shaped, which the decisions read sends with
- * no reading of them. A row that names its text (`UntreedRow.text`) excuses that text
+ * made the broadcast), a GitHub body, and a suggestion's two sides, which
+ * `margin/ThreadCard.tsx` - main's own mounts - draws inside a diff, where the renderer writes
+ * characters and parses nothing. A row that names its text (`UntreedRow.text`) excuses that text
  * alone, so a made broadcast's row, drawn from the body Dispatch stored, is held to that body's
  * tree.
  *
@@ -2384,11 +2383,6 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
   {
     surface: "margin-suggestion-diff",
     why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
-  },
-  {
-    surface: "decision-shaped-link",
-    text: "link.to.text",
-    why: "A link under the Decisions panel's Shaped in the spec names the spec block a decision shaped by the block's words, which the decisions read sends as the block's stored excerpt (`to.text`, `decisionread.readLinks`) and no reading of them, so the page parses them.",
   },
 ];
 

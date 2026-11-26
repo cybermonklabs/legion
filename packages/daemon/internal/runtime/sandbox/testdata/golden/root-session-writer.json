@@ -18,7 +18,7 @@
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
           "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
-          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"3\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"19Gi\"},\"requests\":{\"cpu\":\"3\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"19Gi\"}},\"disk\":\"20Gi\"}"
+          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"8Gi\"},\"requests\":{\"cpu\":\"2\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"8Gi\"}},\"disk\":\"20Gi\"}"
         },
         "labels": {
           "legion.dev/issue": "LEGION-208",
@@ -78,14 +78,14 @@
             "name": "roles",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -277,14 +277,14 @@
             "name": "workspace-fetch",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -360,14 +360,14 @@
             "name": "workspace-init",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {

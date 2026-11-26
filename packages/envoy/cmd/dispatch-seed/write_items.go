@@ -372,6 +372,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	// The address of the comment's own node, which the batch writes before its first row, whether
 	// the batch stated its pointers there, and that the seed records the comment in its thread, as
 	// the server's comment write says of each comment it writes (threads_recorded).
+	// kept for one release: user-threads-triggers
 	columns += ", node_kind, node_address, tuples_stored, threads_recorded"
 	parameters += fmt.Sprintf(", $%d, $%d, $%d, true", next, next+1, next+2)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
@@ -656,6 +657,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 				kind := graphstore.KindMessage
 				nodeKind, nodeAddress = &kind, &row.ID
 			}
+			// kept for one release: user-threads-triggers
 			if _, err := tx.Exec(ctx, `
 				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address, threads_recorded)
 				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, true)
@@ -745,11 +747,11 @@ func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 }
 
 // write inserts the rows and answers the citation the server's own writer of an item's refs rows
-// states beside each row it inserts (refs.replaceRefs): a `mentions` tuple, of the row's own kind,
-// out of the item's node to the row's far end, dated by the row and made by the seed's author. The
-// batch wrote every item's node before its rows, so each row is a citation of the store's and says
-// so in its own insert (refs.tuples_stored), but for a far end past the store's address bound,
-// which is no tuple and holds false.
+// states beside each row it inserts (refs.Replacement.Queue): a `mentions` tuple, of the row's
+// own kind, out of the item's node to the row's far end, dated by the row and made by the seed's
+// author. The batch wrote every item's node before its rows, so each row is a citation of the
+// store's and says so in its own insert (refs.tuples_stored), but for a far end past the store's
+// address bound, which is no tuple and holds false.
 func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) ([]graphstore.UncausedTuple, error) {
 	if len(m.ids) == 0 {
 		return nil, nil

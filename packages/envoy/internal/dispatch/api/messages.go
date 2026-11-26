@@ -630,39 +630,31 @@ func (s *server) createStoredMessage(
 	// before the batch is sent and queued where it fails.
 	fails := failpoint.Planned(ctx, failpoint.Message)
 	// A person's own reply under an Agent thread dismisses it for them where a session answered its
-	// root (inboxwrite's step 6), so it takes that root `for update` before its insert, whose
-	// foreign key holds its parent `for key share`: taken after that, the lock would be an upgrade
-	// that can deadlock against the dismiss route, which takes the root before the person's rows
-	// with this same statement (inboxDismissLockAgentRoots; D6, the lock order on
-	// markInboxReadThreads, api/inbox_read.go). The dismissal's row then moves the root's
-	// agent_dismissed_at under this lock (migration 20261125053125's trigger), as the dismiss
-	// route's does. Whether a session answered the root is read here, before any lock, by a plain
-	// read, which assigns no transaction id (ownAgentRootAnswered). No statement deletes a message,
-	// so a root answered then is answered under the lock, which goes first in the write batch below
-	// (agentRoot). A root that read finds unanswered is taken here and read again once the lock is
-	// granted (lockOwnAgentRoot), since a session's reply may have committed meanwhile; a root still
-	// unanswered is no Agent row, so the reply writes no dismissal of it
-	// (inboxwrite.Recording.Unanswered), and the write batch takes no lock this transaction holds.
-	agentRoot := ""
+	// root (inboxwrite's step 6). Its plan took that root `for update` in the statement that walked
+	// to it (inboxwrite.PlanRecord, inboxwrite.AgentDismissalRootWalkLockStatement), the first lock
+	// of the root this transaction holds and before the reply's insert, whose foreign key holds its
+	// parent `for key share`: taken after either, the lock would be an upgrade that can deadlock
+	// against the dismiss route, which takes the root before the person's rows at that same level
+	// (inboxDismissLockAgentRoots; D6, the lock order on markInboxReadThreads, api/inbox_read.go),
+	// or against a reply of the release before, which holds the root `for key share` and then takes
+	// it `for no key update` to delete a mark (migration 20261125053125). The dismissal's row then
+	// moves the root's agent_dismissed_at under this lock (that migration's trigger), as the
+	// dismiss route's does. Whether a session answered the root is read here, in a statement of its
+	// own once that lock is granted, so its snapshot holds every session's reply that committed
+	// while the lock waited, and no session's reply commits after it before this transaction does,
+	// since each takes the root before it can (inboxwrite.Recording.Unanswered). A root still
+	// unanswered is no Agent row, so the reply writes no dismissal of it.
 	if root, dismisses := recording.AgentDismissal(); dismisses {
 		var answered bool
 		if err := tx.QueryRow(ctx, ownAgentRootAnswered, root).Scan(&answered); err != nil {
 			return model.Message{}, nil, fmt.Errorf("read whether a session answered the agent thread's root %s: %w", root, err)
 		}
-		if answered {
-			agentRoot = root
-		} else {
-			if answered, err = lockOwnAgentRoot(ctx, tx, root); err != nil {
-				return model.Message{}, nil, err
-			}
-			if !answered {
-				recording = recording.Unanswered()
-			}
+		if !answered {
+			recording = recording.Unanswered()
 		}
 	}
-	// The thread's root - `for update` where the message is a person's own reply under an Agent
-	// root a session answered before this write took any lock (agentRoot), `for no key update` where
-	// it is a session's reply that clears its Agent dismissals (inboxwrite.Recording.QueueRootLock)
+	// The thread's root - `for no key update` where the message is a session's reply that clears
+	// its Agent dismissals and its plan did not take the root (inboxwrite.Recording.QueueRootLock)
 	// - the parent's lock, the index its blocks owe, the message's node, the insert, the recovery
 	// point, this message's own index, the event, its stamp, what the node write and the index
 	// stated, its author, its record in its thread and a targeted message's first delivery attempt
@@ -670,12 +662,8 @@ func (s *server) createStoredMessage(
 	// and every cause name the event's id as the id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		// The thread's root first: a person's own reply takes its Agent root `for update` here where
-		// its read found a session's answer (agentRoot), having taken it above where it found none,
-		// and a session's reply takes its root `for no key update`; a message is never both.
-		if agentRoot != "" {
-			b.Queue("", inboxDismissLockAgentRoots, []string{agentRoot})
-		}
+		// The thread's root first, for a session's reply whose plan did not take it; a person's own
+		// reply under an Agent thread holds its root from its plan.
 		recording.QueueRootLock(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
@@ -686,6 +674,7 @@ func (s *server) createStoredMessage(
 		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
 		nodeKind, nodeAddress := stored.rowNode()
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
@@ -722,10 +711,8 @@ func (s *server) createStoredMessage(
 			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, message.ID, actor, createdAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
-			if err := queueRecordAndMentions(b, recording, indexed, actor, createdAt, graphstore.LatestEvent); err != nil {
-				return err
-			}
-		} else if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
+		}
+		if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
 			return err
 		}
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
@@ -789,31 +776,11 @@ func (s *server) createStoredMessage(
 	return message, advice, nil
 }
 
-// lockOwnAgentRoot takes root, the root message of the Agent thread a person's own reply takes out
-// of their Inbox (inboxwrite.Recording.AgentDismissal), `for update`, with the dismiss route's own
-// statement (inboxDismissLockAgentRoots), and then answers whether a session answered it
-// (ownAgentRootAnswered). Its writer calls it only for a root its plain read found no session's
-// answer under (createStoredMessage). The two go in one batch and stay two statements: the server
-// starts the read, taking its snapshot, only once the lock is granted, so it holds every session's
-// reply that committed while the lock waited, and no session's reply commits after it before this
-// transaction does, since each takes the root before it can (inboxwrite.Recording.Unanswered).
-// store.LockOwnerAndRead sends its lock and its read the same way, but its lock is an advisory
-// owner lock, which assigns no transaction id. This one is a row lock, which does: the transaction
-// holds its id from this batch on, so this rare path pays one round trip inside the window
-// (INFRA-636), this batch's, before the write batch.
-func lockOwnAgentRoot(ctx context.Context, tx pgx.Tx, root string) (answered bool, err error) {
-	batch := &pgx.Batch{}
-	batch.Queue(inboxDismissLockAgentRoots, []string{root})
-	batch.Queue(ownAgentRootAnswered, root).QueryRow(func(row pgx.Row) error { return row.Scan(&answered) })
-	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-		return false, fmt.Errorf("take the agent thread's root %s: %w", root, err)
-	}
-	return answered, nil
-}
-
 // ownAgentRootAnswered answers whether the thread under the Agent root $1 holds a session's reply:
 // the thread as the Inbox's reads walk it (agentThreadCTE), and a reply as the one an Agent row is
-// drawn from (myAgentRowFacts' replies), so a root it answers false for is no Agent row.
+// drawn from (myAgentRowFacts' replies), so a root it answers false for is no Agent row. Its writer
+// sends it once the plan holds the root `for update` (createStoredMessage), as a statement of its
+// own, so under read committed it takes its snapshot after that lock was granted.
 var ownAgentRootAnswered = agentThreadCTE("$1::uuid") + `
 	select exists (select 1 from thread t where t.author->>'kind' = 'session')`
 
@@ -1331,6 +1298,7 @@ func (s *server) listAgentConversation(w http.ResponseWriter, r *http.Request) {
 // listAgentMessages answers GET /api/v1/agents/{session_id}/messages, which a page of the release
 // before the conversation read calls: the same rows, so that page keeps working through a roll
 // and after a rollback.
+// kept for one release: inbox-old-reads
 func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 	s.answerAgentConversation(w, r)
 }

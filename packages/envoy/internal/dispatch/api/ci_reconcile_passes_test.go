@@ -170,7 +170,7 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), leases, cireconcile.Lease, time.Time{}, 0, func(context.Context) {
+		duty.Exclusive(t.Context(), nil, leases, cireconcile.Lease, time.Time{}, 0, func(context.Context) {
 			close(held)
 			<-let
 		})

@@ -113,42 +113,6 @@ func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool, s
 	return &copied, true
 }
 
-// withoutBlocks is a copy of tree without each block drop names, wherever it stands, and whether
-// it took one out. Each container on the way to one is a fresh node; every other node is tree's
-// own, which nothing here changes.
-//
-// kept for one release: decisions-step
-func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
-	if tree.Type == "text" || len(tree.Children) == 0 {
-		return tree, false
-	}
-	var children []*pmdoc.Node
-	took := false
-	for index, child := range tree.Children {
-		if drop(child) {
-			if children == nil {
-				children = slices.Clone(tree.Children[:index])
-			}
-			took = true
-			continue
-		}
-		next, tookBelow := withoutBlocks(child, drop)
-		if tookBelow && children == nil {
-			children = slices.Clone(tree.Children[:index])
-		}
-		if children != nil {
-			children = append(children, next)
-		}
-		took = took || tookBelow
-	}
-	if !took {
-		return tree, false
-	}
-	copied := *tree
-	copied.Children = children
-	return &copied, true
-}
-
 // withoutAddedShapedPointers is a copy of tree with the `shaped` pointers added names taken off
 // the ask block each names by block id, an ask holding an answer (decided), every other pointer
 // of that block kept, and whether it took one off: the pointers the conversion's write gave an

@@ -151,9 +151,8 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 	return stated + len(cleared), nil
 }
 
-// UnderEvent is tuples, each stated under event: an older write's own, as RecordOlder and the
-// backfill's pass over an older build's comment edits state what such a write names. It is a new
-// slice, and tuples is left as it was.
+// UnderEvent is tuples, each stated under event: an older write's own, as RecordOlder states what
+// such a write names. It is a new slice, and tuples is left as it was.
 func UnderEvent(tuples []graphstore.Tuple, event int64) []graphstore.Tuple {
 	under := make([]graphstore.Tuple, len(tuples))
 	for index, tuple := range tuples {

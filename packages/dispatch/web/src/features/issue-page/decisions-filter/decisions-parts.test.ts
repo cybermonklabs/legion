@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
@@ -291,6 +292,48 @@ test("a person's decision is the answered ask's entry with its ties, and a readi
   }
 });
 
+// The release before answers a person's decision as a section that cites the answered ask,
+// addressed by the section's heading block, which names no ask (`withEntries`). The filter reads
+// it as this build's: the answered ask's entry is the person's decision and carries the
+// statements the section's links name, and nothing else stands for it - the tree draws no node
+// of the section's own, and no other part holds an entry of it.
+test("a person's section of the release before is the entry of the ask it cites, with its ties", () => {
+  const children = [
+    statement("s1"),
+    statement("s2"),
+    answeredAsk("a1", { at: "2026-11-12T09:00:00Z", text: "Keep the rail." }),
+  ];
+  const section = personDecision("a1", {
+    block_id: "h-rail",
+    links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-h-rail`,
+    text: "## Keep the rail\n\nOne rail for every width.",
+  });
+  const decisions = withEntries(
+    {
+      decisions: [section],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const parts = decisionsParts({
+    asks: [],
+    decisions,
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree(children),
+  });
+
+  expect(idsOf(parts).yours).toEqual(["a1"]);
+  expect(parts.yours[0]?.shapes.map((shape) => shape.id)).toEqual([
+    statement("s1").id,
+    statement("s2").id,
+  ]);
+  expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
+});
+
 // R2: the third part is the reader's own decisions. What another person answered, declined or
 // kept is theirs, and so is a question its asker took back: each is still an entry of the
 // filter, under the heading that says it is not the reader's.
@@ -508,6 +551,64 @@ test("a kept decision names who kept it, and one changed since waits again", () 
     keptBy: { id: "alice", kind: "user" },
     standing: "kept",
   });
+});
+
+// R2, R4: a `decision` block whose `decided_by` names a person is that person's decision, and
+// stands as an answered ask stands by its answerer: in the decider's part, the reader's own or
+// what others decided, by the time it was made, tied to a statement or not and replaced or not.
+// It is never in the review list and never at the foot, which holds the agents' decisions; the
+// read's `kind` is the node's shape, `agent` for every block, and never says who decided.
+test("a decision block a person decided stands in the decider's part, tied or not", () => {
+  const alice = { id: READER, kind: "person" };
+  const bob = { id: "bob", kind: "person" };
+  const parts = partsOf(
+    [
+      statement("s1"),
+      decisionNode("mine-tied"),
+      decisionNode("mine-loose"),
+      decisionNode("bobs-tied"),
+      decisionNode("bobs-replaced"),
+      decisionNode("agents"),
+    ],
+    [
+      decision("mine-tied", {
+        changed_at: "2026-11-14T09:00:00Z",
+        decided_by: alice,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("mine-loose", {
+        changed_at: "2026-11-13T09:00:00Z",
+        decided_by: alice,
+        waiting_review: false,
+      }),
+      decision("bobs-tied", {
+        changed_at: "2026-11-12T09:00:00Z",
+        decided_by: bob,
+        links: [shaped(specRef("s1"))],
+        waiting_review: false,
+      }),
+      decision("bobs-replaced", {
+        changed_at: "2026-11-11T09:00:00Z",
+        decided_by: bob,
+        replaced: true,
+        waiting_review: false,
+      }),
+      // The agent's own, tied and waiting: the one decision the review list holds.
+      decision("agents", { links: [shaped(specRef("s1"))] }),
+    ]
+  );
+
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [D("bobs-tied"), D("bobs-replaced")],
+    review: [D("agents")],
+    yours: [D("mine-tied"), D("mine-loose")],
+  });
+  expect(parts.yours[0]).toMatchObject({ at: "2026-11-14T09:00:00Z", kind: "decision" });
+  expect(parts.others[1]).toMatchObject({ standing: "replaced" });
 });
 
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and

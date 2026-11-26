@@ -16,7 +16,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import { isDecisionEntry } from "../issue/decision-entries";
+import { isDecisionEntry, personDecisionAsk } from "../issue/decision-entries";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { ReferenceNameReading } from "../refs/reference-names";
@@ -1050,14 +1050,14 @@ function addTurns(
  * decision's own content as the read answers it (`decisionContent`), whose references resolve
  * against the document the block stands in (`decisionDocumentId`).
  *
- * Who decided an agent's decision is its entry's `decided_by`: the draft's author is that
- * decider (`deciderOf`), and a decision no entry names a decider for has none, so its row says
- * nobody was recorded (R9).
+ * Who decided a `decision` block, a person or an agent, is its entry's `decided_by`: the draft's
+ * author is that decider (`deciderOf`), and a decision no entry names a decider for has none, so
+ * its row says nobody was recorded (R9).
  *
- * A person's decision is the answered ask itself (`DecisionEntry.kind`): the read names it by the
- * ask's own address, and `addAsks` drew the ask with the person's answer on it. It is no
- * decision node of its own, so it neither restates the question under itself nor stands in the
- * ask's place; the ask's node carries the chips of what it shaped.
+ * An ask a person answered is a decision of its own shape (`DecisionEntry.kind` `person`): the
+ * read names it by the ask's own address, and `addAsks` drew the ask with the person's answer on
+ * it. It is no decision node of its own, so it neither restates the question under itself nor
+ * stands in the ask's place; the ask's node carries the chips of what it shaped.
  */
 function addDecisions(
   drafts: Map<string, Draft>,
@@ -1086,8 +1086,15 @@ function addDecisions(
       linked.set(ref, { ...context.chipOf(ref), stale });
     }
     if (decision.kind === "person") {
+      // Two sections of the release before can cite one ask (`personDecisionAsk`): its node
+      // carries each target once, stale where any of its links is.
       const ask = drafts.get(id);
-      if (ask !== undefined) ask.chips = [...ask.chips, ...linked.values()];
+      if (ask === undefined) return;
+      const chips = new Map(ask.chips.map((chip) => [chip.ref, chip]));
+      for (const [ref, chip] of linked) {
+        chips.set(ref, { ...chip, stale: chip.stale || chips.get(ref)?.stale === true });
+      }
+      ask.chips = [...chips.values()];
       return;
     }
     const held = drafts.get(id);
@@ -1133,18 +1140,19 @@ function addDecisions(
 
 /**
  * The node the tree draws `decision` as: an agent's decision its own block's node, and a
- * person's, which is the answered ask itself (`DecisionEntry.kind`) named by the ask's own
- * address, the node `addAsks` drew that ask as. Undefined for a decision the tree addresses no
- * node for, and for a person's whose ask it drew no node for. `addDecisions` draws each decision
- * at it and `addRequirements` reads each one's `shaped` edge from it, so the two name one node.
+ * person's, which is the answered ask itself (`DecisionEntry.kind`), the node `addAsks` drew
+ * that ask as (`personDecisionAsk`). Undefined for a decision the tree addresses no node for,
+ * and for a person's whose ask it drew no node for. `addDecisions` draws each decision at it and
+ * `addRequirements` reads each one's `shaped` edge from it, so the two name one node.
  */
 function decisionNodeId(
-  decision: Pick<DecisionEntry, "kind" | "ref">,
+  decision: Pick<DecisionEntry, "from_ask" | "kind" | "node" | "ref">,
   context: TreeContext,
   asks: ReadonlyMap<string, string>
 ): string | undefined {
-  const id = context.nodeIdOf(decision.ref);
-  return id === undefined || decision.kind !== "person" ? id : asks.get(id);
+  if (decision.kind !== "person") return context.nodeIdOf(decision.ref);
+  const ask = personDecisionAsk(decision);
+  return ask === undefined ? undefined : asks.get(ask);
 }
 
 /**
@@ -1155,7 +1163,7 @@ function decisionNodeId(
  * is still named by it (`AgentName.tsx`'s `drawnSessionName`); one that stamped none carries no
  * origin. Undefined where the entry names nobody, or a node of another kind.
  */
-function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
+export function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
   if (node === null) return undefined;
   if (node.kind === "session") {
     return node.title === undefined

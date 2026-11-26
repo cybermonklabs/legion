@@ -50,6 +50,7 @@ alter table user_agent_reply_read add column tuples_stored_at timestamptz;
 alter table user_agent_thread_dismissed add column tuples_stored_at timestamptz;
 alter table user_ask_snooze add column tuples_stored_at timestamptz;
 
+-- kept for one release: older-writer-unmark
 create function read_state_unmarked_by_older_writer() returns trigger language plpgsql as $$
 begin
   if current_setting('dispatch.store_marker_writer', true) is distinct from 'on' then
@@ -64,26 +65,31 @@ $$;
 -- thousands of rows in one statement among them, so the function is called only for an update it
 -- unmarks, one a build before this one makes. The function keeps its own test, so a trigger that
 -- calls it without the WHEN still unmarks only an older build's update.
+-- kept for one release: older-writer-unmark
 create trigger user_agent_read_store_marker before update on user_agent_read
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function read_state_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger user_agent_state_store_marker before update on user_agent_state
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function read_state_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger user_agent_reply_read_store_marker before update on user_agent_reply_read
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function read_state_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger user_agent_thread_dismissed_store_marker before update on user_agent_thread_dismissed
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')
   execute function read_state_unmarked_by_older_writer();
 
+-- kept for one release: older-writer-unmark
 create trigger user_ask_snooze_store_marker before update on user_ask_snooze
   for each row
   when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on')

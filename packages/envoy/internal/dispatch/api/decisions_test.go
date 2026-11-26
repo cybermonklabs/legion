@@ -422,6 +422,51 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	}
 }
 
+// One value of an ask's node that does not parse drops that one ask from the Decisions read and
+// never fails the whole read (R4): the open questions and the entries are answered without it, as
+// they are answered for every other ask of the spec. Two asks of the spec hold a value written by
+// hand - an answered_at that is no time, and a selected that is no list of labels - beside one
+// whose node is as the server wrote it.
+func TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE",
+		":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#late}\nWhich name?\n:::\n\n:::ask{#listed}\nWhich port?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 3)
+	fine, late, listed := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "late"), blockAskID(t, handler, issue.Key, "listed")
+	for ask, written := range map[string][2]string{
+		late:   {graphstore.TupleAnsweredAt, "next Tuesday"},
+		listed: {graphstore.TupleSelected, "Yes, No"},
+	} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, $5, now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+		`, graphstore.KindAsk, ask, written[0], graphstore.KindValue, written[1]); err != nil {
+			t.Fatalf("state %s %q on the node of ask %s: %v", written[0], written[1], ask, err)
+		}
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	if len(view.OpenQuestions) != 1 || view.OpenQuestions[0].ID != fine {
+		ids := []string{}
+		for _, question := range view.OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		t.Errorf("open_questions = %v, want the one ask whose node parses, %s", ids, fine)
+	}
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose node parses: %s", fine, entryJSON(t, view.Entries))
+	}
+	for _, dropped := range []string{late, listed} {
+		if _, held := entries[graphstore.KindAsk+":"+dropped]; held {
+			t.Errorf("the entries hold an entry for the ask %s, whose node holds a value that does not parse", dropped)
+		}
+	}
+}
+
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
 // spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
 // deadline (testwait.UntilPolling), and its failure prints the questions it last read.

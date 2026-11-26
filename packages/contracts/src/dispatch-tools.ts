@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_COMPONENTS,
@@ -32,6 +33,10 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /** What the command's `--dry-run` flag does, as its help says, for a command whose dry run asks
+   *  Dispatch something past the argument check every dry run runs. A command without one says
+   *  that its dry run checks the arguments, prints them and sends nothing. */
+  readonly dryRunHelp?: string;
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -223,6 +228,15 @@ export function artifactKindConflictRule(held: string, upload: string): string {
  * it, so its one way out is to send the stored text.
  */
 export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+
+/**
+ * The order in which `dispatch artifact` refuses a Markdown document's text before it asks
+ * Dispatch anything, read from content-file, from stdin or from a Markdown path file: the order its
+ * upload refuses a Markdown file in, the size first, then the first NUL character or byte that is
+ * not UTF-8. The description and the dry run's help each say in their own words when the command
+ * refuses such a text, and then this one clause, so the two state one order.
+ */
+const ARTIFACT_DOCUMENT_BYTES_ORDER = `in the order its upload refuses a Markdown file in: past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB with CAP_EXCEEDED, and otherwise at the first NUL character or byte that is not UTF-8, with NUL_CHARACTER or INVALID_UTF8, Dispatch's own refusal of it, naming the field (content, or file for path), the character and where it stands.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
  *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
@@ -1074,19 +1088,39 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
  *  such an account, and a refusal here would leave it saved and never synced. */
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
-/** A route `dispatch api` reads: the API's root, which lists every route, or a route under it,
+/** A route `dispatch api` sends: the API's root, which lists every route, or a route under it,
  *  with a query or none. */
 const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
 
+/** The characters a URL parser percent-encodes in a path and no rule above refuses: Bun's `URL`
+ *  writes each as its `%XX`, so a route holding one would be sent as another spelling of it. */
+const API_ROUTE_REWRITTEN = /["<>^`{}]/;
+
+/** The methods `dispatch api` sends in place of its GET: each method of Dispatch's writes. A call
+ *  that names none is a GET, so GET is none of them. */
+export const DISPATCH_API_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/** A method `dispatch api` sends in place of its GET. */
+export type DispatchApiMethod = (typeof DISPATCH_API_METHODS)[number];
+
 const API_PATH_RULE =
-  "path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, and no segment before the query is . or ..";
+  'path is a route under /api/v1: it begins /api/v1 and names no scheme or host, every character is printable ASCII other than a space, a backslash and #, no character before the query is ", <, >, ^, `, { or }, and no segment before the query is . or ..';
+
+const API_BODY_RULE =
+  "body goes only with method: a call that names no method is a GET, which sends no body.";
+
+/** The whole rule of a `dispatch_api` call: its path's, then its body's. */
+const API_CALL_RULE = `${API_PATH_RULE}; ${API_BODY_RULE}`;
 
 /**
- * Why `path` is no route `dispatch api` may read, naming the path, or undefined for one it may.
- * Beginning `/api/v1` keeps the read on the client's own server and under the API. The rest keeps
- * it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as `/`
- * and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
- * those could move the read outside `/api/v1`.
+ * Why `path` is no route `dispatch api` may send, naming the path, or undefined for one it may.
+ * Beginning `/api/v1` keeps the request on the client's own server and under the API. The rest
+ * keeps it there once a URL parser has read it: the parser drops a tab or a newline, reads `\` as
+ * `/` and resolves a `.` or `..` segment, spelled plainly or percent-encoded (`%2e`), and each of
+ * those could move the request outside `/api/v1`; it also percent-encodes `"`, `<`, `>`, `^`,
+ * `` ` ``, `{` and `}` in a path, so a route holding one is refused rather than sent spelled as
+ * the caller did not write it. The rule leaves the query alone, and the URL parser writes it
+ * (percent-encoding `"`, `'`, `<` and `>`).
  */
 function apiPathProblem(value: unknown): string | undefined {
   const { path } = value as { readonly path?: unknown };
@@ -1099,10 +1133,22 @@ function apiPathProblem(value: unknown): string | undefined {
     return `path ${named} holds a space, a backslash, a # or a character outside printable ASCII: percent-encode it.`;
   }
   const route = path.split("?", 1)[0] ?? "";
+  if (API_ROUTE_REWRITTEN.test(route)) {
+    return `path ${named} holds before its query a character a URL parser rewrites in a path (", <, >, ^, \`, { or }): percent-encode it.`;
+  }
   if (route.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
     return `path ${named} holds a . or .. segment: name the route itself.`;
   }
   return undefined;
+}
+
+/** Why a `dispatch_api` call is none `dispatch api` sends, or undefined for one it sends: its
+ *  path's problem (`apiPathProblem`), else a body with no method. */
+function apiCallProblem(value: unknown): string | undefined {
+  const pathProblem = apiPathProblem(value);
+  if (pathProblem !== undefined) return pathProblem;
+  const { method, body } = value as { readonly method?: unknown; readonly body?: unknown };
+  return body !== undefined && method === undefined ? API_BODY_RULE : undefined;
 }
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
@@ -1994,7 +2040,7 @@ export const dispatchToolSpecs = [
       "Do not use it for review feedback or for reading; use dispatch comment, dispatch suggest, or dispatch doc-read instead. " +
       "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
-      "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
+      "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent; an answered ask block stays in its document (only a resolved one may be removed, and an agent's removal or retype of an answered one is refused 409 ANSWERED_ASK_KEPT). delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
       'An insert writes inside a block instead with into, "block:<id>", after that block\'s last child: that is how a reading goes into a decision or an answered ask. ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
@@ -2101,7 +2147,7 @@ export const dispatchToolSpecs = [
       "Do not use it for issue status, asks, or events; " +
       "use dispatch read instead. Supply ref, issue, or project plus artifact; issue plus an omitted artifact reads the primary document. " +
       "A live read returns its document token for an optional dispatch doc-edit precondition. With blocks it lists the live document's blocks instead of its markdown, in document order: each block's id, type, token, anchored comments and asks, and opening words, a typed block's serves and needs under it, and under a table each row by the index delete_row takes and each cell by its row and the column delete_column takes; block ids, block tokens and those indexes are what dispatch doc-edit takes. " +
-      "A live read's markdown holds no ask block's state or answer, so it uploads back unchanged; beside its document token it prints one `Answered <block id> by <answerer> at <time>: <answer>` line per answered ask block, with the options chosen, read from the server's asks. The approval line's content sha256 names the approved version's stored bytes, which differ from a live read's text where they still hold ask attributes; a version read prints those stored bytes and no Answered line. " +
+      "A live read's markdown holds no ask block's state or answer, so it uploads back unchanged; beside its document token it prints one `Answered <block id> by <answerer> at <time>: <answer>` line per answered ask block (with the options chosen) and one `Resolved <block id>` line per resolved ask block, each block id JSON-quoted, read from the server's asks. The approval line's content sha256 names the approved version's stored bytes, which differ from a live read's text where they still hold ask attributes; a version read prints those stored bytes and no Answered or Resolved line. " +
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
@@ -2278,6 +2324,8 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_result",
+    dryRunHelp:
+      "Checks the arguments as the call would and prints them as JSON. A record's dry run then asks Dispatch for the pull-request body line the record would print, and prints it; Dispatch records nothing. A retraction's dry run sends nothing.",
     example: {
       issue: "DSP-1",
       check: "k1",
@@ -2462,15 +2510,17 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
+    dryRunHelp: `Before it asks Dispatch anything, and with Dispatch off too, it refuses with exit 1 a text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, whether it is read from --content-file, from stdin (--content-file -) or from a --path file ending in .md or .markdown, a file Dispatch stores as a Markdown document, ${ARTIFACT_DOCUMENT_BYTES_ORDER} It refuses such a text once the flags are read, before it checks the arguments as the call would and before anything that needs Dispatch, as the call does. Then, for text given inline, read from --content-file or from stdin, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling, but for typed blocks' attributes in another order, which the call uploads in Dispatch's order, or that the call refuses for the text alone: one past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB of UTF-8, which it refuses without asking, or one Dispatch refuses as its upload would, such as one making more elements than one write may, or holding markdown the parser refuses. For a Markdown --path file, it then sends Dispatch the file's bytes (POST /api/v1/markdown/file-round-trip), as the call does before it uploads them, and refuses, with the call's own refusal and exit code, what Dispatch refuses of them as their upload would, but never their spelling. Without force it also refuses what Dispatch refuses only of a new document, such as an ask block that breaks its content rule, a block id written twice, a check proved by CI that breaks its rules, or a rendering past the bytes one document holds; with force (--force), which may replace a document Dispatch judges by looser rules, it asks for none of those and checks the spelling Dispatch answers as for any text, so it passes with no warning a text the call can then refuse for one of those: under a name the owner does not hold, because the call uploads a new document; under a name the owner holds, because a replacement holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds over the version it replaces. It does not read whether the owner holds the name, which the call reads only after it checks the text: a text this check refuses is refused alike under a held name, and a text it passes the call without force still refuses under a held name, though the dry run passes it. Otherwise it prints the arguments as JSON. It stores nothing. For any other text but an empty one given inline, read from --content-file or from stdin, which it asks Dispatch nothing about and passes with no warning, when Dispatch cannot answer, or cannot check the text or the file, it says so on stderr and passes.`,
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
       `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
-      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      `A markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB and any other file at most 25 MiB. ` +
       "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. An upload that replaces a file or a picture names the token of the version it replaces the same way, the `Document token:` line dispatch doc-read prints for its latest version, and any other token is refused with 409 PRECONDITION_FAILED; one naming none is taken unchecked. The command's refusal of a name the owner holds prints no token: for a file or a picture it names --force with the token your own dispatch doc-read printed, or --force alone where Dispatch states no token for the file, since such a Dispatch refuses a token on a file's upload; for an upload of another kind than the name holds (a declared Markdown upload is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch refuses it under that name with 400 ARTIFACT_KIND_MISMATCH. A first upload under a name replaces no version, so it names none. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
-      "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
+      `A text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, read from content-file, from stdin or from a Markdown path file, is refused once the flags are read, before the arguments are checked and before anything that needs Dispatch, by the call and its dry run alike, with Dispatch on or off, ${ARTIFACT_DOCUMENT_BYTES_ORDER} ` +
+      `Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. ` +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
       "Markdown holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK; a new version of a document is held to it only for the asks it writes or changes. " +
       `${CI_CHECK_RULE} ` +
@@ -2489,7 +2539,7 @@ export const dispatchToolSpecs = [
       force: z
         .boolean()
         .describe(
-          "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
+          "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused. The command checks the text first, so a text it refuses for the text alone gets that refusal, not this one."
         )
         .optional(),
       precondition: uploadPreconditionArgument(z),
@@ -2931,7 +2981,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project, project_scope}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the service a broker token naming no person names: a job's identity as its job entry lists it, the Kubernetes account an exchange entry lists, or the fleet of a machine nobody has signed in on; else null. project_scope is a broker token's project scope, and null for every other credential. A job's broker token has the project scope named or public, holds no OAuth scope and writes as its service: a route that needs an OAuth scope refuses it with 403 OAUTH_SCOPE_REQUIRED before Dispatch's project check runs. named may write its one project, and that check judges its write to another project as it judges a person's named token's for the same project: 403 PROJECT_SCOPE until dispatch://INFRA-4799 changes that answer for both. public names no one project, so it may write wherever a token that names no project may. An exchange entry's broker token that names its account has the project scope named and no project, and writes as that account wherever a token that names no project may. A machine's broker token that names a service has the project scope person; it may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },
@@ -2947,18 +2997,30 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Read one route of Dispatch's HTTP API that no other command reads, with this session's own credential, and print Dispatch's JSON answer, for jq to read. It sends one GET of path: a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. It only reads: it takes no method and no body, and every write goes through the command named for it (dispatch --help lists them). When Dispatch refuses the read, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint, and exits 1. Under Claude Code, an answer longer than the output limit is written to a file the output names.",
+      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them): dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })
         .describe(
-          "The route to read, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, and no . or .. segment."
+          'The route, beginning /api/v1, with its query after ?, such as /api/v1/issues/ACME-12/events?limit=200. No scheme or host, no . or .. segment, and no ", <, >, ^, `, { or } before the query: percent-encode them.'
         ),
+      method: z
+        .enum(DISPATCH_API_METHODS)
+        .describe(
+          "The method sent in place of GET: POST, PUT, PATCH or DELETE. Omit it to send a GET."
+        )
+        .optional(),
+      body: z
+        .string()
+        .describe(
+          "The request's JSON body, sent as written with Content-Type: application/json; only with method. Write it to a file and pass it with --body-file, or --body-file - for stdin."
+        )
+        .optional(),
     }),
     validation: {
-      check: (value) => apiPathProblem(value) === undefined,
-      message: API_PATH_RULE,
-      refusal: (value) => apiPathProblem(value) ?? API_PATH_RULE,
+      check: (value) => apiCallProblem(value) === undefined,
+      message: API_CALL_RULE,
+      refusal: (value) => apiCallProblem(value) ?? API_CALL_RULE,
     },
     strict: true,
   },

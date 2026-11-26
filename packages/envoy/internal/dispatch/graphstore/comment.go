@@ -95,6 +95,72 @@ func CommentPointerFacts(tuples []Tuple, id string, pointers CommentPointers, au
 	return tuples, true
 }
 
+// CommentRoute is one delivery route a comment names, as its comment_mentions row records it: the
+// route its target spells (model.ParseRoute: `session:<id>` or `role:<topic>`), and the session
+// that route resolved to, nil where it resolved to none.
+type CommentRoute struct {
+	Target  string
+	Session *string
+}
+
+// CommentMentionFacts is what this store holds of the delivery routes one comment names (R5),
+// appended to tuples, which hold what the comment's index states already: a mentions tuple out of
+// the comment's node to the session or the role each route's target names, a second to the
+// session it resolved to, and, where it names any route, the comment's urgency (TupleDelivery),
+// delivery, the one mode the comment's writer applies to every route (api's
+// validateCommentMentions). A mention tuples holds already - an identity the comment's text names,
+// or one an earlier route named - is stated once, and a target no route reads, or an end past the
+// store's address bound, is none. Each fact is made by author at at and caused by event.
+//
+// Each mention is marked LegacyFromCause and carries event as its legacy_source_seq where event is
+// an event, as a mention the comment's text names does (refs' stateMention): graph_edges' identity
+// arm answers that as the edge's source_seq, so a ?since= read of References whose window holds
+// the comment's event lists the route. A writer that appends the comment's event after these facts
+// passes NoEvent, and QueueCaused gives each mention that event; a mention stated at the sentinel
+// carries none and stays out of that read.
+//
+// It is the one statement of these facts, which the request that writes a comment (api's
+// commentMentionFacts) and the backfill of the routes an older build's comment names
+// (graphcensus' writeCommentMentions) both write.
+func CommentMentionFacts(tuples []UncausedTuple, id string, routes []CommentRoute, delivery string, author model.Actor, at time.Time, event int64) []UncausedTuple {
+	if len(routes) == 0 {
+		return tuples
+	}
+	var legacy *int64
+	if event != NoEvent {
+		legacy = &event
+	}
+	stated := make(map[[2]string]struct{}, 2*len(routes))
+	for _, held := range tuples {
+		if held.Kind == TupleMentions && held.FromKind == KindComment && held.FromID == id {
+			stated[[2]string{held.ToKind, held.ToID}] = struct{}{}
+		}
+	}
+	state := func(kind, to string) {
+		end := [2]string{kind, to}
+		if _, held := stated[end]; held || !AddressFits(to) {
+			return
+		}
+		stated[end] = struct{}{}
+		tuples = append(tuples, UncausedTuple{Tuple: Tuple{
+			FromKind: KindComment, FromID: id, Kind: TupleMentions, ToKind: kind, ToID: to,
+			At: at, Who: author, SourceEvent: event, LegacySourceSeq: legacy, Asserted: true,
+		}, LegacyFromCause: true})
+	}
+	for _, route := range routes {
+		if parsed, err := model.ParseRoute(route.Target); err == nil {
+			state(parsed.Kind, parsed.ID)
+		}
+		if route.Session != nil {
+			state(KindSession, *route.Session)
+		}
+	}
+	return append(tuples, UncausedTuple{Tuple: Tuple{
+		FromKind: KindComment, FromID: id, Kind: TupleDelivery, ToKind: KindValue, ToID: delivery,
+		At: at, Who: author, SourceEvent: event, Asserted: true,
+	}})
+}
+
 // CommentFacts is what this store holds of one comment beside who wrote it (AuthorFacts) and what
 // it answers (CommentPointerFacts): its node - project-visible, live, in project or between
 // parties (the issue's or the document's it belongs to, ScopeOf), made by author at at and caused

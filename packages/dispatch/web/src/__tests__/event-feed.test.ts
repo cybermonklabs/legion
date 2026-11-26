@@ -1927,6 +1927,14 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     block_id: "b-1",
     changed_version: 2,
   }),
+  "document.retired": event("document.retired", {
+    artifact_id: "artifact-3",
+    name: "decisions.md",
+    reason: "Converted to decision blocks.",
+    ref_key: "CORE-1/decisions-md",
+    role: "decisions",
+    superseded_approval: null,
+  }),
   "handoff.recorded": event("handoff.recorded", {
     handoff_id: "handoff-1",
     phase: "implement",

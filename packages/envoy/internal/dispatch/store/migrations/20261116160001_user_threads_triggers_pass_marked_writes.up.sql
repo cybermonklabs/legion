@@ -42,6 +42,7 @@
 -- comments, messages, asks, user_threads or user_agent_thread_dismissed, so the window is four
 -- catalogue writes, and the triggers that call them pick up the new bodies on their next statement.
 -- No row is read or rewritten and the census answers 0.
+-- kept for one release: user-threads-triggers
 create or replace function user_threads_comment() returns trigger language plpgsql as $$
 begin
   -- A comment whose pointers its writer stated, or which this release recorded in its thread, is
@@ -59,6 +60,7 @@ begin
 end;
 $$;
 
+-- kept for one release: user-threads-triggers
 create or replace function user_threads_message() returns trigger language plpgsql as $$
 declare
   v_root uuid := new.id;
@@ -86,6 +88,7 @@ begin
 end;
 $$;
 
+-- kept for one release: user-threads-triggers
 create or replace function user_threads_ask() returns trigger language plpgsql as $$
 begin
   -- An ask this release created holds its marker from its insert, and inboxwrite.Record recorded
@@ -112,6 +115,7 @@ begin
 end;
 $$;
 
+-- kept for one release: user-threads-triggers
 create or replace function user_agent_thread_dismissed_clear() returns trigger language plpgsql as $$
 declare
   v_root uuid := new.id;

@@ -32,6 +32,12 @@ type personNode struct {
 	// named as every cut first line an answer carries is (refs.Candidate's first_line). A post its
 	// author deleted keeps its row with the first line "", the body the delete cleared.
 	FirstLine string `json:"first_line"`
+	// Title is FirstLine again, under the name the release before answers it by: a page of that
+	// release draws the row from title, so an open tab of it that reads this build, during a roll
+	// or after one, still draws each row's line. It goes once no page of the release before is
+	// served (root-deletes.txt).
+	// kept for one release: person-node-title
+	Title string `json:"title"`
 	// FirstLineTree is FirstLine read as the tree a reader is shown, present only for a caller
 	// that sent `Dispatch-Trees: 1`: the page's preview draws the line through the one renderer
 	// every stored text is drawn with. The line is a cut, which no writer stores a tree of, so it
@@ -307,6 +313,8 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		row.FirstLine = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeFirstLineRunes)
+		// kept for one release: person-node-title
+		row.Title = row.FirstLine
 		row.CreatedAt = row.CreatedAt.UTC()
 		if editedAt != nil {
 			edited := editedAt.UTC()

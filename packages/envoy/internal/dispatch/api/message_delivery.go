@@ -1065,10 +1065,11 @@ type messageReplyPlan struct {
 	recording inboxwrite.Recording
 }
 
-// planMessageReply plans one session reply above every row lock the route takes: the block the
-// reply names with the index its message owes, the reply's node, its record in its thread, and its
-// own index and references, for an id and a created_at reserved here. Nothing it plans is written
-// here.
+// planMessageReply plans one session reply above every row lock the route takes but one: the
+// block the reply names with the index its message owes, the reply's node, its own index and
+// references, and last its record in its thread, whose plan takes the thread's root first where
+// the message is on no issue (inboxwrite.PlanRecord), for an id and a created_at reserved here.
+// Nothing it plans is written here.
 //
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
@@ -1203,8 +1204,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// The first read is for the issue key alone. A delete committing behind it leaves the row
 	// it holds stale, so the issue is locked first - the order createStoredMessage takes
 	// (messages.go) - and the row this route judges and answers from is the one read again
-	// under that lock. A message with no issue takes no lock and needs none: a delete refuses
-	// one (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set.
+	// under that lock. A message with no issue takes no owner lock: a delete refuses one
+	// (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set, and its thread's root, which orders
+	// the writers of a thread on no issue as an issue's owner lock orders an issue's, is taken
+	// where the reply is planned, before the reply reads who takes part in the thread
+	// (planMessageReply, inboxwrite.PlanRecord).
 	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
@@ -1227,12 +1231,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// This reply - its own body, and the block it names - is read and planned here, before the
-	// first statement that takes a row lock, so no document work runs while the transaction
-	// holds a transaction id (INFRA-636). The refusal the planning earns is raised in the
-	// branch that answers with it, where it was raised; the index it finds the parent owes is
-	// written there too, under the parent's lock, which is taken below: the order
-	// refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a route
-	// with a write phase.
+	// first statement that takes a row lock, so no document work runs while the transaction holds a
+	// transaction id (INFRA-636): the plan's own last statement, a reply on no issue's lock of its
+	// thread's root, comes after every read of the body (planMessageReply). The refusal the
+	// planning earns is raised in the branch that answers with it, where it was raised; the index
+	// it finds the parent owes is written there too, under the parent's lock, which is taken below:
+	// the order refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a
+	// route with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
@@ -1242,7 +1247,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// The thread's root before every other row this reply takes, `for no key update`: the
 		// reply's clear of its root's Agent dismissals moves the root's agent_dismissed_at, so the
 		// root is the first row of the thread a writer of it holds (inboxwrite.Recording.QueueRootLock,
-		// the lock order written on api/inbox_read.go's markInboxReadThreads). A follow-up is
+		// the lock order written on api/inbox_read.go's markInboxReadThreads). A reply on no issue
+		// took the root already, as its plan walked to it, and this queues nothing. A follow-up is
 		// planned again under the first reply, in the same thread, so its root is this one.
 		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 			plan.recording.QueueRootLock(b)
@@ -1359,10 +1365,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
 		// attempt (a stale receipt, an error the session itself reported) reads as sent and answered.
 		// So the session that attempt names is a node of the store from this write on, as a
-		// settle's is, written in the same batch as the attempt's update. The store records no
-		// delivery of a message yet, though a message is a node, so the answer states the
-		// session's node alone and no delivered_to (queueAnsweredDelivery). Then the attempt, sent
-		// and answered by the reply, whose node insertSessionReply wrote, is stated under the
+		// settle's is, written in the same batch as the attempt's update. The answer states that
+		// node alone and no delivered_to out of the message's node (queueAnsweredDelivery, which is
+		// handed no item): the store records a message attempt's delivery on the attempt's node,
+		// which the attempt's statement below states once its row reads sent. Then the attempt,
+		// sent and answered by the reply, whose node insertSessionReply wrote, is stated under the
 		// message.answered event insertSessionReply appended for the reply
 		// (graphstore.QueueAttempted).
 		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
@@ -1511,6 +1518,7 @@ func (s *server) insertSessionReply(
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, stored.written)
 		failpoint.Queue(b, fails)
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
@@ -1559,13 +1567,12 @@ func (s *server) insertSessionReply(
 		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the reply's body is in the store, under the same event (planPendingItem).
 		graphstore.QueueCaused(b, plan.indexed, graphstore.LatestEvent)
-		if !stored.projected {
-			return recording.Queue(b, graphstore.LatestEvent)
+		if stored.projected {
+			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, graphstore.LatestEvent); err != nil {
+				return err
+			}
 		}
-		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, graphstore.LatestEvent); err != nil {
-			return err
-		}
-		return queueRecordAndMentions(b, recording, plan.indexed, actor, reply.CreatedAt, graphstore.LatestEvent)
+		return recording.Queue(b, graphstore.LatestEvent)
 	})
 	if err != nil {
 		return model.Message{}, model.Event{}, err

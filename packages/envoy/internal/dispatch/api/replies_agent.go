@@ -209,6 +209,7 @@ func myAgentLiveRoot(root string) string {
 // read whole - 5,120 Agent-arm rows at 5,000 dismissed threads where 620 read at 250
 // (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory). A root its author's mark still
 // names is dismissed, whatever the table owes of it.
+// kept for one release: agent-dismissed-owed
 func myAgentOwedRoot(root string) string {
 	return root + `.agent_dismissed_at is not null
 		  and not exists (
@@ -221,6 +222,7 @@ func myAgentOwedRoot(root string) string {
 // and its message read by its key. The lateral's `offset 0` keeps the planner from pulling the
 // message read up into a join it could start from the person's roots, so the branch reads as many
 // messages as the table names roots.
+// kept for one release: agent-dismissed-owed
 const myAgentOwedRoots = `(select distinct owed.root_id from user_agent_thread_dismissed_owed owed) owed
 		cross join lateral (select * from messages m where m.id = owed.root_id offset 0) m`
 
@@ -296,6 +298,7 @@ func myAgentInboxRootsOf(from, live string) string {
 // myAgentLiveAndOwedRoots is a state's roots with each branch built by branch: the live branch
 // over messages (myAgentLiveRoot), then, in one union, the owed branch over myAgentOwedRoots
 // (myAgentOwedRoot).
+// kept for one release: agent-dismissed-owed
 func myAgentLiveAndOwedRoots(branch func(from, live string) string) string {
 	return branch(`messages m`, myAgentLiveRoot("m")) + `
 		union all` + branch(myAgentOwedRoots, myAgentOwedRoot("m"))

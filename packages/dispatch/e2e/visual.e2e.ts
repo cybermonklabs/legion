@@ -111,6 +111,7 @@ import { type Browser, expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import {
+  listedRequests,
   phoneShotRoutes,
   type ReviewedRoute,
   type ReviewSeed,
@@ -314,7 +315,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     await page.goto(route.path(seed));
     // The light shot's steps match the dark shot's ("The steps before the light shot", above).
     await page.emulateMedia({ colorScheme: "dark" });
-    await waitForRouteSettled(page, route);
+    await waitForRouteSettled(page, route, listedRequests(page));
     await page.screenshot({
       fullPage: true,
       animations: "disabled",
@@ -330,7 +331,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // still resolving itself - each would compare clean against itself for ever after,
       // and the third is what two container runs of this corpus disagreed about
       // (`waitForRouteSettled`).
-      await waitForRouteSettled(page, route);
+      await waitForRouteSettled(page, route, listedRequests(page));
       // `soft`, so a row that fails in light still shoots dark and reports both. A hard
       // assertion throws out of the `SCHEMES` loop, so a change that moved both schemes was
       // reported as one, and the reader fixed light, re-ran, and met dark the round after.

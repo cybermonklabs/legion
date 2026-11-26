@@ -80,8 +80,10 @@ type Rebuild struct {
 // (IndexOwedItemBlocks, docs.Service.indexOwedDocument), or the forms drain does.
 //
 // The orphan sweep deletes the edges of every source that is gone and, in the same transaction,
-// what refs_forms_owed holds for every source that is gone: the sweep's delete owes that queue
-// each source whose edges it deletes (migration 20261117025906's trigger), and a gone source owes
+// what refs_forms_owed and the two queues of the Decisions page's reading (refs_decisions_forms_owed
+// and refs_decisions_forms_seed_owed) hold for every source that is gone: the sweep's delete owes
+// the first queue each source whose edges it deletes (migration 20261117025906's trigger), a delete
+// from it relays what it removes to the second (migration 20261126040100), and a gone source owes
 // no text.
 func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, error) {
 	var report Rebuild
@@ -182,8 +184,12 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 
 // sweepOrphans deletes the edges of every source that is gone and, after that delete and in its
 // transaction, what refs_forms_owed holds for every source that is gone, which that delete has just
-// owed it (migration 20261117025906): a gone source owes no text, and one transaction leaves no
-// such row behind for a drain to list between the two. It reports how many edges it deleted.
+// owed it (migration 20261117025906), and what refs_decisions_forms_owed and
+// refs_decisions_forms_seed_owed hold for them: a gone source owes no text, and one transaction
+// leaves no such row behind for a drain to list between the two. The delete from refs_forms_owed
+// relays only the rows of a source that still exists (migration 20261126040100), so the second
+// delete is for the rows an older build relayed before its source went, and the third for the
+// sources removed since the seed read them. It reports how many edges it deleted.
 func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -205,6 +211,9 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("delete orphan references: %w", err)
 	}
+	// Each queue's delete names its table: the census of item-row writers and the projection
+	// scan read the table a statement writes from its text, and a name built at runtime is one
+	// they cannot read.
 	if _, err := tx.Exec(ctx, `
 		delete from refs_forms_owed o
 		where not exists (
@@ -218,6 +227,34 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 		)
 	`); err != nil {
 		return 0, fmt.Errorf("settle the index owed by the sources the orphan sweep found gone: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from refs_decisions_forms_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the decisions index owed by the sources the orphan sweep found gone: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from refs_decisions_forms_seed_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the bootstrap decisions index owed by the sources the orphan sweep found gone: %w", err)
 	}
 	return int(orphans.RowsAffected()), tx.Commit(ctx)
 }
@@ -390,8 +427,8 @@ func sourceOwner(ctx context.Context, q Queryer, kind, id string) (*store.Owner,
 // OwedQueue is one queue of text owed a re-index: a table of (kind, id, enqueued_at) a trigger
 // upserts a row into for every source a write left indexed with a grammar older than the one
 // this build reads it with, which a drain lists oldest first (ListOwed), settles (SettleOwed)
-// and re-indexes (ReindexOwed). Dispatch holds the three below, and the table each names is the
-// whole of the difference between them: one drain, one order, for all three.
+// and re-indexes (ReindexOwed). Dispatch holds the five below, and the table each names is the
+// whole of the difference between them: one drain, one order, for all five.
 type OwedQueue struct {
 	// table is the queue's table, which every statement of the drain names.
 	table string
@@ -419,14 +456,58 @@ var RefsGrammarOwed = OwedQueue{table: "refs_grammar_owed"}
 // and a write of this build that left the blocks to its block index, leave the source owed.
 var RefsFormsOwed = OwedQueue{table: "refs_forms_owed"}
 
+// RefsDecisionsFormsOwed is the queue of sources a build that reads an issue's Decisions page as
+// no more than its document indexed (migration 20261126040000, refs_decisions_forms_owed):
+// `dispatch://KEY/decisions` and the page's own link, `/issues/KEY/decisions`, both name the issue
+// the page reads the decision nodes of, where the release before reads the first as no reference
+// and the second as the issue's retired decisions document (RetiredDecisionsSlug). It is
+// RefsFormsOwed's rule again, for a source that release has already settled: a row stays owed
+// until a build that reads the page has indexed that text itself.
+//
+// A queue of its own because RefsFormsOwed alone cannot hold the debt. The release before drains
+// RefsFormsOwed too, and settles a row of it as soon as it has indexed the text with the grammar
+// it knows, in the transaction that deleted the edges of this reading, so nothing there says the
+// text was ever indexed without them. A trigger on that table relays each row a delete removes
+// from it (migration 20261126040100), whoever deletes it, and a trigger on each block table owes
+// the owner of a block edge to the retired document, the one edge that build can add and delete
+// none (migrations 20261126040200-20261126040500). This build deletes the row it relayed in a
+// statement of its own, after the delete from RefsFormsOwed, in every transaction that indexed
+// the source's whole text (settleDecisionsFormsStatement): the relay fires at the end of the
+// statement that deletes the row it relays, so a delete beside it, in one statement, would run
+// before the relay and leave the row for good. It is drained by the duty that drains RefsFormsOwed
+// (docs.Service.RunRefsFormsReconciliation).
+var RefsDecisionsFormsOwed = OwedQueue{table: "refs_decisions_forms_owed"}
+
+// RefsDecisionsFormsSeedOwed is the bootstrap half of RefsDecisionsFormsOwed (migration
+// 20261126040000, refs_decisions_forms_seed_owed): the sources already stored when this release
+// was deployed, which the seed (migration 20261126040600) owes an index with the Decisions page's
+// reading. Nothing else inserts into it, and the live queue's writers insert nowhere else: the
+// seed holds a row for every stored text uncommitted until it commits, so a seed into the live
+// queue made every writer of the release before wait for it and could deadlock with one. A source
+// in both queues is indexed once, and a complete index clears its row of each
+// (settleDecisionsFormsStatement). It has no trigger, so no delete from it relays anything. It is
+// drained by the same duty, one pass, and a drain that finds it empty never reads it again.
+var RefsDecisionsFormsSeedOwed = OwedQueue{table: "refs_decisions_forms_seed_owed"}
+
+// settleDecisionsFormsStatement is the delete that clears one source's row of both halves of the
+// Decisions page's queue, the live one (RefsDecisionsFormsOwed) and the bootstrap one
+// (RefsDecisionsFormsSeedOwed), with the source's kind as $1 and its id as $2. A write that
+// indexed the source's whole text queues it as a statement of its own after every delete from
+// RefsFormsOwed it queued, and never inside one: the relay of the delete into the live queue fires
+// after its statement. The bootstrap delete rides in the same statement, since no trigger writes
+// that table.
+const settleDecisionsFormsStatement = `
+	with seed as (delete from refs_decisions_forms_seed_owed where kind = $1 and id = $2::uuid)
+	delete from refs_decisions_forms_owed where kind = $1 and id = $2::uuid`
+
 // Owed is one source a queue owes an index, as of the write that last owed it (EnqueuedAt).
 //
 // Kind is the source's own kind - comment, ask or message - or, in the whole grammar's queue and
-// the forms queue, `artifact`, a document read at its latest version, or, in the whole grammar's
+// the forms queues, `artifact`, a document read at its latest version, or, in the whole grammar's
 // queue alone, `scope`, whose id is a document whose question blocks moved. Those last two name no
 // text this re-indexes: what a `scope` row owes is a re-index of every source whose text belongs
 // to that document (ScopeSources) and what an `artifact` row owes is a block index of that
-// document, each the drain's own work (docs.Service.reindexOwedText, and for the forms queue
+// document, each the drain's own work (docs.Service.reindexOwedText, and for the forms queues
 // docs.Service.drainFormsDocument). ReindexOwed answers an error for either rather than reading a
 // row with no text of its own and settling it, so no caller can drain one by handing it here.
 type Owed struct {
@@ -471,6 +552,20 @@ func (queue OwedQueue) listAfterQuery() string {
 		where (o.enqueued_at, o.kind, o.id) > ($2, $3, $4::uuid)
 		order by o.enqueued_at, o.kind, o.id limit $1
 	`
+}
+
+// Table is the name of the queue's table.
+func (queue OwedQueue) Table() string {
+	return queue.table
+}
+
+// Count is how many rows the queue holds.
+func (queue OwedQueue) Count(ctx context.Context, q Queryer) (int, error) {
+	var owed int
+	if err := q.QueryRow(ctx, `select count(*) from `+queue.table).Scan(&owed); err != nil {
+		return 0, fmt.Errorf("count what %s owes an index: %w", queue.table, err)
+	}
+	return owed, nil
 }
 
 // settleOwedStatement is the delete that settles one row of this queue, guarded by the
@@ -588,8 +683,9 @@ func QueueSettleOwed(b *store.WriteBatch, source Owed) {
 // batch, the owed row's delete first (QueueSettleOwed, store.RunWrite). The text's own write then
 // settles every queue that source is in again, after every delete its index of the text and its
 // blocks made (reindexPlan.queue), since each such delete owes refs_forms_owed the source it
-// rewrites (migrations 20261117025906-20261117025910). It reports whether it re-indexed the
-// source.
+// rewrites (migrations 20261117025906-20261117025910), and does it for refs_decisions_forms_owed
+// in a statement of its own after the delete from refs_forms_owed, which relays the row it
+// removes there (settleDecisionsFormsStatement). It reports whether it re-indexed the source.
 //
 // The owed row is read and settled only while it holds the enqueued_at source was listed with: a
 // write that lands between the listing and the lock moves it, and this pass is left with nothing
@@ -769,7 +865,9 @@ func planSourceReplace(ctx context.Context, q Queryer, fromKind, fromID string, 
 // what it owes the queues, since that delete owes refs_forms_owed the source whose edges it deletes
 // (migration 20261117025906), and a gone source owes no text. That settle is a statement of its
 // own after the delete: the delete's trigger owes the row at the end of its statement, which a
-// delete of the row in the same statement would not see.
+// delete of the row in the same statement would not see. The same holds a second time for
+// refs_decisions_forms_owed, whose row the delete from refs_forms_owed relays, so its delete is
+// a statement after that one (queueSettleSourceOwed).
 func (p reindexPlan) queue(b *store.WriteBatch) error {
 	if !p.found {
 		b.Queue(fmt.Sprintf("delete the references of %s %s, which is gone", p.kind, p.id),

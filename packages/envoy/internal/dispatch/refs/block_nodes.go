@@ -482,17 +482,19 @@ func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
 // planBlockRefs plans the reconciliation of the document's block_refs with the indexing's pairs,
 // against the links index holds, and answers what it states in the store, with the links the
 // index holds once it is written. It adds to the indexing's moved targets the targets of the
-// links it drops and inserts and of those whose block types it changes.
+// links it drops and inserts, of those whose block types it changes and of those whose node it
+// moves.
 //
 // Beside them it states what each row it inserts or drops is the projection of: one tuple out of
 // the node the row hangs on (blockPair.from) - its block's, or for an ask block's shaped the ask's
 // - under that pair's own kind - a pointer attribute's name, or `mentions` for a block's mention -
 // asserted for each pair the insert inserts and retracted for each pair the delete drops, so the
-// tuple and the row arrive and leave together. A surviving pair earns none: it keeps its dates and
-// its source event and takes this version's to_types, and a tuple appended for it would carry this
-// version's time and win the current read over the one that matches the row.
+// tuple and the row arrive and leave together. A surviving pair earns none while its row names the
+// node it hangs on: it keeps its dates and its source event and takes this version's to_types, and
+// a tuple appended for it would carry this version's time and win the current read over the one
+// that matches the row.
 //
-// The insert writes a row's node columns only where it inserts the row: a pair that names a node
+// The insert writes a row's node columns where it inserts the row: a pair that names a node
 // of its own (blockPair.nodeKind) writes that node into the row, which marks it. A surviving row
 // that names no node - a pair a build before the store wrote, or one the release before this one
 // inserted after this build's mark was set or after the store last stated the document - takes
@@ -503,6 +505,12 @@ func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
 // statement names only rows that name no node, so a surviving pair whose row names its node still
 // earns no tuple. Any other pass leaves such a row its nulls, which the old block_refs arm
 // answers, until the backfill names it and marks the document.
+//
+// A surviving pair whose row names a node other than the one the pair hangs on now moves to that
+// node (rehome): a block retyped between an ask and a decision keeps its id and its tie, and an
+// ask block's shaped hangs on the ask's node where a decision's hangs on the block's own. Its
+// tuple leaves the node the row names and is stated out of the pair's, and the row is renamed to
+// it (queueBlockRefs), so the row and the tuple move together.
 //
 // A scope (BlockIndexing.scope) limits the rows the reconcile drops to those it reaches: every
 // other link the index holds is held as it stands, whatever the pairs hold, so a pass that read
@@ -556,6 +564,11 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 	links = append(links, kept...)
 	for _, pair := range b.pairs {
 		link, already := indexed[pair.key()]
+		if already {
+			var moved []graphstore.UncausedTuple
+			link, moved = b.rehome(link, pair, writer)
+			tuples = append(tuples, moved...)
+		}
 		if already && slices.Equal(link.toTypes, pair.toTypes) {
 			links = append(links, link)
 			continue
@@ -599,6 +612,39 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 		tuples = append(tuples, assertedLink(b.refKey, *link, writer))
 	}
 	return tuples, links, nil
+}
+
+// rehome moves link, the row a surviving pair holds, to the node pair hangs on, where that is not
+// the node the row names, and answers the link as the index holds it after, with what the move
+// states: a retraction of the row's tuple out of the node it named, at this version's time, and
+// the same tuple out of pair's node, dated, written and caused as the tuple of a row the insert
+// inserts (assertedLink). The row takes pair's node, or none where that node's address is past the
+// store's bound, as the insert leaves such a row (queueBlockRefs), and its target is moved, since
+// the node that cites it is another. A row that names no node states no tuple to move: the pass
+// that names surviving rows names it (namesSurvivingRows), and every other leaves it to the old
+// block_refs arm.
+func (b *BlockIndexing) rehome(link indexedLink, pair blockPair, writer model.Actor) (indexedLink, []graphstore.UncausedTuple) {
+	if !link.named {
+		return link, nil
+	}
+	heldKind, held := link.from(b.refKey)
+	wantedKind, wanted := pair.from(b.refKey)
+	if heldKind == wantedKind && held == wanted {
+		return link, nil
+	}
+	stated := []graphstore.UncausedTuple{{Tuple: graphstore.Tuple{
+		FromKind: heldKind, FromID: held, Kind: link.kind,
+		ToKind: link.target.Kind, ToID: link.target.ID,
+		At: b.versionAt, Who: writer, Asserted: false,
+	}}}
+	link.nodeKind, link.nodeAddress = pair.nodeKind, pair.nodeAddress
+	link.named = graphstore.AddressFits(wanted)
+	if link.named {
+		stated = append(stated, assertedLink(b.refKey, link, writer))
+	}
+	b.rehomed = append(b.rehomed, link)
+	b.moved = append(b.moved, link.target)
+	return link, stated
 }
 
 // citedRef is when the document's own refs row for a target was written and the source event
@@ -653,9 +699,10 @@ func assertedLink(refKey string, link indexedLink, writer model.Actor) graphstor
 // matching on the five columns of its key (planBlockRefs planned what it states): the delete of
 // the pairs the version drops, within the indexing's scope where it has one, the insert of those
 // it adds, which names a row's node - its pair's own, or else its block's - only where it inserts
-// the row, and, where the rows may be another release's (namesSurvivingRows: on the drain of this
-// build's mark and where the store's statement is stale), the naming of each surviving row that
-// names none.
+// the row, the move of each surviving row whose pair hangs on another node now (queueRehomed),
+// and, where the rows may be another release's (namesSurvivingRows: on the drain of this build's
+// mark and where the store's statement is stale), the naming of each surviving row that names
+// none.
 func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 	pairs := b.pairs
 	blockIDs := make([]string, len(pairs))
@@ -717,6 +764,7 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		where block_refs.to_types is distinct from excluded.to_types
 	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, b.version, b.versionAt, b.firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes,
 		nodeKinds, nodeAddresses)
+	b.queueRehomed(batch)
 	if !b.namesSurvivingRows {
 		return
 	}
@@ -730,6 +778,36 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		  and (p.node_kind is not null or octet_length($7 || '#' || r.block_id) <= $8)
 		  and octet_length(r.to_id) <= $8
 	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, BlockNodeKind, b.refKey, MaxBlockNodeBytes, nodeKinds, nodeAddresses)
+}
+
+// queueRehomed queues the move of each surviving row whose pair hangs on another node now
+// (rehome) to that node, or to none where that node's address is past the store's bound, matching
+// on the five columns of the row's key.
+func (b BlockIndexing) queueRehomed(batch *store.WriteBatch) {
+	if len(b.rehomed) == 0 {
+		return
+	}
+	blockIDs := make([]string, len(b.rehomed))
+	kinds := make([]string, len(b.rehomed))
+	toKinds := make([]string, len(b.rehomed))
+	toIDs := make([]string, len(b.rehomed))
+	nodeKinds := make([]*string, len(b.rehomed))
+	nodeAddresses := make([]*string, len(b.rehomed))
+	for i, link := range b.rehomed {
+		blockIDs[i], kinds[i], toKinds[i], toIDs[i] = link.blockID, link.kind, link.target.Kind, link.target.ID
+		if link.named {
+			kind, address := link.from(b.refKey)
+			nodeKinds[i], nodeAddresses[i] = &kind, &address
+		}
+	}
+	batch.Queue(fmt.Sprintf("move the block mentions of version %d of %s to the node each hangs on now", b.version, b.artifactID), `
+		update block_refs r
+		set node_kind = p.node_kind, node_address = p.node_address
+		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+		     as p (block_id, kind, to_kind, to_id, node_kind, node_address)
+		where r.artifact_id = $1 and r.block_id = p.block_id and r.kind = p.kind
+		  and r.to_kind = p.to_kind and r.to_id = p.to_id
+	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, nodeKinds, nodeAddresses)
 }
 
 // PlaceBlocks is where the block index places each block of a version of the document refKey
@@ -781,253 +859,6 @@ func parentTuple(address, toKind, toID string, at time.Time, writer model.Actor,
 		ToKind: toKind, ToID: toID,
 		At: at, Who: writer, Asserted: asserted,
 	}}
-}
-
-// blockParentDifference is one block whose part_of in the store is not what the render gives:
-// where the block sits in the arrays the read was handed, the far ends the store still asserts
-// and the render does not give, and whether the render's own parent is among the far ends it
-// asserts. A block the store already places where the render does answers no difference at all.
-type blockParentDifference struct {
-	block   int
-	retract []blockFarEnd
-	holds   bool
-}
-
-// heldBlockParentDifferences is each block of a document whose parent in the store is not the
-// one the render gives, read the way the store reads a current relation - the newest tuple per
-// far end, kept while it asserts (graphstore.CurrentTupleRead) - but in one statement for every
-// block of the document rather than one per block, which on a document of thousands of blocks
-// would be thousands of round trips. The lateral is keyed on the block's address and part_of: it
-// reads through graph_tuples_current under a custom plan, where the bound kind proves that
-// index's predicate, and through graph_tuples_as_of_out under a generic plan, which sees no kind.
-//
-// blockIDs are the blocks that are nodes of the store, in document order, and parentIDs the
-// block each of them sits in, nil for a block the document itself holds. The statement builds
-// both addresses from refKey, as the insert of document_blocks does, so the caller hands over
-// one ref_key and not one address per block. askIDs, nil or as long as blockIDs, names the ask
-// whose node a reading in an answered ask takes for its parent in place of the block holding it
-// (planBlockParents' askParents), nil for every other block.
-//
-// The comparison is the statement's: a block answers a row only where the store asserts a far
-// end the render does not give, or asserts none the render does, so an edit that moved nothing
-// reads back no row and a document of thousands of blocks costs its probe and nothing more. The
-// having clause is that rule, and the two array_aggs carry the far ends the pass retracts.
-func heldBlockParentDifferences(
-	ctx context.Context,
-	q Queryer,
-	refKey string,
-	blockIDs []string,
-	parentIDs []*string,
-	askIDs []*string,
-) ([]blockParentDifference, error) {
-	rows, err := q.Query(ctx, `
-		select block.ordinality,
-		       array_agg(current.to_kind) filter (where not current.wanted),
-		       array_agg(current.to_id) filter (where not current.wanted),
-		       coalesce(bool_or(current.wanted), false)
-		from unnest($1::text[], $2::text[], $8::text[]) with ordinality as block (id, parent, ask)
-		left join lateral (
-			select held.to_kind, held.to_id,
-			       held.to_kind = case when block.ask is not null then $9 when block.parent is null then $6 else $3 end
-			       and held.to_id = case when block.ask is not null then block.ask
-			                             when block.parent is null then $7 else $7 || '#' || block.parent end
-			         as wanted
-			from (
-				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = $3 and t.from_id = $7 || '#' || block.id and t.kind = $4
-				  and t.to_kind <> $5`)+`
-			) held
-			where held.asserted
-		) current on true
-		group by block.ordinality
-		having not coalesce(bool_or(current.wanted), false)
-		    or count(*) filter (where not current.wanted) > 0
-		order by block.ordinality
-	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey, askIDs, graphstore.KindAsk)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var differences []blockParentDifference
-	for rows.Next() {
-		var ordinality int64
-		var kinds, ids []string
-		var holds bool
-		if err := rows.Scan(&ordinality, &kinds, &ids, &holds); err != nil {
-			return nil, err
-		}
-		difference := blockParentDifference{block: int(ordinality) - 1, holds: holds}
-		for index, kind := range kinds {
-			difference.retract = append(difference.retract, blockFarEnd{kind: kind, id: ids[index]})
-		}
-		differences = append(differences, difference)
-	}
-	return differences, rows.Err()
-}
-
-// heldLink is one link a block node states beside its membership of its document and its
-// placement: a mention's or a pointer's, under the kind its pair names, to its far end.
-// A reading's authored_by (PlanDecisionNodes), an ask block copy's copied_from (docs'
-// claimCopies) and a block's mention of a person, an agent's session or a role (IdentityKinds,
-// blockIdentityMentions) are no link: no block_refs row projects any of them, so no pair of a
-// version writes them and no pass that drops a row retracts them. An identity mention is never
-// retracted at all (identityMentions), and a person's goes through graphstore.ToPerson alone,
-// which refuses it in any other write.
-type heldLink struct{ kind, toKind, toID string }
-
-// heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
-// block id: each block node that states itself a member of the document (an in_document tuple
-// into the document's artifact address) and that the store holds in any state but gone, with
-// every link it states now beside that membership and its placement, read the way the store reads
-// a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that
-// states no link is in the map with none, and one whose address does not start with the
-// document's ref_key is no block the pass addresses and is left out.
-//
-// The state read is every state but gone, not live alone: a later release marks a block
-// proposed, settled or overtaken, and the index pass keeps such a state unless the pass itself
-// makes the block gone (blockNode). A block in one of those states that another release's
-// version dropped is as gone as a live one, and a read of the live blocks alone would leave it
-// standing in that state for ever, with nothing projecting it.
-//
-// It is the store's own side of the document, and IndexBlocks reads it only where that side is
-// stale (blockStand.stale): another release indexed the document after the store last stated its
-// blocks, and that release deleted the rows of the blocks and the links its version dropped and
-// retracted nothing, so no row is left to say what the store still holds. The pass's input stays
-// the version's render: this read is what the store would otherwise go on asserting against it,
-// as heldBlockParentDifferences is for the parents. The members come through
-// graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
-// one probe a block, in one statement: the links are every kind but two, which proves nothing of
-// graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
-// value kind are written into the text so the planner can prove each index's partial predicate
-// whatever plan it caches.
-//
-// Each member probes its own node through graph_nodes' primary key, in a subquery behind an
-// offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
-// for the index's condition wherever the table's statistics counted few blocks, and read every
-// block node again for each member, its id left to a join filter: on a document of 1,000 blocks
-// that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
-// (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
-func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
-	rows, err := q.Query(ctx, `
-		select member.id, held.kind, held.to_kind, held.to_id
-		from (
-			select distinct t.from_id as id from graph_tuples t
-			where t.to_kind = 'artifact' and t.to_id = $1
-			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
-		) member
-		cross join lateral (
-			select n.state from graph_nodes n
-			where n.kind = '`+BlockNodeKind+`' and n.id = member.id
-			offset 0
-		) node
-		left join lateral (
-			select current.kind, current.to_kind, current.to_id
-			from (
-				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`'
-				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
-				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')
-				  and not (t.kind = '`+graphstore.TupleMentions+`'
-				           and t.to_kind in ('`+strings.Join(IdentityKinds, `', '`)+`'))`)+`
-			) current
-			where current.asserted
-		) held on true
-		where node.state <> '`+graphstore.StateGone+`'
-		order by member.id, held.kind, held.to_kind, held.to_id
-	`, refKey)
-	if err != nil {
-		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
-	}
-	defer rows.Close()
-	prefix := refKey + "#"
-	held := map[string][]heldLink{}
-	for rows.Next() {
-		var address string
-		var kind, toKind, toID *string
-		if err := rows.Scan(&address, &kind, &toKind, &toID); err != nil {
-			return nil, fmt.Errorf("scan what the store states of a block of %s: %w", refKey, err)
-		}
-		id, ours := strings.CutPrefix(address, prefix)
-		if !ours {
-			continue
-		}
-		links := held[id]
-		if kind != nil {
-			links = append(links, heldLink{kind: *kind, toKind: *toKind, toID: *toID})
-		}
-		held[id] = links
-	}
-	return held, rows.Err()
-}
-
-// goneSinceStated is, in id order, each block the store holds in the document in any state but
-// gone (held) that the version holds no node of (nodes, its unique blocks) and that the rows did
-// not hold either (deleted, the blocks of the rows the version dropped, which IndexBlocks states
-// gone itself): a block another release's version dropped after the store last stated the
-// document. That release deleted the block's row and stated nothing, so its node stands, and it is
-// gone exactly as a block the rows dropped is, by the version that does not hold it.
-func goneSinceStated(held map[string][]heldLink, nodes []model.ArtifactBlock, deleted []string) []string {
-	if len(held) == 0 {
-		return nil
-	}
-	holds := make(map[string]struct{}, len(nodes)+len(deleted))
-	for _, block := range nodes {
-		holds[block.ID] = struct{}{}
-	}
-	for _, id := range deleted {
-		holds[id] = struct{}{}
-	}
-	var gone []string
-	for id := range held {
-		if _, kept := holds[id]; !kept {
-			gone = append(gone, id)
-		}
-	}
-	slices.Sort(gone)
-	return gone
-}
-
-// unheldLinks retracts each link the store states now out of a block of the document (held) that
-// no pair of the version writes, at the version's time and by its writer, as planBlockRefs
-// retracts the pair of a row the pass drops: a link another release's version dropped after the
-// store last stated the document, deleting its block_refs row and retracting nothing. The links
-// of a block goneSinceStated names are among them, as a dropped block's rows are among the rows
-// queueBlockRefs drops. stated is the tuples planBlockRefs answered, and a link it already
-// retracts, the pair of a row the pass dropped, is not retracted twice. The retractions come in
-// block id order and in the read's order within a block, so a reader of the log can predict them.
-func unheldLinks(held map[string][]heldLink, refKey string, pairs []blockPair, stated []graphstore.UncausedTuple, at time.Time, writer model.Actor) []graphstore.UncausedTuple {
-	if len(held) == 0 {
-		return nil
-	}
-	type blockLink struct {
-		blockID string
-		link    heldLink
-	}
-	kept := make(map[blockLink]struct{}, len(pairs)+len(stated))
-	for _, pair := range pairs {
-		kept[blockLink{pair.blockID, heldLink{pair.kind, pair.target.Kind, pair.target.ID}}] = struct{}{}
-	}
-	prefix := refKey + "#"
-	for _, tuple := range stated {
-		if id, ours := strings.CutPrefix(tuple.FromID, prefix); ours && !tuple.Asserted {
-			kept[blockLink{id, heldLink{tuple.Kind, tuple.ToKind, tuple.ToID}}] = struct{}{}
-		}
-	}
-	var retracted []graphstore.UncausedTuple
-	for _, id := range slices.Sorted(maps.Keys(held)) {
-		for _, link := range held[id] {
-			if _, ok := kept[blockLink{id, link}]; ok {
-				continue
-			}
-			retracted = append(retracted, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: link.kind,
-				ToKind: link.toKind, ToID: link.toID,
-				At: at, Who: writer, Asserted: false,
-			}})
-		}
-	}
-	return retracted
 }
 
 // blockParents names, for each block, the index of the tightest block of the same document

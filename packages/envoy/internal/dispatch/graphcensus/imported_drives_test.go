@@ -402,8 +402,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}
 	const replayedKey = "sizing-replayed-comment"
 	comment := func(name string, sites ...string) []string {
-		return append([]string{name, "graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue",
-			"api/comment_create.go#queueRecordAndMentions"}, sites...)
+		return append([]string{name, "graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue"}, sites...)
 	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,

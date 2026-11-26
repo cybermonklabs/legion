@@ -13,6 +13,7 @@
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name on user_agent_reply_read, which the runner
 -- drops with DROP INDEX CONCURRENTLY and builds again on the next attempt.
+-- kept for one release: inbox-roll-catch-up
 create index concurrently if not exists user_agent_reply_read_unmarked
     on user_agent_reply_read (login, reply_id)
     where tuples_stored_at is null;

@@ -428,3 +428,199 @@ func commitIndex(t *testing.T, pool interface {
 		t.Fatalf("commit the index pass: %v", err)
 	}
 }
+
+// indexWhole runs the block index over version number of the document, which the test wrote at
+// record, with the typed-node pass's facts read as a version write reads them, and appends what
+// it stated under the version's event.
+func indexWhole(t *testing.T, database *store.Store, document parentDocument, number int, version typedVersion, record versionRecord) {
+	t.Helper()
+	ctx := context.Background()
+	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+		facts, err := versionFacts(ctx, tx, document.artifact, number, version, writerSources(tx, document.artifact, record.writer))
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, "", facts)
+		if err == nil && !won {
+			err = fmt.Errorf("version %d lost the revision fence", number)
+		}
+		return write, err
+	}, record.event)
+}
+
+// typedRowsOf is the document's block_refs rows of the typed kinds as the tests compare them:
+// block, kind, far end and the node the row names.
+func typedRowsOf(t *testing.T, q Queryer, artifactID string) []string {
+	t.Helper()
+	var rows []string
+	for _, row := range typedRows(t, q, artifactID) {
+		rows = append(rows, row.block+" "+row.kind+" -> "+row.toKind+" "+row.toID+" on "+row.node)
+	}
+	return rows
+}
+
+// currentTies is each tie of kinds node kind/id states now, as its kind and its far end.
+func currentTies(t *testing.T, q Queryer, kind, id string, kinds ...string) []string {
+	t.Helper()
+	held, err := graphstore.CurrentOut(context.Background(), q, kind, id, kinds)
+	if err != nil {
+		t.Fatalf("read the ties %s/%s states: %v", kind, id, err)
+	}
+	var ties []string
+	for _, tuple := range held {
+		ties = append(ties, tuple.Kind+" -> "+tuple.ToKind+" "+tuple.ToID)
+	}
+	return ties
+}
+
+// A block retyped between an ask and a decision that keeps its id and its shaped keeps the one
+// block_refs row of that tie, which hangs on another node now: an ask block's shaped on the ask's
+// node, and a decision's on its block's own (TypedFacts.pairs). The index moves the row and its
+// tuple together (rehome), so graph_edges answers the tie out of the node it hangs on and not out
+// of the one it left, and the row and the tuples agree as the census holds them (graphcensus'
+// tieProjection): the node the row names states the tie, and the node it left states none. Each
+// direction is the first retype of one case, and the retype back is the other direction again.
+func TestARetypeBetweenAnAskAndADecisionMovesItsShapedTie(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// asked is whether the first version holds the ask block, and the second the decision.
+		asked bool
+	}{
+		{"an ask block retyped into a decision, and back", true},
+		{"a decision retyped into an ask block, and back", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database := parentDatabase(t)
+			ctx := context.Background()
+			document := newParentDocument(t, database, "RETYPE", "notes")
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			spec := "dispatch://" + document.issue + "/artifact/notes#b-r1"
+			specRef, _ := text.ParseRef(spec, "")
+			specTarget, _ := TargetOf(specRef)
+			asked := renderTypedVersion(t, ":::requirement{#r1}\nA requirement.\n:::\n\n:::ask{#a1 shaped=\""+spec+"\"}\nWhich transport?\n:::\n")
+			decided := renderTypedVersion(t, ":::requirement{#r1}\nA requirement.\n:::\n\n:::decision{#a1 shaped=\""+spec+"\"}\nWe chose REST.\n:::\n")
+			versions := []typedVersion{asked, decided, asked}
+			if !test.asked {
+				versions = []typedVersion{decided, asked, decided}
+			}
+			// The ask a1's row names its node from the start: the block of a decision is no ask
+			// block, and only an ask block's shaped hangs on it.
+			first := document.writeVersion(t, 1, versions[0].markdown, alice)
+			ask := answeredAsk(t, document, "a1", first.at)
+			for index, version := range versions {
+				number := index + 1
+				record := first
+				if number > 1 {
+					record = document.writeVersion(t, number, version.markdown, alice)
+				}
+				indexWhole(t, database, document, number, version, record)
+				kind, id := graphstore.KindAsk, ask
+				if version.markdown == decided.markdown {
+					kind, id = BlockNodeKind, document.address("a1")
+				}
+				when := fmt.Sprintf("version %d", number)
+				var shaped []string
+				for _, row := range typedRows(t, database.Pool, document.artifact) {
+					if row.kind == TupleShaped {
+						shaped = append(shaped, row.block+" -> "+row.toKind+" "+row.toID+" on "+row.node)
+					}
+				}
+				if want := []string{"a1 -> " + specTarget.Kind + " " + specTarget.ID + " on " + kind + ":" + id}; !slices.Equal(shaped, want) {
+					t.Fatalf("%s: the shaped rows are %v, want %v", when, shaped, want)
+				}
+				rows, err := database.Pool.Query(ctx, `
+					select from_kind || ':' || from_id from graph_edges
+					where kind = $1 and to_kind = $2 and to_id = $3 order by 1
+				`, TupleShaped, specTarget.Kind, specTarget.ID)
+				if err != nil {
+					t.Fatalf("%s: read the shaped edges graph_edges answers: %v", when, err)
+				}
+				edges, err := pgx.CollectRows(rows, pgx.RowTo[string])
+				if err != nil {
+					t.Fatalf("%s: read the shaped edges graph_edges answers: %v", when, err)
+				}
+				if want := []string{kind + ":" + id}; !slices.Equal(edges, want) {
+					t.Errorf("%s: graph_edges answers the shaped edges %v into %s, want %v", when, edges, specTarget.ID, want)
+				}
+				for _, node := range [...][2]string{{graphstore.KindAsk, ask}, {BlockNodeKind, document.address("a1")}} {
+					var want []string
+					if node[0] == kind && node[1] == id {
+						want = []string{TupleShaped + " -> " + specTarget.Kind + " " + specTarget.ID}
+					}
+					if ties := currentTies(t, database.Pool, node[0], node[1], TupleShaped); !slices.Equal(ties, want) {
+						t.Errorf("%s: %s/%s states %v, want %v, as the row naming %s:%s holds", when, node[0], node[1], ties, want, kind, id)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Above the deferral bound the typed-node pass runs alone (PlanDecisionNodes), and a version that
+// removes a decision and an ask block drops the rows of their ties in that pass, each tuple
+// retracted out of the node its row names: the ask block's shaped out of the ask's node, and the
+// decision's shaped and decided_by out of its block's. A version that holds no typed block at all
+// reads bare facts, and drops them as one that keeps another decision does. The release before
+// would otherwise delete the ask's row when it indexes the document, and retract out of the
+// block's own node, which leaves the ask's tuple standing with no row.
+func TestADeferredVersionDropsTheTiesOfTheTypedBlocksItRemoved(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// keeps is whether the version keeps a decision of its own, d2.
+		keeps bool
+	}{
+		{name: "a version that holds no typed block"},
+		{name: "a version that keeps another decision", keeps: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database := parentDatabase(t)
+			ctx := context.Background()
+			document := newParentDocument(t, database, "DROP", "notes")
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			spec := "dispatch://" + document.issue + "/artifact/notes#b-r1"
+			specRef, _ := text.ParseRef(spec, "")
+			specTarget, _ := TargetOf(specRef)
+			requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
+			tied := renderTypedVersion(t, requirement+"\n:::decision{#d1 shaped=\""+spec+"\"}\nWe chose REST.\n:::\n\n"+
+				":::ask{#a1 shaped=\""+spec+"\"}\nWhich transport?\n:::\n")
+			first := document.writeVersion(t, 1, tied.markdown, alice)
+			ask := answeredAsk(t, document, "a1", first.at)
+			indexWhole(t, database, document, 1, tied, first)
+			to := specTarget.Kind + " " + specTarget.ID
+			if got, want := typedRowsOf(t, database.Pool, document.artifact), []string{
+				"a1 shaped -> " + to + " on ask:" + ask,
+				"d1 decided_by -> person alice on block:" + document.address("d1"),
+				"d1 shaped -> " + to + " on block:" + document.address("d1"),
+			}; !slices.Equal(got, want) {
+				t.Fatalf("version 1 wrote the typed rows %v, want %v", got, want)
+			}
+
+			markdown, want := requirement, []string(nil)
+			if test.keeps {
+				markdown += "\n:::decision{#d2 shaped=\"" + spec + "\"}\nWe chose gRPC.\n:::\n"
+				want = []string{
+					"d2 decided_by -> person alice on block:" + document.address("d2"),
+					"d2 shaped -> " + to + " on block:" + document.address("d2"),
+				}
+			}
+			removed := renderTypedVersion(t, markdown)
+			second := document.writeVersion(t, 2, removed.markdown, alice)
+			commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+				facts, err := versionFacts(ctx, tx, document.artifact, 2, removed, writerSources(tx, document.artifact, alice))
+				if err != nil {
+					return graphstore.Uncaused{}, err
+				}
+				return indexTypedAlone(ctx, tx, document.artifact, 2, second.at, facts)
+			}, second.event)
+			if got := typedRowsOf(t, database.Pool, document.artifact); !slices.Equal(got, want) {
+				t.Errorf("the typed pass of version 2 left the typed rows %v, want %v", got, want)
+			}
+			if ties := currentTies(t, database.Pool, graphstore.KindAsk, ask, TupleShaped); len(ties) != 0 {
+				t.Errorf("the ask's node states %v after the version that removed its block, want no shaped tie", ties)
+			}
+			if ties := currentTies(t, database.Pool, BlockNodeKind, document.address("d1"), typedKinds...); len(ties) != 0 {
+				t.Errorf("the removed decision's node states %v, want no tie of the typed kinds", ties)
+			}
+		})
+	}
+}

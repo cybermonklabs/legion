@@ -214,13 +214,14 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 
 // A block's mention of a person, an agent's session or a role (refs.IdentityKinds) is no link of
 // the block's pairs: the index states it in the store alone, since no block_refs row holds a party,
-// and never retracts it. So the pass over a version the release before this one indexed after the
-// store last stated the document, which reads what the store still asserts of its blocks and
-// retracts each link no pair of the version holds, leaves those mentions standing. A retraction
-// of the person's would be refused (graphstore.ErrPersonTupleOutsideToPerson) and fail every index
-// of the document, the forms drain's among them, so the edges of the forms that release cannot
-// read would never come back; the session's and the role's would be lost for good, since the
-// index appends a mention once.
+// and retracts it only where the version's text of the block no longer names it. So the pass over
+// a version the release before this one indexed after the store last stated the document, which
+// reads what the store still asserts of its blocks and retracts each link no pair of the version
+// holds, leaves those mentions standing. A retraction of the person's would be refused
+// (graphstore.ErrPersonTupleOutsideToPerson) and fail every index of the document, the forms
+// drain's among them, so the edges of the forms that release cannot read would never come back;
+// the session's and the role's would be missing from the store until a later index of the
+// document, which states again each mention the text names that the store does not hold.
 //
 // This build indexes version 1, the stand-in for the previous release writes and indexes version
 // 2, which appends a paragraph and drops no link (indexAsThePreviousRelease), and the forms drain

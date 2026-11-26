@@ -336,6 +336,7 @@ type postHistoryQuery struct {
 }
 
 // inboxQuery is GET /api/v1/inbox's query.
+// kept for one release: inbox-old-reads
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
 	Project string `query:"project"`
@@ -357,6 +358,7 @@ type myAnswersQuery struct {
 
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
+// kept for one release: inbox-old-reads
 type myRepliesQuery struct {
 	// Kind is the kinds of row answered, as one comma list of reply and agent (`reply`,
 	// `agent`, `reply,agent`); an absent one reads reply alone, and any other value is
@@ -384,9 +386,9 @@ type myRepliesQuery struct {
 // document that takes no `session` (RefusesUndeclared).
 type meInboxQuery struct {
 	// Limit is the page size, 1 to 200; one above 200 is refused by its name. An absent one is
-	// every entry, save under state=dismissed, which answers one page of 200: newest dismissal
-	// first, then by node id, with a total of the page's own entries and a next_cursor when the
-	// page is full.
+	// every entry, but under state=dismissed one page of 200: newest dismissal first, then by node
+	// id, with a total of the page's own entries and a next_cursor while another entry follows the
+	// page.
 	Limit int `query:"limit"`
 	// Offset is where that page starts.
 	Offset int `query:"offset"`
@@ -632,6 +634,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
+	},
+	"POST /api/v1/markdown/file-round-trip": {
+		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: fileRoundTripInput{},
 	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: createdProject{}, Request: createProjectInput{}},
@@ -915,10 +920,11 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusOK, Body: model.MessageDelivery{}},
 		},
 	},
+	// kept for one release: inbox-old-reads
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
-	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
+	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}}, // kept for one release: inbox-old-reads
 	"GET /api/v1/me/inbox": {
 		Status: http.StatusOK, Response: meInboxResponse{}, Params: meInboxQuery{}, RefusesUndeclared: true,
 	},
@@ -959,7 +965,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
 	"GET /api/v1/agents/{session_id}/conversation": {Status: http.StatusOK, Response: []messageRead{}},
-	"GET /api/v1/agents/{session_id}/messages":     {Status: http.StatusOK, Response: []messageRead{}},
+	"GET /api/v1/agents/{session_id}/messages":     {Status: http.StatusOK, Response: []messageRead{}}, // kept for one release: inbox-old-reads
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},

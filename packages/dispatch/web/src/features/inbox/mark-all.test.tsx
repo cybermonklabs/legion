@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { meInboxThreads } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -223,6 +223,60 @@ test("a refused press brings the rows and the counts back and says nothing was m
   expect(inboxCount()).toBe("2");
   expect(unread()).toBe("2");
   expect(listed()).toBe("2");
+});
+
+// Two presses out at once over two narrowings of the list - its Reply rows, then its Agent rows -
+// each refused in turn. A refusal draws unread again the rows its own press drew read, and raises
+// the count by them, and nothing else: had it put every read back as its press found it, the first
+// refusal would draw the second press's row unread while that press is still out, and the second
+// would draw the first press's row read again, though Dispatch marked neither, with the count one
+// too low.
+test("two presses refused in a row each draw their own rows unread again, and the count as it was", async () => {
+  const reply = replyRow("c1");
+  const agent = plannerAgentRow();
+  const client = new QueryClient(CLIENT_OPTIONS);
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([reply, agent]));
+  client.setQueryData(meInboxCountQuery().queryKey, 2);
+  const first = Promise.withResolvers<never>();
+  const second = Promise.withResolvers<never>();
+  const marked = answerInboxReads();
+  marked.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const rows: readonly InboxListRow[] = [
+    { kind: "thread", thread: reply },
+    { kind: "thread", thread: agent },
+  ];
+  const { result } = renderHook(
+    () => ({
+      agents: useMarkAllRead({ asOf: AS_OF, filters: { type: ["agent"] }, rows }),
+      count: useQuery(meInboxCountQuery()).data,
+      replies: useMarkAllRead({ asOf: AS_OF, filters: { type: ["reply"] }, rows }),
+      unread: meInboxThreads(useQuery(meInboxQuery()).data)
+        .filter((thread) => thread.unread)
+        .map((thread) => thread.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  act(() => result.current.replies.markAll());
+  await waitFor(() => expect(result.current).toMatchObject({ count: 1, unread: ["message-1"] }));
+  act(() => result.current.agents.markAll());
+  await waitFor(() => expect(result.current).toMatchObject({ count: 0, unread: [] }));
+
+  // The first press is refused while the second is still out: its own row is unread again, and
+  // the second's is still drawn read.
+  await act(async () => first.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(marked).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 1, unread: ["c1"] }));
+
+  await act(async () => second.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() =>
+    expect(result.current).toMatchObject({ count: 2, unread: ["c1", "message-1"] })
+  );
 });
 
 // A read of the list asked before the press - an event's refresh, say - answers the rows as they

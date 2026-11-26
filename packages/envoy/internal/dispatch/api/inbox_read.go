@@ -465,8 +465,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // row: the root is the first row of a thread any of them takes. A reply of this release takes the
 // thread's root `for no key update` before its insert (inboxwrite.Recording.QueueRootLock, which
 // api's replyMessage and createStoredMessage run before they take the message's attempt or write
-// the row), and its writer, inboxwrite.Record, clears the root's Agent dismissals under it before
-// it takes any user_threads row of the thread (Record's step 2, below). An older build's reply
+// the row, or, for a reply on no issue - every reply under an Agent thread - its plan, in the
+// statement that walks to the root, inboxwrite.RootWalkLockStatement), and its writer,
+// inboxwrite.Record, clears the root's Agent dismissals under it before it takes any user_threads
+// row of the thread (Record's step 2, below). An older build's reply
 // does the same through its triggers: Postgres fires a table's row triggers in name order, so on
 // messages user_agent_thread_dismissed_clear (migration 20261105093507, whose body 20261125053125
 // replaced) runs before user_threads_message (0095, attached by 0097) on an issue message, and on
@@ -489,20 +491,25 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //
 // A person's own reply under an Agent thread takes step 2 as well, and, where a session answered
 // the thread's root, step 4, as a dismissal of that one thread (the own-answer rule, R1, D6). Its
-// writer (createStoredMessage, api/messages.go) takes the thread's root `for update` before the
-// reply's own insert: that insert's foreign key holds its parent `for key share`, so a `for update`
-// taken after it would be the upgrade migration 20261105093507's header records as a deadlock.
-// Before it takes any lock it reads whether a session answered the root (ownAgentRootAnswered).
-// No statement deletes a message, so a root answered then is answered under the lock, which goes
-// first in the reply's write batch. A root that read finds unanswered it takes at once, and reads
-// again once that lock is granted, in a statement of its own (lockOwnAgentRoot): a root still
-// unanswered is no Agent row, and a reply under it takes step 2 alone and writes no mark
+// plan takes the thread's root `for update` in the statement that walks to it
+// (inboxwrite.PlanRecord, inboxwrite.AgentDismissalRootWalkLockStatement), the first lock of the
+// root its transaction holds and before the reply's own insert, so its writer
+// (createStoredMessage, api/messages.go) never raises a lock of the root: that insert's foreign key
+// holds its parent `for key share`, so a `for update` taken after it would be the upgrade
+// migration 20261105093507's header records as a deadlock, and one taken after a `for no key
+// update` of the root would wait for an older build's reply holding the root `for key share`
+// while that reply's clear waits for the root to take it `for no key update` before its delete
+// (migration 20261125053125). Once that lock is granted, the writer reads whether a session
+// answered the root, in a statement of its own (ownAgentRootAnswered): a root still unanswered is
+// no Agent row, and a reply under it takes step 2 alone and writes no mark
 // (inboxwrite.Recording.Unanswered). Only then, in the record's step 6 (inboxwrite.Record), does a
 // reply under an answered root write the person's own user_agent_thread_dismissed row, and then,
 // as this transaction's dismissal does, the thread's unread replies read by id, new
 // user_agent_reply_read rows in ascending reply_id order. So a dismiss of the same root and the
 // reply meet at the root, whichever reaches it first, and neither holds a row the other waits for
-// (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther).
+// (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther); nor do the reply and an
+// older build's reply holding the root `for key share`
+// (TestAPersonsOwnAgentReplyWaitsAtTheRootWhileAnOlderReplyHoldsItForKeyShare).
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock

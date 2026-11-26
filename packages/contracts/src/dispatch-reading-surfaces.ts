@@ -70,7 +70,6 @@ export type DispatchReadingSurface =
   | "issue-decision"
   | "decision-heading-words"
   | "decision-change-quote"
-  | "decision-shaped-link"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -819,9 +818,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "inbox-thread-title",
   },
-  // The issue's Decisions panel, which names the decisions document by its artifact id: a
-  // decision's heading and paragraphs, and the open questions. A link to a spec block a decision
-  // shaped is a row of its own (`decision-shaped-link`).
+  // The issue's Decisions panel reads each decision's heading and paragraphs in that
+  // decision's document. A shaped link names the target block by its id, in the panel's
+  // own words: the decisions read sends none of the block's text (`refs.BlockLinks`).
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
@@ -894,20 +893,6 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "decision-change-quote",
   },
-  // A link under "Shaped in the spec:" on the Decisions panel, worded by the spec block a
-  // decision shaped.
-  {
-    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
-    proof: {
-      file: "packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx",
-      test: "a shaped block's link reads its block's words as their plain-text projection",
-    },
-    reach: "/issues/<ISSUE>/decisions, a decision's link under Shaped in the spec",
-    reason: `A link names the spec block a decision shaped by the block's words, which the decisions read sends as the block's stored excerpt (\`to.text\`) with no reading of them, so the page parses them. ${PLAIN_WORDS_REASON} Until the reader's engine has answered, and for a block the read sends no words for, the link names the block by its id, in the panel's own words.`,
-    record: true,
-    rendered: false,
-    surface: "decision-shaped-link",
-  },
   // A requirement's line in the spec's Requirements list.
   {
     files: ["packages/dispatch/web/src/features/issue/SpecRequirements.tsx"],
@@ -971,8 +956,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A document's margin: the decision card and the pinned conversations, which an issue's page
   // shows beside its spec, a suggestion's two sides and a thread's comments. The decision card's
-  // text is a passage of the issue's `decisions.md`, named by that document's artifact id as the
-  // Decisions panel names it (`issue-decision`).
+  // text is a passage of the decision's document, which the Decisions read names by artifact id.
   {
     files: ["packages/dispatch/web/src/features/margin/DecisionCard.tsx"],
     reach: "/issues/<ISSUE>/spec, a margin decision card's heading and passage",

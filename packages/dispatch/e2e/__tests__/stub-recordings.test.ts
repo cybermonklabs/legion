@@ -16,6 +16,14 @@
  *  200 that answers a list of events is read a second way: every text an event's payload holds
  *  is demanded under the path that map keys it by.
  *
+ *  The GitHub proxy (`/api/github/rest/...`) is no route of that document: it forwards GitHub's
+ *  own answer. Its entries are held to the proxy's contract instead -
+ *  `packages/envoy/internal/dispatch/githubapi/testdata/proxy-contract.json`, which a Go test of
+ *  that package holds to the proxy's own declarations: its prefix, the paths it forwards, the
+ *  query a workflow-runs read may carry, its error codes and the fields it trims a workflow-runs
+ *  answer to - and to the shapes the dashboard reads of each other answer
+ *  (`web/src/features/issue/GitHubLink.tsx`, `web/src/features/refs/Unfurl.tsx`).
+ *
  *  Those last ones are what keep the stubbed rows reading Go's tree. The dashboard asks for the
  *  trees on every request it makes, and draws one wherever it is given one; where it is given
  *  none it parses the markdown itself, which is the fallback a rolling deploy needs and which
@@ -32,11 +40,17 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Ajv2020 } from "ajv/dist/2020";
+import { issueClaimEventPayloadFields } from "@legion/contracts";
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020";
 
 import { recordedOrigin } from "../stub/origin";
-import type { Har } from "../stub/recording";
-import { recordingsDirectory, recordingsUnder } from "../stub/recordings";
+import { bodyUnread, type Har } from "../stub/recording";
+import {
+  familyOf,
+  recordingFamily,
+  recordingsDirectory,
+  recordingsUnder,
+} from "../stub/recordings";
 
 interface OpenApiDocument {
   components?: { schemas?: Record<string, unknown> };
@@ -196,6 +210,155 @@ withTrees.addSchema({ $id: "trees", ...demandedDocument });
 const ajv = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 ajv.addSchema({ $id: "dispatch", ...document });
 
+/** The GitHub proxy's contract, which `contract_test.go` in its package holds to the proxy's own
+ *  declarations, as the OpenAPI document is held to the route table. */
+interface ProxyContract {
+  prefix: string;
+  readable: string;
+  workflowRunsGroup: string;
+  workflowRunsQuery: string;
+  workflowRunsCommit: string;
+  workflowRunsQueries: Record<string, boolean>;
+  errorCodes: string[];
+  workflowRuns: Record<string, unknown>;
+}
+const proxyContract = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../../envoy/internal/dispatch/githubapi/testdata/proxy-contract.json",
+        import.meta.url
+      )
+    ),
+    "utf8"
+  )
+) as ProxyContract;
+
+const githubPrefix = proxyContract.prefix;
+const githubReadable = new RegExp(proxyContract.readable);
+const workflowRunsParameter = new RegExp(proxyContract.workflowRunsQuery);
+
+/** `workflowRunsOfOneCommit` of proxy.go, on the contract's pattern and commit parameter; the
+ *  contract carries the proxy's own verdicts on a set of queries, which this is held to below. */
+function workflowRunsOfOneCommit(query: string): boolean {
+  const seen = new Set<string>();
+  for (const parameter of query.split("&")) {
+    const match = workflowRunsParameter.exec(parameter);
+    if (match === null) return false;
+    const name = match.slice(1).find((group) => group !== undefined) ?? "";
+    if (seen.has(name)) return false;
+    seen.add(name);
+  }
+  return seen.has(proxyContract.workflowRunsCommit);
+}
+
+/** A JSON schema of exactly the fields the contract lists: "integer" or "string" for a field, a
+ *  one-entry list holding an element's fields for a list. */
+function exactSchema(fields: unknown): Record<string, unknown> {
+  if (typeof fields === "string") return { type: fields };
+  if (Array.isArray(fields)) return { items: exactSchema(fields[0]), type: "array" };
+  const entries = Object.entries(fields as Record<string, unknown>);
+  return {
+    additionalProperties: false,
+    properties: Object.fromEntries(entries.map(([name, field]) => [name, exactSchema(field)])),
+    required: entries.map(([name]) => name),
+    type: "object",
+  };
+}
+
+/** What the dashboard reads of each answer the proxy forwards, as a schema of the members it
+ *  reads: GitHub's answer passes through whole, so a member the dashboard does not read may be
+ *  there or not. A workflow-runs answer is the one the proxy trims, to its `workflowRuns` struct,
+ *  so that one is held to exactly the members the struct keeps. */
+const githubShapes = {
+  reference: {
+    properties: {
+      body: { type: ["string", "null"] },
+      head: { properties: { sha: { type: "string" } }, type: "object" },
+      merged: { type: "boolean" },
+      state: { type: "string" },
+      title: { type: "string" },
+    },
+    required: ["state", "title"],
+    type: "object",
+  },
+  checkRuns: {
+    properties: {
+      check_runs: {
+        items: {
+          properties: {
+            app: {
+              oneOf: [
+                { type: "null" },
+                { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
+              ],
+            },
+            check_suite: {
+              oneOf: [
+                { type: "null" },
+                { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
+              ],
+            },
+            conclusion: { type: ["string", "null"] },
+            id: { type: "integer" },
+            name: { type: "string" },
+            status: { type: "string" },
+          },
+          required: ["id", "name", "status", "conclusion"],
+          type: "object",
+        },
+        type: "array",
+      },
+    },
+    required: ["check_runs"],
+    type: "object",
+  },
+  workflowRuns: exactSchema(proxyContract.workflowRuns),
+  error: {
+    oneOf: [
+      {
+        properties: { code: { enum: proxyContract.errorCodes }, error: { type: "string" } },
+        required: ["error", "code"],
+        type: "object",
+      },
+      { properties: { message: { type: "string" } }, required: ["message"], type: "object" },
+    ],
+  },
+} as const;
+const githubValidators = Object.fromEntries(
+  Object.entries(githubShapes).map(([name, schema]) => [name, ajv.compile(schema)])
+) as Record<keyof typeof githubShapes, ValidateFunction>;
+
+function checkGithubRead(entry: Har["log"]["entries"][number], url: URL, where: string): void {
+  expect(entry.request.method, `${where}: the GitHub proxy reads only`).toBe("GET");
+  const path = url.pathname.slice(githubPrefix.length);
+  const match = githubReadable.exec(path);
+  expect(match, `${where}: the GitHub proxy forwards no such path`).not.toBeNull();
+  if (match === null) return;
+  const workflowRuns = match.groups?.[proxyContract.workflowRunsGroup] !== undefined;
+  if (workflowRuns) {
+    expect(
+      workflowRunsOfOneCommit(url.search.slice(1)),
+      `${where}: a workflow-runs read the proxy refuses - its query names no one commit`
+    ).toBe(true);
+  }
+  const status = entry.response.status;
+  let shape: keyof typeof githubShapes;
+  if (status !== 200) shape = "error";
+  else if (workflowRuns) shape = "workflowRuns";
+  else if (path.endsWith("/check-runs")) shape = "checkRuns";
+  else shape = "reference";
+  expect(status === 200 || status >= 400, `${where}: the proxy answers 200 or an error`).toBe(true);
+  const body = entry.response.content.text;
+  expect(body, `${where}: a GitHub answer with no body`).toBeDefined();
+  if (body === undefined) return;
+  const validate = githubValidators[shape];
+  expect(
+    validate(JSON.parse(body)),
+    `${where}: the ${status} answer is not what the dashboard reads of it - ${ajv.errorsText(validate.errors)}`
+  ).toBe(true);
+}
+
 /** Every member of a payload that can hold a stored text: the field of every pair the document
  *  declares. An event's trees stand in a map of their own, so the demand above reaches none of
  *  them and the rule below reads an event's payload with these names instead.
@@ -213,8 +376,35 @@ ajv.addSchema({ $id: "dispatch", ...document });
  *  A member holding a list of texts - an answer's `selected` - is no string, and demands nothing
  *  here: an event carries the trees of the labels a replaced answer chose, which the Activity
  *  tab's `was:` line draws, and not those of the current answer, whose options the payload's
- *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`). */
+ *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`).
+ *
+ *  Two fields are read as words and not texts: an issue claim event's `reason`, while it holds
+ *  one of the words `claimReasons` lists, and an artifact event's `name`. */
 const storedTextFields = new Set(demandedPairs.map(({ field }) => field));
+
+const claimReasons = new Set<string>(issueClaimEventPayloadFields.reason.options);
+
+function isClaimReason(event: RecordedEvent, at: string): boolean {
+  if (at !== "payload.reason") return false;
+  if (event.type !== "issue.claimed" && event.type !== "issue.released") return false;
+  const payload = event.payload;
+  if (payload === null || typeof payload !== "object" || !("reason" in payload)) return false;
+  return typeof payload.reason === "string" && claimReasons.has(payload.reason);
+}
+
+/** Whether `at` is an artifact event's name: `payload.name` (a version's) or
+ *  `payload.artifact.name` (a created, renamed or removed one's), the artifact's file name, which
+ *  the app writes into a line as a string (`features/activity/activity-model.ts`'s
+ *  `added ${event.payload.artifact.name}` and `saved ${event.payload.name} v…`, and
+ *  `features/issue/event-description.ts` likewise) and the server reads no tree for, since
+ *  `eventPayloadTexts` reads the comment, message, suggestion and ask families alone. `name` is a
+ *  stored text where a schema pairs it with a tree (a reference link's), so the field name alone
+ *  demands one here; a recording whose issue holds a saved document has such events. */
+function isArtifactName(event: RecordedEvent, at: string): boolean {
+  return (
+    (at === "payload.name" || at === "payload.artifact.name") && event.type.startsWith("artifact.")
+  );
+}
 
 /** Whether this schema is an event's: one that declares a `payload` beside the `trees` map
  *  holding the display tree of every text that payload carries (model.Event's `Trees`). */
@@ -319,6 +509,7 @@ function checkTrees(file: string): number {
     for (const event of answered as RecordedEvent[]) {
       events += 1;
       for (const at of eventTextPaths(event.payload, "payload", [])) {
+        if (isClaimReason(event, at) || isArtifactName(event, at)) continue;
         expect(
           holdsContent(event.trees?.[at]),
           `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
@@ -337,6 +528,81 @@ describe("every committed recording answers what the generated contract declares
     expect(files.length).toBeGreaterThan(0);
   });
 
+  test("the GitHub proxy rule takes what the proxy forwards and refuses the rest", () => {
+    expect(githubPrefix).toBe("/api/github/rest/");
+    for (const forwarded of [
+      "repos/acme/web/pulls/7",
+      "repos/acme/web/issues/7",
+      "repos/acme/web/commits/0123abc/check-runs",
+      "repos/acme/web/actions/runs",
+    ]) {
+      expect(githubReadable.test(forwarded), forwarded).toBe(true);
+    }
+    for (const refused of [
+      "repos/acme/web/contents/README.md",
+      "user",
+      "repos/acme/web/pulls/7/files",
+    ]) {
+      expect(githubReadable.test(refused), refused).toBe(false);
+    }
+    // The port of `workflowRunsOfOneCommit` gives each verdict the proxy's own gives, as the Go
+    // test wrote them into the contract.
+    const verdicts = Object.entries(proxyContract.workflowRunsQueries);
+    expect(verdicts.length).toBeGreaterThan(0);
+    expect(
+      verdicts.filter(([query, verdict]) => workflowRunsOfOneCommit(query) !== verdict)
+    ).toEqual([]);
+    expect(githubReadable.exec("repos/acme/web/actions/runs")?.groups).toEqual({
+      [proxyContract.workflowRunsGroup]: "actions/runs",
+    });
+    expect(githubValidators.reference({ state: "open", title: "Ship it" })).toBe(true);
+    expect(githubValidators.reference({ state: "open" })).toBe(false);
+    expect(
+      githubValidators.checkRuns({
+        check_runs: [{ conclusion: null, id: 1, name: "ci", status: "queued" }],
+      })
+    ).toBe(true);
+    expect(githubValidators.checkRuns({ check_runs: [{ id: 1, name: "ci" }] })).toBe(false);
+    const run = { check_suite_id: 6, event: "push", name: "CI" };
+    expect(githubValidators.workflowRuns({ total_count: 1, workflow_runs: [run] })).toBe(true);
+    expect(
+      githubValidators.workflowRuns({ total_count: 1, workflow_runs: [{ ...run, actor: {} }] })
+    ).toBe(false);
+    expect(githubValidators.error({ code: "GITHUB_PATH_REFUSED", error: "refused" })).toBe(true);
+    expect(githubValidators.error({ code: "SOMETHING_ELSE", error: "refused" })).toBe(false);
+  });
+
+  test("an issue claim event's reason word carries no tree, and a written reason still does", () => {
+    const claimed = { id: 1, payload: { reason: "takeover" }, type: "issue.claimed" };
+    expect(isClaimReason(claimed, "payload.reason")).toBe(true);
+    expect(
+      isClaimReason(
+        { ...claimed, payload: { reason: "the lane stalled overnight" } },
+        "payload.reason"
+      )
+    ).toBe(false);
+    expect(isClaimReason({ ...claimed, type: "comment.created" }, "payload.reason")).toBe(false);
+  });
+
+  // A layout row reads what the page draws, and an answer whose body the recording never read
+  // (`bodyUnread`) replays as an empty body the page cannot parse: the shell then draws "Could not
+  // load navigation." in place of its sidebar, and the reading measures that page
+  // (dispatch://INFRA-5200: a re-record left 42 such answers in the layout recordings before
+  // `normalise` preferred an answer with its body). The family is read the one way the stubbed
+  // layer reads it, so a changed path scheme matches no file and fails here rather than passing.
+  test("no layout recording replays an answer whose body it never read", () => {
+    const layout = files.filter(
+      (file) => recordingFamily(file) === familyOf("layout-rule.stub.e2e.ts")
+    );
+    expect(layout.length, "the layout rows' recordings this guard reads").toBeGreaterThan(0);
+    const unread = layout.flatMap((file) =>
+      (JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har).log.entries
+        .filter(bodyUnread)
+        .map(({ request }) => `${file}: ${request.method} ${new URL(request.url).pathname}`)
+    );
+    expect(unread, "answers whose body the recording never read").toEqual([]);
+  });
+
   for (const file of files) {
     test(file, () => {
       const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
@@ -346,9 +612,10 @@ describe("every committed recording answers what the generated contract declares
         expect(url.origin, `${where}: a committed recording names the placeholder origin`).toBe(
           recordedOrigin
         );
-        // The generator covers the `/api/v1` route table and nothing else, so the sign-in
-        // route it leaves out is named here rather than passed over: a recording that reached
-        // some other unguarded route would otherwise be checked by nothing at all.
+        if (url.pathname.startsWith(githubPrefix)) {
+          checkGithubRead(entry, url, where);
+          continue;
+        }
         if (!url.pathname.startsWith("/api/v1/")) {
           expect(url.pathname, `${where}: no contract covers this route`).toBe("/auth/whoami");
           continue;
@@ -422,6 +689,7 @@ describe("every committed recording answers the display tree of every stored tex
       "CommentWriteResponse.body",
       "Decision.text",
       "DecisionEntry.answer",
+      "DecisionEntry.selected",
       "DecisionEntry.text",
       "GraphExcerptWithTrees.text",
       "GraphNodeRead.text",

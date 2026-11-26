@@ -474,10 +474,13 @@ func refuseTupleTrigger(t *testing.T, database *store.Store, when, body string) 
 }
 
 // TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn races a move of a
-// project's default assignee against the two writes that read or move who an ask that falls
-// through to it waits on, and holds each pair to ending with one standing delivered_to, to the
-// person asks.AskedOfPersonExpression names once both committed (the spec's R2: the
-// list follows the assignment).
+// project's default assignee against the writes that read or move who an ask that falls through
+// to it waits on, and holds each pair to ending with one standing delivered_to, to the person
+// asks.AskedOfPersonExpression names once both committed (the spec's R2: the list follows the
+// assignment); and against the writes into such an ask's thread that read who takes part in it -
+// a comment, either first, and an answer - each of which holds the project's lock shared before
+// that read (inboxwrite.HoldProjectDefault), so the default the move left keeps the part its own
+// write gave it and the default it brought receives what is written after the move (R4).
 //
 // The interleaving is forced rather than hoped for, as
 // TestBroadcastsNamingTheirRecipientsInOppositeOrdersBothCommit forces its own: each write runs on
@@ -492,33 +495,31 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, "carol", "erin")
-	// race sends first on its own server, waits for it to queue behind holder, then sends the move
-	// of project's default to bob on another, waits for that to queue too, lets holder go, and
-	// answers both responses. holder goes however race ends, so a write still queued behind it
-	// when a check fails finishes before its server's cleanup waits for it.
-	race := func(t *testing.T, holder pgx.Tx, project string, first func(http.Handler) *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
+	// raceWrites sends first on its own server, waits for it to queue behind holder, then sends
+	// second on another, waits for that to queue too - behind holder, or behind first, which holds
+	// what second must take turns at - lets holder go, and answers both responses. early says what
+	// second answering before holder went means. holder goes however raceWrites ends, so a write
+	// still queued behind it when a check fails finishes before its server's cleanup waits for it.
+	raceWrites := func(t *testing.T, holder pgx.Tx, first, second func(http.Handler) *httptest.ResponseRecorder, early string) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 		t.Helper()
 		defer func() { _ = holder.Rollback(context.Background()) }()
 		firstServer, firstBackend := oneConnectionHandler(t, deps)
-		moveServer, moveBackend := oneConnectionHandler(t, deps)
+		secondServer, secondBackend := oneConnectionHandler(t, deps)
 		firstAnswer := make(chan *httptest.ResponseRecorder, 1)
 		go func() { firstAnswer <- first(firstServer) }()
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, firstBackend, firstAnswer); early {
+		if answer, answered := storetest.WaitForQueuedBehind(t, holder, firstBackend, firstAnswer); answered {
 			t.Fatalf("the first write answered %d before it reached the hold: %s", answer.Code, answer.Body.String())
 		}
-		moveAnswer := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			moveAnswer <- dispatchRequest(t, moveServer, http.MethodPut, "/api/v1/projects/"+project+"/default-assignee",
-				map[string]any{"assignee": "bob"}, "alice")
-		}()
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, moveBackend, moveAnswer); early {
-			t.Fatalf("the move of the default answered %d while the first write, which read who the ask waits on, had not committed: %s", answer.Code, answer.Body.String())
+		secondAnswer := make(chan *httptest.ResponseRecorder, 1)
+		go func() { secondAnswer <- second(secondServer) }()
+		if answer, answered := storetest.WaitForQueuedBehind(t, holder, secondBackend, secondAnswer); answered {
+			t.Fatalf("%s answered %d: %s", early, answer.Code, answer.Body.String())
 		}
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("let the first write go: %v", err)
 		}
 		answers := [2]*httptest.ResponseRecorder{}
-		for index, answered := range []chan *httptest.ResponseRecorder{firstAnswer, moveAnswer} {
+		for index, answered := range []chan *httptest.ResponseRecorder{firstAnswer, secondAnswer} {
 			select {
 			case answers[index] = <-answered:
 			case <-time.After(storeStepWait):
@@ -526,6 +527,54 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 			}
 		}
 		return answers[0], answers[1]
+	}
+	// moveTo is the move of project's default to bob.
+	moveTo := func(t *testing.T, project string) func(http.Handler) *httptest.ResponseRecorder {
+		return func(server http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, server, http.MethodPut, "/api/v1/projects/"+project+"/default-assignee",
+				map[string]any{"assignee": "bob"}, "alice")
+		}
+	}
+	// race is raceWrites with the move of project's default to bob second.
+	race := func(t *testing.T, holder pgx.Tx, project string, first func(http.Handler) *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
+		t.Helper()
+		return raceWrites(t, holder, first, moveTo(t, project),
+			"the move of the default, sent while the first write, which read who the ask waits on, had not committed,")
+	}
+	// fallingThrough opens carol's question on a new document of a new project, whose default is
+	// alice, its creator: it waits on alice, who takes part in its thread by the assignee arm.
+	fallingThrough := func(t *testing.T, project string) (document, ask string) {
+		t.Helper()
+		createDefaultAssigneeProject(t, handler, project, "Race of a thread write")
+		document = createProjectDocument(t, handler, project, "Race notes", "# Race\n\nA passage.\n").ID
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document+"/asks", map[string]any{
+			"question": "Who takes part in the race?",
+			"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+		}, "carol")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("open carol's question: status=%d body=%s", response.Code, response.Body.String())
+		}
+		ask = decodeBody[model.Ask](t, response).ID
+		requireOneStandingDelivery(t, database, ask, "alice")
+		return document, ask
+	}
+	// commentOn is alice's comment in ask's thread on document.
+	commentOn := func(t *testing.T, document, ask string) func(http.Handler) *httptest.ResponseRecorder {
+		return func(server http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, server, http.MethodPost, "/api/v1/artifacts/"+document+"/comments",
+				map[string]any{"body": "Alice writes in the thread of her question.", "ask_id": ask}, "alice")
+		}
+	}
+	// takesPart is whether login's participates_in in ask's thread stands.
+	takesPart := func(t *testing.T, login, ask string) bool {
+		t.Helper()
+		taking, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindPerson, login, []string{graphstore.TupleParticipatesIn})
+		if err != nil {
+			t.Fatalf("read the threads %s takes part in: %v", login, err)
+		}
+		return slices.ContainsFunc(taking, func(tuple graphstore.Tuple) bool {
+			return tuple.ToKind == graphstore.KindAsk && tuple.ToID == ask
+		})
 	}
 	begin := func(t *testing.T) pgx.Tx {
 		t.Helper()
@@ -590,6 +639,80 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 				handed.Code, handed.Body.String(), moved.Code, moved.Body.String())
 		}
 		requireOneStandingDelivery(t, database, ask, "erin")
+	})
+
+	// Alice, the default the ask falls through to, writes in its thread, and her comment holds
+	// the project's lock shared from before it read who takes part (describeAsk): held past its
+	// participates_in, at the move of the rows of the people it reached, the comment keeps the move
+	// of the default to bob waiting, and the move, once it runs, finds her comment's participation
+	// and leaves her in the thread. A move that did not wait would end her part with a retraction
+	// newer than her comment's participation, which it could not read yet.
+	t.Run("a comment of the default's in an ask's thread racing a move of the default", func(t *testing.T) {
+		document, ask := fallingThrough(t, "RACEK")
+		holder := begin(t)
+		if _, err := holder.Exec(ctx, `lock table user_threads in share mode`); err != nil {
+			t.Fatalf("hold the writes of user_threads: %v", err)
+		}
+		commented, moved := race(t, holder, "RACEK", commentOn(t, document, ask))
+		if commented.Code != http.StatusCreated || moved.Code != http.StatusOK {
+			t.Fatalf("the comment answered %d (%s) and the move %d (%s), want both written",
+				commented.Code, commented.Body.String(), moved.Code, moved.Body.String())
+		}
+		if !takesPart(t, "alice", ask) {
+			t.Errorf("alice, who wrote in the ask's thread, no longer takes part in it once the move of the default committed")
+		}
+		requireOneStandingDelivery(t, database, ask, "bob")
+	})
+
+	// The move of the default to bob is held after it took the project's lock, at the asks rows it
+	// moves, and alice's comment in the ask's thread then waits for it at that lock, before it
+	// reads who takes part: it reaches bob, whom the move made the person the ask waits on, and
+	// alice takes part in the thread from her comment on.
+	t.Run("a move of the default racing a comment in the thread of an ask that falls through to it", func(t *testing.T) {
+		document, ask := fallingThrough(t, "RACEM")
+		holder := begin(t)
+		holdRow(t, ctx, holder, `select 1 from asks where id = $1::uuid for no key update`, ask)
+		moved, commented := raceWrites(t, holder, moveTo(t, "RACEM"), commentOn(t, document, ask),
+			"the comment in the ask's thread, sent while the move of the default it falls through to had not committed,")
+		if commented.Code != http.StatusCreated || moved.Code != http.StatusOK {
+			t.Fatalf("the comment answered %d (%s) and the move %d (%s), want both written",
+				commented.Code, commented.Body.String(), moved.Code, moved.Body.String())
+		}
+		comment := decodeBody[model.Comment](t, commented).ID
+		if reached := meInboxDeliveredTo(t, database, graphstore.KindComment, comment); !slices.Contains(reached, graphstore.KindPerson+":bob") {
+			t.Errorf("alice's comment reached %v, want bob, the default the ask fell through to once the move committed", reached)
+		}
+		if !takesPart(t, "alice", ask) {
+			t.Errorf("alice, who wrote in the ask's thread, does not take part in it")
+		}
+		requireOneStandingDelivery(t, database, ask, "bob")
+	})
+
+	// Erin's answer to the ask holds the project's lock shared from before it read who takes part
+	// in its thread (transitionAskTx): held past its participates_in, the answer keeps the move of
+	// the default waiting, and the move then finds the ask answered and moves nothing of it, so the
+	// ask stands delivered to alice, the default it waited on, and to carol, its asker, whom the
+	// answer reached, and to nobody else. A move that did not wait would give bob the ask and end
+	// alice's delivery, and the answer, planned before it, would then state alice's again beside
+	// bob's.
+	t.Run("an answer racing a move of the default the ask falls through to", func(t *testing.T) {
+		_, ask := fallingThrough(t, "RACEA")
+		holder := begin(t)
+		if _, err := holder.Exec(ctx, `lock table user_threads in share mode`); err != nil {
+			t.Fatalf("hold the writes of user_threads: %v", err)
+		}
+		answered, moved := race(t, holder, "RACEA", func(server http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, server, http.MethodPost, "/api/v1/asks/"+ask+"/answer",
+				map[string]any{"selected": []string{"Yes"}, "expected_edited_at": nil}, "erin")
+		})
+		if answered.Code != http.StatusOK || moved.Code != http.StatusOK {
+			t.Fatalf("the answer answered %d (%s) and the move %d (%s), want both written",
+				answered.Code, answered.Body.String(), moved.Code, moved.Body.String())
+		}
+		want := []string{graphstore.KindPerson + ":alice", graphstore.KindPerson + ":carol"}
+		if reached := meInboxDeliveredTo(t, database, graphstore.KindAsk, ask); !slices.Equal(reached, want) {
+			t.Errorf("the answered ask's delivery stands to %v, want %v: the move came after the answer closed it", reached, want)
+		}
 	})
 }
 

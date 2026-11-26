@@ -14,6 +14,7 @@
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name on refs, which the runner drops with DROP
 -- INDEX CONCURRENTLY and builds again on the next attempt.
+-- kept for one release: inbox-roll-catch-up
 create index concurrently if not exists refs_item_tuples_unstored
     on refs (from_kind, from_id, to_kind, to_id)
     where not tuples_stored and from_kind in ('comment', 'message', 'ask');

@@ -1,5 +1,5 @@
 kind: Changed
-body: The bundled `dispatch` command's `inbox` reads `GET /api/v1/me/inbox` and prints what it printed before.
+body: The bundled `dispatch` command's `inbox` reads `GET /api/v1/me/inbox` and prints what it printed before. Against a server of the release before, which has no such route, it reads the two routes it read before and prints the same, at once.
 time: 2026-11-21T20:44:49.97488922Z
 custom:
     Issue: pr4182

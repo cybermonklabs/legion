@@ -13,7 +13,12 @@ import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
+import {
+  api,
+  REFERENCE_TARGETS_MAX,
+  REFERENCE_TARGETS_MAX_QUERY_CHARS,
+  refusesOpenAsksWithNoNarrowing,
+} from "./client";
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
@@ -45,6 +50,9 @@ export const openAsksKey = ["open-asks"] as const;
 /** The open asks the viewer can see (`GET /api/v1/asks/open`), as their rows: every one of every
  *  project by default, which the Inbox reads for every person's asks but the reader's own, and the
  *  margin, the Agents page and the Machines page read too; one project's (`project`) for its page.
+ *  A Dispatch process of the release before refuses the read of every project, and while one
+ *  serves, those rows are read as the page of that release read them
+ *  (`openAsksOfTheReleaseBefore`); any other failure is the read's own, and nothing else is read.
  *  An Inbox card mounts its thread from these rows, so the read's requests count in the
  *  generations an ask event in flight marks (`ask-thread-freshness.ts`). */
 export const openAsksQuery = (project?: string) =>
@@ -52,9 +60,17 @@ export const openAsksQuery = (project?: string) =>
     queryKey: [...openAsksKey, { project }],
     queryFn: async ({ client }) => {
       const fetch = beginInboxFetch(client, "open-asks");
+      const query = project === undefined ? {} : { project };
       let asks: OpenAskRow[] | undefined;
       try {
-        asks = (await api.listOpenAsks(project === undefined ? {} : { project })).asks ?? [];
+        asks = await api.listOpenAsks(query).then(
+          (answer) => answer.asks ?? [],
+          // kept for one release: open-asks-scopeless-fallback
+          (refusal: unknown) => {
+            if (!refusesOpenAsksWithNoNarrowing(refusal)) throw refusal;
+            return api.openAsksOfTheReleaseBefore(query);
+          }
+        );
         return asks;
       } finally {
         finishInboxFetch(client, fetch, asks);

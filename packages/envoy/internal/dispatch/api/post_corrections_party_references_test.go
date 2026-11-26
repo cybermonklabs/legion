@@ -63,13 +63,17 @@ func projectDocumentRef(document model.Artifact) string {
 	return "dispatch://TEST/artifact/" + document.Slug
 }
 
-// citedDocuments is what the post ref names cites, as GET /api/v1/references?from= lists its
-// mentions edges: each edge's other end, by its reference, sorted.
+// citedDocuments is the documents the post ref names cites, as GET /api/v1/references?from=
+// lists its mentions edges: the other end of each edge that is a document (an artifact), by its
+// reference, sorted. A mentions edge to a store-owned identity (a session, a person, a role) is
+// no document and has no reference, so it is left out.
 func citedDocuments(t *testing.T, handler http.Handler, ref string) []string {
 	t.Helper()
 	var cited []string
 	for _, edge := range graphEdges(t, handler, url.Values{"from": {ref}, "kind": {"mentions"}}).Edges {
-		cited = append(cited, edge.Node.Ref)
+		if edge.Node.Kind == "artifact" {
+			cited = append(cited, edge.Node.Ref)
+		}
 	}
 	slices.Sort(cited)
 	return cited

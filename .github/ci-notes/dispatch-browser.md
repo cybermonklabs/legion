@@ -155,7 +155,7 @@ by a build of ./cmd/listener and ./internal/testnats/cmd/natsd alone
 (.github/workflows/ci-caches.yaml), so a job that restores it and builds these four
 downloads and compiles their closure on a key that hit: 115 `go: downloading` lines in
 job 129055096326 of run 42585736615, where this build still sat inside the alone job's
-3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
+3-minute browser step. go-envoy-test is filled by `go test -count=1 -run '^$' ./...` over
 the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
 restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
 here saves either one.
@@ -227,7 +227,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-e07980de): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-398fb2e8): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -921,8 +921,8 @@ harness starts its servers with crash safety off, so no commit waits for the run
 With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
 answering for about 5 s, the read mark a closed page left in flight could neither commit nor
 be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
-service can be given those three settings too, with `alter system` and a reload, as
-docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+service can be given those three settings too, on its `command:` line, as docs-site.yaml's is
+(.github/scripts/postgres-service-settings.sh); this job takes the harness's server rather than a second copy of its
 settings, and that server loads the stall library below as it starts, which a service,
 started before any step has built the library, could do only after a restart. The suite's
 row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the
@@ -1371,26 +1371,31 @@ setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
 One step carries a budget of its own: "Reading one, the rows", which calls
 .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
 ladder bounds that wait rather than measuring it - three attempts, each bounded by
-`timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
-bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
-4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
-that step carries. The rule's two-minute floor does not bind. The step now also runs
+`timeout 30`, with waits of 10 s and 20 s between them - and a bound takes no 15 per cent.
+The read is paginated, so gh-read.sh can read no answer of its own: after an attempt that
+exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
+takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
+has a measured maximum of 4 s; it now also runs
 packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
-counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
+whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
 
-A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
-waits for GitHub to answer again only when that falls at least 30 s before this step's limit and
-the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
-STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So the
-wait never outlives either budget, and the budgets need no room for it: a step that would have to
-wait past them fails by name instead, and a re-run after the reset reads the jobs again.
+A spent API budget is not in that bound: when the rate_limit route shows the core budget this
+read spends at 0, gh-read.sh's gh_wait_reset waits for its reset only when that falls at least
+30 s before this step's limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES
+and the step's as STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait
+and the limit. So the wait never outlives either budget, and the budgets need no room for it: a
+step that would have to wait past them fails by name instead, and a re-run after the reset
+reads the jobs again. A secondary rate limit is not waited for on this read: GitHub names its
+wait in the answer's retry-after, which a paginated read leaves unread, so it is one of the
+ladder's failed attempts.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
-one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
+one step's 240 s, plus the measured maximum of every step without one: 40 s less reading
 one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
 runs one `echo` and has no measurement of its own - 1 s is what this job's other
-one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
+one-command steps measure. 240 + 37 = 277 s, which is 4 min 37 s, so 5 min. The job's
 budget is above the step's, so the step's own budget fires first and names the step,
 which is the reason this file's head gives for putting budgets on steps.
 

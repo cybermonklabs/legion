@@ -228,6 +228,7 @@ export type {
   MessageWithTrees,
   MyAnswerRow,
   MyAnswersResponse,
+  // kept for one release: inbox-old-reads
   MyRepliesResponse,
   MyReplyAgentRow,
   MyReplyRow,

@@ -5,6 +5,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os/exec"
 	"regexp"
@@ -382,12 +383,21 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 			return waiters, waiters >= 1
 		})
-		var waited string
-		if err := database.Pool.QueryRow(ctx, `
-			select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waited); err != nil {
-			t.Fatalf("read the statement the seed waits at behind the hold on %s: %v", table, err)
-		}
+		// A backend enters a lock's queue, where LockWaiters counts it, before Postgres reports its
+		// wait event, so the statement it waits at is read until that event shows.
+		waited := testwait.UntilPolling(t, 10*time.Millisecond, "the seed's wait behind the hold on "+table+" to show in pg_stat_activity", func() (string, bool) {
+			var query string
+			err := database.Pool.QueryRow(ctx, `
+				select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
+			`).Scan(&query)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", false
+			}
+			if err != nil {
+				t.Fatalf("read the statement the seed waits at behind the hold on %s: %v", table, err)
+			}
+			return query, true
+		})
 		if folded := strings.TrimSpace(seedStatementSpace.ReplaceAllString(strings.ToLower(waited), " ")); !strings.HasPrefix(folded, statement) {
 			t.Fatalf("the seed waits behind the hold on %s at %q, not at its first %s: what it appended so far is not the sites before it alone",
 				table, folded, statement)

@@ -11,7 +11,6 @@ import {
   createPriority,
   editArtifact,
   getArtifactText,
-  getIssueDecisions,
   listPriorities,
   publishAgentStreamFrame,
   requestApproval,
@@ -140,9 +139,9 @@ function composerSend(
     .getByRole("button", { exact: true, name: "Send" });
 }
 
-/** The decision the Decisions panel's box changes: the heading of the `decision` block the
- *  session writes in the spec's `## Decisions` part, which the form the change is written in is
- *  named after (`ChangeComposer`). */
+/** The decision the Decisions panel's box changes: the heading of an agent's `decision` block in
+ *  the spec's `## Decisions` part, which the form the change is written in is named after
+ *  (`ChangeComposer`). */
 const DECISION = "Store notices in a table";
 
 const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
@@ -390,26 +389,22 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       );
     },
     seed: async (world) => {
-      // A decision is a `decision` block of the spec, written here by the session. The panel
-      // lists it as an agent's decision waiting for the reader's review, the one kind of decision
-      // it offers a Change on, and the read the panel draws from holds it as that.
+      // An agent's decision waits for a person's review, so the panel offers its Change: the
+      // agent writes it into the host's spec as decisions are written.
       await editArtifact(
         world.spec,
         {
           ops: [
             {
               after: "end",
-              markdown: `## Decisions\n\n:::decision{#d1}\n### ${DECISION}\n\nChosen for the simplest storage.\n:::\n`,
+              markdown: `## Decisions\n\n:::decision{#d-store}\n### ${DECISION}\n\nChosen for the simplest storage.\n:::\n`,
               op: "insert",
             },
           ],
+          summary: "decided",
         },
         { actor: { id: SESSION.session_id, kind: "session" }, as: "agent" }
       );
-      const decisions = (await getIssueDecisions(world.host)).entries ?? [];
-      expect(
-        decisions.filter((entry) => entry.node.kind !== "ask").map((entry) => entry.waiting_review)
-      ).toEqual([true]);
     },
   },
   "document-body": {

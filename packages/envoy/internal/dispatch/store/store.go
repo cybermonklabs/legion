@@ -66,6 +66,7 @@ const poolSizeParam = "pool_max_conns"
 // row an older build inserts. user_threads' trigger also takes the marker off an update made
 // inside another trigger, whichever connection runs it. A process that updates those rows of this
 // build's on a connection of its own carries the setting too.
+// kept for one release: older-writer-unmark
 const StoreMarkerWriterSetting = "dispatch.store_marker_writer"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
@@ -90,6 +91,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	// kept for one release: older-writer-unmark
 	config.ConnConfig.RuntimeParams[StoreMarkerWriterSetting] = "on"
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)

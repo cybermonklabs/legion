@@ -52,11 +52,14 @@ const AskEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited
 // the marker test of the ask's create and of the answer it holds, read off the ask's own row,
 // which passes the test while the marker is null; the person an open ask waits on, over the
 // issue, document and project rows that rule reads, which carry no marker of this release's; the
-// ask's node; and the event each owed write was recorded under. It is one statement,
-// made in the answer's read phase and taking no row lock: every answer writer holds the owner lock
-// every writer of the ask takes first (store.LockOwner), the approval carry's included, under which
-// nothing it reads moves before the answer is written, and the answer's own update takes the row
-// in the write phase (asks.Settled.Queue).
+// ask's node; and the event each owed write was recorded under. It is one statement, made in the
+// answer's read phase and taking no row lock, after the locks under which nothing it reads moves
+// before the answer is written: the owner lock every writer of the ask takes first
+// (store.LockOwner), which every answer writer holds, the approval carry's included, and, for an
+// open ask that falls through to its project's default assignee, that project's owner lock,
+// taken shared (HoldProjectDefault, HoldAskDefault), which a move of the default takes exclusive
+// before it reads who the ask waits on. The answer's own update takes the row in the write phase
+// (asks.Settled.Queue).
 func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 	return readAsk(ctx, tx, askID, false)
 }

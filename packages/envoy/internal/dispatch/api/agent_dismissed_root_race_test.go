@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -72,10 +73,11 @@ func heldIn(t *testing.T, holder queryer, pid uint32, table string, modes ...str
 // thread's root `for update` (step 2) and is queued at the caller's own row of a Reply thread it
 // names beside it (step 3). The reply then queues at the root with the statement that takes it
 // before anything else of the thread, holding no attempt row and no write of messages, since it
-// takes the root before its attempt and its insert (inboxwrite.Recording.QueueRootLock). Once the
-// gate is let go the dismissal writes its mark, which moves the root's column, and commits; the
-// reply then deletes the mark, which moves the column back, and the thread is in the Inbox,
-// unread, with no mark and no column.
+// takes the root before its attempt and its insert: an Agent thread is on no issue, so the reply's
+// plan takes the root as it walks to it (inboxwrite.RootWalkLockStatement, inboxwrite.PlanRecord).
+// Once the gate is let go the dismissal writes its mark, which moves the root's column, and
+// commits; the reply then deletes the mark, which moves the column back, and the thread is in the
+// Inbox, unread, with no mark and no column.
 //
 // With the reply's lock taken only where its clear runs, after its insert, it queues at the root
 // holding the attempt row and the insert's lock on messages, and the reads of what it holds red.
@@ -92,7 +94,7 @@ func TestASessionReplyTakesTheAgentRootBeforeItsAttemptWhileADismissHoldsIt(t *t
 	storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads)
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.RootLockStatement)
+	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.RootWalkLockStatement)
 	// The root's own lock takes the row share mode on messages; the attempt's takes it on
 	// message_deliveries, and the insert the row exclusive mode on messages.
 	if locks := heldIn(t, held.tx, replying, "message_deliveries", rowShareMode, rowExclusiveMode); locks > 0 {
@@ -109,6 +111,55 @@ func TestASessionReplyTakesTheAgentRootBeforeItsAttemptWhileADismissHoldsIt(t *t
 	}
 	dismissRanAndLeftTheThread(t, seed, response, 2, seed.agent, agentThreadDismissal(t, database, "alice", seed.agent))
 	requireRootMirrorsTheMark(t, database, seed.agent, "after the dismissal and the reply")
+}
+
+// A person's own reply under an Agent thread while a session's reply of the release before holds
+// the thread's root: that reply's clear trigger takes the root `for key share`, and then, in a
+// statement of its own and where a mark or an owed row of the root stands, `for no key update`
+// before its delete (user_agent_thread_dismissed_clear, migration 20261125053125). A transaction
+// of the test's takes the two in turn, with alice's reply sent between them. Her reply dismisses
+// the thread, so its plan takes the root `for update` as it walks to it
+// (inboxwrite.AgentDismissalRootWalkLockStatement, inboxwrite.PlanRecord): it queues there before
+// its insert, holding no lock of the root, so the older reply's `for no key update` is granted at
+// once. Once that reply ends, alice's reply takes the root and writes her mark at her reply's
+// moment, which the root's column follows.
+//
+// With the walk taking the root `for no key update`, as a session's reply's walk does, and the
+// reply raising it to `for update` later, her reply passes the older reply's key share, holds the
+// root and waits behind that key share for the raise, while the older reply's `for no key update`
+// waits for the root she holds: a cycle Postgres breaks by failing one of the two (40P01). Her
+// reply is then never found waiting at the walk, and that is this row's red.
+func TestAPersonsOwnAgentReplyWaitsAtTheRootWhileAnOlderReplyHoldsItForKeyShare(t *testing.T) {
+	t.Parallel()
+	seed := seedInboxRead(t)
+	handler, database := seed.handler, seed.database
+	held := holdGateRow(t, database, "the agent thread's root as an older reply's clear takes it",
+		`select 1 from messages where id = $1 for key share`, seed.agent)
+	replied := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		replied <- postAgentMessage(t, handler, "s1", map[string]any{
+			"body": "Thanks, that settles it.", "delivery": "btw", "in_reply_to": seed.agentReply,
+		}, "alice")
+	}()
+	replying := storetest.WaitForStatementBehind(t, database, held.tx, inboxwrite.AgentDismissalRootWalkLockStatement)
+	if locks := heldIn(t, held.tx, replying, "messages", rowExclusiveMode); locks > 0 {
+		t.Errorf("alice's reply waits at the agent thread's root holding a write of messages (%d locks): it wrote before it took the root", locks)
+	}
+	if _, err := held.tx.Exec(context.Background(), `select 1 from messages where id = $1 for no key update`, seed.agent); err != nil {
+		t.Fatalf("take the root `for no key update`, as the older reply's clear does before its delete, while alice's reply waits there: %v", err)
+	}
+	held.release()
+
+	reply := <-replied
+	if reply.Code != http.StatusCreated {
+		t.Fatalf("alice's reply answered %d %s, want 201", reply.Code, reply.Body.String())
+	}
+	written := decodeBody[model.Message](t, reply)
+	if mark := requireTheAgentMarkIsTheNewestTuple(t, database, seed.agent); !mark.Equal(written.CreatedAt) {
+		t.Errorf("alice's mark on the agent thread is %s, want her reply's moment %s",
+			mark.Format(time.RFC3339Nano), written.CreatedAt.Format(time.RFC3339Nano))
+	}
+	requireRootMirrorsTheMark(t, database, seed.agent, "after alice's own reply")
 }
 
 // A dismissal and a restore of the same Agent thread, the dismissal first. The dismissal reads the

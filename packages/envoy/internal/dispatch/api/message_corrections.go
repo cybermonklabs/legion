@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -217,16 +218,26 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 // mentions (indexed, what the edit's index states) in the post's thread, from the edit's moment
 // (R4's mention arm), with no delivery, since an edit delivers nothing; nil for an edit that names
 // nobody new. The thread's root is read in tx, in the read phase, only for an edit that names
-// somebody new. editComment and editMessage queue it last in their write.
+// somebody new: a mention the edit retracts, of a person its text no longer names, ends no
+// participation it caused. Where that root is an open ask that falls through to its project's
+// default assignee, that project's owner lock is taken shared there too (inboxwrite.HoldAskDefault):
+// a move of the default reads who else holds a person in the ask's thread before it ends their
+// part, so it either committed before this edit, or waits for it and then finds the participation
+// this edit states. editComment and editMessage queue it last in their write.
 func editMentionParticipation(
 	ctx context.Context, tx pgx.Tx, kind, id string, indexed graphstore.Uncaused, actor model.Actor, at time.Time,
 ) ([]graphstore.Tuple, error) {
-	if len(indexed.People) == 0 {
+	if !slices.ContainsFunc(indexed.People, func(tuple graphstore.Tuple) bool { return tuple.Asserted }) {
 		return nil, nil
 	}
 	rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, kind, id)
 	if err != nil {
 		return nil, err
+	}
+	if rootKind == graphstore.KindAsk {
+		if err := inboxwrite.HoldAskDefault(ctx, tx, rootID); err != nil {
+			return nil, err
+		}
 	}
 	return inboxwrite.MentionParticipation(rootKind, rootID, indexed, actor, at, graphstore.LatestEvent), nil
 }

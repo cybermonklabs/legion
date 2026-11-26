@@ -568,6 +568,67 @@ export function askOpenerBlockId(line: string): string | undefined {
   return typedBlockIdAttribute(id) === attributes.slice(0, end) ? id : undefined;
 }
 
+/** The named character references an opener's quoted value reads back, each with its character. */
+// kept for one release: release-before-text
+const NAMED_ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  quot: '"',
+};
+
+/**
+ * A quoted attribute value with its character references read back, in one pass, so a character
+ * a reference decodes to starts no reference of its own (`&amp;#x22;` is `&#x22;`): every numeric
+ * reference, hexadecimal or decimal (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`), and the five named
+ * ones (NAMED_ATTRIBUTE_REFERENCES). Any other named reference stays as written. A numeric
+ * reference that names no character - zero, a surrogate, one past U+10FFFF - is U+FFFD, as it is
+ * to Go's `html.UnescapeString`, which pmdoc's directive reader decodes an attribute with
+ * (`pmdoc.ParseTypedDirectiveOpen`). Those are the references the renderer writes and a
+ * browser's parser reads back; Go's reader holds the whole HTML named-reference table besides,
+ * which no renderer writes into an opener.
+ */
+// kept for one release: release-before-text
+function openerAttributeValue(raw: string): string {
+  return raw.replace(
+    /&(?:#([xX][0-9a-fA-F]+|[0-9]+)|(amp|apos|gt|lt|quot));/g,
+    (whole: string, number: string | undefined, name: string | undefined) => {
+      if (number === undefined) return NAMED_ATTRIBUTE_REFERENCES[name ?? ""] ?? whole;
+      const codePoint =
+        number.startsWith("x") || number.startsWith("X")
+          ? Number.parseInt(number.slice(1), 16)
+          : Number.parseInt(number, 10);
+      return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? "\uFFFD"
+        : String.fromCodePoint(codePoint);
+    }
+  );
+}
+
+/**
+ * The quoted attributes `line`, an ask block's opener as `askOpenerLines` gives it, carries, each
+ * name with its value read back (`openerAttributeValue`): what a Dispatch of the release before
+ * writes on an opener from the store, `state`, `answered_by`, `answered_at`, `selected`,
+ * `answer`, `copied_from` and `copied_from_document`. A name written twice keeps its last value.
+ * Empty where the line has no braces. The block's id is read by `askOpenerBlockId`. The web's
+ * reader of a live text of the release before and the CLI's read opener attributes here, so the
+ * two never read one opener differently.
+ */
+// kept for one release: release-before-text
+export function askOpenerAttributes(line: string): ReadonlyMap<string, string> {
+  const values = new Map<string, string>();
+  const start = line.indexOf("{");
+  const end = line.lastIndexOf("}");
+  if (start === -1 || end <= start) return values;
+  for (const [, name = "", raw = ""] of line
+    .slice(start + 1, end)
+    .matchAll(/([\w-]+)="([^"]*)"/g)) {
+    values.set(name, openerAttributeValue(raw));
+  }
+  return values;
+}
+
 /** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that
  *  open the ask block `blockId`: the lines whose id (`askOpenerBlockId`) is `blockId`. The web's
  *  and the CLI's readers of one block's opening line both take it here. */

@@ -18,20 +18,18 @@ import {
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { barAction } from "./filters";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
 import { assertPageFits } from "./unclipped";
-
-const tinyPng =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
 
 // The files a row uploads are written in that row's own output directory, which Playwright gives
 // each row of each worker (`testInfo.outputPath`): two workers running these rows at once would
 // otherwise write one path in the checkout, and a run must leave no file changed under e2e/.
 async function diagramFile(testInfo: TestInfo): Promise<string> {
   const path = testInfo.outputPath("diagram.png");
-  await writeFile(path, Buffer.from(tinyPng, "base64"));
+  await writeFile(path, Buffer.from(ONE_PIXEL_PNG, "base64"));
   return path;
 }
 

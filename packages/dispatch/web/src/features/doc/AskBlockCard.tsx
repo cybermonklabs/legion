@@ -54,11 +54,12 @@ export interface AskBlockCardProps {
    *  version reads its own attributes only, so a later withdrawal never appears on it. */
   rowResolution: boolean;
   /** The server's read of the ask the block shows, keyed by its block id: its own ask, or a
-   *  copy's source, from the owner's asks (`servedAskOf`) or, for a copy whose source they do not
-   *  list, from what the live text answers for the block in its asks (`liveAskOf`). The block's
-   *  state, answer, answerer, time and a copy's source are read from it, since the answer is held
-   *  on the ask alone; without it the block's own attributes are read, as a text body and a
-   *  version that holds them carry them, and a block that records no state reads as open. */
+   *  copy's source, the ask of the owner's asks the live text names as its source
+   *  (`servedAskOfBlock`), or, for a copy whose source they do not list, what the live text
+   *  answers for the block in its asks (`liveAskOf`). The block's state, answer, answerer, time
+   *  and a copy's source are read from it, since the answer is held on the ask alone; without it
+   *  the block's own attributes are read, as a text body and a version that holds them carry
+   *  them, and a block that records no state reads as open. */
   served?: ServedAsk;
 }
 
@@ -250,9 +251,9 @@ const COPY_STATE_LABELS: Record<string, string> = {
 };
 
 /** Where a copied block is answered: the document its source ask is on, linked at the block,
- * and the source's state there, both read from the server's read of that ask (`servedAskOf`),
- * or from the block's attributes on a version that records them. The document's reference is
- * the server's, read whatever the length of its name. */
+ * and the source's state there, both read from the server's read of that ask
+ * (`servedAskOfBlock`), or from the block's attributes on a version that records them. The
+ * document's reference is the server's, read whatever the length of its name. */
 function CopiedFromLink({
   blockId,
   copied,

@@ -76,8 +76,9 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 
 // loadProject reads the project row, every column model.Project carries but the open-ask count,
 // which only the project list reads. A project.updated event carries what this answers, so its
-// payload is the whole row a reader of the project list sees. An unknown key is 404
-// PROJECT_NOT_FOUND.
+// payload is the whole row a reader of the project list sees, and a stored list of gated steps is
+// read without the retired `decisions` step here as the list reads it (scanListedProject). An
+// unknown key is 404 PROJECT_NOT_FOUND.
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
@@ -95,6 +96,10 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		}
 		return model.Project{}, err
 	}
+	// A stored list may hold the retired `decisions` step until the decisions step rewrites it,
+	// and the database's check still admits it.
+	// kept for one release: check-narrowings
+	project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 	return project, nil
 }
 
@@ -130,8 +135,23 @@ func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, owner ow
 // through to no default takes no second lock, and the check costs the owner check's round trip
 // alone.
 func (s *server) requireOpenOwnerStatusHoldingDefault(ctx context.Context, tx pgx.Tx, owner owner) (*string, error) {
+	status, project, err := s.requireOpenOwnerStatusAndDefault(ctx, tx, owner)
+	if err != nil {
+		return nil, err
+	}
+	if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
+		return nil, err
+	}
+	return status, nil
+}
+
+// requireOpenOwnerStatusAndDefault is requireOpenOwnerStatusHoldingDefault's locked read without
+// its hold: the owner's status and the project whose default assignee an ask on the owner falls
+// through to, "" for none, for a write that decides on the ask itself whether to hold it - an
+// answer, which holds it only for an open ask handed to nobody (transitionAskTx).
+func (s *server) requireOpenOwnerStatusAndDefault(ctx context.Context, tx pgx.Tx, owner owner) (*string, string, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
-		return nil, ownerInvalid()
+		return nil, "", ownerInvalid()
 	}
 	var status *string
 	var project string
@@ -140,19 +160,16 @@ func (s *server) requireOpenOwnerStatusHoldingDefault(ctx context.Context, tx pg
 		status = new(string)
 		if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), issueStatusDefaultRead,
 			[]any{*owner.IssueKey}, status, &open, &project); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	} else if err := refuseMissingArtifact(store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(*owner.ArtifactID),
 		unlinkedArtifactDefaultRead, []any{*owner.ArtifactID}, &project)); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := refuseClosed(open, refusedWhenClosed); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
-		return nil, err
-	}
-	return status, nil
+	return status, project, nil
 }
 
 // issueStatusDefaultRead is issueStatusRead with the project an ask on the issue falls through

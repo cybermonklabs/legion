@@ -13,6 +13,7 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { isPersonDecision } from "../issue/decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "../issue/decision-heading";
 import { holdsUnsureParagraph, plainParagraph, unsureWords } from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -106,7 +107,7 @@ export function DecisionCard({
       }}
     >
       <p className={`flex flex-wrap gap-x-2 text-xs ${textMutedOnSelectedCard}`}>
-        <span>{decision.kind === "agent" ? "Agent's decision" : "A person's decision"}</span>
+        <span>{isPersonDecision(decision) ? "A person's decision" : "Agent's decision"}</span>
         {unsure ? <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span> : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>

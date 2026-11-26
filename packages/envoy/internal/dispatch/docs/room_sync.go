@@ -194,8 +194,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // close or a reopen notified while the hub had no connection reached nobody. The removal lane is
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
 // behind a catch-up reading another document's stored history; it reads the rows of this
-// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
-// while the hub had no connection reached nobody and nothing announces it again.
+// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal or a
+// retirement notified while the hub had no connection reached nobody and nothing announces it
+// again.
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{

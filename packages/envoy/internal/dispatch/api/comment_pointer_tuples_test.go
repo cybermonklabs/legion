@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -346,5 +347,75 @@ func retractCommentPointer(t *testing.T, database *store.Store, id, kind, toKind
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the retraction of %s's %s: %v", id, kind, err)
+	}
+}
+
+// R4: a person a comment's edit newly mentions takes part in the comment's thread from it
+// (editMentionParticipation), and a reply's thread is the head it replies to (inboxwrite's
+// threadOf). A reply a build of the release before wrote states none of its pointers as tuples
+// (comments.tuples_stored false) until the backfill takes it, so its row's reply_to is the one
+// record of that head.
+//
+// alice writes a comment through this build, and bob a reply to it as the release before writes
+// one: the reply's node, which that release writes beside the row, and the row naming that node
+// and the head it answers, with no tuple of what it answers. bob then edits his reply through this
+// build to name dave: dave takes part in alice's comment, the thread's root, under the edit's
+// event, and in no thread whose root is the reply. Its control is threadOf reading the reply's
+// tuples alone: dave takes part in the reply itself, a thread no later reply to alice's comment
+// reaches.
+func TestAnEditOfAnOlderBuildsReplyMakesWhomItNamesTakePartInItsHeadsThread(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "OLDR", "An older reply edited", "The spec.\n")
+	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Is the copy final?"}, "alice")
+	ctx := context.Background()
+	tx, err := olderBuild(t, database).Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the older build's reply: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var reply string
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&reply, &at); err != nil {
+		t.Fatalf("draw the older build's reply's id: %v", err)
+	}
+	node, tuples := graphstore.CommentFacts(nil, reply, model.Actor{Kind: "user", ID: "bob"}, at, graphstore.NoEvent, "", "", "OLDR", nil)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
+		t.Fatalf("write the older build's reply's node: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, reply_to, node_kind, node_address, created_at)
+		values ($1::uuid, $2, '{"kind":"user","id":"bob"}', 'Nearly.', $3::uuid, $4, $1, $5)
+	`, reply, issue.Key, root.ID, graphstore.KindComment, at); err != nil {
+		t.Fatalf("write the older build's reply: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the older build's reply: %v", err)
+	}
+	var stored bool
+	if err := database.Pool.QueryRow(ctx, `select tuples_stored from comments where id = $1::uuid`, reply).Scan(&stored); err != nil || stored {
+		t.Fatalf("the older build's reply %s holds tuples_stored %t (err %v), want false: this test proves nothing", reply, stored, err)
+	}
+	if held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, reply, commentPointerKinds); err != nil || len(held) != 0 {
+		t.Fatalf("the store holds %v of what the older build's reply %s answers (err %v), want nothing: this test proves nothing", held, reply, err)
+	}
+
+	const dave = "dave@example.com"
+	if edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+reply,
+		map[string]any{"body": "Nearly: over to [Dave](dispatch://person/" + dave + ") to check."}, "bob"); edited.Code != http.StatusOK {
+		t.Fatalf("bob edits his reply to name dave: status=%d body=%s", edited.Code, edited.Body.String())
+	}
+	event := writeEventOf(t, database, "comment.edited", reply)
+	taking, err := readStrings(ctx, database.Pool, `
+		select to_kind || ':' || to_id || ' under ' || source_event::text from graph_tuples
+		where kind = $1 and asserted and from_kind = $2 and from_id = $3
+		order by seq
+	`, graphstore.TupleParticipatesIn, graphstore.KindPerson, dave)
+	if err != nil {
+		t.Fatalf("read dave's participation: %v", err)
+	}
+	if want := []string{graphstore.KindComment + ":" + root.ID + " under " + fmt.Sprint(event)}; !slices.Equal(taking, want) {
+		t.Errorf("after bob's edit of the older build's reply %s dave takes part in %v, want %v: the thread of alice's comment, which the reply answers",
+			reply, taking, want)
 	}
 }

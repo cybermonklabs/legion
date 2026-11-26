@@ -69,7 +69,8 @@ var unnamedForwardBoundInterval = fmt.Sprintf("interval '%d seconds'", int64(unn
 const mentionAbandonedError = "the outbox published the comment's own copy instead; the send was abandoned"
 
 // mentionDeliveries is what a new comment's mentions did, read from comment_deliveries when the
-// event is published (loadMentionDeliveries). A mention resolved at write time names only a
+// event is published (loadMentionDeliveries), and, for a callback reply, which records no attempt,
+// the sessions its text names alone (mentioned). A mention resolved at write time names only a
 // candidate: its send runs after the comment commits and can fail - the listener does not know the
 // session, the receipt times out, the handler is cancelled, the session lacks the delivery mode -
 // and a session whose mention failed has no copy but the outbox's.
@@ -146,11 +147,13 @@ type mentionDeliveries struct {
 	// (destinations.addDestination).
 	held map[string]struct{}
 	// mentioned holds each session the comment's mentions name, read off the store's mentions
-	// tuples out of the comment's node (api's commentMentionFacts): a session:<id> it names as a
-	// route or in its body, and the session a role it names resolved to. Each is a destination of
-	// the comment's own event left to the mention (eventDestinations, addWorkingSession): skipped
-	// once a mention of it delivered the comment, held while one is still being sent, and added
-	// where each failed.
+	// tuples out of the comment's node: for a new comment, a session:<id> it names as a route or
+	// in its body, and the session a role it names resolved to (api's commentMentionFacts); for a
+	// callback reply, each session its text names (api's replyComment, which states what its
+	// index finds). Each is a destination of the comment's own event left to the mention
+	// (eventDestinations, addWorkingSession): skipped once a mention of it delivered the comment,
+	// held while one is still being sent, and added where each failed or where no attempt names
+	// it, as none of a callback reply's does.
 	mentioned map[string]struct{}
 	// unpinned is what the attempts of the comment that name no session yet and whose send is
 	// still coming decide (unpinnedRoleMentions): the roles they target and the state each of
@@ -1099,7 +1102,7 @@ func payloadSuppressedRouteTarget(payload any) string {
 // payloadHasMentions reports whether a comment payload names a mention at all (mentions[]), as
 // the batch decodes the payload from JSON. It is the one reading of the payload the destinations
 // make of a comment's mentions: it says whether the comment can have a comment_deliveries row at
-// all, so a comment with none is read for none (eventDestinations). Which session each mention
+// all, so a new comment with none is read for none (readsMentions). Which session each mention
 // counts under the payload does not say - an unanswered @role: mention names none there, and its
 // sender pins one on the attempt row after the commit - so the attempts decide every copy left to
 // a mention (destinations.leftToMention).
@@ -1107,6 +1110,17 @@ func payloadHasMentions(payload any) bool {
 	values, _ := payload.(map[string]any)
 	mentions, _ := values["mentions"].([]any)
 	return len(mentions) > 0
+}
+
+// readsMentions reports whether event's destinations read what its comment's mentions did
+// (eventDestinations, lookup.mentionDeliveries): a new comment that names a mention at all
+// (payloadHasMentions), and every callback reply (comment.answered). A reply's payload names no
+// mention - it opens no attempt and writes no comment_mentions row - but its text's mentions of
+// sessions are the store's mentions tuples out of its node, which its write states
+// (api's replyComment), and R5 delivers it to each of those sessions once, as it does a new
+// comment (mentionDeliveries.mentioned).
+func readsMentions(event model.Event) bool {
+	return (event.Type == "comment.created" && payloadHasMentions(event.Payload)) || event.Type == "comment.answered"
 }
 
 // holdFallbackCopy records the fallback row of the copy of the comment at destination, decided by

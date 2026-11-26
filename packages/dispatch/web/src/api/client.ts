@@ -491,6 +491,20 @@ export function isNoRoute(error: unknown): boolean {
   );
 }
 
+// Whether `error` is a Dispatch process of the release before refusing `GET /api/v1/asks/open`
+// with neither `project` nor `author_session` (`400 AUTHOR_SESSION_OR_PROJECT_REQUIRED`), which
+// this release's process answers with every project's open asks. While a release rolls out, or
+// after a rollback, such a process can answer the page, which then reads those asks as the page of
+// that release read them (`openAsksOfTheReleaseBefore`).
+// kept for one release: open-asks-scopeless-fallback
+export function refusesOpenAsksWithNoNarrowing(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 400 &&
+    error.code === "AUTHOR_SESSION_OR_PROJECT_REQUIRED"
+  );
+}
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -1379,12 +1393,26 @@ export class DispatchApiClient {
     return this.read("/api/v1/asks/open", {}, query);
   }
 
+  /**
+   * The open asks under `query`, read as the page of the release before read them, from
+   * `GET /api/v1/inbox` under the same `project`. `openAsksQuery` reads it only where a Dispatch
+   * process of the release before refused `listOpenAsks` (`refusesOpenAsksWithNoNarrowing`): such
+   * a process takes `GET /api/v1/asks/open` only with `project` or `author_session`. So every
+   * page that draws every project's open asks still loads while such a process serves, during a
+   * roll or after a rollback.
+   * kept for one release: open-asks-scopeless-fallback
+   */
+  openAsksOfTheReleaseBefore(query: { readonly project?: string }) {
+    return this.read("/api/v1/inbox", {}, query);
+  }
+
   /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
    *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
    *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own
    *  rows in that state - `unread`, `inbox` or `dismissed` - an absent `limit` answers every
-   *  entry, and `cursor` reads on from a page's `next_cursor`. Any key the route does not declare
-   *  is refused by name. Needs the `person` scope. */
+   *  entry, but under `dismissed` one page of 200, and `cursor` reads on from a page's
+   *  `next_cursor`. Any key the route does not declare is refused by name. Needs the `person`
+   *  scope. */
   getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
     return this.read("/api/v1/me/inbox", {}, query);
   }

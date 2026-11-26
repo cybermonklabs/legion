@@ -453,10 +453,13 @@ type ItemIndex struct {
 	// whether the read of the index made them (PlanOwnRefs).
 	own     []heldCitation
 	ownRead bool
-	// mentioned is each identity the store holds a mention of out of the item's node, read with
-	// the block mentions of an indexed comment or message (heldItemBlockLinks): what the index
-	// appends no mention of again (identityMentions).
-	mentioned map[Target]struct{}
+	// mentioned is each identity the store holds a mention of out of the item's node now, read
+	// with the block mentions of an indexed comment or message (heldItemBlockLinks): what the
+	// index appends no mention of again (identityMentions), and retracts each mention of that the
+	// text no longer names (unnamedMentions). routes is each identity a comment's delivery routes
+	// name, read beside them (its comment_mentions rows, api's commentMentionFacts): mentions the
+	// comment states apart from its text, which no change of its text retracts.
+	mentioned, routes map[Target]struct{}
 }
 
 // itemBlockLink is one stored block mention of an item: the block holding it, the edge kind and
@@ -510,7 +513,7 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if index.stored, index.rows, err = storedItemBlocks(ctx, q, kind, tables, itemID, index.scope.held); err != nil {
 		return ItemIndex{}, err
 	}
-	if index.held, index.own, index.ownRead, index.mentioned, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+	if index.held, index.own, index.ownRead, index.mentioned, index.routes, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
 	}
 	return index, nil
@@ -843,13 +846,16 @@ func planItemBlocks(
 		}
 	}
 	// The identities the text names, a mention of each out of the item's node where the store
-	// holds none from it already (identityMentions): a session's and a role's with the node's other
-	// facts, a person's through the store's one writer of a fact that names a person. An item no
-	// block-aware build indexed holds none (ReadItemIndex reads them with its links).
+	// holds none from it already (identityMentions), and the retraction of each mention the store
+	// holds from it that the text no longer names and no delivery route of a comment names
+	// (unnamedMentions): a session's and a role's with the node's other facts, a person's through
+	// the store's one writer of a fact that names a person. An item no block-aware build indexed
+	// holds none (ReadItemIndex reads them with its links).
 	if scope.held {
 		tuples, people := identityMentions(string(kind), itemID, scope.node.Visibility, scope.node.MadeBy, at, source.identities, index.mentioned)
-		indexing.stated.Tuples = append(indexing.stated.Tuples, tuples...)
-		indexing.stated.People = append(indexing.stated.People, people...)
+		unnamed, unnamedPeople := unnamedMentions(string(kind), itemID, scope.node.Visibility, scope.node.MadeBy, at, source.identities, index.mentioned, index.routes)
+		indexing.stated.Tuples = append(indexing.stated.Tuples, slices.Concat(tuples, unnamed)...)
+		indexing.stated.People = append(indexing.stated.People, slices.Concat(people, unnamedPeople)...)
 	}
 	return indexing, nil
 }
@@ -863,7 +869,8 @@ func (i ItemIndexing) Moved() []Target {
 // Stated is what the index states in the node and tuple store, held for the event of the write
 // that queues it: the block nodes Queue writes before their rows, and the base attributes that
 // write states of them, the part_of of each block it places and the links it states or retracts,
-// and the mention of each identity its text newly names (identityMentions).
+// the mention of each identity its text newly names (identityMentions), and the retraction of each
+// identity mention its text no longer names (unnamedMentions).
 // A write that appends an event queues it with graphstore.QueueCaused right after that event, in
 // the same write phase; a pass no event records queues it at graphstore.NoEvent.
 func (i ItemIndexing) Stated() graphstore.Uncaused {
@@ -875,9 +882,10 @@ func (i ItemIndexing) Stated() graphstore.Uncaused {
 // (PlanAskParts). It reads the plan alone: the state this index records, the blocks the source
 // holds in its order followed by the removed ones, the ones this index removes first, as a read
 // after the write orders them (storedItemBlocks), what the index reads of each row, the links its
-// blocks hold once the reconciliation has run, the item's scope, and the identities the store
-// holds a mention of from the item once this index's are appended. It holds none of the item's
-// own refs rows, which the plan does not read (PlanOwnRefs answers false).
+// blocks hold once the reconciliation has run, the item's scope, the identities the store holds a
+// mention of from the item once this index's mentions and retractions are appended, and those its
+// delivery routes name. It holds none of the item's own refs rows, which the plan does not read
+// (PlanOwnRefs answers false).
 func (i ItemIndexing) Held() ItemIndex {
 	held := ItemIndex{
 		kind: i.kind, itemID: i.itemID,
@@ -890,11 +898,10 @@ func (i ItemIndexing) Held() ItemIndex {
 		held:      make([]itemBlockLink, 0, len(i.pairs)),
 		scope:     i.index.scope,
 		mentioned: make(map[Target]struct{}, len(i.index.mentioned)+len(i.stated.People)),
+		routes:    i.index.routes,
 	}
 	maps.Copy(held.mentioned, i.index.mentioned)
-	for _, tuple := range slices.Concat(i.stated.People, statedMentions(i.stated.Tuples)) {
-		held.mentioned[Target{Kind: tuple.ToKind, ID: tuple.ToID}] = struct{}{}
-	}
+	held.mentioned = mentionsAfter(held.mentioned, slices.Concat(i.stated.People, statedMentions(i.stated.Tuples)))
 	maps.Copy(held.rows, i.index.rows)
 	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
 		for _, row := range rows {
@@ -969,14 +976,14 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	return itemBlockNodeAddress(i.kind, i.itemID, blockID), excerpt, true
 }
 
-// SettlingForms is the index settling what the forms queue holds for the item (RefsFormsOwed)
-// in the statement that records it indexed (queueRecordIndexed), so the settle costs the write no
-// statement of its own. A writer asks for it where this index is the last of the writes that index
-// the item's whole text, queued after the reconciliation of the item's own references: an ask's
-// parts after its question's (Replacement.SettlingForms is the other order). That statement is
-// the index's last, so the settle follows every delete of its block edges and the references'
-// delete before it, each of which owes that queue the item (migrations
-// 20261117025906-20261117025910).
+// SettlingForms is the index settling what the forms queues hold for the item (RefsFormsOwed,
+// RefsDecisionsFormsOwed) in the statement that records it indexed (queueRecordIndexed) and the
+// one after it, so the settle costs the write one statement beyond its own. A writer asks for it
+// where this index is the last of the writes that index the item's whole text, queued after the
+// reconciliation of the item's own references: an ask's parts after its question's
+// (Replacement.SettlingForms is the other order). That statement is the index's last, so the
+// settle follows every delete of its block edges and the references' delete before it, each of
+// which owes the first queue the item (migrations 20261117025906-20261117025910).
 func (i ItemIndexing) SettlingForms() ItemIndexing {
 	i.settleForms = true
 	return i
@@ -1006,7 +1013,10 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) error {
 // revisions, clears the block index's marker and leaves the window arm's standing. With
 // settleForms it also deletes the item's row of refs_forms_owed, in the same statement
 // (SettlingForms): the statement is the index's last, so the delete follows every delete of its
-// block edges.
+// block edges. The item's row of refs_decisions_forms_owed, which that delete relays
+// (migration 20261126040100) at the end of its statement, and its row of the bootstrap queue
+// beside it are deleted by a statement after it (settleDecisionsFormsStatement), never by the one
+// that relays it.
 //
 // The windows of these blocks are not written by this index. The block-index tick's window arm
 // writes them in a transaction of its own (docs.windowItem, WriteItemWindows), so a write holds
@@ -1060,6 +1070,10 @@ func (i ItemIndexing) queueRecordIndexed(b *store.WriteBatch) {
 		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
 	}
 	b.Queue(what, statement, args...)
+	if i.settleForms {
+		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", i.kind, i.itemID),
+			settleDecisionsFormsStatement, string(i.kind), i.itemID)
+	}
 }
 
 // itemWindowBlocks is the item's blocks as the windows that embed them hold them: each block's
@@ -1167,10 +1181,13 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 // (ItemIndex.PlanOwnRefs). A row of the ask's own carries no block id, which tells the two apart,
 // and its last column is its tuples_stored where a link's is whether it names its block's node.
 // For a comment or a message the same statement reads the identities the store holds a mention
-// of out of the item's node (mentioned, IdentityMentionsRead), each a row with no block id whose
-// far end is an identity's kind, which no refs row names (TargetOf): what the index appends no
-// mention of again.
-func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned map[Target]struct{}, err error) {
+// of out of the item's node now (mentioned, IdentityMentionsRead), each a row with no block id
+// whose far end is an identity's kind, which no refs row names (TargetOf): what the index appends
+// no mention of again, and retracts the mention of where the text no longer names it. For a
+// comment it reads its delivery routes too (routes, routeRows): the session or the role each of
+// its comment_mentions rows targets, and the session that row resolved to, each a mention the
+// comment's write states apart from its text (api's commentMentionFacts), which no edit retracts.
+func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned, routes map[Target]struct{}, err error) {
 	query, args := `
 		select block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
 		union all
@@ -1178,7 +1195,20 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 			`+IdentityMentionsRead(`$2`, `$3`, `$4`)+`
 		) mentioned
 	`, []any{itemID, string(kind), itemID, IdentityKinds}
-	if kind == ItemAsk {
+	switch kind {
+	case ItemComment:
+		role, session := graphstore.RouteSQL(`m.target`)
+		query += `
+		union all
+		select null, '` + routeRows + `', routed.kind, routed.id, true
+		from comment_mentions m
+		cross join lateral (values
+			('` + graphstore.KindRole + `', ` + role + `),
+			('` + graphstore.KindSession + `', ` + session + `),
+			('` + graphstore.KindSession + `', m.resolved_session_id)
+		) routed (kind, id)
+		where m.comment_id = $1::uuid and routed.id is not null`
+	case ItemAsk:
 		query = `
 			select block_id, kind, to_kind, to_id, node_kind is not null from ask_block_refs where ask_id = $1::uuid
 			union all
@@ -1188,17 +1218,19 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, false, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, nil, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
 	defer rows.Close()
-	held, own, mentioned = []itemBlockLink{}, []heldCitation{}, map[Target]struct{}{}
+	held, own, mentioned, routes = []itemBlockLink{}, []heldCitation{}, map[Target]struct{}{}, map[Target]struct{}{}
 	for rows.Next() {
 		var blockID *string
 		var link itemBlockLink
 		if err := rows.Scan(&blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.named); err != nil {
-			return nil, nil, false, nil, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
+			return nil, nil, false, nil, nil, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
 		}
 		switch {
+		case blockID == nil && kind == ItemComment && link.kind == routeRows:
+			routes[link.target] = struct{}{}
 		case blockID == nil && kind != ItemAsk:
 			mentioned[link.target] = struct{}{}
 		case blockID == nil:
@@ -1209,10 +1241,15 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, false, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, nil, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
-	return held, own, read, mentioned, nil
+	return held, own, read, mentioned, routes, nil
 }
+
+// routeRows is the kind heldItemBlockLinks' statement gives the rows it reads off a comment's
+// comment_mentions, the table's own name, which no tuple kind and no block link kind is, so the
+// scan tells a delivery route from a mention.
+const routeRows = "comment_mentions"
 
 // itemRefRows is the item's own refs rows by target, each with its created_at and source_seq,
 // which date the tuples an item's first indexing states of the links it inserts (planItemBlocks).
