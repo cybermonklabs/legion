@@ -608,7 +608,7 @@ func (m *Machine) adoptPodLoad() {
 // caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
 // and launchTries returns no error at the park. The launch has not failed — it waits at the gate
 // to start as asked — and an error would fail the request that raised it: an operator's resume or
-// spawn answered as a failure (internal/api's operatorFailure), and the decision logged at Error
+// spawn answered as a failure (internal/api's operationFailure), and the decision logged at Error
 // as an event that failed (internal/daemon's supervisor). stopUnconfirmed is what carries the
 // refusal to whoever must hear that the process may be running still: the owner of a stalled
 // worker.

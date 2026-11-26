@@ -161,8 +161,8 @@ a copy on the old root's document for its step, which belongs to the old tree: n
 that document after the carry closes your gate, and a gate carried closed opens when a human
 approves the old document at the carried version or a later one; you are told so with
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
-an old root's document: never revise it, request its approval, or register it; when the tree's
-work waits on that approval, tell the controller. Resume the tree from there; a root carried in
+an old root's document: never revise it, request its approval, or register it. Resume the tree
+from there; a root carried in
 `accepting` is yours to accept with `sign_off`, as above, or to send back with
 `request_backward_move`, once you have read its evidence.
 
@@ -195,12 +195,17 @@ Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status
 For a fold, name in the reason the issue that carries the work.
 Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
 Say why in a `dispatch comment`.
-A child that looks independent of the tree,
-capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
-child as a root. A problem outside the tree is never an issue you file: a clear defect in code
-this tree touches or depends on is fixed in this tree's own pull request, any other clear defect
-goes to the controller, which gives it to the tree that owns that code, and a problem that needs a
-decision is a `dispatch ask`
+A child that looks independent of the tree, and
+capacity, go to the controller, which asks a person before it re-files a child as a root. A
+cross-tree conflict goes to the other tree's architect, as a Dispatch comment on its issue that
+mentions its role. A problem outside the tree is never an issue you file. A clear defect is this
+tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child.
+It goes to another tree's architect only when the fix would collide with that tree's open pull
+request, or when it is in a repository this tree's token does not reach; when no tree owns that
+code, it goes to the controller of the project that repository maps to, or to your own project's
+controller when Dispatch maps it to none, to file. A defect that needs a person's
+decision, a deploy window or work much larger than this tree's own, and any other problem that
+needs a decision, is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is a decision block
 you write in the root spec; after approval its new version closes the gate until the human answers.
@@ -239,6 +244,15 @@ want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
+Before every `sign_off`, read the project's merge holds:
+`dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the
+project of the issue's key. A line under its `Holds` heading that names the repository of the
+issue's pull request, or `all`, and whose end is not past holds the sign-off. While one holds it,
+end the turn with a WAITING line naming the hold, and subscribe to nothing for it. At each change
+of the document the daemon sends you a `merge-holds-changed` notice, which wakes you also when
+the daemon released your pod. On it, read the document again: wait again while a line holds the
+sign-off, and go on once none does. Read the document again before you sign off on any other
+wake too.
 Then
 `sign_off` (which moves the task to its next step, or to retro where your acceptance is its last
 step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of

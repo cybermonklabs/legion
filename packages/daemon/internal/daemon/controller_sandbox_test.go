@@ -44,14 +44,11 @@ import (
 )
 
 // The names the Sandbox runtime puts on the controller's pod and in its launcher's private
-// directory, written out because they are package sandbox's own (manifest.go's poolKey,
-// poolValue, gvisor, microVMRuntimeClass and computeClassKey, names.go's labelSandbox and
-// bootTokenKey, drift.go's podShapeAnnotation, podkind.go's --microvm): a test of what the daemon
-// renders reads them off the pod the fake cluster made, as an operator reads them off the
-// cluster.
+// directory, written out because they are package sandbox's own (manifest.go's gvisor,
+// microVMRuntimeClass and computeClassKey, names.go's labelSandbox and bootTokenKey, drift.go's
+// podShapeAnnotation, podkind.go's --microvm): a test of what the daemon renders reads them off the
+// pod the fake cluster made, as an operator reads them off the cluster.
 const (
-	controllerSandboxPoolKey       = "legion.dev/pool"
-	controllerSandboxPoolValue     = "legion"
 	controllerSandboxComputeKey    = "cloud.google.com/compute-class"
 	controllerSandboxLabel         = "legion.dev/sandbox"
 	controllerSandboxShapeKey      = "legion.dev/pod-shape"
@@ -148,28 +145,25 @@ type controllerSandboxPlacement struct {
 
 // placement is the controller's pod a daemon on s renders: under microvm, the microvm
 // RuntimeClass, the operator's selector with the block's ComputeClass in place of Scale-Out, the
-// pool's toleration, the operator's other one and the class's, Scale-Out's dropped, the label,
-// the flag, and the recorded runtime and compute class (the block names no metadata endpoint, and
-// the controller's shape records no disk class); under gvisor, the pod as the operator's
-// scheduling is written, with none of those.
+// operator's other toleration and the class's, Scale-Out's dropped, the label, the flag, and the
+// recorded runtime and compute class (the block names no metadata endpoint, and the controller's
+// shape records no disk class); under gvisor, the pod as the operator's scheduling is written,
+// with none of those.
 func (s controllerSandboxSetting) placement() controllerSandboxPlacement {
-	pool := controllerSandboxToleration(controllerSandboxPoolKey, controllerSandboxPoolValue)
 	dedicated := controllerSandboxToleration("dedicated", "legion")
 	if s.microVM() {
 		return controllerSandboxPlacement{
 			runtimeClass: controllerSandboxMicroVMClass,
-			nodeSelector: map[string]string{controllerSandboxPoolKey: controllerSandboxPoolValue, "kubernetes.io/arch": "amd64",
-				controllerSandboxComputeKey: controllerSandboxComputeClass},
-			tolerations: []corev1.Toleration{pool, dedicated, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxComputeClass)},
-			microVM:     true,
-			shape:       map[string]any{"runtime_class": controllerSandboxMicroVMClass, "compute_class": controllerSandboxComputeClass},
+			nodeSelector: map[string]string{"kubernetes.io/arch": "amd64", controllerSandboxComputeKey: controllerSandboxComputeClass},
+			tolerations:  []corev1.Toleration{dedicated, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxComputeClass)},
+			microVM:      true,
+			shape:        map[string]any{"runtime_class": controllerSandboxMicroVMClass, "compute_class": controllerSandboxComputeClass},
 		}
 	}
 	return controllerSandboxPlacement{
 		runtimeClass: controllerSandboxGVisorClass,
-		nodeSelector: map[string]string{controllerSandboxPoolKey: controllerSandboxPoolValue, "kubernetes.io/arch": "amd64",
-			controllerSandboxComputeKey: controllerSandboxScaleOut},
-		tolerations: []corev1.Toleration{pool, controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxScaleOut), dedicated},
+		nodeSelector: map[string]string{"kubernetes.io/arch": "amd64", controllerSandboxComputeKey: controllerSandboxScaleOut},
+		tolerations:  []corev1.Toleration{controllerSandboxToleration(controllerSandboxComputeKey, controllerSandboxScaleOut), dedicated},
 	}
 }
 

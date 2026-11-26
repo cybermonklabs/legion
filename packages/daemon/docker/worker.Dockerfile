@@ -125,7 +125,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-25 at its 18.18.6-sami.20261125-164517 pin, jj's on 2026-11-26 at
+# Oh My Pi's was read on 2026-11-26 at its 18.18.6-sami.20261126-110039 pin, jj's on 2026-11-26 at
 # its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
@@ -135,7 +135,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
-ARG OMP_SHA256=359f95dec797f1a507accbd2f3b56b3ef9b5dfc5fb5cd4c8652a326175ad6c85
+ARG OMP_SHA256=5a87f1737b1fd6c01884f907c69b95a4fc3705d8f9b783036faa2e8525b3e797
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
@@ -1423,7 +1423,7 @@ WORKDIR /home/legion
 #    @oh-my-pi/pi-natives native/natives-dir.js names .omp/natives, since the build sets none of
 #    PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, XDG_CACHE_HOME and OMP_CONFIG_ROOT) — the build's success is
 #    the check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
-#    (ubuntu-24.04, AVX2), 124 MiB; this layer ships it, so a pod whose node selects the same
+#    (ubuntu-24.04, AVX2), 125 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: one
 #    copy for each role of an issue pod. The probes in the final step never wait on it.

@@ -551,7 +551,7 @@ func TestTheOperatorsRetryOfAClaimThatHasNotFailedIsRefused(t *testing.T) {
 		refusal string
 	}{
 		{supervise.StateReady, architectToken, "", "retry refused: the claim is ready (the claim has not failed)"},
-		{supervise.StateSuspended, architectToken, "suspend", "retry refused: the claim is suspended (a suspended claim is resumed, not retried)"},
+		{supervise.StateSuspended, architectToken, "suspend", "retry refused: the claim is suspended (a suspended agent is resumed, not retried)"},
 	} {
 		if step.reach != "" {
 			if recorder := h.operator(http.MethodPost, route(step.token, step.reach), nil); recorder.Code != http.StatusOK {
@@ -1814,10 +1814,10 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 	}
 
 	machine, _ := h.supervisor.Machine(architectToken)
-	if err := machine.Handle(h.ctx, supervise.RequestForgetSession{Claim: architectToken, Session: "ses_architect"}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestForgetSession{Claim: architectToken, Session: "ses_architect", By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("first forget after snapshot: %v", err)
 	}
-	if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: architectToken}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: architectToken, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("resume after first forget: %v", err)
 	}
 	generation := machine.Claim().Generation

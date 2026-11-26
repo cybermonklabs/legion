@@ -3679,12 +3679,13 @@ var (
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
 // phase-ended message, a hook's words, an update ask and a merge forward's message name the role of
 // the row's own issue, as the executors read it (the daemon's roleToken); the merge-queue message
-// goes to the issue's merger; a role message names the claim's token itself
-// (record.RoleMessage.Role).
+// and the message that the project's merge holds changed go to the issue's merger, whose token
+// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message
+// names the claim's token itself (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
-	case OutboxKindMergeQueueRemoval:
+	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
 		if _, ok := claim.Token(role).Role(); ok {

@@ -2911,10 +2911,11 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
 // tree runs. A conventional unslotted root belongs to no live tree (unslotted); an
 // awaiting-person root is live by design, and leaves only when its hand-over label or its current
 // Dispatch claim makes a resume unsafe (workflow's Unresumable). Legion starts nothing for
-// either — it is someone else's work now, or a person's move to make — and the controller is told
-// on the controller topic alone (record.UnslottedNotice, one per root, its reason naming why). A
-// key Reconcile holds is left for release to apply first, when respectHolds is set. It reports
-// whether it released any.
+// either — it is someone else's work now, or a person's move to make — and tells nobody: the
+// controller re-admits nothing for it, and reads it from the state, a root at `phase: done`
+// whose status is one only a running tree has (skill://legion-controller, "What happened before
+// you started"). The log line names why it left. A key Reconcile holds is left for release to
+// apply first, when respectHolds is set. It reports whether it released any.
 func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, live map[string]struct{},
 	waits map[string]record.ChildWait, respectHolds bool,
 ) (bool, error) {
@@ -2937,12 +2938,9 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.engine.LeaveUnslotted(ctx, tx, issue); err != nil {
 			return released, fmt.Errorf("release unslotted root %s: %w", issue.Key, err)
 		}
-		reason += "; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again"
-		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
-			return released, err
-		}
 		store.OnCommit(ctx, func() {
-			a.log.Warn("admission: released a root no tree of which runs and nothing would ever start", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation)
+			a.log.Warn("admission: released a root no tree of which runs and nothing would ever start", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation,
+				"reason", reason)
 		})
 		released = true
 	}
@@ -3880,12 +3878,13 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
-		// A claim an operator suspended is passed over whatever entry it stands on: `legion
-		// claims suspend` suspended that worker, and an operator's suspension holds against every
-		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
-		// past). A claim the daemon itself suspended is repaired, which is what the idle rule's
-		// release and the daemon's own suspend both leave behind.
-		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
+		// An agent the operator or the project's controller suspended is passed over whatever
+		// entry its claim stands on: `legion claims suspend`, or the controller's own suspend,
+		// suspended that worker, and each such suspension holds against
+		// every rule of the daemon's until a resume lifts it (supervise's RuleHolds, which no
+		// start the daemon queues gets past). A claim the daemon itself suspended is repaired,
+		// which is what the idle rule's release and the daemon's own suspend both leave behind.
+		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy.Holds() {
 			continue
 		}
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion
