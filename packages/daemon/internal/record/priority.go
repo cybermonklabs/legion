@@ -126,6 +126,16 @@ func PriorityOf(issue, root Issue) Priority {
 	return root.Priority
 }
 
+// PlacingPriority gives the priority of issue in a line that bands by priority. It reads
+// the issue and its supplied tree root as PriorityOf does. An unbanded line uses NoPriority
+// for every issue. Waiting and SlotsReading use this same rule.
+func PlacingPriority(issue, root Issue, banded bool) Priority {
+	if !banded {
+		return NoPriority
+	}
+	return PriorityOf(issue, root)
+}
+
 // StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199, C2
 // of dispatch://INFRA-5636): whether admission reads it as P0 (Issue.AdmissionPriority), directly
 // or by Dispatch's inheritance. It never reads PriorityOf's tree root: a P0 Legion tree root makes

@@ -29,12 +29,16 @@ type copyWriter struct {
 // non-test source, read from that source: the mirror's one write (blockers.Mirror.put), which an
 // event, a view, the release's read, the periodic turn's re-read and a listing all reach, and
 // the boot's refill in reconcileListing, which empties the project's rows in the transaction that
-// fills them from the listing. A use added anywhere else is a member the set does not hold, and
-// the test fails naming its file and function.
+// fills them from the listing. The replay of a recorded window (internal/replay) replays that
+// refill at each boot the record holds, on the replay's own database, in the transaction that
+// fills the rows from its copy of Dispatch's listing ((*driver).boot), and writes every reading
+// through the mirror. A use added anywhere else is a member the set does not hold, and the test
+// fails naming its file and function.
 func TestEveryWriterOfTheCopyIsAReading(t *testing.T) {
 	want := []copyWriter{
 		{file: "internal/blockers/mirror.go", function: "(*Mirror).put", method: "PutDispatchIssue"},
 		{file: "internal/daemon/workflow.go", function: "(*workflowRuntime).reconcileListing", method: "TakeDispatchRefill"},
+		{file: "internal/replay/driver.go", function: "(*driver).boot", method: "TakeDispatchRefill"},
 	}
 	got := copyWriters(t, filepath.Join("..", ".."), "cmd", "internal")
 	for _, writer := range got {
@@ -60,35 +64,14 @@ func copyWriters(t *testing.T, module string, dirs ...string) []copyWriter {
 	var writers []copyWriter
 	files := 0
 	for _, dir := range dirs {
-		if err := filepath.WalkDir(filepath.Join(module, dir), func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return err
-			}
-			files++
-			parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(module, path)
-			if err != nil {
-				return err
-			}
-			for _, decl := range parsed.Decls {
-				function := "a package-level declaration"
-				if fn, ok := decl.(*ast.FuncDecl); ok {
-					function = functionName(fn)
+		files += eachDeclaration(t, module, dir, func(file, function string, decl ast.Decl) {
+			ast.Inspect(decl, func(node ast.Node) bool {
+				if sel, ok := node.(*ast.SelectorExpr); ok && slices.Contains(copyWriterMethods, sel.Sel.Name) {
+					writers = append(writers, copyWriter{file: file, function: function, method: sel.Sel.Name})
 				}
-				ast.Inspect(decl, func(node ast.Node) bool {
-					if sel, ok := node.(*ast.SelectorExpr); ok && slices.Contains(copyWriterMethods, sel.Sel.Name) {
-						writers = append(writers, copyWriter{file: filepath.ToSlash(rel), function: function, method: sel.Sel.Name})
-					}
-					return true
-				})
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("read the Go source under %s: %v", filepath.Join(module, dir), err)
-		}
+				return true
+			})
+		})
 	}
 	if files < 100 {
 		t.Fatalf("read %d non-test Go files under %v of %s, want the daemon's whole source", files, dirs, module)
@@ -97,6 +80,40 @@ func copyWriters(t *testing.T, module string, dirs ...string) []copyWriter {
 		return cmp.Or(cmp.Compare(a.file, b.file), cmp.Compare(a.function, b.function), cmp.Compare(a.method, b.method))
 	})
 	return writers
+}
+
+// eachDeclaration hands visit every top-level declaration of the non-test Go source under dir
+// of module (a slash-separated path), with its file relative to module, slash-separated, and the
+// function it is (functionName), or "a package-level declaration" for one outside every
+// function. It answers how many files it read.
+func eachDeclaration(t *testing.T, module, dir string, visit func(file, function string, decl ast.Decl)) int {
+	t.Helper()
+	files := 0
+	if err := filepath.WalkDir(filepath.Join(module, filepath.FromSlash(dir)), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		files++
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(module, path)
+		if err != nil {
+			return err
+		}
+		for _, decl := range parsed.Decls {
+			function := "a package-level declaration"
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				function = functionName(fn)
+			}
+			visit(filepath.ToSlash(rel), function, decl)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the Go source under %s: %v", filepath.Join(module, dir), err)
+	}
+	return files
 }
 
 // functionName is fn as a reader names it: Name for a function, (*Recv).Name for a method on a

@@ -209,7 +209,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 // An event that moves a child to another parent is in the copy before that same event's decisions
 // read it: P is a root at admitted whose design gate is open, and its one open child C, in backlog
 // under P in the copy at 5, holds P's first phase by the children-first rule
-// (record.ChildrenFirstCandidates, record.ChildWaitsOf), with a slot free. A fact that changes
+// (record.SlotRule.ChildrenFirstCandidates, record.ChildWaitsOf), with a slot free. A fact that changes
 // nothing leaves P waiting. C's event at 6 shows C under another parent, and after that one fact P
 // has started its first phase: the event's own admission pass read C under its new parent, so the
 // wait ended in that pass and not at a later fact. With the mirror after admission in the handler

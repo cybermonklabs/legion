@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-21T08:06:02.659823412Z",
+    "jsonPayload": {
+      "claim": "legion-acme-acme-51-merger",
+      "generation": 8,
+      "level": "INFO",
+      "limit": 20,
+      "msg": "supervise: a turn ended",
+      "refused": false,
+      "refusedRun": 0,
+      "sequence": 4,
+      "time": "2026-11-21T08:06:02.659521763Z"
+    }
+  }
+]

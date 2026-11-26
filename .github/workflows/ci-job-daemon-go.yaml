@@ -154,6 +154,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # The checkout above is one commit deep. Two steps of this job read history. internal/record's
+      # TestEveryRuleNamesItsCommit, in the plain test step, reads each kept slot rule's commit in
+      # the history of origin/main (git cat-file and git merge-base --is-ancestor) and skips on a
+      # shallow clone. The contract stamp step below needs HEAD's history back to main's
+      # first-parent line and main's own, as commits and trees (scripts/daemon-contract-order.sh
+      # reads no blob). This one fetch serves both and leaves the clone whole: a second
+      # `--unshallow` in the same job fails, since git refuses it on a complete repository. The
+      # repository is public, so the fetch needs no credential.
+      - name: Fetch HEAD's and main's history for the slot rules' commit check and the contract stamp
+        run: git fetch --no-tags --filter=blob:none --unshallow origin "$(git rev-parse HEAD)" +refs/heads/main:refs/remotes/origin/main
+
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -242,9 +253,9 @@ jobs:
       # pull request the stamp is main's order with the branch's entries after it, the order main
       # takes if the branch merges next; in a merge group it is the order main takes. So the
       # order a production build numbers its entries in is tested before it reaches main. The
-      # checkout is one commit deep, and the order needs HEAD's history back to main's
-      # first-parent line and main's own, so the first step fetches both, with no blob (the script
-      # reads commits and trees alone), and hands the stamp to the second as its output. The second
+      # order needs HEAD's history back to main's first-parent line and main's own, which this
+      # job's fetch step, after the checkout, brings. The first step hands the stamp to the second
+      # as its output. The second
       # is one go test line, which go-test-step-expansion.py's step reader reads: that reader
       # refuses a step whose $(…) call is not of go-tagged-tests.sh, and its test, which the
       # merge queue's test job runs, reads every go test step. The plain step compiled this test
@@ -255,8 +266,6 @@ jobs:
         if: matrix.leg == 3
         id: contract-order
         run: |
-          head=$(git rev-parse HEAD)
-          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
           echo "$stamp"
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"

@@ -2421,7 +2421,7 @@ func (r *keptRun) noteRun(tree *keptTree, before supervise.ClaimState, answered 
 		}
 		if runErr == nil && r.publisher.answers()[keptNoHolder] > answered[keptNoHolder] {
 			r.counts.endedCatchUps++
-			if claimEnded(before) {
+			if record.ClaimEnded(before) {
 				r.counts.endedByFailure++
 			}
 			r.tracef("catch-up finished undelivered: nobody will hold the architect's role again (claim=%s)", keptClaimState(before))
@@ -2495,7 +2495,7 @@ func (r *keptRun) claimStates() map[string]supervise.ClaimState {
 
 // claimState is the architect's claim as the supervisor holds it now, and "" when this daemon
 // supervises none, which is what the notice executor reads for a claim it does not supervise
-// (claimEnded).
+// (record.ClaimEnded).
 func (r *keptRun) claimState(tree *keptTree) supervise.ClaimState {
 	if tree == nil {
 		return ""

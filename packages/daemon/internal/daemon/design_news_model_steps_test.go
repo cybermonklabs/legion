@@ -695,7 +695,7 @@ func (m *newsModel) opened() {
 	m.r.run(ofKind(record.OutboxKindRoleMessage))
 	told := m.toldRows()
 	for _, row := range m.rows() {
-		row.openSeq = told[toldKey{row.issue, row.audience}].Opening
+		row.openSeq = told[record.ToldKey{Issue: row.issue, Audience: row.audience}].Opening
 		for _, a := range row.agents {
 			messages := m.r.publishedTo(a.token)
 			for _, message := range messages[a.messages:] {

@@ -2160,6 +2160,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			PromptFailures: cfg.PromptFailureLimit,
 			PromptRetires:  cfg.PromptRetireLimit,
 		},
+		// The project controller's session age past which a daemon-driven relaunch starts a fresh
+		// session (supervise.Deps.ControllerSessionMaxAge, dispatch://INFRA-2045 R3).
+		ControllerSessionMaxAge: cfg.ControllerSessionMaxAge,
 		Timeouts: supervise.Timeouts{
 			Boot:                  cfg.WorkerBootTimeout,
 			RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
@@ -3103,7 +3106,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, cfg.ControllerTurnBound, s.log)
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -3769,10 +3772,17 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.wakes != nil {
 		held = s.wakes()
 	}
+	// The slots reading names the cap beside the slots in use, and reads each holder's claims
+	// through the statement the tick's own reading reads them through, the one that holds when a
+	// suspended or a retired claim stopped (record.Store.HolderClaims).
+	holderClaims, err := records.HolderClaims(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
 		Claims: claims, Stranded: stranded, Reports: s.reports(),
-		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Wakes: api.WakesWaitingOf(held, paced), Now: now, Cap: s.admissionCap, HolderClaims: holderClaims,
 	})
 	if err != nil {
 		return api.State{}, nil, err

@@ -141,14 +141,15 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     pending notice again, and the mark is written only for a row that went into the outbox.
 //
 // The liveness clause reads the slots this pass already holds, what the caller handed over, the
-// P0 bound the pass admits under (bound, nil for none) and the trees R6 counts at work
+// pass's gate (the P0 bound it admits under, nil for none, and the signals it admits below P0 by:
+// passGate) and the trees R6 counts at work
 // (lineCanMove). Those trees are the set step 2 built where step 2 needed it, and are built here
 // otherwise, so the pass builds the set at most once and makes its one read at most once, and the
 // clause is answered only once a root has come through the bound, the measure and the
 // registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row, floor stallFloor, bound *int,
+	rows map[string]blockers.Row, floor stallFloor, gate passGate,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -268,7 +269,9 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 			return err
 		}
 	}
-	canMove := a.lineCanMove(issues, holds, working, rows, bound)
+	// The measure asks whether the line could move, as the pass of an event judges it: a tick's
+	// own bar on a start below P0 (passGate.asEvent) must not read as a line that is stuck.
+	canMove := a.lineCanMove(issues, facts, slots, holds, working, rows, gate.asEvent())
 	var stopped []record.Issue
 	named := 0
 	for _, root := range stalled {
@@ -755,11 +758,14 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     a holder never carries: it is an entry of the line that holds no slot
 //     (record.LineEntry.Holds);
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,
-//     the rule the promotion itself reads per kind) and the promotion starts it under the cap and
-//     the P0 bound (capLets, the cap's half the promotion reads too, over the holders counted as
-//     it counts them, record.SlotHolders): it takes a row the holders below P0 hold fewer than
-//     the cap of, it is a P0 issue the bound lets in, or it takes none at all, as a queued root in
-//     accepting, retro or merging takes none and opens its tree whatever the cap says. The
+//     the rule the promotion itself reads per kind) and the promotion starts it under the cap
+//     and the P0 bound (capLets, the cap's half the promotion reads too, under the pass's own
+//     rule — facts — with the slots its holders lend, covers, over the holders counted as the
+//     promotion counts them, record.SlotHolders): it takes a row the holders the cap counts
+//     (record.SlotRule.CapCounted) hold fewer than the cap of, it takes none at all, as a queued
+//     root in accepting, retro or merging takes none and opens its tree whatever the cap says, or
+//     it starts outside the cap under a rule that starts a P0 there
+//     (record.SlotRule.StartsOutsideCap) while the P0 bound the pass admits under lets it in. The
 //     promotion this same pass runs after the measure starts that entry's work. A slot comes
 //     free without a worker
 //     where a started issue gives its row back to wait on another issue (releaseSlotsForWaits),
@@ -779,12 +785,13 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //
 // It is answered once per pass, by the caller, and never per tree: the question is the
 // project's and its answer is the same for every tree of the pass.
-func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working map[string]struct{},
-	rows map[string]blockers.Row, bound *int,
+func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, slots []record.Slot, holds lineHolds,
+	working map[string]struct{}, rows map[string]blockers.Row, gate passGate,
 ) bool {
 	if len(working) > 0 {
 		return true
 	}
+	rule := facts.Rule.OrMain()
 	var held record.SlotHolders
 	for _, issue := range issues {
 		if _, holdsSlot := holds.holders[issue.Key]; !holdsSlot {
@@ -798,8 +805,15 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 		// the slot back, so the project's line can move.
 		return true
 	}
+	// The slots counted waiters offer under a rule whose start may take a cover are read as the
+	// promotion reads them (covers), over this project's own rows; nothing is offered under every
+	// other rule, so the issues are walked for the rows under that rule alone.
+	var lending covers
+	if rule.Take == record.TakeCover {
+		lending = coversOf(issues, ownSlots(issues, slots), rows, facts)
+	}
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, a.cap, bound) {
+		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending, gate) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

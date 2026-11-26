@@ -37,10 +37,22 @@ func TestStartedParentsAreTheIssuesWhosePhasesStarted(t *testing.T) {
 	}
 	owed := map[string]OwedStart{"LEGION-15": {Issue: "LEGION-15", Phase: phase.Planning}}
 
-	got := StartedParents(issues, owed)
+	got := MainRule.StartedParents(issues, owed)
 	want := []string{"LEGION-1", "LEGION-15", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-7", "LEGION-8"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("StartedParents = %v, want %v", got, want)
+	}
+	// Under a rule whose wait stops no phase under way (SlotRule.WaitStopsPhase off), the rules the
+	// recorded windows ran before cybermonklabs/legion#4592, an open child holds no started
+	// parent, so none is read.
+	for _, name := range []string{"legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1"} {
+		rule, kept := SlotRuleNamed(name)
+		if !kept || rule.WaitStopsPhase {
+			t.Fatalf("the rule %s = %+v (kept %t), want one whose wait stops no phase", name, rule, kept)
+		}
+		if parents := rule.StartedParents(issues, owed); len(parents) != 0 {
+			t.Errorf("StartedParents under %s = %v, want none: its wait stops no phase", name, parents)
+		}
 	}
 	// The children-first candidates are a judgement of their own: under every tree's open gate
 	// they are the issues at admitted, LEGION-9 among them, which never started and so is no
@@ -51,7 +63,7 @@ func TestStartedParentsAreTheIssuesWhosePhasesStarted(t *testing.T) {
 	for _, issue := range issues {
 		gates[issue.Tree] = open
 	}
-	if candidates := ChildrenFirstCandidates(issues, gates); !slices.Equal(candidates, []string{"LEGION-15", "LEGION-9"}) {
+	if candidates := MainRule.ChildrenFirstCandidates(issues, gates); !slices.Equal(candidates, []string{"LEGION-15", "LEGION-9"}) {
 		t.Fatalf("ChildrenFirstCandidates under open gates = %v, want LEGION-15 and LEGION-9, the issues at admitted", candidates)
 	}
 }

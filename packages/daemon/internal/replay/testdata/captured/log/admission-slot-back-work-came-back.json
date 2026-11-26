@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "2026-11-21T04:55:47.564982672Z",
+    "jsonPayload": {
+      "issue": "ACME-14",
+      "level": "INFO",
+      "msg": "admission gives a slot back to an issue whose work came back",
+      "phase": "implementing",
+      "time": "2026-11-21T04:55:47.564647172Z"
+    }
+  }
+]

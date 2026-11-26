@@ -288,13 +288,14 @@ func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.Outbo
 	return rows, nil
 }
 
-// nextDue is when the lane's next row comes due after now, if one does (record.Store.NextDue).
+// nextDue is when the lane's next row comes due after now, if one does (record.Store.NextDue),
+// scoped to the project as the lane's list of what is due is (listDue).
 func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) (time.Time, bool, error) {
 	var at time.Time
 	var ok bool
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		at, ok, err = r.records.NextDue(ctx, tx, issue, kinds, now)
+		at, ok, err = r.records.NextDue(ctx, tx, r.dispatchProject, issue, kinds, now)
 		return err
 	}); err != nil {
 		return time.Time{}, false, err

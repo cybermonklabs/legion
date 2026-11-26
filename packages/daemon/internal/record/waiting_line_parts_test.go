@@ -41,7 +41,7 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 		// A live tree whose gate is open: its root's own first phase is still to come, one
 		// released child waits for its first, and a third member owes its tester a start. That
 		// member stands at testing and not in accepting, retro or merging: those phases need
-		// none of the cap's slots and so stand in no line at all (PhaseKeepsSlot, NeedsSlot), and
+		// none of the cap's slots and so stand in no line at all (SlotRule.PhaseKeepsSlot, NeedsSlot), and
 		// the kind this entry is here for — an issue whose work came back — is a kind of the
 		// line and would leave the fixture with it.
 		linePartIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),

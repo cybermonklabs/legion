@@ -455,7 +455,8 @@ What each part is for:
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
-  controller, which resumes its session hearing the new list.
+  controller, which resumes its session hearing the new list, unless the session is older than
+  `controller_session_max_age_hours`, when the relaunch starts a fresh session.
 - **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
   project's issues opens a
   [production check](/legion/legion/concepts/#the-production-check), and which role works it. It
@@ -1223,11 +1224,15 @@ Set `controller: daemon` in `legion.yaml` (it needs `dispatch_url`) and restart 
 and supervises it the same way; the rest of this section is the Kubernetes runtime's.
 It launches the controller at boot as an Agent Sandbox pod, `legion-<project>-controller`, with the
 same model access as the workers and a volume of its own, which its Sandbox owns, relaunches it when it
-dies, and resumes the same session. You start nothing, and `legion controller start` against this
-daemon is refused: one controller runs per project. Nobody types into the pod: reach the controller
-through Dispatch (a message to its session on the Agents page, a reply to an ask it opened, a
-mention) and read its session with `kubectl logs <pod> -c controller`, its one container's log. A
-Send from the Agents page is answered in the conversation that page shows.
+dies, and resumes the same session, unless two launches of that session in a row end before it
+finishes another turn, or the session is older than `controller_session_max_age_hours` (72 by
+default) when the daemon relaunches it: then the daemon starts a fresh session instead. The
+daemon stops no live controller for its age. You start nothing, and
+`legion controller start` against this daemon is refused: one controller runs per project. Nobody
+types into the pod: reach the controller through Dispatch (a message to its session on the Agents
+page, a reply to an ask it opened, a mention) and read its session with
+`kubectl logs <pod> -c controller`, its one container's log. A Send from the Agents page is
+answered in the conversation that page shows.
 `legion claims list` shows its claim.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.
@@ -1449,6 +1454,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  slots: 3 of 4 in use: 1 working (oldest 2026-10-03T10:12Z), 0 stopped, 1 person (oldest 2026-10-02T16:20Z), 0 issue, 1 idle (oldest 2026-10-03T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-03T09:58Z), 1 in all (oldest 2026-10-03T09:58Z). 2 holders rank below WIDGETS-14, which waits for a slot.
   P0: 0 of the 3 issues holding a slot are P0 and hold it outside the cap of 4; P0 bound none in force, none in legion.yaml; none set while the daemon runs
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
@@ -1481,6 +1487,33 @@ Closing the terminal leaves the project without one, and the daemon logs
   The regular cap counts only holders that are not P0: a P0 issue needs no free regular slot and
   starts outside the regular cap while below any P0 bound (the `P0:` line shows P0 holders and
   the P0 bound).
+
+  The `slots` line under it says what each slot in use is spent on.
+  Each holder of a slot is counted in one state, the first of these five that is true of it.
+  `working`: a claim of the holder is in a turn, a start of one of its roles is queued, or a claim of it holds a task that no turn has taken yet.
+  `stopped`: its phase is held, or a claim of it is one that nothing will wake, which the `claims nothing will wake` line names.
+  `person`: it is a tree root that waits on a person, on an ask or on its design gate.
+  `issue`: it waits on another issue, an unfinished Dispatch blocker or an open child, and keeps its slot through the wait.
+  `idle`: none of the four is true, and its last turn has ended or it has had no turn yet.
+
+  The time after `oldest` is the earliest moment a holder of that count entered its state, in UTC to the minute.
+  A `working` holder entered it at the start of its oldest open turn, else when its oldest start was queued, else when its oldest pending task was queued.
+  A `stopped` holder entered it at the start of its hold or of its stop, and a `person` or an `issue` holder at the start of its wait.
+  An `idle` holder entered it at the end of its last turn, or at the moment it took its slot where that is later.
+  A count prints no `oldest` when the daemon knows no such moment, which is the case for a state that began before the release that added this line.
+
+  The second sentence counts the started work that waits without a slot.
+  `wait only for a slot` counts the issues whose work came back, that hold no slot, and that `blocked on Dispatch links` does not name.
+  `in all` counts every issue whose work came back and that holds no slot, an issue that still waits on a link among them.
+  It also counts each started parent in `awaiting_children` that holds no slot, from the moment its wait on its children began.
+  `wait only for a slot` counts no such parent, since its next start waits on its open children.
+
+  The last sentence names the first issue of the waiting line that waits for a slot and for nothing else.
+  It counts holders below that issue by priority, then tree root rank, then issue rank.
+  An issue uses its own priority or its tree root's, with no priority after P3.
+  It reads `No issue waits for a slot.` when no issue of the line waits for a slot alone.
+  `--json` carries the same reading as `admission.slots`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
+  The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them.

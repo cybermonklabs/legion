@@ -16,10 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A phase worker holds a member's phase, and only a phase worker does (phaseHolder): admitted,
+// A phase worker holds a member's phase, and only a phase worker does (record.PhaseHolder): admitted,
 // which phase.RoleFor answers the tree's architect for since #3711, has no phase holder, since a
 // member there has not started its work and its first phase's start carries its news; accepting,
-// which the owning architect holds, is named through newsClaims.holderOf and not here; a phase no
+// which the owning architect holds, is named through record.NewsClaims.HolderOf and not here; a phase no
 // role works names none. A member in reviewing names its reviewer's claim.
 func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 	t.Parallel()
@@ -33,20 +33,20 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 		{phase.Reviewing, claim.RoleReviewer},
 		{phase.Merging, claim.RoleMerger},
 	} {
-		holder, held := phaseHolder("legion", record.Issue{Key: "LEGION-801", Phase: tc.phase})
-		if held != (tc.role != "") || held && holder.role != tc.role {
+		holder, held := record.PhaseHolder("legion", record.Issue{Key: "LEGION-801", Phase: tc.phase})
+		if held != (tc.role != "") || held && holder.Role != tc.role {
 			t.Fatalf("the holder of a member in %s = %+v (held %t), want role %q", tc.phase, holder, held, tc.role)
 		}
 		if held {
-			if want, _ := claim.NewToken("legion", "LEGION-801", tc.role); holder.token != want {
-				t.Fatalf("the holder of a member in %s is %s, want %s", tc.phase, holder.token, want)
+			if want, _ := claim.NewToken("legion", "LEGION-801", tc.role); holder.Token != want {
+				t.Fatalf("the holder of a member in %s is %s, want %s", tc.phase, holder.Token, want)
 			}
 		}
 	}
 }
 
-// The holder of a member's phase is named from the member's record (newsClaims.member). A caller
-// that read none of the tree's issues hands none over (newNewsClaims), and a member is then read
+// The holder of a member's phase is named from the member's record (record.NewsClaims.Member). A caller
+// that read none of the tree's issues hands none over (record.NewNewsClaims), and a member is then read
 // from the record with the rest of the tree, so the tester's claim is named for a member in
 // testing, and that claim is told by a task now. Without that read the member would be the zero
 // issue, in no phase, which names no holder and reads as told at its next start. A key the record
@@ -57,27 +57,27 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Testing)
 	tester := r.holder(reconcileChild, claim.RoleTester, supervise.StateIdle, "", 1)
-	child := toldKey{reconcileChild, record.AudienceHolder}
+	child := record.ToldKey{Issue: reconcileChild, Audience: record.AudienceHolder}
 
-	var holders map[toldKey]owedHolder
+	var holders map[record.ToldKey]record.OwedHolder
 	r.inTx(func(tx pgx.Tx) error {
 		var err error
-		holders, err = readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, nil), []toldKey{child})
+		holders, err = record.ReadOwedHolders(r.ctx, tx, r.records, record.NewNewsClaims(root, nil), []record.ToldKey{child})
 		return err
 	})
 	holder, held := holders[child]
-	if !held || holder.token != tester || holder.issue.Phase != phase.Testing || holder.entry != 1 {
+	if !held || holder.Token != tester || holder.Issue.Phase != phase.Testing || holder.Entry != 1 {
 		t.Fatalf("the holder of %s, which no caller handed over = %+v (held %t), want its tester's claim %s at entry 1",
 			reconcileChild, holder, held, tester)
 	}
-	if told := holderTold(holder.run, holder.entry); told != workflow.NewsSentNow {
+	if told := holderTold(holder.Run, holder.Entry); told != workflow.NewsSentNow {
 		t.Fatalf("the tester of %s is told %q, want %q: its claim runs at its phase's entry and holds no task", reconcileChild, told, workflow.NewsSentNow)
 	}
 
 	const unknown = "LEGION-699"
 	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(root, nil),
-			[]toldKey{{unknown, record.AudienceHolder}})
+		_, err := record.ReadOwedHolders(ctx, tx, r.records, record.NewNewsClaims(root, nil),
+			[]record.ToldKey{{Issue: unknown, Audience: record.AudienceHolder}})
 		return err
 	})
 	if err == nil || !strings.Contains(err.Error(), "the record holds no issue "+unknown) {
@@ -85,8 +85,8 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 	}
 }
 
-// The owner walk of a member in accepting reads every issue of the tree (newsClaims.owningIssue),
-// since a caller hands over the facts it read of the tree, whole, or nothing (newNewsClaims). So a
+// The owner walk of a member in accepting reads every issue of the tree (record.NewsClaims' owner walk),
+// since a caller hands over the facts it read of the tree, whole, or nothing (record.NewNewsClaims). So a
 // member in accepting whose parent's own architect holds its role is held by that architect, never
 // by the root's, whether the walk reads the tree itself, asked first with nothing handed over, or
 // reads the facts its caller handed over.
@@ -100,7 +100,7 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 	own := r.holder(reconcileChild, claim.RoleArchitect, supervise.StateWorking, "", 0)
 
 	for _, handed := range []bool{false, true} {
-		var holder newsHolder
+		var holder record.NewsHolder
 		var held bool
 		r.inTx(func(tx pgx.Tx) error {
 			var facts *record.NewsFacts
@@ -112,10 +112,10 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 				facts = &read
 			}
 			var err error
-			holder, held, err = newNewsClaims(root, facts).holderOf(r.ctx, tx, r.records, accepting)
+			holder, held, err = record.NewNewsClaims(root, facts).HolderOf(r.ctx, tx, r.records, accepting)
 			return err
 		})
-		if !held || holder.token != own || holder.issue.Key != reconcileChild || holder.role != claim.RoleArchitect {
+		if !held || holder.Token != own || holder.Issue.Key != reconcileChild || holder.Role != claim.RoleArchitect {
 			t.Fatalf("the holder of %s in accepting, the facts handed over %t = %+v (held %t), want its parent's architect %s",
 				reconcileGrandchild, handed, holder, held, own)
 		}
@@ -140,7 +140,7 @@ func TestTheRootArchitectsSummarySaysItAnswersAMemberInAcceptingItOwns(t *testin
 		if err != nil {
 			return err
 		}
-		drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+		drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), record.NewNewsClaims(*root, nil))
 		return err
 	})
 	for _, draft := range drafts {

@@ -97,15 +97,17 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	// A caller stating dispatchCredentialContract stands below each entry's band, gateBasisContract's
-	// (narrowing_test.go reads its line) and the P0 bound's among them, and each band writes its own
-	// line, so the line this test is for is the one that drops dispatchCredential, which no row may
-	// write for this caller.
+	// A caller stating dispatchCredentialContract stands below each entry's band, slotsReadingContract's,
+	// gateBasisContract's and the P0 bound's among them, and each band writes its own line
+	// (narrowing_test.go reads them), so the line this test is for is the one that drops
+	// dispatchCredential, which no row may write for this caller, and the caller is narrowed by those
+	// rows alone (narrowingsExpected).
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
+	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(state, dispatchCredentialContract))
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {

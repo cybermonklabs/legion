@@ -144,8 +144,31 @@ func (l Lifecycle) OpenUnderWorkflow() bool {
 
 // Open starts a fresh authorized lifetime or returns its current open epoch. It is called in the
 // admission fact transaction or before an explicit operator root is created; a cleanup reservation
-// is a named wait, never an implicit zero authority.
+// is a named wait, never an implicit zero authority. A lifetime it starts — the tree's first, or
+// its next epoch once its cleanup has confirmed — is stamped with Postgres's now(), the moment of
+// the transaction; OpenAt stamps a caller's time instead.
 func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority) (Lifecycle, error) {
+	return open(ctx, tx, project, tree, authority, nil)
+}
+
+// OpenAt is Open with the tree's lifecycle stamped at at rather than at Postgres's now(): the
+// updated_at of the row it creates, and of the row whose next epoch it opens. A zero at is the
+// database's own now(), which is what Open stamps. A store on a clock of its own
+// (record.NewStoreWithClock, store.Store.UseClock) opens a tree through it with that clock's
+// time, so a replay of a recorded window that promotes a queued root stamps the tree's lifetime
+// with the window's time and not with the moment the replay ran.
+func OpenAt(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority, at time.Time) (Lifecycle, error) {
+	if at.IsZero() {
+		return Open(ctx, tx, project, tree, authority)
+	}
+	return open(ctx, tx, project, tree, authority, &at)
+}
+
+// open is Open and OpenAt, one rule of a tree's opening whichever clock stamps it. at is the time
+// a lifetime it starts is stamped with, nil for Postgres's now(), which each of the two statements
+// that write one reads in its place (coalesce), so the opening sends no statement of its own to
+// read a clock.
+func open(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority, at *time.Time) (Lifecycle, error) {
 	if authority != AuthorityWorkflow && authority != AuthorityOperator {
 		return Lifecycle{}, fmt.Errorf("open tree lifecycle %s: invalid authority %q", tree, authority)
 	}
@@ -154,7 +177,8 @@ func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Author
 	}
 	lifecycle, err := read(ctx, tx, project, tree)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err := tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, $3)`, project, tree, string(authority))
+		_, err = tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority, updated_at)
+			values ($1, $2, 1, $3, coalesce($4::timestamptz, now()))`, project, tree, string(authority), at)
 		if err != nil {
 			return Lifecycle{}, fmt.Errorf("create tree lifecycle %s: %w", tree, err)
 		}
@@ -173,7 +197,8 @@ func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Author
 		lifecycle.Epoch++
 		lifecycle.Authority, lifecycle.CleanupStarted, lifecycle.CleanupConfirmedAt = authority, false, time.Time{}
 		_, err = tx.Exec(ctx, `update tree_lifecycles set epoch = $3, authority = $4, cleanup_started = false,
-			cleanup_confirmed_at = null, updated_at = now() where project = $1 and tree = $2`, project, tree, int64(lifecycle.Epoch), string(authority))
+			cleanup_confirmed_at = null, updated_at = coalesce($5::timestamptz, now()) where project = $1 and tree = $2`,
+			project, tree, int64(lifecycle.Epoch), string(authority), at)
 		if err != nil {
 			return Lifecycle{}, fmt.Errorf("open next tree lifecycle %s: %w", tree, err)
 		}

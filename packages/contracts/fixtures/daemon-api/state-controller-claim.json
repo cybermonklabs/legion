@@ -43,7 +43,38 @@
           "LEGION-208"
         ]
       }
-    ]
+    ],
+    "slots": {
+      "inUse": 1,
+      "cap": 2,
+      "working": {
+        "count": 0
+      },
+      "stopped": {
+        "count": 0
+      },
+      "person": {
+        "count": 0
+      },
+      "issue": {
+        "count": 0
+      },
+      "idle": {
+        "count": 1,
+        "oldest": "2026-10-06T18:02:11Z"
+      },
+      "waitOnlyForSlot": {
+        "count": 0
+      },
+      "startedWithoutSlot": {
+        "count": 0
+      },
+      "belowFirstWaiting": {
+        "count": 0,
+        "first": "LEGION-211"
+      },
+      "line": "slots: 1 of 2 in use: 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-10-06T18:02Z). Started work without a slot: 0 wait only for a slot, 0 in all. 0 holders rank below LEGION-211, which waits for a slot."
+    }
   },
   "issues": {
     "LEGION-208": {
@@ -103,7 +134,9 @@
       "workers": {},
       "slot": {
         "index": 0,
-        "admittedAt": "2026-10-06T18:02:11Z"
+        "admittedAt": "2026-10-06T18:02:11Z",
+        "state": "idle",
+        "since": "2026-10-06T18:02:11Z"
       },
       "treeMovedAt": "2026-10-06T18:03:01Z",
       "quietHours": 0.002777777777777778
@@ -131,6 +164,8 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-210",
+      "rank": "00010",
+      "rootRank": "00010",
       "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -163,6 +198,8 @@
       "phase": "implementing",
       "status": "todo",
       "tree": "LEGION-211",
+      "rank": "00011",
+      "rootRank": "00011",
       "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -252,6 +289,8 @@
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
     "controller": "operator",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {}
     },

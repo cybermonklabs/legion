@@ -169,7 +169,7 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
 // with every task-less phase start and every step record left out. A phase worker's start is one
-// row, which carries the task and, in a phase that keeps a slot (record.PhaseKeepsSlot), waits
+// row, which carries the task and, in a phase that keeps a slot (record.SlotRule.PhaseKeepsSlot), waits
 // for the issue's admission slot (workflow.StartOrOwe); a start that names a phase and carries no
 // task is a role admission brings back beside it, which asks that role nothing. These assertions
 // are about the starts that carry work, as the workflow package's own helpers are. A start that

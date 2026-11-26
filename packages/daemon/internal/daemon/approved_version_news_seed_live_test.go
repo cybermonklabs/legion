@@ -81,7 +81,7 @@ func (r *versionNewsLive) standAtTheirEntries() {
 // standingEntry is the entry c stands at, and fails the run unless c stands where the daemon's
 // start path leaves every claim it starts: at an entry of 1 or more of its role's phases row, given
 // that entry. Whether a holder takes its news directly compares those two entries
-// (newsClaimTakes), and a claim at entry 0 drives no such comparison. The FAIL line names the claim
+// (record.NewsClaimTakes), and a claim at entry 0 drives no such comparison. The FAIL line names the claim
 // and both numbers.
 func (r *versionNewsLive) standingEntry(c *versionNewsClaimant) int64 {
 	r.t.Helper()
@@ -97,7 +97,7 @@ func (r *versionNewsLive) standingEntry(c *versionNewsClaimant) int64 {
 
 // claimEntries reads the entry role's phases row on issue names and the entry token's claim was
 // given, each 0 where its row does not exist: the two numbers whose comparison decides whether a
-// holder takes its news directly (newsClaimTakes).
+// holder takes its news directly (record.NewsClaimTakes).
 func claimEntries(ctx context.Context, db *store.Pool, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
 	err = db.QueryRow(ctx, `select coalesce((select entry from phases where issue = $1 and role = $2), 0),
 		coalesce((select given_entry from claims where token = $3), 0)`, issue, string(role), string(token)).Scan(&entry, &given)

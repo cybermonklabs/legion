@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T02:04:04.400616413Z",
+    "jsonPayload": {
+      "ack_floor": 7496814,
+      "admitted": 2,
+      "count": 2174,
+      "idle": false,
+      "level": "INFO",
+      "msg": "admission: the Dispatch consumer has caught up; releasing held roots",
+      "time": "2026-11-21T02:04:04.400314433Z"
+    }
+  }
+]

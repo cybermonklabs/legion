@@ -313,8 +313,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			if view.Releasing || view.Paused {
 				return nil
 			}
+			queued := s.stamp()
 			for _, row := range mark.Rows {
-				if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
+				if _, err := insertOutboxRow(ctx, tx, project, issue, row, queued); err != nil {
 					return err
 				}
 			}
@@ -328,8 +329,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			return nil
 		}
 		var first, boundary, last int64
+		queued := s.stamp()
 		for _, row := range mark.Rows {
-			id, err := insertOutboxRow(ctx, tx, project, issue, row)
+			id, err := insertOutboxRow(ctx, tx, project, issue, row, queued)
 			if err != nil {
 				return err
 			}
@@ -374,8 +376,8 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		// column's default is TeardownReached, the note of every mark an earlier release writes.
 		if _, err := tx.Exec(ctx, `insert into issue_releases
 			(project, issue, generation, first_row, boundary_row, last_row, started_row, wake_row, role, kind, marked_at, turn_start, teardown)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11, $12)`,
-			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind, turned,
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11::timestamptz, now()), $12, $13)`,
+			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind, queued, turned,
 			string(TeardownNotReached)); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
@@ -412,11 +414,18 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 	return marked, nil
 }
 
-// insertOutboxRow queues one outbox row of project, encoded by the caller, and answers the id the
-// outbox gave it: the ids of a release's own rows are the range its mark is read against
-// (IssueReleaseStop), and a resume a cancel queues takes its id from the same sequence, above every
-// row of the release it ends. A pause's stop rows and its notices are queued through it too
-// (queuePauseStopRow, queuePauseNotice).
+// insertOutboxRow queues one outbox row of project, encoded by the caller, due and created at
+// at, and answers the id the outbox gave it: the ids of a release's own rows are the range its
+// mark is read against (IssueReleaseStop), and a resume a cancel queues takes its id from the same
+// sequence, above every row of the release it ends. A pause's stop rows and its notices are queued
+// through it too (queuePauseStopRow, queuePauseNotice).
+//
+// at is the store's clock as a statement's argument (Store.stamp): nil for the daemon's own store,
+// whose rows are due and created at Postgres's now(), as they always were, and a replay's simulated
+// moment for a store on a clock (UseClock), so a row a replay's pause queues comes due at the
+// window's moment the pause stands at, as the daemon's comes due at its own now, and not at the
+// moment the replay ran, after every window's end. created_at is named with next_at, since a
+// column default reads no clock but the database's.
 //
 // project is the caller's project, its Dispatch key or its claim token's spelling, and a row keyed
 // by an issue of another project is refused (claim.KeyOfProject): only that project's daemon runs
@@ -424,13 +433,14 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 // which rolls the caller's transaction back, since every caller writes the row together with what
 // names it — a release's mark, a cancel's end of one, a pause and its stops — and neither stands
 // without the other.
-func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row IdleReleaseRow) (int64, error) {
+func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row IdleReleaseRow, at *time.Time) (int64, error) {
 	if !claim.KeyOfProject(project, issue) {
 		return 0, fmt.Errorf("queue the %s row of %s for project %s: %w", row.Kind, issue, project, claim.ErrKeyOfAnotherProject)
 	}
 	var id int64
-	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
-		values ($1, $2, $3, 0, now(), '', '') returning id`, row.Kind, issue, string(row.Payload)).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, created_at)
+		values ($1, $2, $3, 0, coalesce($4::timestamptz, now()), '', '', coalesce($4::timestamptz, now())) returning id`,
+		row.Kind, issue, string(row.Payload), at).Scan(&id); err != nil {
 		return 0, fmt.Errorf("queue the %s row of %s: %w", row.Kind, issue, err)
 	}
 	return id, nil
@@ -549,7 +559,7 @@ func (s *Store) DeclineIssueRelease(ctx context.Context, project, issue string, 
 	}
 	var told bool
 	cancelled, err := s.cancelIssueRelease(ctx, project, issue, resume, outOfWorkflow, paused, func(tx pgx.Tx) (err error) {
-		told, err = recordDecline(ctx, tx, project, issue, decline)
+		told, err = recordDecline(ctx, tx, project, issue, decline, s.stamp())
 		return err
 	})
 	cancelled.Told = told && cancelled.Declined
@@ -593,7 +603,7 @@ func (s *Store) declinePodDelete(ctx context.Context, project, issue string, dec
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		told, err = recordDecline(ctx, tx, project, issue, decline)
+		told, err = recordDecline(ctx, tx, project, issue, decline, s.stamp())
 		return err
 	})
 	if err != nil {
@@ -691,7 +701,8 @@ var leftPodTurnedQuery = `select exists (select 1 from claims where project = $1
 // work where no role runs to read it again (pods.IdleDecline.Work). A failed read made in another
 // pod than the row's keeps no work, since the work was found on a disk that pod replaced. On no
 // row, it writes a row that holds no work. Any other decline replaces the row whole, at its own
-// moment, and queues its message.
+// moment, and queues its message, due at queued, the store's clock (stamp), as every row this file
+// queues is (insertOutboxRow).
 //
 // A Kept decline, the read of a pod's launcher where no role process runs (R6 of
 // #5285), tells the issue's architect once for each pod, and whether the architect
@@ -703,7 +714,7 @@ var leftPodTurnedQuery = `select exists (select 1 from claims where project = $1
 // architect nor makes a later launcher decline of the same pod tell again. A told pod the runtime
 // could not name takes the uid of the first decline that names one. A failed read that tells moves
 // the row's role to the architect and its declined_at to the read's moment, the telling's own.
-func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, decline IdleReleaseDecline) (bool, error) {
+func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, decline IdleReleaseDecline, queued *time.Time) (bool, error) {
 	const startedRow = `(select coalesce(max(last_start_row), 0) from claims where project = $1 and issue = $2)`
 	// told is a Kept decline whose pod the architect was already told of (told_pod).
 	var told bool
@@ -783,7 +794,7 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 	if !tells {
 		return false, nil
 	}
-	if _, err := insertOutboxRow(ctx, tx, project, issue, *decline.Message); err != nil {
+	if _, err := insertOutboxRow(ctx, tx, project, issue, *decline.Message, queued); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -877,12 +888,13 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, r
 				return deleteIssueRelease(ctx, tx, project, issue)
 			}
 		}
+		queued := s.stamp()
 		for _, r := range roles {
 			row, err := resume(r.role, standing.generation)
 			if err != nil {
 				return err
 			}
-			if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
+			if _, err := insertOutboxRow(ctx, tx, project, issue, row, queued); err != nil {
 				return err
 			}
 			cancelled.Resumed = append(cancelled.Resumed, r.role)

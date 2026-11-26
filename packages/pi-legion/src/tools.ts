@@ -326,7 +326,11 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; p0 holders <count> [bound <n|none> [set <n|none> by <who> at <time>: <reason>]], " +
+  "admission cap; slots: the daemon's slots line, what each slot in use is spent on (working, " +
+  "stopped, person, issue, idle, each with its oldest time), the started work that waits without " +
+  "a slot, and how many holders rank below the first issue that waits for one in the line's own " +
+  "order, which puts priority first; " +
+  "p0 holders <count> [bound <n|none> [set <n|none> by <who> at <time>: <reason>]], " +
   "the P0 issues holding a slot outside the cap and the P0 bound in force, with the value set " +
   "while the daemon runs that stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
@@ -376,6 +380,11 @@ function stateSummary(state: LegionState): string {
     lines.push(
       `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`
     );
+    // The daemon's own slots line, printed as it wrote it, so the controller reads the sentence
+    // `legion state` prints and the tick notice carries. A daemon that serves a caller below the
+    // contract that added it writes none, and the line is left out.
+    const slots = admission.slots;
+    if (slots?.line !== undefined) lines.push(slots.line);
     const p0 = p0Summary(state);
     if (p0 !== undefined) lines.push(p0);
     lines.push(

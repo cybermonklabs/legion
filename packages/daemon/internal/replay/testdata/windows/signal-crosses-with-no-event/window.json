@@ -1,0 +1,58 @@
+{
+  "format": 1,
+  "project": "ACME",
+  "from": "2001-03-05T10:20:00Z",
+  "to": "2001-03-05T10:55:00Z",
+  "before": "1h20m0s",
+  "caps": [
+    {
+      "at": "2001-03-05T09:00:00Z",
+      "cap": 3
+    }
+  ],
+  "parts": [
+    {
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T10:55:00Z",
+      "release": "fixture",
+      "commit": "9542c6fbbecd184ccee73523ab3defa39d6cf23a",
+      "rule": "legion-v19.57.3"
+    }
+  ],
+  "tickInterval": "30m0s",
+  "gateSteps": [],
+  "linger": "2h0m0s",
+  "reviewRoundCap": 3,
+  "stalledTreeNotice": "6h0m0s",
+  "workerSilence": "4h0m0s",
+  "workerBackground": "4h0m0s",
+  "experiments": [],
+  "lines": [
+    "admission: slot taken",
+    "daemon: opening the store; a connection error that the next attempt can clear is tried again",
+    "supervise: a turn ended",
+    "supervise: a turn started",
+    "supervise: launched",
+    "workflow: design gate registered",
+    "workflow: phase changed",
+    "workflow: the root of this tree takes its slot and starts its own first phase"
+  ],
+  "collector": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+  "files": {
+    "events/ACME-1.jsonl": "f929bd3e821e8b844f8e416ff054bcc967127ebf58ce50fc98fdb864bce8e7a4",
+    "events/ACME-2.jsonl": "3bf9ee8f3dbefaecc758fc581977a6f885fa7ec3bd86f4f68e4dd3994482c550",
+    "events/ACME-3.jsonl": "f53504d385484e24a3b9c867b728cc24ec5442c70bc171d199e6090d05da0819",
+    "events/ACME-4.jsonl": "5cdd455a0790421949e0f48a22adbdc0006588808857c6a41ce37a3dbf98c3c5",
+    "events/ACMEAUX-1.jsonl": "1d38f35e14cfb8bb8ed315444fa4dd2a2afa9b044a7164d96db9e42995428433",
+    "launcher/log.jsonl": "fd52940b7fd90867bc97329e1bf473117ecc9ec57f8c7b2e0993a3a189e3c51e",
+    "log.jsonl": "cd417e9c6fdf16d9f7c672f8801ddcf1401bad4f67c7b339d2c6dc2eda35e220"
+  },
+  "signals": {
+    "kills": [
+      {
+        "from": "2001-03-05T09:00:00Z",
+        "to": "2001-03-05T10:55:00Z"
+      }
+    ]
+  }
+}

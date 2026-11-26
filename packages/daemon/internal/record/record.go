@@ -405,11 +405,17 @@ type RepoNote struct {
 	PostedAt     time.Time
 }
 
-// Hold is a held issue's hold: the phase it left, and why it is held when the hold has a reason.
-// An issue whose phase is not held has none, so ending a hold (Issue.Hold = nil) ends its reason.
+// Hold is a held issue's hold: the phase it left, why it is held when the hold has a reason, and
+// when it began where the record holds that (Since). An issue whose phase is not held has none, so
+// ending a hold (Issue.Hold = nil) ends its reason.
+//
+// Since is read from issue_holds, which the engine's move into held writes (workflow's
+// claimFailed, Store.MarkHoldBegan), and never written by PutIssue: a hold that began before the
+// release that keeps the time, and one a test writes by hand, carries none.
 type Hold struct {
 	From   phase.Phase
 	Reason HoldReason
+	Since  *time.Time
 }
 
 // HoldReason is why a held issue is held.
@@ -1333,9 +1339,11 @@ type ConflictRead struct {
 }
 
 // MergeForward is the daemon's ask that a role merge Base forward onto Head
-// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
-// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
-// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
+// (PullRequest.MergeForward). Role is the role asked: under the daemon's own rule the implementer
+// before merging, and the merger in merging (MergeForwardAsker, cybermonklabs/legion#4979), and
+// under another rule the role its conflict path asks (SlotRule.MergeForwardAsker); Asked reads it.
+// Phase is the phase the issue stood in when the daemon asked, and stays in. Why is the first of
+// R0's reasons that
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
 // landing asked the reviewer to read the merge, which it does when the reviewer step of the
@@ -1387,10 +1395,12 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict where the
-	// merge comes next before merging - retro, or accepting where no step of the task follows the
-	// acceptance (classify.MergeComesNext) - waits for merging, where the merger merges the base
-	// forward (cybermonklabs/legion#4979).
+	// ConflictMergeNext: under the daemon's own rule, the issue stands in merging, or is held from
+	// it; a conflict where the merge comes next before merging - retro, or accepting where no step
+	// of the task follows the acceptance (classify.MergeComesNext) - waits for merging, where the
+	// merger merges the base forward (cybermonklabs/legion#4979). Under a rule whose conflict path
+	// acts at once past the review (SlotRule.ConflictWaitsForMerging false), the issue stands in
+	// accepting, retro or merging, or is held from one of them.
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1401,10 +1411,12 @@ const (
 )
 
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
-// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
-// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// implementing, or a phase after it on the task's line). The ask's row goes to it
-// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+// in at under its own rule (cybermonklabs/legion#4979): the merger in merging, where the merge is
+// its own work, and the implementer in every earlier phase where a merge forward stands
+// (classify.MergeForwardStands: implementing, or a phase after it on the task's line). The ask's
+// row goes to it (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role). The
+// engine asks the role of the rule it runs (SlotRule.MergeForwardAsker), which is this one but
+// under a conflict path that asks the implementer past the review too.
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
 		return claim.RoleMerger
@@ -2097,6 +2109,12 @@ type Slot struct {
 	Issue      string
 	Index      int
 	AdmittedAt time.Time
+	// WaitsSince is when the holder began to wait on another issue while it keeps the slot
+	// (blockers.KeptWaits), and nil while it waits on none or where the record holds no such
+	// time. The admission pass writes it when the holder's waits go from none to some and clears
+	// it when they end (Store.MarkSlotWait), on a row of slot_waits that goes with the slot's.
+	// PutSlot never writes it.
+	WaitsSince *time.Time
 }
 
 // OutboxRow is one effect that has not yet been completed. A claimed row carries a non-empty
@@ -2132,6 +2150,17 @@ type Handover struct {
 	Tree       string
 	Generation uint64
 	Cancelled  bool
+}
+
+// HandOverHolds says whether a hand-over's status write (HandOverStatusRow, write) still holds its
+// fence over the records read in one transaction: the child issue still in the tree its hand-over
+// record names, that record (handover) uncancelled and of the tree and linger the write names, and
+// the tree's root lingering at that generation. A record the read found none of (nil) holds
+// nothing. The daemon's executor reads it before the write, and a replay's worker stub before its
+// own; intake enforces the durable fence again when the write's event arrives.
+func HandOverHolds(issue, root *Issue, handover *Handover, write StatusWrite) bool {
+	return issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree &&
+		handover.Tree == write.HandOverTree && handover.Generation == write.HandOverLinger && root.LingersAt(handover.Generation)
 }
 
 // ReleaseRetry is the bounded wait for a released todo child whose parent event has not reached the
@@ -2258,6 +2287,12 @@ type Store interface {
 	// unrecorded key matches no row and writes nothing, which is what a fact of an issue the
 	// daemon does not run must do.
 	MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error
+	// MarkHoldBegan records at as when key's hold began (Hold.Since), on its row of issue_holds,
+	// replacing the time of any hold before it. It is the one writer of that row, and its one
+	// caller is the engine's move into held (workflow's claimFailed), the one path into held, in
+	// the transaction that writes the hold: PutIssue names the row nowhere, so no copy of an
+	// issue read before the hold can write its time away.
+	MarkHoldBegan(ctx context.Context, tx pgx.Tx, key string, at time.Time) error
 	// MarkTreeStalledTold records at as the movement the daemon has told root's tree stopped
 	// for (Issue.TreeStalledToldAt), the one writer of that column: the admission pass hands it
 	// the tree's newest movement in the transaction that queues the notice, and PutIssue names
@@ -2358,6 +2393,11 @@ type Store interface {
 	// pays hundreds of times over. A row the record does not hold is absent from the answer, which
 	// reads as the zero entry: a role no transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
+	// MergersReady is, of issues, the ones whose merger's phases row records the head it stands
+	// on (PhaseRow.HandoffCommit): the merger's ready mark (LineFacts.Ready), read in one
+	// statement for every issue a pass under a rule that gives the slot back there finds standing
+	// in merging (ReadLineFactsUnder), in no order. An issue with no merger's row is absent.
+	MergersReady(ctx context.Context, tx pgx.Tx, issues []string) ([]string, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	// PullRequest, PullRequestByBranch and PullRequestByNumber read one pull request whole, what it
 	// remembers of its settled heads with it, for a fact's handling that may write the record back
@@ -2437,6 +2477,13 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
+	// HolderClaims is every claim of the project that stands on an issue holding a slot, as a
+	// slot holder's state reads one (HolderClaim), in no order and never nil: what the admission
+	// pass reads for the slots reading of the tick notice, and what the daemon's state source
+	// reads for its projection, so the two read a holder's claims through one statement. The
+	// slots are the ones the caller's transaction holds. project is the claim project token
+	// (claim.ProjectToken), as ProjectClaims takes it.
+	HolderClaims(ctx context.Context, tx pgx.Tx, project string) ([]HolderClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
@@ -2778,6 +2825,13 @@ type Store interface {
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
+	// MarkSlotWait records whether issue's slot holder waits on another issue while it keeps the
+	// slot (Slot.WaitsSince). Where waits is true it writes at on a row of slot_waits, and only
+	// where no row stands, so the wait keeps the moment it began; where waits is false it deletes
+	// the row. Its one caller is the admission pass (admit's markSlotWaits), which calls it for
+	// each holder whose waits went from none to some or from some to none. A slot given back
+	// takes its row with it.
+	MarkSlotWait(ctx context.Context, tx pgx.Tx, issue string, waits bool, at time.Time) error
 	// ReleaseSlotForWait takes issue's slot away because it waits on another issue and records
 	// that it did, in one statement: the row is deleted and Issue.ReleasedForWaitAt set to at, so
 	// no pass can ever read a row gone with no mark, which would say the issue never started, or
@@ -2901,9 +2955,9 @@ type Store interface {
 	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; renewed false
 	// is a lease no longer the caller's, and gone is a row finished rather than leased by another.
 	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (renewed, gone bool, err error)
-	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
-	// false is none. Kinds nil is every kind.
-	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
+	// NextDue is the earliest next_at after now among project's rows of kinds no live lease holds;
+	// false is none. Issue "" is every issue of project, kinds nil every kind.
+	NextDue(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
 	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
@@ -3054,7 +3108,8 @@ type RoleRun struct {
 // deleted.
 //
 // Age is now(), the start of the reading transaction, less created_at, both in the store's own
-// clock. A row a transaction that began later wrote reads a negative age, which is inside any
+// clock, which a store built with a clock (NewStoreWithClock) reads in place of now() for both.
+// A row a transaction that began later wrote reads a negative age, which is inside any
 // bound. It is read from created_at because a row the outbox runs again in place keeps it, where
 // next_at moves with every backoff. It is read in the store's clock because created_at is the
 // database's now() at the start of the transaction that wrote the row, and subtracting it from

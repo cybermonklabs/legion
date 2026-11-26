@@ -82,7 +82,7 @@ func TestStoreRoundTripsAParentsChildrenWait(t *testing.T) {
 func TestAwaitingChildrenHoldsNoSlotIsNotAtWorkAndCarriesItsRun(t *testing.T) {
 	waiting := Issue{Key: "LEGION-231", Tree: "LEGION-230", Project: "LEGION", Phase: phase.AwaitingChildren,
 		Status: "in_progress", Parent: ParentOf("LEGION-230")}
-	if PhaseKeepsSlot(phase.AwaitingChildren) {
+	if MainRule.PhaseKeepsSlot(phase.AwaitingChildren) {
 		t.Errorf("PhaseKeepsSlot(awaiting_children) = true, want false: a parent waiting on its children holds no slot")
 	}
 	if KeepsSlot(waiting) {

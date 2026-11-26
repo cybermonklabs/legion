@@ -69,7 +69,39 @@
         "issue": "LEGION-214",
         "reason": "label_off"
       }
-    ]
+    ],
+    "slots": {
+      "inUse": 5,
+      "cap": 5,
+      "working": {
+        "count": 1,
+        "oldest": "2026-09-22T09:16:30Z"
+      },
+      "stopped": {
+        "count": 2,
+        "oldest": "2026-09-22T08:47:03Z"
+      },
+      "person": {
+        "count": 0
+      },
+      "issue": {
+        "count": 0
+      },
+      "idle": {
+        "count": 2,
+        "oldest": "2026-09-20T16:42:10Z"
+      },
+      "waitOnlyForSlot": {
+        "count": 0
+      },
+      "startedWithoutSlot": {
+        "count": 0
+      },
+      "belowFirstWaiting": {
+        "count": 0
+      },
+      "line": "slots: 5 of 5 in use: 1 working (oldest 2026-09-22T09:16Z), 2 stopped (oldest 2026-09-22T08:47Z), 0 person, 0 issue, 2 idle (oldest 2026-09-20T16:42Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+    }
   },
   "issues": {
     "LEGION-207": {
@@ -435,6 +467,8 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-211",
+      "rank": "00011",
+      "rootRank": "00011",
       "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -500,6 +534,8 @@
       "phase": "awaiting_person",
       "status": "in_progress",
       "tree": "LEGION-212",
+      "rank": "00012",
+      "rootRank": "00012",
       "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -517,7 +553,9 @@
       ],
       "slot": {
         "index": 2,
-        "admittedAt": "2026-09-22T08:01:30Z"
+        "admittedAt": "2026-09-22T08:01:30Z",
+        "state": "stopped",
+        "since": "2026-09-22T08:52:00Z"
       },
       "waitingLine": {
         "place": 1,
@@ -579,6 +617,8 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-218",
+      "rank": "00018",
+      "rootRank": "00018",
       "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
@@ -636,6 +676,8 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-219",
+      "rank": "00019",
+      "rootRank": "00019",
       "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
@@ -1197,6 +1239,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

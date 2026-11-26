@@ -315,6 +315,19 @@ func populatedState(t *testing.T) State {
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
 	architectDied := time.Date(2026, 9, 22, 9, 15, 21, 0, time.UTC)
 	architectStartFailed := time.Date(2026, 9, 22, 9, 15, 50, 0, time.UTC)
+	// What the five slots in use are spent on: LEGION-208's implementer is in a
+	// turn; LEGION-210 is held and LEGION-212's tester is stranded, the two stopped holders, the
+	// older stopped when LEGION-210's implementer failed; and the two reviewing roots are idle.
+	// No returned member of the line is without a slot, and the one issue of the starting part,
+	// LEGION-211, stands in `blocked`, so no issue waits for a slot. The line is the one sentence
+	// record.SlotsLine writes of the reading.
+	testerStoppedAt := time.Date(2026, 9, 22, 8, 52, 0, 0, time.UTC)
+	slotsReading := record.SlotsReading{InUse: 5, Cap: 5,
+		Working: record.StateCount{Count: 1, Oldest: &implementerStep.TurnStartedAt},
+		Stopped: record.StateCount{Count: 2, Oldest: &implementerFailedAt},
+		Idle:    record.StateCount{Count: 2, Oldest: &stuckApprovedAt},
+	}
+	slotsReading.Line = record.SlotsLine(slotsReading)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -369,6 +382,7 @@ func populatedState(t *testing.T) State {
 				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
 			},
+			Slots: &slotsReading,
 		},
 		Issues: map[string]Issue{
 			"LEGION-208": {
@@ -609,6 +623,8 @@ func populatedState(t *testing.T) State {
 			// `admission.blocked` names what it waits on besides the slot.
 			"LEGION-211": {
 				Key:           "LEGION-211",
+				Rank:          "00011",
+				RootRank:      "00011",
 				Generation:    2,
 				Phase:         phase.Implementing,
 				Status:        "in_progress",
@@ -681,6 +697,8 @@ func populatedState(t *testing.T) State {
 			// entry numbers says why), so this root carries no `architect` and no entry times.
 			"LEGION-212": {
 				Key:           "LEGION-212",
+				Rank:          "00012",
+				RootRank:      "00012",
 				Generation:    1,
 				Phase:         phase.AwaitingPerson,
 				Status:        "in_progress",
@@ -727,6 +745,9 @@ func populatedState(t *testing.T) State {
 				Slot: &SlotView{
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
+					// Its retired tester is the stranded claim that stops it.
+					State: string(record.HolderStopped),
+					Since: &testerStoppedAt,
 				},
 			},
 			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
@@ -838,6 +859,8 @@ func populatedState(t *testing.T) State {
 			// (classify.MergeOutcomeOf).
 			"LEGION-218": {
 				Key:           "LEGION-218",
+				Rank:          "00018",
+				RootRank:      "00018",
 				Generation:    1,
 				Phase:         phase.Reviewing,
 				Status:        "needs_review",
@@ -885,6 +908,8 @@ func populatedState(t *testing.T) State {
 			},
 			"LEGION-219": {
 				Key:           "LEGION-219",
+				Rank:          "00019",
+				RootRank:      "00019",
 				Generation:    3,
 				Phase:         phase.Reviewing,
 				Status:        "needs_review",

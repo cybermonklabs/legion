@@ -1,0 +1,71 @@
+[
+  {
+    "id": 877110,
+    "issue_key": "ACME-29",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 23,
+    "type": "ask.opened",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-4000-8000-00000000000c",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-29",
+        "session_title": "Legion architect · ACME-29"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-20T20:47:49.424239Z",
+    "payload": {
+      "anchor": null,
+      "answer": null,
+      "artifact_id": null,
+      "asked_of": null,
+      "asked_of_at": null,
+      "asked_of_by": null,
+      "author": {
+        "id": "00000000-0000-4000-8000-00000000000c",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/workspaces/cybermonklabs/legion/acme-29",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-29"
+        }
+      },
+      "block_id": "00000000-0000-4000-8000-00000000000d",
+      "created_at": "2026-11-20T20:47:49.424239Z",
+      "edited_at": null,
+      "id": "00000000-0000-4000-8000-00000000000e",
+      "issue_key": "ACME-29",
+      "kind": "question",
+      "multiple": false,
+      "opened_event_id": 877110,
+      "options": [
+        {
+          "description": "text 9",
+          "id": "b2",
+          "label": "text 10"
+        },
+        {
+          "id": "b3",
+          "label": "text 11"
+        }
+      ],
+      "question": "text 12",
+      "referenced_by_count": 0,
+      "references_changed": [
+        {
+          "id": "ACME-30",
+          "kind": "issue"
+        }
+      ],
+      "revision": 1,
+      "state": "open",
+      "thread_logins": [],
+      "urgency": "med"
+    }
+  }
+]

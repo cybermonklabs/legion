@@ -41,10 +41,11 @@ func TestTheTickNamesAWaitingParentBlockedByItsOpenChildren(t *testing.T) {
 	var held []record.HeldIssue
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
-		var err error
-		if held, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
+		reading, err := admission.tickRead(context.Background(), tx)
+		if err != nil {
 			t.Fatalf("read the tick's rows: %v", err)
 		}
+		held, blocked = reading.held, reading.blocked
 	})
 	if want := []record.BlockedIssue{{Issue: spParent, BlockedBy: []string{spChild}}}; !reflect.DeepEqual(blocked, want) {
 		t.Fatalf("the tick's blocked list = %+v, want %+v: the waiting parent with its one open child", blocked, want)

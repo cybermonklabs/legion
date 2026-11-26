@@ -1513,9 +1513,10 @@ const (
 // or out of the workflow - has no pull request work to merge forward and is asked for none. A hold
 // counts as standing in the phase it is held from (record.StandsAt). Where the merge comes next
 // before merging - retro, or accepting where no step of the task follows the acceptance
-// (MergeComesNext) - nothing is asked (ConflictNeedsMerge): the merger merges the base forward once
-// the issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until
-// it lands.
+// (MergeComesNext) - nothing is asked under the daemon's own rule (ConflictNeedsMerge): the merger
+// merges the base forward once the issue reaches merging (cybermonklabs/legion#4979), and an ask
+// made before stands there until it lands. A rule whose conflict path acts at once past the review
+// decides otherwise (ConflictNeedsMergeUnder).
 func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 	at := record.StandsAt(issue)
 	implementing, here := -1, -1
@@ -1546,8 +1547,10 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 //     task's line. GitHub sends no event of the pull request while it computes whether the head
 //     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
 //     so a conflict there is acted on at once (R0). Where the merge comes next before merging
-//     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) it
-//     is recorded for the move into merging (cybermonklabs/legion#4979). Elsewhere, without a
+//     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) the
+//     daemon's own rule records it for the move into merging (cybermonklabs/legion#4979), and a
+//     rule whose conflict path acts at once past the review acts on it there
+//     (ConflictNeedsMergeUnder). Elsewhere, without a
 //     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
@@ -1608,7 +1611,8 @@ func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateF
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
-// contexts green on the head when nothing needs a merge yet, reads them once.
+// contexts green on the head when nothing needs a merge yet, reads them once. The engine decides
+// under the rule it runs (ConflictNeedsMergeUnder), which under the daemon's own rule is this.
 func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
 	case record.StandsIn(issue, phase.Merging):
@@ -1628,12 +1632,31 @@ func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.Ba
 	return ""
 }
 
+// ConflictNeedsMergeUnder is R0's decision on a confirmed conflict under rule, the slot rule the
+// engine runs (workflow.Config.SlotRule), whose conflict path (record.SlotRule.Conflict) decides a
+// conflict past the review. Under a path that waits for merging there, the daemon's own
+// (record.SlotRule.ConflictWaitsForMerging, cybermonklabs/legion#4979), it is ConflictNeedsMerge.
+// Under any other path a conflict in accepting, retro or merging, or held from one of them, needs
+// the merge at once (record.ConflictMergeNext), as at commit bafd3618: the merge is the issue's
+// next step, and GitHub merges no head that conflicts with its base. The engine then acts by the
+// rule's path: the move back of a path that moves back, as the rows of 958173da and 9542c6fb did
+// from those phases, or the implementer's merge forward (record.ConflictImplementerMergesForward).
+// Before the review every path decides by ConflictNeedsMerge.
+func ConflictNeedsMergeUnder(rule record.SlotRule, issue record.Issue, line []phase.Phase, rules *record.BaseRules,
+	green []string,
+) record.ConflictWhy {
+	if !rule.ConflictWaitsForMerging() && record.StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging) {
+		return record.ConflictMergeNext
+	}
+	return ConflictNeedsMerge(issue, line, rules, green)
+}
+
 // MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
 // phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
 // accepting where no step of the task follows the acceptance, or is held from one of them
-// merges. In the default steps these are accepting, retro and merging. In merging the merger
-// merges the base forward itself, and before it the conflict waits for merging
-// (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
+// merges. In the default steps these are accepting, retro and merging. Under the daemon's own rule,
+// in merging the merger merges the base forward itself, and before it the conflict waits for
+// merging (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
 // acceptance, that step runs at the head before the merge, as a tester or a reviewer does after
 // the implementer. A line that holds no acceptance has no acceptance a step follows, so it answers
 // false in accepting.

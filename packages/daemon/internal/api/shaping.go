@@ -1094,10 +1094,10 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
-// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
-// list to version.go's entry headers, so a renumber that moves dispatch://INFRA-4036's entry and
-// leaves this constant behind names a contract no entry declares and fails there.
+// #4553's own number, which is why answers.go's frozenContracts names it rather than its
+// number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
+// entry headers, so a renumber that moves #4553's entry and leaves this constant behind names a
+// contract no entry declares and fails there.
 const cachesSourceContract = 213
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
@@ -1190,6 +1190,31 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // that constant, and the contract the keys arrived at stays where it is. It is a number of
 // answers.go's frozenContracts.
 const causeTimesContract = 256
+
+// withoutSlotsReading is state with no `admission.slots`, the one key of the state's own that
+// slotsReadingContract added. The admission block is the state's own value, so clearing the
+// pointer leaves the source's reading as it was.
+func withoutSlotsReading(state State) (State, bool) {
+	moved := state.Admission.Slots != nil
+	state.Admission.Slots = nil
+	return state, moved
+}
+
+// withoutRanksAndSlotStates is the issue with no `rank`, no `rootRank`, and a slot with no
+// `state` and no `since`, the four fields slotsReadingContract added to an issue. The slot is the
+// source's, so it is copied before its two fields are cleared, and only for a slot that carries
+// one of them.
+func withoutRanksAndSlotStates(issue Issue) (Issue, bool) {
+	moved := issue.Rank != "" || issue.RootRank != ""
+	issue.Rank, issue.RootRank = "", ""
+	if slot := issue.Slot; slot != nil && (slot.State != "" || slot.Since != nil) {
+		cleared := *slot
+		cleared.State, cleared.Since = "", nil
+		issue.Slot = &cleared
+		moved = true
+	}
+	return issue, moved
+}
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step

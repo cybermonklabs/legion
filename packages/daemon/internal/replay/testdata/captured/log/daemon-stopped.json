@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "2026-11-21T01:54:47.065080858Z",
+    "jsonPayload": {
+      "boot": 159,
+      "level": "INFO",
+      "msg": "legion daemon stopped",
+      "project": "ACME",
+      "time": "2026-11-21T01:54:47.064170219Z"
+    }
+  }
+]

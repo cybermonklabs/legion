@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -42,7 +43,8 @@ type Admission struct {
 	// config.Project.ExperimentsDeclared), drawn for each unit this admission records: every
 	// tree-unit experiment when it opens a tree for the first time, and every issue-unit
 	// experiment when it first records an issue (drawExperiments), each drawn with the engine's
-	// random source (workflow.Engine's ExperimentSource), the one source of the daemon's draws.
+	// random source (workflow.Engine's ExperimentSource), the one source of the daemon's draws, and
+	// the one a replay of a recorded window seeds from its run (workflow.Config.ExperimentSource).
 	experiments []config.Experiment
 	// stalledTreeNotice is `stalled_tree_notice_hours` (UseStalledTreeNotice), how long a tree
 	// of this project may be quiet before the pass tells the project's controller once that it
@@ -133,12 +135,36 @@ type Admission struct {
 	workerSilence    time.Duration
 	workerBackground time.Duration
 
+	// tables is where a pass under a rule the daemon does not run reads and keeps what that rule
+	// records beyond the daemon's own tables (UseRuleTables, RuleTables): nil in the daemon.
+	tables RuleTables
+
+	// releasedWakes reads the recorded wakes of released pods that the stranded judgement reads a
+	// released claim by (UseReleasedWakes, workflow.Stranded), for the tick's slots reading; nil
+	// until the daemon registers it, when the tick judges no released claim stranded.
+	releasedWakes func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error)
+
+	// observer is handed the view of each pass once its fact commits (UsePassObserver,
+	// observePass): a replay's measure of its own run. nil in the daemon, where a pass gathers no
+	// view.
+	observer func(PassView)
+
 	// p0Configured is legion.yaml's `admission_p0_bound` (UseP0Bound,
 	// config.Config.AdmissionP0Bound): how many P0 issues may hold a slot at once, outside the cap,
 	// while no value set while the daemon runs stands, and nil for no bound, which is what an
 	// admission nobody registered a bound with holds. Every pass reads the bound in force again
 	// (p0BoundAt), so a value set while the daemon runs is in force from its own fact's pass on.
 	p0Configured *int
+
+	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor), read through the
+	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
+	// every pass admits under the cap.
+	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
+
+	// passFacts names more facts the pass rule (Apply) runs the pass on whatever their transaction
+	// wrote, beside passFact's (UsePassFacts): nil in the daemon, which names none; a replay names
+	// its own facts.
+	passFacts func(intake.Fact) bool
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -146,6 +172,17 @@ type Admission struct {
 // controller's periodic turn names each gap in the day's report. No other wake carries it.
 func (a *Admission) ReportCapabilities(open func() []string) {
 	a.openCapabilities = open
+}
+
+// UseReleasedWakes registers read, the daemon's read of the wakes of its released pods that have
+// not reached the woken role's first turn, through the transaction it is handed: what the
+// stranded judgement reads a released claim by (workflow.Stranded), which the tick's slots
+// reading counts a holder `stopped` by, as `legion state` does (internal/daemon's
+// strandedReleaseWakes reads both). claims are the project's stopped claims, which say whether
+// any is released at all. It is a setter rather than a parameter of New for the reason
+// ReportCapabilities is, and an admission given none judges no released claim stranded.
+func (a *Admission) UseReleasedWakes(read func(ctx context.Context, tx pgx.Tx, claims []supervise.Claim) ([]workflow.ReleasedWake, error)) {
+	a.releasedWakes = read
 }
 
 // UseExperiments registers the project's declared experiments
@@ -180,6 +217,18 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerBackground = background
 }
 
+// UseClock sets the clock this admission's passes read the time from: the slot a promotion
+// grants (record.Slot.AdmittedAt), the mark of a release for a wait (releaseSlotsForWaits), the
+// movement a promotion marks, the rows it queues and every judgement of the line made at a
+// moment. New sets the wall clock, which is the daemon's, and a replay of a recorded window sets
+// its simulated clock, the one its engine (workflow.Config.Clock) and its store
+// (record.NewStoreWithClock) read, so the pass writes and compares the window's times. It is a
+// setter rather than a parameter of New for the reason UseExperiments is: every test that admits
+// anything builds an admission, and none of them but the package's own sets a clock.
+func (a *Admission) UseClock(clock func() time.Time) {
+	a.now = clock
+}
+
 // UseP0Bound registers legion.yaml's P0 bound (`admission_p0_bound`, config.Config.AdmissionP0Bound),
 // nil where the file gives none: the bound every pass admits under while no value set while the
 // daemon runs stands (p0BoundAt). It is a setter rather than a parameter of New for the reason
@@ -187,6 +236,16 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 // configure no bound.
 func (a *Admission) UseP0Bound(configured *int) {
 	a.p0Configured = configured
+}
+
+// UsePassFacts registers runs, which names more facts the pass rule (Apply) runs the pass on
+// whatever their transaction wrote, beside passFact's. A replay names its own facts with it: each
+// stands for a change its daemon made outside any fact (a claim the supervisor settled) or for a
+// pass of its own, as passFact's facts do, and writes no record that would run the pass by itself.
+// The daemon registers none. It is a setter rather than a parameter of New for the reason
+// UseExperiments is.
+func (a *Admission) UsePassFacts(runs func(intake.Fact) bool) {
+	a.passFacts = runs
 }
 
 // p0BoundAt is the P0 bound this pass admits under, read through tx: the value the controller or
@@ -224,6 +283,15 @@ func (a *Admission) recordP0BoundChange(ctx context.Context, tx pgx.Tx, change s
 	return nil
 }
 
+// The lines of R10's starts: each start outside the cap (P0StartLine), and each issue that would
+// start outside the cap held at the P0 bound (P0BoundRefusalLine), each with the P0 holders, the
+// other holders, the cap and the bound (boundWords). A replay's log carries them, which a fixture
+// window checks.
+const (
+	P0StartLine        = "admission starts a P0 issue outside the cap"
+	P0BoundRefusalLine = "admission holds a P0 issue at the P0 bound"
+)
+
 // boundWords is a P0 bound as a log line writes it: the number, or "none".
 func boundWords(bound *int) any {
 	if bound == nil {
@@ -236,7 +304,11 @@ var _ intake.Handler = (*Admission)(nil)
 
 // New creates an admission handler for one Dispatch project. engine is the workflow's own, shared
 // with intake's other handler: reenterStrandedChildren calls its exported ReenterChild rather than
-// keeping a second copy of re-entry and gate-open behavior.
+// keeping a second copy of re-entry and gate-open behavior. The pass judges by the engine's slot
+// rule (workflow.Engine.SlotRule), the one its transitions and the slot mark of each start read,
+// so the two never judge one record by two rules: the facts every pass reads carry it
+// (record.ReadLineFactsUnder, lineFacts), so the line, the waits, the held words, the release and
+// the grant all answer under it.
 func New(store record.Store, engine *workflow.Engine, cap int, project string, log *slog.Logger) *Admission {
 	if log == nil {
 		log = slog.Default()
@@ -300,24 +372,30 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		return nil, nil, a.convergeEntries(ctx, tx)
 	}
 	if _, ok := fact.(intake.ControllerTick); ok {
-		_, returned, err := a.promote(ctx, tx)
+		_, returned, err := a.promoteHolds(ctx, tx, true, signals.PassTick)
 		if err != nil {
 			return nil, nil, err
 		}
-		// What the project waits on, what nothing starts and whose phase worker nothing will
-		// prompt are read here, after the promotion this tick made, from one read of the
-		// project (tickRows): the first two are two assemblies of one judgement of the line, and they are built whether or not a controller is
-		// registered to be told. The wake carries them as it carries the open capabilities, and
-		// judges nothing a second time.
-		held, blocked, silent, err := a.tickRows(ctx, tx)
+		// What the project waits on, what nothing starts, whose phase worker nothing will prompt
+		// and what its slots in use are spent on are read here, after the promotion this tick
+		// made, from one read of the project (tickRead): the first two and the slots reading are
+		// assemblies of one judgement of the line, and they are built whether or not a controller
+		// is registered to be told. The wake carries them as it carries the open capabilities,
+		// and judges nothing a second time.
+		read, err := a.tickRead(ctx, tx)
 		if err != nil {
 			return nil, nil, err
 		}
+		// The reading is the daemon's own record of each tick's slots as well, one line once the
+		// fact commits whether or not a controller is told, so a window of the log read later
+		// says what the slots were spent on at every tick.
+		reading := read.slots
+		store.OnCommit(ctx, func() { a.log.Info("admission: slots reading", "slots", reading) })
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		_, err = a.wakeController(ctx, tx,
-			record.ControllerNotice{Kind: record.TickNotice, Held: held, Blocked: blocked, Silent: silent}, a.project, a.now())
+		_, err = a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.TickNotice, Held: read.held,
+			Blocked: read.blocked, Silent: read.silent, Slots: &reading}, a.project, a.now())
 		return returned, nil, err
 	}
 	if handover, ok := fact.(intake.Handover); ok {
@@ -340,8 +418,16 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 
 	observation, ok := fact.(intake.DispatchIssue)
 	if !ok {
+		// A signal's deadline (intake.SignalDeadline) is the timer fact whose pass admits below P0
+		// once a signal crosses back under its limit: it runs its pass whatever it wrote, as a
+		// deadline's pass (signals.PassDeadline), which the pass rule's promote would run as an
+		// event's.
+		if _, deadline := fact.(intake.SignalDeadline); deadline {
+			_, returned, err := a.promoteHolds(ctx, tx, true, signals.PassDeadline)
+			return returned, nil, err
+		}
 		promote := a.promoteWritten
-		if passFact(fact) {
+		if passFact(fact) || a.passFacts != nil && a.passFacts(fact) {
 			promote = a.promote
 		}
 		_, returned, err := promote(ctx, tx)
@@ -574,12 +660,17 @@ const todoWakeDelay = 30 * time.Second
 // The line is the one the promotion itself would read (blockers.JudgeLine), held by the same
 // blocker hold and the same children-first wait: a line built here from its own reads would
 // answer differently from the pass that acts, and a slot this said was free would then go to
-// nobody.
+// nobody. It is judged under the pass's own rule (lineFacts) and counted as the promotion counts
+// against the cap (capLets): a candidate a counted waiter offers its slot to under a cover
+// (covers) starts on that slot, which the waiter gives up for it, and takes no free slot.
 //
-// The slot it speaks of is one of the cap's, so it counts the holders the cap counts: a P0 holder
-// takes none of the cap's slots (record.HoldersOf), and a P0 candidate the line would start is no
-// taker of one either, since it starts outside the cap (capLets). The promotion, the stall
-// measure's free-slot term (lineCanMove) and this read count the same holders of one record.
+// The slot it speaks of is one of the cap's, so it counts the holders the cap counts: under a rule
+// that starts a P0 issue outside the cap (record.SlotRule.StartsNow) a P0 holder takes none of the
+// cap's slots (record.HoldersOf, record.SlotRule.CapCounted), and a P0 candidate the line would
+// start is no taker of one either, since it starts outside the cap
+// (record.SlotRule.StartsOutsideCap, capLets); under a rule that starts none there, every holder
+// is the cap's. The promotion, the stall measure's free-slot term (lineCanMove) and this read
+// count the same holders of one record.
 func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if a.cap <= 0 {
 		return false, nil
@@ -592,7 +683,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	facts, err := a.lineFacts(ctx, tx, issues)
 	if err != nil {
 		return false, err
 	}
@@ -601,14 +692,19 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	lending := coversOf(issues, own, rows, facts)
+	rule := facts.Rule.OrMain()
 	held := record.HoldersOf(issues, own)
 	taking := 0
 	for _, candidate := range line {
-		if len(blockers.LineWaitsOn(rows, candidate)) == 0 && slotFor(candidate) && !candidate.Issue.StartsNow() {
+		if len(blockers.LineWaitsOn(rows, candidate)) > 0 || !slotFor(candidate, facts) || rule.StartsOutsideCap(candidate.Issue) {
+			continue
+		}
+		if _, covering := lending.take(candidate.Issue.Key); !covering {
 			taking++
 		}
 	}
-	return held.Capped+taking < a.cap, nil
+	return rule.CapCounted(held)+taking < a.cap, nil
 }
 
 // wakeController queues notice on issue, due at dueAt, when a controller is registered and no
@@ -616,7 +712,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
 // (ReportCapabilities), which this adds, and the three lists the tick's own fact built from one
-// read of the project and put on the notice before it reached here (applyFact, tickRows): every
+// read of the project and put on the notice before it reached here (applyFact, tickRead): every
 // issue Legion waits on another issue for, one it has still to start or one it started that gave
 // its slot back, every issue nothing starts at all, and every issue whose phase worker nothing
 // will prompt (silentWorkers). So a tick that wakes nobody has judged them all the same, and
@@ -703,7 +799,16 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
-// tickRows is what the tick controller notice carries beside the open capabilities: every issue
+// tickReading is what the tick controller notice carries beside the open capabilities: the three
+// lists tickRead reads, and the project's slots reading (slotsReading).
+type tickReading struct {
+	held    []record.HeldIssue
+	blocked []record.BlockedIssue
+	silent  []record.SilentIssue
+	slots   record.SlotsReading
+}
+
+// tickRead is what the tick controller notice carries beside the open capabilities: every issue
 // Legion waits on another issue for, one it has still to start or one it started that gave its
 // slot back (`blocked`, blockers.Blocked), every issue the daemon's own record holds in the
 // workflow that stands in neither the active set nor the waiting line, with the one word for why
@@ -728,23 +833,82 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // out of them itself (record.InWorkflow). The silent list is read from those same issues and
 // line facts, before the judgement adds to them, so its tree gates are the gates the blocked
 // list is judged from and nothing is read twice in this one transaction.
-func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, []record.SilentIssue, error) {
+//
+// The slots reading beside the three lists is assembled from that same judgement of the line and
+// those same two lists (slotsReading), so the reading the controller is told and the lists it is
+// told beside it are one reading of one record.
+func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx) (tickReading, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
-		return nil, nil, nil, err
+		return tickReading{}, err
 	}
 	silent, err := a.silentWorkers(ctx, tx, issues, facts)
 	if err != nil {
-		return nil, nil, nil, err
+		return tickReading{}, err
 	}
 	own := ownSlots(issues, slots)
 	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
-		return nil, nil, nil, err
+		return tickReading{}, err
 	}
 	held := record.HeldList(issues, own, line, dropped, facts)
 	a.logUnclassified(held, issues)
-	return held, blockers.Blocked(rows, issues, line, facts), silent, nil
+	blocked := blockers.Blocked(rows, issues, line, facts)
+	reading, err := a.slotsReading(ctx, tx, blockers.SlotsInputs{Cap: a.cap, Issues: issues, Slots: own, Rows: rows, Facts: facts,
+		Line: line, Blocked: blocked, Held: held})
+	if err != nil {
+		return tickReading{}, err
+	}
+	return tickReading{held: held, blocked: blocked, silent: silent, slots: reading}, nil
+}
+
+// slotsReading is the project's slots reading over in, the tick's judgement of the line and its
+// two lists, with the claims of the project's slot holders and the claims among them nothing will
+// wake filled in: one narrow read of the claims (record.Store.HolderClaims, the statement the
+// state's source reads them through, over the slots this transaction holds, the ones reread read)
+// and, where one of them stands stopped, the daemon's own judgement of which nothing will wake
+// (workflow.Stranded), so a holder reads `stopped` for a stranded claim here as it does in
+// `legion state`. The released wakes that judgement reads a released claim by are the daemon's
+// (UseReleasedWakes); an admission given none judges no released claim stranded.
+func (a *Admission) slotsReading(ctx context.Context, tx pgx.Tx, in blockers.SlotsInputs) (record.SlotsReading, error) {
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return record.SlotsReading{}, err
+	}
+	if in.Claims, err = a.store.HolderClaims(ctx, tx, project); err != nil {
+		return record.SlotsReading{}, err
+	}
+	if in.Stranded, err = a.strandedClaims(ctx, tx, project, in.Claims); err != nil {
+		return record.SlotsReading{}, err
+	}
+	reading, _ := blockers.SlotsReading(in)
+	return reading, nil
+}
+
+// strandedClaims is, of claims, every one nothing will wake (workflow.Stranded), judged over the
+// fields of a claim that judgement reads, which the narrow read holds. The claims are the slot
+// holders' alone (record.Store.HolderClaims), the only ones the slots reading reads, and the
+// judgement reads each claim on its own, so a project none of whose holders has a claim standing
+// suspended, failed or retired has none, and costs no read.
+func (a *Admission) strandedClaims(ctx context.Context, tx pgx.Tx, project string, claims []record.HolderClaim) ([]supervise.Claim, error) {
+	stopped := make([]supervise.Claim, 0, len(claims))
+	for _, held := range claims {
+		if held.State == supervise.StateSuspended || held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+			stopped = append(stopped, supervise.Claim{Token: held.Token, Project: project, Tree: held.Tree, Issue: held.Issue,
+				Role: held.Role, State: held.State, SuspendedBy: held.SuspendedBy})
+		}
+	}
+	if len(stopped) == 0 {
+		return nil, nil
+	}
+	var wakes []workflow.ReleasedWake
+	if a.releasedWakes != nil {
+		var err error
+		if wakes, err = a.releasedWakes(ctx, tx, stopped); err != nil {
+			return nil, err
+		}
+	}
+	return workflow.Stranded(ctx, tx, a.store, a.project, a.engine.GatedSteps(), stopped, wakes, a.now())
 }
 
 // logUnclassified writes one line for each row the ladder could put no word to (C2), naming the
@@ -1024,7 +1188,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	if err != nil {
 		return nil, fmt.Errorf("list admission issues: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	facts, err := a.lineFacts(ctx, tx, issues)
 	if err != nil {
 		return nil, err
 	}
@@ -1937,11 +2101,13 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 
 // releaseSlots releases the slot of every issue of this project that no longer needs one
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
-// whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
-// order. Each release is logged once the fact commits. A tree leaving the workflow, a root
-// finishing, an issue moving into accepting, retro or merging, an issue reaching its done, and a
-// linger all read the same predicate, so one rule says when an issue stops needing a slot where
-// it stands.
+// whose phase half the grant reads too — record.KeepsSlot — asked of the pass's own rule through
+// its facts: record.LineFacts.NeedsSlot) and reports those issues in slot order. Each release is
+// logged once the fact commits. A tree leaving the workflow, a root finishing, an issue moving
+// into accepting, retro or merging, an issue reaching its done, and a linger all read the same
+// predicate, so one rule says when an issue stops needing a slot where it stands; under a rule
+// that keeps a slot in merging and gives it back at the merger's ready mark
+// (record.SlotRule.ReleaseAtReady), that mark is one more such moment (record.LineFacts.Ready).
 // The daemon makes two other releases. releaseSlotsForWaits, judged by blockers.waitsOf rather
 // than by record.NeedsSlot, frees the row of an issue that goes on working and waits on
 // another issue; the two are apart because they free rows for opposite reasons — this one
@@ -1967,7 +2133,10 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
 // the line from the moment before the park (record.Waiting).
-func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
+//
+// Each release is recorded on moves with the term of the predicate that failed (releaseReason),
+// for the pass's record line.
+func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, moves *passMoves) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return nil, fmt.Errorf("list this project's slotted issues: %w", err)
@@ -1983,7 +2152,8 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		// A slotted issue whose root the live records do not hold belongs to a tree that has
 		// finished: LiveRoots does not name it either, so the predicate releases it.
 		_, running := live[issue.Tree]
-		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		root := byKey[issue.Tree]
+		if facts.NeedsSlot(issue, root, running) {
 			continue
 		}
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
@@ -1992,13 +2162,14 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		inUse--
 		released = append(released, issue.Key)
 		a.logSlot(ctx, "released", issue.Key, inUse)
+		moves.take(issue.Key, releaseReason(issue, root, running), inUse)
 	}
 	for _, issue := range issues {
 		if issue.ReleasedForWaitAt == nil {
 			continue
 		}
 		_, running := live[issue.Tree]
-		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+		if facts.NeedsSlot(issue, byKey[issue.Tree], running) {
 			continue
 		}
 		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
@@ -2017,22 +2188,37 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // the two are written apart and why this one marks the issue.
 // The cap counts the issues Legion is working on, and an issue waiting for another issue to
 // finish is not one of them, so its row goes to the line and it stands there for a row of its
-// own again. Nothing else of it moves —
+// own again. Under the daemon's own rule nothing else of it moves —
 // no claim is suspended, no phase changes, no Dispatch status is written.
+//
+// Under a rule whose wait gives the slot back only after a grace (record.SlotRule.WaitGrace) the
+// judgement names no holder whose wait is younger than the grace (record.LineFacts.InWaitGrace),
+// so this frees none of them: such a holder keeps its row through the wait, the pass marks the
+// wait's start beside it (markSlotWaits), and the first pass at or after that start plus the
+// grace finds it waiting and frees its row here. Nothing asks for a pass at that moment: the
+// next fact of the project or the next controller tick makes it, so the delay is the rule's own.
+//
+// A wait that stops the phase under way (record.SlotRule.WaitStopsPhase, the daemon's own since
+// cybermonklabs/legion#4592) is no release here: a started parent an open Dispatch child holds
+// moves into awaiting_children before the releases (childrenWaits), where its phase keeps no
+// slot, so the ordinary release frees its row (releaseSlots) and it stands in no line, and a
+// blocked_by link stops nothing under any rule the repository keeps.
 //
 // The release is one statement an issue (record.Store.ReleaseSlotForWait): the delete of the row
 // and the mark that says why are written together, so no pass can read one without the other.
 // The rows it frees are reported to the caller with the rows the ordinary release frees, because
 // the controller's free-slot wake is about the capacity of the project and not about the reason
-// a row came free.
+// a row came free. Each release is recorded on moves with what the issue waits on (waitReason),
+// for the pass's record line.
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts,
+	slots []record.Slot, facts record.LineFacts, moves *passMoves,
 ) ([]string, error) {
 	own := ownSlots(issues, slots)
 	inUse := len(own)
 	var released []string
 	for _, slot := range own {
-		if _, waits := facts.Waits[slot.Issue]; !waits {
+		waits, waiting := facts.Waits[slot.Issue]
+		if !waiting {
 			continue
 		}
 		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
@@ -2041,6 +2227,62 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 		inUse--
 		released = append(released, slot.Issue)
 		a.logSlot(ctx, "released", slot.Issue, inUse)
+		moves.take(slot.Issue, waitReason(slot.Issue, waits, facts), inUse)
+	}
+	return released, nil
+}
+
+// releaseIdleSlots takes back, under a rule with an idle return (record.SlotRule.IdleReturn), the
+// row of every issue of this project that holds one, waits on its children or on a person, and
+// none of whose roles has had a turn for that long (record.LineFacts.IdleReturns), and reports
+// the issues it took one from. It reads the claims of the project's slot holders once
+// (record.Store.HolderClaims, the narrow read the slots reading takes their turns from), and
+// under every other rule, the daemon's own among them, it reads nothing and frees nothing.
+//
+// It is a release for a wait, written as releaseSlotsForWaits writes one
+// (record.Store.ReleaseSlotForWait): the row goes and the mark that says why is written with it,
+// so the issue keeps its place in the line by the moment of the release, ahead of every slot given
+// back after it, and stands there passed over while it waits on its children, or out of the line
+// until a person answers it (record.Waiting). An issue that pass already freed for a wait on
+// another issue (record.LineFacts.Waits) is not judged again, and nothing else of the issue
+// moves: no claim is stopped, no phase changes and no Dispatch status is written. Each release is
+// recorded on moves as an idle return (record.TakenIdleReturn), for the pass's record line.
+func (a *Admission) releaseIdleSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+	slots []record.Slot, facts record.LineFacts, moves *passMoves,
+) ([]string, error) {
+	if facts.Rule.OrMain().IdleReturn <= 0 {
+		return nil, nil
+	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := a.store.HolderClaims(ctx, tx, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of %s's slot holders: %w", a.project, err)
+	}
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	own := ownSlots(issues, slots)
+	inUse := len(own)
+	var released []string
+	for _, slot := range own {
+		if _, waits := facts.Waits[slot.Issue]; waits {
+			inUse--
+			continue
+		}
+		if !facts.IdleReturns(byKey[slot.Issue], slot, issues, claims) {
+			continue
+		}
+		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
+			return released, fmt.Errorf("release the idle slot of %s: %w", slot.Issue, err)
+		}
+		inUse--
+		released = append(released, slot.Issue)
+		a.logSlot(ctx, "released", slot.Issue, inUse)
+		moves.take(slot.Issue, record.TakenIdleReturn, inUse)
 	}
 	return released, nil
 }
@@ -2280,7 +2522,9 @@ func (a *Admission) logOnCommit(ctx context.Context, msg string, args ...any) {
 // architect start is queued behind a row creating its issue branch (record.IssueBranch), which
 // the start waits for.
 func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, error) {
-	return a.promoteHolds(ctx, tx, true)
+	// The pass of an event: every fact but the controller's tick and a signal's deadline, which
+	// run their own (applyFact).
+	return a.promoteHolds(ctx, tx, true, signals.PassEvent)
 }
 
 // promoteHolds is promote; respectHolds false is release's own call, once every held key's own
@@ -2305,7 +2549,16 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // boot's Reconcile — so each of them is also a look at every issue a blocker holds, at every slot
 // whose worker has lost its task, and at every tree a step that left gates.design released
 // (record.Waiting's LineFirstPhase).
-func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
+//
+// It is also every path that moves one of the cap's slots, so it writes the record of the pass
+// (passMoves): each slot the releases take back and the promotion gives out, and each candidate
+// the promotion passes over, in one line once the fact commits where any slot moved
+// (logPassMoves), whichever return ends the pass. A pass that ends with no error hands what it
+// read, judged and moved to the admission's observer once its fact commits (observePass), which
+// only a replay registers.
+func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool, kind signals.PassKind) (int, []string, error) {
+	var moves passMoves
+	defer a.logPassMoves(ctx, &moves)
 	// A paused project promotes nothing (decision 11 of dispatch://INFRA-3759): no slot, no owed
 	// entry, no stalled-tree notice and no children-first notice. The tick's wake of the
 	// controller is the caller's and still runs, and the resume applies one pass of its own. The
@@ -2318,12 +2571,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	// The pass is taken past the pause, so a pause's skipped pass leaves a catch-up release owed.
 	a.passCatchUpReleases(ctx)
-	// The P0 bound is read once for the pass, beside the pause, and the stall measure and the
-	// promotion below judge under it (capLets).
-	bound, err := a.p0BoundAt(ctx, tx)
+	// The P0 bound and the signals are read once for the pass, beside the pause (gateFor), and the
+	// stall measure and the promotion below judge under them (capHold).
+	gate, err := a.gateFor(ctx, tx, kind)
 	if err != nil {
 		return 0, nil, err
 	}
+	p0Bound := gate.p0Bound
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
 		return 0, nil, err
@@ -2362,7 +2616,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	released, err := a.releaseSlots(ctx, tx, issues, facts)
+	released, err := a.releaseSlots(ctx, tx, issues, facts, &moves)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -2397,11 +2651,20 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// so this pass's own line and its ownSlots read the state after the release: an issue that
 	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
 	// this very pass rather than the next one.
-	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
+	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts, &moves)
 	if err != nil {
 		return 0, append(released, waiting...), err
 	}
 	released = append(released, waiting...)
+	// Under a rule with an idle return, each holder that waits on its children or on a person and
+	// none of whose roles had a turn for that long gives its row back here too, beside the release
+	// for a wait and on the same judgement (releaseIdleSlots); under every other rule nothing is
+	// read for it.
+	idle, err := a.releaseIdleSlots(ctx, tx, issues, slots, facts, &moves)
+	if err != nil {
+		return 0, append(released, idle...), err
+	}
+	released, waiting = append(released, idle...), append(waiting, idle...)
 	unslotted, err := a.releaseUnslotted(ctx, tx, issues, record.LiveRoots(issues, facts), facts.ChildWaits, respectHolds)
 	if err != nil {
 		return 0, released, err
@@ -2434,6 +2697,32 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
+	// Under a rule whose start may take a cover, each cover that ended gives its waiter's slot
+	// back and each waiter a started issue can hold the slot of gives it to that issue, after the
+	// releases and the members' return and before the line is promoted, and the records are read
+	// again where a slot or a cover moved (settleCovers). A waiter it covered freed a slot the cap
+	// no longer counts.
+	covered, freed, err := a.settleCovers(ctx, tx, issues, slots, rows, facts, &moves)
+	if err != nil {
+		return 0, released, err
+	}
+	released = append(released, freed...)
+	if covered {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, released, err
+		}
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+			return 0, released, err
+		}
+	}
+	// Each holder that waits on another issue while it keeps its slot has the moment its wait
+	// began written beside its slot, which the slots reading dates the holder state `issue` by,
+	// and the mark goes once its waits end (markSlotWaits). It is judged here, after the releases
+	// and the members' return, from the rows and facts of the judgement the line was built from,
+	// so a holder the release just freed is marked nothing.
+	if err := a.markSlotWaits(ctx, tx, issues, slots, rows, facts); err != nil {
+		return 0, released, err
+	}
 	if err := a.tellChildrenFirst(ctx, tx, issues, facts); err != nil {
 		return 0, released, err
 	}
@@ -2455,19 +2744,38 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// holds now. It runs before the cap check below, because a deployment whose cap admits
 	// nothing still runs the trees it opened before and still owes its controller the news that
 	// one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, bound); err != nil {
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped, rows, floor, gate); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
+		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil, kind)
 		return 0, released, nil
 	}
 	admitted := 0
+	// promoted is each candidate the current round of the loop promoted, which the line the
+	// observer is handed leaves out (observePass).
+	var promoted []string
 	for {
-		// The holders as the cap and the P0 bound count them, which grow with each grant below.
-		held := record.HoldersOf(issues, slots)
+		own := ownSlots(issues, slots)
+		// The holders as the cap and the P0 bound count them (record.HoldersOf), which grow with
+		// each grant below: the holders below P0 and the P0 holders, which the pass's rule reads
+		// as its cap counts them (record.SlotRule.CapCounted): the cap counts the holders below P0
+		// and the bound the P0 holders under a rule that starts a P0 outside the cap, and the cap
+		// counts them all under one that starts none there.
+		rule := facts.Rule.OrMain()
+		held := record.HoldersOf(issues, own)
+		// The covers of this round under a rule whose start may take a cover: the slots its
+		// counted waiters offer to what they wait on (covers), nothing under every other rule,
+		// the daemon's own among them.
+		lending := coversOf(issues, own, rows, facts)
 		stopped, opened, resumed := false, false, false
-		for _, candidate := range line {
+		moves.round()
+		promoted = promoted[:0]
+		for at, candidate := range line {
 			issue := candidate.Issue
+			// The candidate's place in this round's line, counted from 1, which the pass's record
+			// names for each candidate it passes over.
+			place := at + 1
 			// A hold stops the whole pass, the candidates behind this one included. Every
 			// candidate competes for the same slots now that the cap counts the project's
 			// issues rather than its trees, so passing one over would invert Dispatch's rank
@@ -2483,6 +2791,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// with respectHolds false — release's own call — it is the boot catch-up's hold
 			// alone, so a release bypasses the Dispatch consumer's hold and never the catch-up's.
 			if heldKeys(issue.Key) {
+				moves.pass(candidate, place, record.PassedHeldKey)
 				stopped = true
 				break
 			}
@@ -2494,25 +2803,28 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// loop would start anyway.
 			if waits := blockers.LineWaitsOn(rows, candidate); len(waits) > 0 {
 				a.log.Info("admission waits for what this issue waits on", "issue", issue.Key, "blockers", waits)
+				moves.pass(candidate, place, record.PassedWaits)
 				continue
 			}
 			// A candidate that already holds a row, or that stands in a phase keeping none,
 			// takes no slot and so is never held by the cap: a root another tree handed to
 			// Legion carrying the phase it ran there opens its tree at once on the row it
 			// brought, and an answered root resumes its architect on the row it kept through
-			// the wait.
-			takes := slotFor(candidate)
-			if !capLets(candidate, held, a.cap, bound) {
+			// the wait. The phases are the pass's rule's (slotFor, over its facts), and so is
+			// what the cap lets through (capLets, with the slots its holders lend).
+			takes := slotFor(candidate, facts)
+			if reason := a.capHold(candidate, held, facts, lending, gate); reason != "" {
 				// A full cap gives no further slot below P0, and the scan goes on. This is not the
 				// hold above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
 				// the cap is an answer for this candidate alone, because it says only that there
-				// is no slot for it. The count only grows inside this loop, so no candidate below
-				// P0 behind this one takes a slot either and the rank order of the issues that
-				// need one is kept whole, while the candidates the cap cannot bind — the ones
-				// slotFor is false for, and a P0 issue, which starts outside the cap (capLets) —
-				// are promoted as they are reached, which is what makes a hand-over, an answered
-				// root and a P0 issue start under a cap that is permanently full.
+				// is no slot for it. The count only grows inside this loop, so no candidate
+				// behind this one that the cap counts takes a slot either and the rank order of
+				// the issues that need one is kept whole, while the candidates the cap cannot
+				// bind — the ones slotFor is false for, and under a rule that starts a P0 outside
+				// the cap a P0 issue (record.SlotRule.StartsOutsideCap) — are promoted as they
+				// are reached, which is what makes a hand-over, an answered root and a P0 issue
+				// start under a cap that is permanently full.
 				//
 				// An answered root this branch passes over is told nothing. It reads where it
 				// stands from its own record — `waitingLine`, which is the live place
@@ -2520,13 +2832,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// finds a slot free, so a message would carry a snapshot of a place that moves
 				// with every pass and nothing besides.
 				//
-				// A P0 issue is held here by the P0 bound alone, never by the cap: the bound is
-				// set and as many P0 issues as it allows hold a slot. It waits first in the line,
-				// where its priority places it (record.Waiting), and the pass says why.
-				if takes && issue.StartsNow() {
-					a.logOnCommit(ctx, "admission holds a P0 issue at the P0 bound", "issue", issue.Key,
-						"p0_holders", held.P0, "p0_bound", boundWords(bound), "other_holders", held.Capped, "cap", a.cap)
+				// An issue that starts outside the cap is held here by the P0 bound alone, never
+				// by the cap: the bound is set and as many such issues as it allows hold a slot.
+				// It waits first in the line, where its priority places it (record.Waiting), and
+				// the pass says why.
+				if takes && rule.StartsOutsideCap(issue) {
+					a.logOnCommit(ctx, P0BoundRefusalLine, "issue", issue.Key, "p0_holders", held.P0, "p0_bound", boundWords(p0Bound),
+						"other_holders", held.Capped, "cap", a.cap)
 				}
+				moves.pass(candidate, place, reason)
 				continue
 			}
 			if candidate.Kind == record.LineAnswered {
@@ -2541,6 +2855,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				if reason != "" {
 					a.log.Warn("admission skips an answered root it may not resume", "issue", issue.Key, "reason", reason)
+					moves.pass(candidate, place, record.PassedNotResumable)
 					continue
 				}
 			}
@@ -2555,12 +2870,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err != nil {
 					if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 						a.log.Info("admission waits for tree cleanup", "issue", issue.Key, "tree", issue.Tree)
+						moves.pass(candidate, place, record.PassedTreeCleanup)
 						continue
 					}
 					// The operator opened a tree under this root's key: this root waits until
 					// that tree's cleanup confirms, and the candidates behind it go on.
 					if errors.Is(err, treelifecycle.ErrAuthorityHeld) {
 						a.log.Warn("admission waits for its tree's other authority", "issue", issue.Key, "tree", issue.Tree, "error", err)
+						moves.pass(candidate, place, record.PassedTreeCleanup)
 						continue
 					}
 					return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
@@ -2580,16 +2897,34 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			now := a.now()
 			if takes {
+				// A candidate a counted waiter waits on starts on that waiter's slot where one
+				// is offered, whichever half of the cap let it through (covers.take): the waiter
+				// gives its slot up first, so the candidate takes none of the cap's own, and the
+				// covers that stand are kept with the new one. Under every other rule nothing is
+				// offered.
+				if waiter, covering := lending.take(issue.Key); covering {
+					var err error
+					if slots, _, err = a.cover(ctx, tx, waiter, issue.Key, slots, len(own), facts, &moves); err != nil {
+						return admitted, released, err
+					}
+					own = slices.DeleteFunc(own, func(slot record.Slot) bool { return slot.Issue == waiter })
+					// The waiter holds no slot now, so the holders are counted again without it
+					// (record.HoldersOf).
+					held = record.HoldersOf(issues, own)
+					if err := a.keepCovers(ctx, tx, lending.held); err != nil {
+						return admitted, released, err
+					}
+				}
 				// An entry carries whether its issue held a row when the line was built
 				// (record.LineEntry.Holds), and the line this loop reads holds each issue once,
 				// so no grant here changes the answer slotFor gives a candidate behind it; what
-				// the grant does change is held, the count of holders, which grows with it: the
-				// cap reads held.Capped and the P0 bound held.P0 (capLets). finishFencedStarts
-				// keeps the line to one entry an issue, not record.Waiting: Waiting would list an
-				// issue at admitted that holds no row and still owes a start both as a return and
-				// as a first phase, but every owed start names a worker phase, and
-				// finishFencedStarts ends each one whose phase is not the issue's own before the
-				// line is built, so none is left owed at admitted.
+				// the grant does change is own and held, the count of holders, which grow with it:
+				// the cap reads the holders its rule counts and the P0 bound held.P0 (capLets,
+				// record.SlotRule.CapCounted). finishFencedStarts keeps the line to one entry an
+				// issue, not record.Waiting: Waiting would list an issue at admitted that holds no
+				// row and still owes a start both as a return and as a first phase, but every owed
+				// start names a worker phase, and finishFencedStarts ends each one whose phase is
+				// not the issue's own before the line is built, so none is left owed at admitted.
 				slot := record.Slot{Issue: issue.Key, Index: nextSlotIndex(slots), AdmittedAt: now}
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
@@ -2603,15 +2938,16 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
 					}
 				}
-				slots = append(slots, slot)
+				slots, own = append(slots, slot), append(own, slot)
 				held.Add(issue)
-				a.logSlot(ctx, "taken", issue.Key, held.Total())
-				// A P0 start is the one start the cap does not count, so it says so with what the
-				// cap and the bound count (C4 of dispatch://INFRA-5636): the P0 holders, this one
-				// among them, the other holders and the cap.
-				if issue.StartsNow() {
-					a.logOnCommit(ctx, "admission starts a P0 issue outside the cap", "issue", issue.Key,
-						"p0_holders", held.P0, "other_holders", held.Capped, "cap", a.cap, "p0_bound", boundWords(bound))
+				a.logSlot(ctx, "taken", issue.Key, len(own))
+				moves.give(issue.Key, candidate.Kind, len(own))
+				// A start outside the cap is the one start the cap does not count, so it says so
+				// with what the cap and the bound count: the P0 holders, this one among them, the
+				// other holders, the cap and the bound.
+				if rule.StartsOutsideCap(issue) {
+					a.logOnCommit(ctx, P0StartLine, "issue", issue.Key, "p0_holders", held.P0, "other_holders", held.Capped,
+						"cap", a.cap, "p0_bound", boundWords(p0Bound))
 				}
 			}
 			switch candidate.Kind {
@@ -2752,6 +3088,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 			}
 			admitted++
+			promoted = append(promoted, issue.Key)
 		}
 		// A resume, or a tree opened above whose design gate already stands open, releases
 		// members of its own tree that stood at admitted on the snapshot this round read and
@@ -2768,7 +3105,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return admitted, released, err
 		}
 	}
@@ -2781,6 +3118,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// every pass rather than waiting for a fact about it. The other half that once needed a pass
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
 	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
+	a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, promoted, kind)
 	return admitted, released, nil
 }
 
@@ -2796,14 +3134,35 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 	if err != nil {
 		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	facts, err := a.lineFacts(ctx, tx, issues)
 	return issues, slots, facts, err
+}
+
+// lineFacts is the facts of this admission's pass for issues (record.ReadLineFacts), read under
+// the pass's own slot rule, its engine's (record.ReadLineFactsUnder, workflow.Engine.SlotRule):
+// every read of the facts the pass judges comes through here, so the release, the line, the
+// waits, the held words, the grant and the repair all answer under the one rule the engine runs,
+// and none of them reads the daemon's own in its place. Where the admission was given tables of a
+// rule the daemon does not run (UseRuleTables), what that rule records there is read in beside
+// them: the merger's ready marks, the covers that stand, the first slots and the arrivals
+// (RuleTables.ReadRuleFacts).
+func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
+	rule := a.engine.SlotRule()
+	facts, err := record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), rule)
+	if err != nil || a.tables == nil {
+		return facts, err
+	}
+	if err := a.tables.ReadRuleFacts(ctx, tx, issues, &facts); err != nil {
+		return record.LineFacts{}, fmt.Errorf("read what the slot rule %s keeps for %s: %w", rule.Name, a.project, err)
+	}
+	return facts, nil
 }
 
 // slotFor says whether promoting this candidate must take one of the cap's slots for it: it
 // holds none already (record.LineEntry.Holds, which the line sets from the slots it was built
-// from) and its phase keeps one (record.KeepsSlot). The grant and the release read that one
-// predicate, so no pass hands out a row the next pass would take back.
+// from) and its phase keeps one (record.KeepsSlot, asked of the pass's own rule through its
+// facts: record.LineFacts.KeepsSlot). The grant and the release read that one predicate, so no
+// pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
 // it in, and the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
@@ -2822,42 +3181,85 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
 // (workflow.StartOrOwe), and the root takes a row again only where its work moves to a phase
 // that keeps one: its architect sends the work back, or a step after its acceptance whose phase
-// keeps a slot starts, and it waits for that row in the line.
+// keeps a slot starts, and it waits for that row in the line. Under a rule that keeps a slot in
+// one of those phases, such a root takes one at its promotion as any candidate in a phase that
+// keeps one does.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
 // holding it back would bound nothing and would leave its tree closed for no reason.
-func slotFor(entry record.LineEntry) bool {
-	return !entry.Holds && record.KeepsSlot(entry.Issue)
+func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
+	return !entry.Holds && facts.KeepsSlot(entry.Issue)
 }
 
 // capLets says whether the cap and the P0 bound let the promotion start entry, given held, the
-// project's holders of a slot as the two count them (record.HoldersOf), cap and bound, the P0 bound
-// in force (p0BoundAt, nil for none): an entry that takes no slot (slotFor) starts whatever the cap
-// says; a P0 entry that takes one (record.Issue.StartsNow: Dispatch's resolved P0, or own P0 with
-// an older Dispatch release) starts outside the cap, while fewer P0 issues than the bound hold a
-// slot, or always where no bound is set (R10 of dispatch://INFRA-3199); and any other entry that
-// takes one starts only while the holders below P0 leave a row of the cap free. A cap that admits
-// nothing lets nothing start, since the promotion does not run under it. It answers the cap's half
-// alone: what an entry waits on is the other half (blockers.LineWaitsOn), which each reader asks
-// beside this.
+// project's holders of a slot as the two count them (record.HoldersOf), facts, the pass's own,
+// lending, the covers of the pass (covers), and gate, what the pass read once (passGate): the P0
+// bound in force (p0BoundAt, nil for none) and the signals it admits below P0 by, if any
+// (capHold). An entry that takes no slot (slotFor) starts whatever the cap says, and so does one
+// that a counted waiter that waits on it offers its own slot to, under a rule whose start may
+// take a cover (record.TakeCover), which the waiter gives up for it (covers.take), so the start
+// leaves the count where it stood; a covered waiter holds no row, so held is the count the cap
+// bounds. Under a rule that starts a P0 issue outside the cap (record.SlotRule.StartsOutsideCap:
+// admission reads it as P0, record.Issue.StartsNow, Dispatch's resolved P0 or own P0 with an older
+// Dispatch release, and never by its tree root's), such an entry that takes a slot starts while
+// fewer P0 issues than the bound hold a slot, or always where no bound is set, whatever the
+// number of rows in use, so the slots in use may stand above the cap after it. Any other entry
+// that takes a slot starts only while the holders the cap counts (record.SlotRule.CapCounted: the
+// holders below P0, and every holder under a rule that starts none outside the cap) leave a row
+// of the cap free. A cap that admits nothing lets nothing start, a P0 among it, since the
+// promotion does not run under it. It answers the cap's half alone: what an entry waits on is the
+// other half (blockers.LineWaitsOn), which each reader asks beside this, so every hold on a start
+// but the cap holds a P0 as it holds any other entry.
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
 // said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
-func capLets(entry record.LineEntry, held record.SlotHolders, cap int, bound *int) bool {
-	if cap <= 0 {
-		return false
+func (a *Admission) capLets(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, gate passGate) bool {
+	return a.capHold(entry, held, facts, lending, gate) == ""
+}
+
+// capHold is why the cap's half holds entry, the word the pass's record gives for it, and "" where
+// the cap lets it through (capLets). A cap that admits nothing holds every entry. An entry that
+// takes no slot, or starts on a slot a waiter offers, is never held. An entry that starts outside
+// the cap is held by the P0 bound alone, at every kind of pass. Any other entry that takes a slot
+// is decided by the rule's own half of admission by signals (record.SlotRule.SignalsLet) where the
+// pass was given a snapshot (UseSignals), which holds it at a tick's pass (record.PassedTick), by a
+// signal over its limit (record.PassedSignal) or by the holders the cap counts at the ceiling or the
+// allowance (record.PassedCap); without one it starts while the holders the cap counts leave a
+// row free, as before. It gives no slot back: a holder is never judged here.
+func (a *Admission) capHold(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, gate passGate) record.SlotPassedReason {
+	if a.cap <= 0 {
+		return record.PassedCap
 	}
-	switch {
-	case !slotFor(entry):
-		return true
-	case entry.Issue.StartsNow():
-		return bound == nil || held.P0 < *bound
-	default:
-		return held.Capped < cap
+	if !slotFor(entry, facts) || lending.offers(entry.Issue.Key) {
+		return ""
 	}
+	rule := facts.Rule.OrMain()
+	if rule.StartsOutsideCap(entry.Issue) {
+		if gate.p0Bound == nil || held.P0 < *gate.p0Bound {
+			return ""
+		}
+		return record.PassedCap
+	}
+	capped := rule.CapCounted(held)
+	if gate.bySignals {
+		switch rule.SignalsLet(gate.kind, gate.snapshot, capped, a.cap) {
+		case signals.Starts:
+			return ""
+		case signals.HeldByTick:
+			return record.PassedTick
+		case signals.HeldBySignal:
+			return record.PassedSignal
+		default:
+			return record.PassedCap
+		}
+	}
+	if capped < a.cap {
+		return ""
+	}
+	return record.PassedCap
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
@@ -3177,7 +3579,7 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 		if err != nil {
 			return nil, fmt.Errorf("list admission issues: %w", err)
 		}
-		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+		facts, err := a.lineFacts(ctx, tx, issues)
 		if err != nil {
 			return nil, err
 		}
@@ -3215,7 +3617,7 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 				"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
 		})
 	}
-	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp)
+	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp, signals.PassEvent)
 	if err != nil {
 		return nil, err
 	}
@@ -3267,6 +3669,32 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 		}
 	}
 	return own
+}
+
+// markSlotWaits writes, for each holder of this project's slots, whether it waits on another
+// issue while it keeps its slot (blockers.KeptWaits over the pass's own rows and facts): a holder
+// whose waits went from none to some is marked at the pass's clock, and one whose waits ended is
+// cleared (record.Store.MarkSlotWait). A holder whose mark already says what it waits on is
+// written nothing, so a wait keeps the moment it began across every pass and a pass that changes
+// nothing writes nothing. It reads the mark off the slots the pass holds (record.Slot.WaitsSince),
+// so it makes no read of its own.
+func (a *Admission) markSlotWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+	rows map[string]blockers.Row, facts record.LineFacts,
+) error {
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	for _, slot := range ownSlots(issues, slots) {
+		waits := len(blockers.KeptWaits(rows, byKey[slot.Issue], facts)) > 0
+		if waits == (slot.WaitsSince != nil) {
+			continue
+		}
+		if err := a.store.MarkSlotWait(ctx, tx, slot.Issue, waits, a.now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // returnOwedMembers is the first run of a re-admitted tree: it brings back the members the
@@ -3376,7 +3804,7 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 // promotion granted, or carries the mark of the slot it gave back for a wait
 // (record.Issue.ReleasedForWaitAt), or stands in a phase of its own tree past admitted, as it does
 // once its tree has moved on to accepting, retro or merging, which keep no slot and clear the wait
-// mark (record.PhaseKeepsSlot, releaseSlots).
+// mark under the rule every earlier release ran (record.MainRule's PhaseKeepsSlot, releaseSlots).
 //
 // A marked root of this release is none of these. Its promotion clears the mark in the
 // transaction that grants the slot; its re-admission leaves its tree no slot of the generation
@@ -3733,12 +4161,14 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // among them.
 //
 // Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// in accepting, retro or merging (record.InSlotlessPhase, the complement of the phases that keep a row), by key
+// in a phase that keeps no row (record.LineFacts.InSlotlessPhase, the complement of the working
+// phases the pass's own rule keeps a row in, which under the daemon's own rule are accepting,
+// retro and merging), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
-// by nothing. The three phases are read from the record package rather than listed here, so a
-// phase that moves into or out of record.PhaseKeepsSlot moves this repair with it. Every half is
+// by nothing. The phases are read from the rule the pass was given rather than listed here, so a
+// phase that moves into or out of a rule's KeepsSlotIn moves this repair with it. Every half is
 // read from the records the pass already holds, so the widening costs no further read.
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
@@ -3912,7 +4342,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	for _, issue := range issues {
-		if !record.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
+		if !facts.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
 			continue
 		}
 		root, rooted := byKey[issue.Tree]

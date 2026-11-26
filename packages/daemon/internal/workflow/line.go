@@ -18,8 +18,8 @@ import (
 // (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
 // phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
-// Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
-// steps of both are read the same way (placeOnWalk).
+// Table, row for row, under the daemon's own slot rule. Every behaviour that differs from today
+// reads Stored and nothing else; the steps of both are read the same way (placeOnWalk).
 //
 // Line and Steps are read only: an unstored walk's Line is phase.Order itself, and its Steps are
 // todaysSteps itself.
@@ -47,6 +47,11 @@ type Walk struct {
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
 	Version record.PlanVersion
+	// Conflict is the trigger by which the slot rule of the engine that read this walk moves a
+	// conflicting head back to implementing (conflictTrigger, Engine.conflict), "" under the
+	// daemon's own rule and on a walk no engine read: the rows of that move stand on the table of
+	// this walk's line beside the line's own (table, tableUnder).
+	Conflict TriggerKind
 }
 
 // builtinDeployment is the roles a step of this release runs as (plan.BuiltinRoles): the one
@@ -65,13 +70,17 @@ var todaysSteps = planSteps("", 0, defaultTask, config.Project{}.RunsByDefault()
 func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }
 
 // walk is the walk of issue's run: its plan rows, or today's line with Stored false
-// (todaysWalk). A run whose rows hold no task or more than one (record.StoredPlan.Task, the one
-// rule for the task a run is on), or a step whose role runs as no phase, is an error: no plan
-// this release takes writes one (plan.Validate, plan.Supported).
+// (todaysWalk). Each answer carries the trigger this engine's slot rule moves a conflicting head
+// back by (Walk.Conflict, Engine.conflict), so the table of the walk's line carries that move's
+// rows wherever the engine reads one. A run whose rows hold no task or more than one
+// (record.StoredPlan.Task, the one rule for the task a run is on), or a step whose role runs as no
+// phase, is an error: no plan this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
-		return todaysWalk(), err
+		w := todaysWalk()
+		w.Conflict = e.conflict
+		return w, err
 	}
 	task, err := stored.Task()
 	if err != nil {
@@ -83,7 +92,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
-		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
+		StoppedReason: task.StoppedReason, Version: stored.Version, Conflict: e.conflict}, nil
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -356,11 +365,20 @@ func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Ph
 	return w.steps()[n-1], ""
 }
 
-// table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)
-// built once, and the table of the task's line otherwise.
+// table is the table of w's line under the trigger its engine's slot rule moves a conflicting head
+// back by (Conflict, tableUnder): for a run with no plan rows, one of the three tables of today's
+// line built once for the process — Table, which is TableOf(phase.Order), under the daemon's own
+// rule, and Table with that move's rows under the two rules whose conflicting head moves back; and
+// for a run with plan rows the table of the task's line, with those rows on it too.
 func (w Walk) table() []Row {
-	if !w.Stored {
-		return Table
+	if w.Stored {
+		return tableUnder(w.Conflict, w.Line)
 	}
-	return TableOf(w.Line)
+	switch w.Conflict {
+	case TriggerConflict:
+		return conflictTable
+	case TriggerChecksRed:
+		return checksRedTable
+	}
+	return Table
 }

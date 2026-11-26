@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-21T05:01:32.767710711Z",
+    "jsonPayload": {
+      "from": "testing",
+      "issue": "ACME-50",
+      "level": "INFO",
+      "msg": "workflow: phase changed",
+      "status": "in_progress",
+      "time": "2026-11-21T05:01:32.767426961Z",
+      "to": "implementing",
+      "tree": "ACME-22",
+      "trigger": "backward"
+    }
+  }
+]

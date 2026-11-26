@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -39,13 +40,13 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		client := &tickDispatch{summaries: []dispatch.IssueSummary{filed}}
 		w := tickRuntime(t, pool, client)
 		seedStartedParent(t, pool, startedParent)
-		seedBlockedRoots(t, pool, blockerReadFanout-1)
+		seedBlockedRoots(t, pool, blockers.ReadFanout-1)
 
 		w.applyControllerTick(ctx, time.Now())
 
 		if asked, listings := client.asked(), client.listings(); len(asked) != 0 || listings != 1 {
 			t.Fatalf("the first turn read %v singly and listed the project %d times, want no single read and one listing for the %d blockers and the children",
-				asked, listings, blockerReadFanout-1)
+				asked, listings, blockers.ReadFanout-1)
 		}
 		if row := tickMirrored(t, pool)[filedChild]; row.Status != "triage" || row.Parent != startedParent {
 			t.Fatalf("the mirror holds %s as %+v after one turn, want the listing's reading: triage under %s", filedChild, row, startedParent)
@@ -70,7 +71,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 		if asked, listings := client.asked(), client.listings(); len(asked) != 0 || listings != 2 {
 			t.Fatalf("the turns read %v singly and listed the project %d times, want the second turn to take the %d keys of the bound from one listing as well",
-				asked, listings, blockerReadFanout)
+				asked, listings, blockers.ReadFanout)
 		}
 		again := recordOf(t, pool, record.NewStore(), startedParent)
 		if again.Phase != phase.AwaitingChildren || !sameChildrenWait(again.ChildrenWait, moved.ChildrenWait) {

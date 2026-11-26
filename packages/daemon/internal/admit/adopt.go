@@ -168,7 +168,7 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 		if err != nil {
 			return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
 		}
-		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+		facts, err := a.lineFacts(ctx, tx, issues)
 		if err != nil {
 			return nil, nil, record.LineFacts{}, err
 		}

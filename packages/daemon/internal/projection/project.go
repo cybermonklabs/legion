@@ -68,6 +68,20 @@ type Inputs struct {
 	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
 	// measured from.
 	Now time.Time
+	// SlotRule is the slot rule the state is read under (record.SlotRule): the daemon's own, and
+	// a replay's under the rule it replays, so the line, the held words and the answer of `why`
+	// name each issue by the rule that placed it. The zero value is the daemon's own rule
+	// (record.SlotRule.OrMain).
+	SlotRule record.SlotRule
+	// Cap is the project's admission cap, which the slots reading names beside the slots in use
+	// (record.SlotsReadingOf, api.Admission.Slots).
+	Cap int
+	// HolderClaims are the project's claims as a slot holder's state reads them, read by the
+	// caller in this transaction through the statement the admission pass's tick reads them
+	// through (record.Store.HolderClaims), which is the one that holds when a suspended or a
+	// retired claim stopped. Nil is Claims as record.HolderClaimsOf reads them, which date a
+	// stranded claim by its failure alone: what a caller holding only whole claims gives.
+	HolderClaims []record.HolderClaim
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -436,7 +450,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			own = append(own, issue)
 		}
 	}
-	facts, err := record.ReadLineFacts(ctx, in.Tx, in.Store, in.Project, own, in.Steps)
+	// The facts are read under the rule the state is read under (Inputs.SlotRule, the daemon's own
+	// unless a replay names another), so the line, the held words and the answer of `why` below
+	// place each issue by the rule that placed it in the pass (record.ReadLineFactsUnder).
+	facts, err := record.ReadLineFactsUnder(ctx, in.Tx, in.Store, in.Project, own, in.Steps, in.SlotRule)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -492,6 +509,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, entry := range line {
 		parts[bandPart{entry.Priority, entry.Part}]++
 	}
+	banded := in.SlotRule.OrMain().PriorityFirst
 	for i, entry := range line {
 		key := entry.Issue.Key
 		projected.Admission.Waiting[i] = key
@@ -523,15 +541,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			since := entry.Since
 			view.WaitingLine.Since = &since
 		}
-		// The sentence a person reads (waitingLineReason), rendered from the entry itself, the
+		// The sentence a person reads (waitingLineReasonUnder), rendered from the entry itself, the
 		// length of the part of its band it stands in and the length of that band's other part,
 		// which is what a member of the starting part waits behind. The render reads those and
-		// nothing else, so the words have one source and a test of them needs no database.
+		// nothing else but whether the rule the state is read under bands the line by priority,
+		// so the words have one source and a test of them needs no database. Under a rule that
+		// does not, every entry carries NoPriority (record.LineEntry.Priority), so the counts above
+		// are of the whole part and the sentence names no priority.
 		other := bandPart{entry.Priority, record.PartReturned}
 		if entry.Part == record.PartReturned {
 			other.part = record.PartStarting
 		}
-		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
+		view.WaitingLine.Reason = waitingLineReasonUnder(banded, entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)
@@ -542,6 +563,49 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// no drop site saw, over the same facts and the same line these lists are built from, so one
 	// issue reads one word here and in the controller's tick.
 	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
+	// What the slots in use are spent on: each holder counted by what it is doing, the two
+	// readings of started work that waits without a slot, and the holders that rank below the
+	// first issue that waits for one, with the sentence `legion state` prints for them. It is read
+	// by the one assembly the admission pass's tick reads it by (blockers.SlotsReading), over the
+	// judgement, the line and the two lists above, so the body, its line and the tick notice give
+	// one reading of one project. Each holder's `slot` carries the state it was counted under and
+	// when it entered it.
+	holderClaims := in.HolderClaims
+	if holderClaims == nil {
+		holderClaims = record.HolderClaimsOf(in.Claims)
+	}
+	reading, holders := blockers.SlotsReading(blockers.SlotsInputs{
+		Cap: in.Cap, Issues: own, Slots: slots, Rows: rows, Facts: facts, Line: line,
+		Blocked: projected.Admission.Blocked, Held: projected.Admission.Held, Claims: holderClaims, Stranded: in.Stranded,
+	})
+	projected.Admission.Slots = &reading
+	for key, holder := range holders {
+		view, shown := projected.Issues[key]
+		if !shown || view.Slot == nil {
+			continue
+		}
+		slot := *view.Slot
+		slot.State, slot.Since = string(holder.State), holder.Since
+		view.Slot = &slot
+		projected.Issues[key] = view
+	}
+	// Each issue of the project carries its own Dispatch rank and its tree root's, the two keys
+	// the line orders its starting part by and the reading places a holder against the first
+	// issue that waits for a slot by, so the count of holders below that issue can be read off
+	// the body. An issue of another project, which the state lists for a claim's sake, is no
+	// issue the admission reading places and carries neither.
+	ownByKey := make(map[string]record.Issue, len(own))
+	for _, issue := range own {
+		ownByKey[issue.Key] = issue
+	}
+	for _, issue := range own {
+		view := projected.Issues[issue.Key]
+		view.Rank = issue.Rank
+		if root, recorded := ownByKey[issue.Tree]; recorded {
+			view.RootRank = root.Rank
+		}
+		projected.Issues[issue.Key] = view
+	}
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the

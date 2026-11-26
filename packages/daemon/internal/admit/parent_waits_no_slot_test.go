@@ -253,7 +253,7 @@ func pnMoveParent(t *testing.T, pool *pgxpool.Pool, from phase.Phase, seed func(
 ) (*Admission, record.ChildrenWait) {
 	t.Helper()
 	admission := pnAdmission(t, pool, 2)
-	spSeedParent(t, pool, spParent, from, record.PhaseKeepsSlot(from), nil)
+	spSeedParent(t, pool, spParent, from, record.MainRule.PhaseKeepsSlot(from), nil)
 	pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 	seedMirrorChild(t, pool, spChild, "todo", spParent)
 	if seed != nil {
@@ -465,7 +465,7 @@ type pnTestingPath struct {
 // the ready, the silence and the boot as facts.
 func pnTestingPaths() []pnTestingPath {
 	slotted := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
-		spSeedParent(t, pool, spParent, at, record.PhaseKeepsSlot(at), nil)
+		spSeedParent(t, pool, spParent, at, record.MainRule.PhaseKeepsSlot(at), nil)
 		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 	}
 	// testerOnItsEntry is the tester's claim in state, suspended by by, level with the entry 3 its

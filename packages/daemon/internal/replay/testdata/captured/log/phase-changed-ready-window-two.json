@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-16T22:31:54.321000497Z",
+    "jsonPayload": {
+      "from": "merging",
+      "issue": "ACME-34",
+      "level": "INFO",
+      "msg": "workflow: phase changed",
+      "status": "retro",
+      "time": "2026-11-16T22:31:54.320717187Z",
+      "to": "awaiting_merge",
+      "tree": "ACME-31",
+      "trigger": "ready"
+    }
+  }
+]

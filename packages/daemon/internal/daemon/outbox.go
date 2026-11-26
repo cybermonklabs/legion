@@ -1728,8 +1728,7 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 			return false, fmt.Errorf("drop the cancelled hand-over of %s: %w", row.Issue, err)
 		}
 	}
-	if issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
-		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation) {
+	if record.HandOverHolds(issue, root, handover, payload) {
 		return true, nil
 	}
 	r.log.Info("outbox hand-over no longer holds; finished without writing", "row", row.ID, "issue", row.Issue,

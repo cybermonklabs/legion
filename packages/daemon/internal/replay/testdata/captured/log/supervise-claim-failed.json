@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "2026-11-18T10:37:34.716843703Z",
+    "jsonPayload": {
+      "cause": "launch_refused",
+      "claim": "legion-acme-acme-41-implementer",
+      "deaths": 0,
+      "launchFailures": 20,
+      "level": "ERROR",
+      "msg": "supervise: claim failed",
+      "promptFailures": 0,
+      "promptRetires": 0,
+      "time": "2026-11-18T10:37:34.716550893Z",
+      "why": "launch failures ran out: launch legion-acme-acme-41-implementer: start through its authenticated launcher: the shared public leak check could not be installed: the served check could not be run: waitid: no child processes"
+    }
+  }
+]

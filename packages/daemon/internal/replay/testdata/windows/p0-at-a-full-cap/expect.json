@@ -1,0 +1,186 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:00:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 2,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 1.5833333333333333,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 1.5833333333333333,
+        "max": 2,
+        "hours": 1.5833333333333333
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z",
+        "ACME-2": "2001-03-05T09:20:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 9, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 0,
+            "p90Minutes": 0,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          }
+        }
+      },
+      "from": "2001-03-05T09:00:00Z"
+    },
+    "before-p0": {
+      "source": "replay",
+      "rule": "before-p0",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:00:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 1,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0.6666666666666666,
+      "priorityTakenBanded": 0.6666666666666666,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 0.9166666666666666,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 0.9166666666666666,
+        "max": 1,
+        "hours": 0.9166666666666666
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 1
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 9, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 40,
+            "cut": 1
+          }
+        }
+      },
+      "from": "2001-03-05T09:00:00Z"
+    }
+  },
+  "checks": {
+    "before-p0": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      }
+    },
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      }
+    }
+  }
+}

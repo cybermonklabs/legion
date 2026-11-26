@@ -396,6 +396,30 @@ function fixtureBody(name: string): Record<string, unknown> {
   return body;
 }
 
+/** A state body as a caller below the slots-reading entry is served it: with no
+ * `admission.slots`, no `rank` or `rootRank` on an issue, and no `state` or `since` on a slot,
+ * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. It
+ * takes the keys off `state` itself, which the caller reads fresh from its file. */
+function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.slots;
+  }
+  if (isJsonObject(state.issues)) {
+    for (const issue of Object.values(state.issues)) {
+      if (!isJsonObject(issue)) {
+        continue;
+      }
+      delete issue.rank;
+      delete issue.rootRank;
+      if (isJsonObject(issue.slot)) {
+        delete issue.slot.state;
+        delete issue.slot.since;
+      }
+    }
+  }
+  return state;
+}
+
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
  * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
  * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
@@ -3179,13 +3203,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
   // stands the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
-  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`). So the golden's
-  // issues, rows and claim views are compared without them. One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
-  // row is served here without its `source`, every other field of it and every other row as the
-  // state golden holds them. The gate-basis entry's value strips take nothing more here: the strip
-  // of its two step statuses takes the `gatedSteps` its band has taken already, and the golden
-  // holds no issue in `awaiting_children` and no held row of it.
+  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and above that
+  // the slots-reading entry's, which takes off `admission.slots`, `rank`, `rootRank`, and each
+  // slot's `state` and `since`. So the golden's issues, rows and claim views are compared without
+  // them. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them. The
+  // gate-basis entry's value strips take nothing more here: the strip of its two step statuses
+  // takes the `gatedSteps` its band has taken already, and the golden holds no issue in
+  // `awaiting_children` and no held row of it.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
@@ -3204,7 +3230,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
-  } = fixtureBody("state.json");
+  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
   if (!isJsonObject(rest.issues)) {
     throw new Error("state fixture lacks its issues");
   }

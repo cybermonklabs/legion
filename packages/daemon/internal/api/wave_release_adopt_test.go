@@ -226,7 +226,7 @@ func (a *adoptionHarness) assertJoinedAndWaiting(key string, generation uint64) 
 
 // assertJoinedAndPlanning asserts key runs in adoptionTree, planning at generation under its open
 // gate with its planner's start queued, and holds a slot of its own, out of the waiting line:
-// planning keeps a slot (record.PhaseKeepsSlot).
+// planning keeps a slot (record.SlotRule.PhaseKeepsSlot).
 func (a *adoptionHarness) assertJoinedAndPlanning(key string, generation uint64) {
 	a.t.Helper()
 	got := a.record(key)

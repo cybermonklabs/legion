@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -36,12 +35,14 @@ func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree str
 }
 
 // openTreeLifecycle is the open both entry points share: one transaction holding the open and
-// whatever created runs where the open created the tree's row.
+// whatever created runs where the open created the tree's row. A lifetime it starts is stamped at
+// the store's clock (UseClock, treelifecycle.OpenAt), and at Postgres's now() for the daemon's
+// own store, whose zero time OpenAt reads as the database's.
 func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		opened, err := treelifecycle.Open(ctx, tx, project, tree, authority)
+		opened, err := treelifecycle.OpenAt(ctx, tx, project, tree, authority, orZero(s.stamp()))
 		if err != nil {
 			return err
 		}
@@ -254,7 +255,7 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 		if err := treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
-		return endTreePausePodHoldsTx(ctx, tx, project, tree, time.Now().UTC())
+		return endTreePausePodHoldsTx(ctx, tx, project, tree, s.clockNow().UTC())
 	})
 }
 

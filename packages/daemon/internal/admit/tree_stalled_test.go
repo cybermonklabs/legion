@@ -207,9 +207,17 @@ func claimStore(t *testing.T, pool *pgxpool.Pool) *store.Store {
 // alone.
 func seedClaim(t *testing.T, records *store.Store, tree, issue string, role claim.Role, state supervise.ClaimState) {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	seedClaimForProject(t, records, testProject, tree, issue, role, state)
+}
+
+// seedClaimForProject is seedClaim under a Dispatch project key of its own.
+func seedClaimForProject(t *testing.T, records *store.Store, dispatchProject, tree, issue string, role claim.Role,
+	state supervise.ClaimState,
+) {
+	t.Helper()
+	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
-		t.Fatalf("project token of %s: %v", testProject, err)
+		t.Fatalf("project token of %s: %v", dispatchProject, err)
 	}
 	token, err := claim.NewToken(project, issue, role)
 	if err != nil {
@@ -950,7 +958,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// `worker_silence_minutes` (workflow.SilentPhaseWorker) — makes no phase change and no
 	// status change, so it gives no slot back and keeps the line moving no more than an idle
 	// claim does. silentWorkerProject seeds the deadlocked project above with one tree more: a
-	// root in merging, which holds no slot, as merging keeps none (record.PhaseKeepsSlot), so no
+	// root in merging, which holds no slot, as merging keeps none (record.SlotRule.PhaseKeepsSlot), so no
 	// slot holder of the project is added, and whose merger is that worker, its last step two
 	// hours before the movement the clock is measured from. silence is the
 	// `worker_silence_minutes` the admission registers, zero for an admission that registers none.

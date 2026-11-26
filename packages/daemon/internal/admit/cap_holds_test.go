@@ -199,7 +199,7 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
 
 	// From then on it keeps that row in each phase that keeps one, as reviewing does
-	// (record.PhaseKeepsSlot).
+	// (record.SlotRule.PhaseKeepsSlot).
 	back := issue(t, pool, "LEGION-101")
 	back.Phase, back.Status, back.DispatchStatus = phase.Reviewing, "needs_review", "needs_review"
 	putIssue(t, pool, back)

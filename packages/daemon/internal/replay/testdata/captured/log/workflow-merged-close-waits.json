@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T19:26:26.873672861Z",
+    "jsonPayload": {
+      "issue": "ACME-1",
+      "level": "INFO",
+      "msg": "workflow: a merged issue's close waits for the issues beneath it",
+      "pullRequest": 2377,
+      "time": "2026-11-21T19:26:26.873257581Z",
+      "tree": "ACME-1",
+      "waitingFor": "ACME-2"
+    }
+  }
+]

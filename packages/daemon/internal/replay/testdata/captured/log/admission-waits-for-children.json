@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T00:52:05.903914866Z",
+    "jsonPayload": {
+      "children": 5,
+      "generation": 1,
+      "issue": "ACME-56",
+      "level": "INFO",
+      "msg": "admission: an issue waits for the Dispatch children under it",
+      "time": "2026-11-21T00:52:05.903683936Z",
+      "tree": "ACME-56"
+    }
+  }
+]

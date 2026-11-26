@@ -92,9 +92,11 @@ func carriedOr[T any](value Carried[T], none T) T {
 	return none
 }
 
+// TakeDispatchRefill takes project's refill mark, stamped at the store's clock (stamp), and
+// empties the project's rows of the copy where it took one.
 func (s *Postgres) TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project string) ([]string, bool, error) {
-	tag, err := tx.Exec(ctx, `update dispatch_issue_refills set refilled_at = now()
-		where project = $1 and refilled_at is null`, project)
+	tag, err := tx.Exec(ctx, `update dispatch_issue_refills set refilled_at = coalesce($2::timestamptz, now())
+		where project = $1 and refilled_at is null`, project, s.stamp())
 	if err != nil {
 		return nil, false, fmt.Errorf("take the Dispatch copy's refill mark of %s: %w", project, err)
 	}

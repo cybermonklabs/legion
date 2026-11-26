@@ -34,6 +34,17 @@ const AwaitingChildrenNoticeKind = record.NoticeKind("awaiting-children")
 // one, and the parent stands in none (dispatch://INFRA-3320 R11).
 const waitingOnChildren = "WAITING_ON_CHILDREN"
 
+// ParentWaitsLine and ParentReturnsLine are the lines the engine writes once its fact commits at
+// each move of a parent into awaiting_children (awaitChildren: its issue, its tree, the phase it
+// left, the start it holds and its open children) and at each return out of it
+// (ReturnFromChildren: its issue, its tree, the start it held, the phase it goes back to and
+// whether its pull request merged during the wait). A replay of a recorded window reads both as
+// the parent's phase moves.
+const (
+	ParentWaitsLine   = "workflow: a parent waits on its open children"
+	ParentReturnsLine = "workflow: a parent's open children are finished, so it goes back to the step its return takes"
+)
+
 // childrenHold is one move of a parent into awaiting_children (Engine.awaitChildren): the start
 // the move holds and what the move tells. Each caller fills it from what it has already read —
 // the transition from the row it chose and the task it built, the release of a hold from the
@@ -174,7 +185,7 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if cleared != nil && cleared.Landed == "" {
 		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base, Role: cleared.Asked()}
 	}
-	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
+	e.logOnCommit(ctx, ParentWaitsLine, "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
 	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
 		return err
@@ -215,8 +226,14 @@ func (e *Engine) childrenHolding(ctx context.Context, tx pgx.Tx, issue record.Is
 // pull request has merged. The guard of a move between phases reads it after the phase the issue
 // leaves (childrenHolding); the restart of a stopped task at its first step reads it alone
 // (restartTask), since that start is raised from held whatever place the stop stood at.
+//
+// It is the reader of the engine's rule's wait that stops the phase under way
+// (record.SlotRule.WaitStopsPhase, the daemon's own since cybermonklabs/legion#4592), as the
+// admission pass's judgement of the started parents is (record.SlotRule.StartedParents): under a
+// rule whose wait stops nothing, the rules the recorded windows ran, no open child holds any start
+// of a started parent, so no move, release or restart moves one into awaiting_children.
 func (e *Engine) childrenHoldingStart(ctx context.Context, tx pgx.Tx, issue record.Issue, to phase.Phase, pr *record.PullRequest) ([]record.OpenChild, error) {
-	if !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
+	if !e.cfg.SlotRule.WaitStopsPhase || !record.OpenChildHolds(to) || (pr != nil && pr.State == record.PullRequestMerged) {
 		return nil, nil
 	}
 	return e.childrenOpen(ctx, tx, issue, nil)
@@ -385,6 +402,9 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // at this pass, and the slot it held is the pass's own release to free, since awaiting_children
 // keeps none (record.PhaseKeepsSlot).
 //
+// Under a rule whose wait stops no phase (record.SlotRule.WaitStopsPhase off: the rules the
+// recorded windows ran, and cover) it moves no parent at all, whatever open children it is given.
+//
 // A parent standing anywhere else is left as it stands, by the phase check that opens this
 // function (record.OpenChildHolds): held, whose release is a start the guard in retryPhase reads,
 // retro, merging, admitted, and awaiting_children itself, so that a second pass sends nothing
@@ -408,7 +428,7 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 // wait would pass that question again and reach the worker before the return's start has its
 // slot.
 func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, open []record.OpenChild, owed []record.OwedStart) (bool, error) {
-	if !record.OpenChildHolds(issue.Phase) || len(open) == 0 {
+	if !e.cfg.SlotRule.WaitStopsPhase || !record.OpenChildHolds(issue.Phase) || len(open) == 0 {
 		return false, nil
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
@@ -622,7 +642,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a parent's open children are finished, so it goes back to the step its return takes", "issue", issue.Key,
+	e.logOnCommit(ctx, ParentReturnsLine, "issue", issue.Key,
 		"tree", issue.Tree, "held", held.Start, "to", back.Phase, "merged", merged)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err

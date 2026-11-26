@@ -1,0 +1,82 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T14:00:00Z",
+      "unplaced": 0,
+      "done": 1,
+      "workLeft": 1,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.13333333333333333,
+        "max": 1,
+        "hours": 0.6666666666666666
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 3.8333333333333335,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 0.9,
+        "max": 1,
+        "hours": 4.5
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T11:30:00Z"
+      },
+      "assumptions": [1, 2, 9, 15, 16],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      }
+    }
+  }
+}

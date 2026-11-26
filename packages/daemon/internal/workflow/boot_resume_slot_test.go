@@ -30,7 +30,7 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 
 // The boot's resume by rule marks its one row for the issue's admission slot where the phase it
 // resumes holds one, and writes it unmarked where that phase holds none (StartOrOwe, over
-// record.PhaseKeepsSlot).
+// record.SlotRule.PhaseKeepsSlot).
 //
 // A start is one row since INFRA-1573, and that row carries the worker's task, so the mark now
 // decides when the worker comes back. A started issue holds a slot while it stands in a phase

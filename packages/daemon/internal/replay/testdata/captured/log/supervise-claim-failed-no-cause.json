@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-16T18:01:58.038525264Z",
+    "jsonPayload": {
+      "claim": "legion-acme-acme-10-tester",
+      "deaths": 20,
+      "launchFailures": 0,
+      "level": "ERROR",
+      "msg": "supervise: claim failed",
+      "promptFailures": 0,
+      "promptRetires": 0,
+      "time": "2026-11-16T18:01:58.038220213Z",
+      "why": "deaths with work outstanding ran out"
+    }
+  }
+]
