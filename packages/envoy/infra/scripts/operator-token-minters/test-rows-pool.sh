@@ -27,13 +27,15 @@
 #   (y)  the same in the route password reader's namespace, naming that pair;
 #   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
 #        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
-#   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
-#        users, groups and serviceaccounts, escalate and bind clusterroles, create, patch and update
-#        clusterrolebindings cluster-wide; bind and escalate roles and create, patch and update
-#        rolebindings in envoy-operator), exits 1 naming it;
-#   (as) on a GKE fleet member in another project, apps/deployer given alone impersonate groups,
-#        create clusterrolebindings, bind clusterroles, create or get nodes/proxy, or create pods in
-#        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
+#   (an) each escalation right (impersonate users, groups and serviceaccounts, escalate and bind
+#        clusterroles, create, patch and update clusterrolebindings cluster-wide; bind and escalate
+#        roles and create, patch and update rolebindings in envoy-operator; create and get
+#        nodes/proxy), given on another cluster of the pool to a ServiceAccount that holds nothing
+#        else, is a finding naming it, and nothing else is (one world, one ServiceAccount a right);
+#   (as) on a GKE fleet member in another project, impersonate groups, create clusterrolebindings,
+#        bind clusterroles, create or get nodes/proxy, or create pods in kube-system (where
+#        namespace-controller may create namespaces), each given to a ServiceAccount that holds
+#        nothing else, is a finding naming it (one world, one ServiceAccount a right);
 #   (az) with --pool-project example-pool, that project's own cluster holding the namespace
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
 #        UNKNOWN;
@@ -299,9 +301,9 @@ if row aa; then
   passed "(aa) two clusters named operator-cluster and no --location read UNKNOWN, and neither as the operator's"
 fi
 
-# --- (an) The escalation rights on another cluster of the pool, each alone. Each entry is the grant
-# (verb, API group, resource, the binding's namespace or none for cluster-wide) and the right the
-# run must name. ---
+# --- (an) The escalation rights on another cluster of the pool, each given to a ServiceAccount
+# that holds nothing else. Each entry is the grant (verb, API group, resource, the binding's
+# namespace or none for cluster-wide) and the right the run must name. ---
 escalation_rights=(
   "impersonate||users|=impersonate users cluster-wide"
   "impersonate||groups|=impersonate groups cluster-wide"
@@ -319,29 +321,43 @@ escalation_rights=(
   "create||nodes/proxy|=create nodes/proxy cluster-wide"
   "get||nodes/proxy|=get nodes/proxy cluster-wide"
 )
-escalation_row() {
-  local right="${1#*=}" verb group resource sub="" namespace
-  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
-  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+# All the rights in one world and one run, each given to a ServiceAccount of its own on
+# other-cluster, ci/right-<its place in the list>, which holds nothing else (a run per right cost
+# 15 runs of the check). A right the check does not ask leaves its account's line out, and a
+# finding misread onto another principal names an account no right was given to.
+escalation_rights_row() {
+  local i=0 entry verb group resource sub namespace
   base_world
   add_cluster other-cluster us-east1
-  add_sa other-cluster ci runner
-  subject_grant other-cluster "$(sa_subject ci runner)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  for entry in "${escalation_rights[@]}"; do
+    i=$((i + 1))
+    IFS='|' read -r verb group resource namespace <<<"${entry%%=*}"
+    sub=""
+    case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+    add_sa other-cluster ci "right-$i"
+    subject_grant other-cluster "$(sa_subject ci "right-$i")" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  done
   run
-  want_status 1 "ci/runner with $right on other-cluster"
-  want_line "FINDING system:serviceaccount:ci:runner: $right on cluster $project/us-east1/other-cluster" "ci/runner with $right on other-cluster"
-  [ "$(count_prefix 'FINDING system:serviceaccount:ci:runner: ')" -eq "$(count_prefix 'FINDING ')" ] ||
-    fail "ci/runner with $right on other-cluster: a finding names another principal"
+  want_status 1 "each escalation right on other-cluster given to its own ServiceAccount"
+  i=0
+  for entry in "${escalation_rights[@]}"; do
+    i=$((i + 1))
+    want_line "FINDING system:serviceaccount:ci:right-$i: ${entry#*=} on cluster $project/us-east1/other-cluster" \
+      "ci/right-$i with ${entry#*=} on other-cluster alone"
+  done
+  [ "$(count_prefix 'FINDING system:serviceaccount:ci:right-[0-9]*: ')" -eq "$(count_prefix 'FINDING ')" ] ||
+    fail "each escalation right on other-cluster given to its own ServiceAccount: a finding names another principal"
 }
 if row an; then
-  each escalation_row "${escalation_rights[@]}"
-  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given alone to ci/runner on another cluster of the pool, exits 1 naming it"
+  escalation_rights_row
+  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given on another cluster of the pool to a ServiceAccount that holds nothing else, is a finding naming it, and nothing else is"
 fi
 
 # --- (as) The escalation rights, nodes/proxy and the system namespaces on a GKE fleet member in
-# another project, each alone given to apps/deployer there. Each entry is the grant (verb, API group,
-# resource[/subresource], the binding's namespace or none for cluster-wide) and the right the run
-# must name. ---
+# another project, each given to a ServiceAccount of its own there, apps/right-<its place in the
+# list>, which holds nothing else, all in one world and one run. Each entry is the grant (verb, API
+# group, resource[/subresource], the binding's namespace or none for cluster-wide) and the right
+# the run must name. ---
 member_rights=(
   "impersonate||groups|=impersonate groups cluster-wide"
   "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
@@ -350,21 +366,30 @@ member_rights=(
   "get||nodes/proxy|=get nodes/proxy cluster-wide"
   "create||pods|kube-system=create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
 )
-member_right_row() {
-  local right="${1#*=}" verb group resource sub="" namespace
-  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
-  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+member_rights_row() {
+  local i=0 entry verb group resource sub namespace
   base_world
   grade_member
-  subject_grant grade-cluster "$(sa_subject apps deployer)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  for entry in "${member_rights[@]}"; do
+    i=$((i + 1))
+    IFS='|' read -r verb group resource namespace <<<"${entry%%=*}"
+    sub=""
+    case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+    add_sa grade-cluster apps "right-$i"
+    subject_grant grade-cluster "$(sa_subject apps "right-$i")" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  done
   run
-  want_status 1 "apps/deployer with $right on the fleet member grade"
-  want_line "FINDING system:serviceaccount:apps:deployer: $right on cluster example-grade/us-east1/grade-cluster" \
-    "apps/deployer with $right on the fleet member grade"
+  want_status 1 "each right on the fleet member grade given to its own ServiceAccount"
+  i=0
+  for entry in "${member_rights[@]}"; do
+    i=$((i + 1))
+    want_line "FINDING system:serviceaccount:apps:right-$i: ${entry#*=} on cluster example-grade/us-east1/grade-cluster" \
+      "apps/right-$i with ${entry#*=} on the fleet member grade alone"
+  done
 }
 if row as; then
-  each member_right_row "${member_rights[@]}"
-  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given alone to a ServiceAccount on a GKE fleet member in another project, exits 1 naming it"
+  member_rights_row
+  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given on a GKE fleet member in another project to a ServiceAccount that holds nothing else, is a finding naming it"
 fi
 
 # --- (az) The pool project's own clusters, with --pool-project naming another project. ---

@@ -29,8 +29,9 @@
 #   (ah) a holder of roles/resourcemanager.projectIamAdmin is a finding, and so is a holder of each
 #        of iam.serviceAccounts.setIamPolicy, secretmanager.secrets.setIamPolicy,
 #        resourcemanager.organizations.setIamPolicy and iam.roles.update over a checked resource;
-#   (at) grade-ci holding alone on a GKE fleet member's project each member permission (the
-#        container.* escalation and admission permissions, nodes.proxy and the IAM writers) exits 1;
+#   (at) grade-ci holding on a GKE fleet member's project each member permission (the container.*
+#        escalation and admission permissions, nodes.proxy and the IAM writers), each through a role
+#        granting it alone, is a finding naming it (one world, one role a permission);
 #   (au) a holder of setIamPolicy on the folder above that member's project exits 1;
 #   (av) grade-ci holding roles/resourcemanager.projectIamAdmin, or a role with
 #        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1;
@@ -261,7 +262,10 @@ if row ah; then
   passed "(ah) a holder of each IAM-writing permission over a checked resource is a finding"
 fi
 
-# --- (at) A fleet member's own project's IAM: each member permission held alone by grade-ci. ---
+# --- (at) A fleet member's own project's IAM: each member permission held by grade-ci through a
+# role of its own that grants nothing else, projects/<project>/roles/only.<permission>, all bound in
+# one world and judged by one run (a run a permission cost 25 runs of the check). A permission the
+# check does not ask leaves its role's line out. ---
 member_iam_permissions=(container.namespaces.update container.serviceAccounts.update container.pods.update
   container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
@@ -271,19 +275,24 @@ member_iam_permissions=(container.namespaces.update container.serviceAccounts.up
   resourcemanager.projects.setIamPolicy
   resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
   secretmanager.secrets.setIamPolicy iam.roles.update)
-member_iam_row() {
+member_iam_rows() {
+  local permission
   base_world
   grade_member
-  role "projects/$project/roles/only.$1" "$1"
-  iam "$grade_res" "projects/$project/roles/only.$1" "serviceAccount:$grade_ci"
+  for permission in "${member_iam_permissions[@]}"; do
+    role "projects/$project/roles/only.$permission" "$permission"
+    iam "$grade_res" "projects/$project/roles/only.$permission" "serviceAccount:$grade_ci"
+  done
   run
-  want_status 1 "$1 held by grade-ci on the fleet member's project"
-  want_line "FINDING serviceAccount:$grade_ci: $1 on $grade_res through projects/$project/roles/only.$1, granted at $grade_res" \
-    "$1 held by grade-ci on the fleet member's project"
+  want_status 1 "grade-ci holding each member permission through a role of its own on the fleet member's project"
+  for permission in "${member_iam_permissions[@]}"; do
+    want_line "FINDING serviceAccount:$grade_ci: $permission on $grade_res through projects/$project/roles/only.$permission, granted at $grade_res" \
+      "$permission held by grade-ci on the fleet member's project through a role granting it alone"
+  done
 }
 if row at; then
-  each member_iam_row "${member_iam_permissions[@]}"
-  passed "(at) each of the ${#member_iam_permissions[@]} member permissions, held alone by grade-ci on a fleet member's project, exits 1 naming it"
+  member_iam_rows
+  passed "(at) each of the ${#member_iam_permissions[@]} member permissions, held by grade-ci on a fleet member's project through a role granting it alone, is a finding naming it"
 fi
 
 # --- (av) The reviewer's two roles on a fleet member's project: roles/resourcemanager.projectIamAdmin,
