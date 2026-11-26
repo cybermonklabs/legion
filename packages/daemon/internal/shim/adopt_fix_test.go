@@ -312,9 +312,13 @@ func TestAnAdoptionMakesTheFixCopyAtItsHead(t *testing.T) {
 	if after := r.jjIn(r.workspace, "log", "-r", "@", "--no-graph", "-T", shared); after != before {
 		t.Errorf("the issue's workspace's working copy went from %q to %q, want it unchanged beside the fix", before, after)
 	}
+	read := "log -r " + r.head + " --no-graph --ignore-working-copy -T commit_id -R " + r.workspace
 	add := "workspace add --name " + filepath.Base(r.fixDir) + " -r " + r.head + " " + r.fixDir + " -R " + r.workspace
-	if ran := r.commands(); len(ran) != 2 || ran[0] != add || !slices.Equal(verbs(ran), []string{"workspace add", "metaedit"}) || !strings.HasSuffix(ran[1], "-R "+r.fixDir) {
-		t.Errorf("the adoption ran jj\n%s\nwant the fix's workspace added (%s), then the adoption of that workspace alone", strings.Join(ran, "\n"), add)
+	back := "log -r @- --no-graph --ignore-working-copy -T commit_id -R " + r.fixDir
+	if ran := r.commands(); len(ran) != 4 || ran[0] != read || ran[1] != add || ran[2] != back ||
+		!slices.Equal(verbs(ran), []string{"log", "workspace add", "log", "metaedit"}) || !strings.HasSuffix(ran[3], "-R "+r.fixDir) {
+		t.Errorf("the adoption ran jj\n%s\nwant the read of the head (%s), the fix's workspace added at it (%s), the read of what it made (%s), then the adoption of that workspace alone",
+			strings.Join(ran, "\n"), read, add, back)
 	}
 }
 
@@ -341,7 +345,7 @@ func TestASecondFixMovesTheCopy(t *testing.T) {
 		t.Errorf("the fix's working copy is %q, want an undescribed commit authored by %s", author, adoptingUser)
 	}
 	ran := r.commands()[before:]
-	if want := []string{"workspace update-stale", "log", "new", "metaedit"}; !slices.Equal(verbs(ran), want) {
+	if want := []string{"workspace update-stale", "log", "log", "new", "metaedit"}; !slices.Equal(verbs(ran), want) {
 		t.Errorf("the second fix's adoption ran jj\n%s\nwant %v in the fix's working copy and no second workspace add", strings.Join(ran, "\n"), want)
 	}
 	for _, command := range ran {
@@ -598,11 +602,16 @@ func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 		if files := second.filesOf(second.fixDir, "@-"); !has(files, "fix.txt") {
 			t.Fatalf("the fix's copy in the fresh pod stands on a commit with %v, want the fix's own fix.txt", files)
 		}
+		at := second.commitOf(second.fixDir, "@-")
 		fetch := "git fetch --remote origin --branch " + fixBranch + " -R " + second.workspace
 		track := "bookmark track exact:" + fixBranch + " --remote exact:origin -R " + second.workspace
-		add := "workspace add --name " + filepath.Base(second.fixDir) + " -r " + fixBranch + "@origin " + second.fixDir + " -R " + second.workspace
-		if ran := second.commands(); len(ran) != 4 || ran[0] != fetch || ran[1] != track || ran[2] != add || !strings.HasPrefix(ran[3], "metaedit ") {
-			t.Errorf("the fresh pod's adoption ran jj\n%s\nwant %s, then %s, then %s, then the adoption of the fix's copy", strings.Join(ran, "\n"), fetch, track, add)
+		read := "log -r " + fixBranch + "@origin --no-graph --ignore-working-copy -T commit_id -R " + second.workspace
+		add := "workspace add --name " + filepath.Base(second.fixDir) + " -r " + at + " " + second.fixDir + " -R " + second.workspace
+		back := "log -r @- --no-graph --ignore-working-copy -T commit_id -R " + second.fixDir
+		if ran := second.commands(); len(ran) != 6 || ran[0] != fetch || ran[1] != track || ran[2] != read || ran[3] != add ||
+			ran[4] != back || !strings.HasPrefix(ran[5], "metaedit ") {
+			t.Errorf("the fresh pod's adoption ran jj\n%s\nwant %s, then %s, then %s, then %s, then %s, then the adoption of the fix's copy",
+				strings.Join(ran, "\n"), fetch, track, read, add, back)
 		}
 		for _, command := range workspace.BesideTakeCommands(second.fixDir, prefix, fixBranch, taskBranch) {
 			exits0(t, second, second.fixDir, command)
@@ -695,5 +704,139 @@ func TestAFixInAFreshPodPushesItsOwnBranch(t *testing.T) {
 	}
 	if names := strings.Fields(files); !slices.Contains(names, "fix.txt") || !slices.Contains(names, "fix2.txt") {
 		t.Errorf("%s on origin holds %v after the fresh pod's push, want fix.txt and fix2.txt", fixBranch, names)
+	}
+}
+
+// pushedByAPerson commits name on the issue's branch of the bare origin, from a clone of its own,
+// as a person's push to the task's branch does, and answers the commit. A pod whose clone fetched
+// before that push has no such object: that is the state the fix's adoption has to fetch out of.
+func pushedByAPerson(t *testing.T, origin, key, name, message string) string {
+	t.Helper()
+	work := filepath.Join(t.TempDir(), "person")
+	branch := claim.IssueBranch(key)
+	git := fixturegit.Isolated(t, t.TempDir())
+	git.Run(filepath.Dir(work), "git", "clone", "--quiet", "--branch", branch, origin, work)
+	if err := os.WriteFile(filepath.Join(work, name), []byte(message+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git.Run(work, "git", "add", name)
+	git.Run(work, "git", "commit", "--quiet", "-m", message)
+	git.Run(work, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
+	return git.Run(work, "git", "rev-parse", "HEAD")
+}
+
+// A fix starts at the head its check failed at, and a pod's clone need not have that commit: the
+// head is the one GitHub recorded for the task's branch, a person pushes to that branch, and the
+// clone holds the branch as its own last fetch left it. The adoption fetches the task's branch
+// itself, and the fix's copy is made at the very commit the fix was given, holding the person's
+// file. Without that fetch `jj workspace add` fails on a revision the clone has not got — after
+// making the copy's directory and registering its workspace — and the fix's task is never sent.
+//
+// The control is a pod of its own whose clone already holds the head the fix starts from: its
+// adoption makes the copy with no fetch of the task's branch at all, so the fetch above answers
+// the missing commit and is not run every time.
+func TestAFixStartsAtAHeadTheCloneHasNotFetched(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("jj is required: %v", err)
+	}
+	const key = "ACME-42"
+	fixBranch, err := claim.BesideBranch(key, 1, "a", 1, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := newOrigin(t, key)
+	r := newPodRig(t, jj, origin, key)
+	pushed := pushedByAPerson(t, origin, key, "person.txt", "fix: a person's push")
+	fetch := "git fetch --remote origin --branch " + claim.IssueBranch(key) + " -R " + r.workspace
+	if held, err := r.try(r.workspace, "log", "-r", pushed, "--no-graph", "-T", "commit_id"); err == nil {
+		t.Fatalf("the pod's clone already holds the person's commit %s (%s); the fault needs a commit it has not fetched", pushed, held)
+	}
+
+	got := r.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: pushed, FixBranch: fixBranch})
+	if !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the adoption at a head the clone has not fetched answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	if parent := r.commitOf(r.fixDir, "@-"); parent != pushed {
+		t.Errorf("the fix's working copy stands on %s, want the head the fix starts from, %s", parent, pushed)
+	}
+	if files := r.filesOf(r.fixDir, "@-"); !slices.Contains(files, "person.txt") {
+		t.Errorf("the fix's copy stands on a commit with %v, want the person's person.txt", files)
+	}
+	if ran := r.commands(); !slices.Contains(ran, fetch) {
+		t.Errorf("the adoption ran jj\n%s\nwant %s, the fetch of the task's branch that brings the head", strings.Join(ran, "\n"), fetch)
+	}
+
+	t.Run("control: a head the clone holds is adopted with no fetch of the task's branch", func(t *testing.T) {
+		other := newPodRig(t, jj, origin, key)
+		if got := other.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: pushed, FixBranch: fixBranch}); !got.OK || got.FixDir != other.fixDir {
+			t.Fatalf("the adoption answered %#v, want ok with fixDir %s", got, other.fixDir)
+		}
+		if parent := other.commitOf(other.fixDir, "@-"); parent != pushed {
+			t.Errorf("the fix's working copy stands on %s, want the head the fix starts from, %s", parent, pushed)
+		}
+		if ran := other.commands(); slices.ContainsFunc(ran, func(command string) bool { return strings.HasPrefix(command, "git fetch") }) {
+			t.Errorf("the adoption ran jj\n%s\nwant no fetch: the clone holds the head already", strings.Join(ran, "\n"))
+		}
+	})
+}
+
+// The working copy beside the workspace is one fix's. A fix whose claim failed leaves its commits
+// there, unpushed, and a later fix of the same task starts at the same head: nothing in those
+// commits tells the two apart, so the later fix would go on top of the earlier one's work and push
+// it to its own branch as its own. The adoption binds the copy to the fix that made it, by that
+// fix's own branch, and resumes a copy that holds work only where it is that fix's; the later fix
+// starts on a fresh commit over the head it was given, and the earlier fix's commits stay in the
+// clone, which abandons none of them, with the edit its agent had not committed recorded in the
+// commit the copy stood on.
+//
+// The control is the first half of the row: the same fix's adoption again, which every resend of
+// its task runs, resumes its own copy with its commit and its uncommitted edit, as
+// TestAnAdoptionOfTheRunningFixKeepsItsCopy has it for a request that names no branch.
+func TestALaterFixDoesNotResumeTheEarlierFixsCopy(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("jj is required: %v", err)
+	}
+	const key = "ACME-42"
+	named := func(fix int) string {
+		t.Helper()
+		branch, err := claim.BesideBranch(key, 1, "a", fix, claim.RoleImplementer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return branch
+	}
+	earlier, later := named(1), named(2)
+	r := newPodRig(t, jj, newOrigin(t, key), key)
+	if got := r.adopt("fix-1", shimwire.AdoptWorkingCopy{FixFrom: r.head, FixBranch: earlier}); !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the first fix's adoption answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	work := r.commit(r.fixDir, "fix1.txt", "fix: the first failure")
+	r.write(r.fixDir, "wip.txt", "not committed yet\n")
+
+	if got := r.adopt("fix-1-again", shimwire.AdoptWorkingCopy{FixFrom: r.head, FixBranch: earlier}); !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the first fix's adoption again answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	if parent := r.commitOf(r.fixDir, "@-"); parent != work {
+		t.Fatalf("the first fix's copy stands on %s after its own adoption again, want its own commit, %s", parent, work)
+	}
+	kept := r.commitOf(r.fixDir, "@")
+
+	got := r.adopt("fix-2", shimwire.AdoptWorkingCopy{FixFrom: r.head, FixBranch: later})
+	if !got.OK || got.FixDir != r.fixDir {
+		t.Fatalf("the later fix's adoption answered %#v, want ok with fixDir %s", got, r.fixDir)
+	}
+	if parent := r.commitOf(r.fixDir, "@-"); parent != r.head {
+		t.Errorf("the later fix's copy stands on %s, want the head it starts from, %s: it is not the earlier fix's to go on from", parent, r.head)
+	}
+	if files := r.filesOf(r.fixDir, "@-"); slices.Contains(files, "fix1.txt") {
+		t.Errorf("the later fix's copy stands on a commit with %v, want none of the earlier fix's fix1.txt", files)
+	}
+	if body := r.jjIn(r.fixDir, "file", "show", "-r", work, "fix1.txt"); body != "fix: the first failure" {
+		t.Errorf("the earlier fix's commit %s holds fix1.txt as %q, want its work kept in the clone", work, body)
+	}
+	if body := r.jjIn(r.fixDir, "file", "show", "-r", kept, "wip.txt"); body != "not committed yet" {
+		t.Errorf("the commit the earlier fix's copy stood on, %s, holds wip.txt as %q, want the edit it had not committed", kept, body)
 	}
 }
