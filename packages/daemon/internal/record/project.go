@@ -151,10 +151,10 @@ func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 // working (workflow's claimFailed), and the work has reached exactly where it had before.
 //
 // It is the one reading of where an issue stands, and the rules that must never read a held
-// issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
-// KeepsSlot) and the acceptance rules (StandsIn, and Accepted, which reads AcceptedPhase of it).
-// A hold the record names no phase for answers phase.Held itself, which is all the daemon knows
-// of it.
+// issue differently all take it: the phase half of the slot rule (SlotRule.PhaseKeepsSlot,
+// through KeepsSlot) and the acceptance rules (StandsIn, and Accepted, which reads AcceptedPhase
+// of it). A hold the record names no phase for answers phase.Held itself, which is all the daemon
+// knows of it.
 func StandsAt(issue Issue) phase.Phase {
 	if issue.Phase == phase.Held && issue.Hold != nil {
 		return issue.Hold.From
@@ -559,7 +559,8 @@ type LineEntry struct {
 	// Priority is the priority that placed the entry, the first key of the whole line:
 	// PriorityOf, the issue's own, else its tree root's, else NoPriority, whose band stands after
 	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
-	// priority orders the line and nothing else.
+	// priority orders the line and nothing else. Under a rule that does not band the line
+	// (SlotRule.PriorityFirst) no priority places an entry, and it is NoPriority on every entry.
 	Priority Priority
 	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
 	// its place within that band and part alone, counted from 1. Waiting sets both in its last
@@ -642,15 +643,17 @@ type LineFacts struct {
 	// — classification alone does (HeldFacts.treeRoot) — and the gates it reads are the gates
 	// of roots among the pass's own issues, so the line cannot change for either read.
 	Roots map[string]Issue
-	// Now is the moment the pass reads the record, which classification alone reads: the
-	// tree_closed word asks whether a root's linger is still running at it (Lingering,
-	// HeldReasonOf), so that a parked root's members read tree_parked once its linger has run
-	// out rather than tree_closed for ever. The one caller that fills it is the judgement every
-	// reader of the line comes through (blockers.JudgeLine), which takes the clock of the pass
-	// that called it. The zero moment reads every armed linger as still running, which is what a
-	// caller that builds the line itself — a test, a reader with no clock — gets, and it leaves
-	// each such member reading tree_closed. Waiting's placement reads it nowhere, so the line
-	// cannot change for it.
+	// Now is the moment the pass reads the record, which classification reads: the tree_closed
+	// word asks whether a root's linger is still running at it (Lingering, HeldReasonOf), so that a
+	// parked root's members read tree_parked once its linger has run out rather than tree_closed for
+	// ever. Under a rule whose wait gives the slot back only after a grace (SlotRule.WaitGrace) the
+	// wait judgement reads it too: a holder's wait keeps its slot while its grace has not run out at
+	// it (InWaitGrace). The one caller that fills it is the judgement every reader of the line comes
+	// through (blockers.JudgeLine), which takes the clock of the pass that called it. The zero moment
+	// reads every armed linger as still running, which is what a caller that builds the line itself
+	// — a test, a reader with no clock — gets, and it leaves each such member reading tree_closed.
+	// Waiting's placement reads it nowhere, so the line changes for it only through the waits it is
+	// handed (Waits).
 	Now time.Time
 	// Held is the unfinished blockers of each issue a Dispatch blocker holds where it stands, by
 	// key: the issues whose first phase the line must not offer a slot to, however long they
@@ -677,17 +680,75 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// SlotWaits is, under a rule whose wait on another issue gives the slot back only after a grace
+	// (SlotRule.WaitGrace), each slot holder of the judgement by key, with the moment it began to
+	// wait on another issue while it kept its slot (Slot.WaitsSince), nil where no pass has marked
+	// one yet: what the grace is read against (InWaitGrace). The one caller that fills it is the
+	// judgement every reader of the line comes through (blockers.JudgeLine), from the slots it is
+	// handed. Nil under every other rule, the daemon's own among them, which reads none.
+	SlotWaits map[string]*time.Time
+	// Rule is the slot rule the line and every judgement over these facts read (SlotRule): the
+	// admission pass's own rule for the facts it judges, and the daemon's for the facts the state
+	// projection reads, each set where the facts are read (ReadLineFactsUnder). The zero value is
+	// the daemon's own rule (SlotRule.OrMain). The facts answer the rule's three questions of an
+	// issue themselves (KeepsSlot, NeedsSlot, InSlotlessPhase), so a reader asks them of the facts
+	// in hand and reads the merger's ready mark beside the rule without knowing of it.
+	Rule SlotRule
+	// Ready is the issues standing in merging whose merger has completed merging, the head it
+	// stands on recorded on its phases row (PhaseRow.HandoffCommit) while the issue waits in
+	// merging for the merge itself: the merger's ready mark, at which a rule that keeps a slot in
+	// merging and gives it back there (SlotRule.ReleaseAtReady) takes the slot back. It is read
+	// only for such a rule (ReadLineFactsUnder) and is empty under every other, the daemon's own
+	// among them, so a pass under those reads nothing for it. A replay of a release whose ready
+	// was a move rather than a handoff writes that mark in a table of its own database instead,
+	// which its pass reads in here beside the phases rows (admit's RuleTables).
+	Ready map[string]struct{}
+	// Covers is the covers that stand under a rule whose start may take a cover (SlotRule.Take,
+	// TakeCover), by the key of each covered waiter: the issue that holds that waiter's slot for it
+	// while the waiter waits on it, the holder. A cover is kept rather than judged again on each
+	// pass, since it stays until its holder is done or leaves the work, or until the waiter no
+	// longer waits on it, whatever else begins to wait meanwhile: judged again, a new link or an
+	// older waiter could take it from its waiter and the count would rise with no start. The daemon
+	// runs its own rule and keeps none; a replay under such a rule keeps them in a table of its own
+	// database, which the pass reads in here (admit's RuleTables). Nil under every other rule.
+	Covers map[string]string
+	// BeneathWaits is, under a rule whose start may take a cover (SlotRule.Take, TakeCover), the
+	// issues beneath each issue past its review whose close waits for them (OpenBeneath): a parent
+	// whose sign-off the workflow holds while an issue beneath it is in the workflow, and an issue
+	// whose pull request merged while one is (workflow's closeMerged). Each such wait is a wait a
+	// cover reads (blockers.CoverWaits), as the rule's spec adds them. The daemon runs its own rule
+	// and reads none; a replay under such a rule reads them from its own records and a table of its
+	// own database (admit's RuleTables). Nil under every other rule.
+	BeneathWaits map[string][]string
+	// FirstSlots is, under a rule that orders the line by first slots (SlotRule.Order,
+	// LineReturnedByFirstSlot and LineReworkFirst) or by arrival (LineArrival), the moment of each
+	// issue's first slot in its current generation, by key, which Waiting places a returned issue
+	// by, and, under LineReworkFirst, a tree already open by its root's. The daemon keeps no such
+	// moment once a slot goes back, and runs no such rule; a replay under one keeps them in a table
+	// of its own database, which the pass reads in here (admit's RuleTables), and an issue it holds
+	// none of is placed by the moment its work came back. Under a rule that places by arrival it is
+	// also the moment an issue with no arrival (Arrivals) is placed by. Nil under every other rule.
+	FirstSlots map[string]time.Time
+	// Arrivals is, under a rule that places issues by their arrival in the line (SlotRule.Order,
+	// LineReworkFirst and LineArrival), the moment each issue arrived in the line in its current
+	// generation, by key: the moment the record first held it in that generation. The daemon keeps
+	// no such moment (an issue's MovedAt moves with each move) and runs no such rule; a replay under
+	// one keeps them in a table of its own database, which the pass reads in here (admit's
+	// RuleTables), and an issue it holds none of is placed by its first slot (FirstSlots) and then by
+	// the moment its record last moved (Issue.MovedAt). Nil under every other rule.
+	Arrivals map[string]time.Time
 	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
-	// by parent key (readChildWaits over StartedParents): an issue in planning through
-	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no
-	// entry for one no open child holds. It is what the admission pass moves a started parent into
-	// awaiting_children by and returns one by, to the step ReturnStep gives its held start (admit's
-	// childrenWaits), and the children the held word awaiting_children names (HeldReasonOf). It is
-	// apart from ChildWaits, the wait of an issue whose first phase has not started: a started
-	// parent's children hold no first phase, so no children-first notice, no children_first word
-	// and no wait of a started issue on another issue (Waits) reads them. ReadLineFacts fills it,
-	// since the judgement reads the mirror against the daemon's records in the transaction the line
-	// is never given; it is never stored, and each read of the facts judges it again.
+	// by parent key (readChildWaits over SlotRule.StartedParents, under the facts' rule: none under
+	// a rule whose wait stops no phase): an issue in planning through accepting, held from one of
+	// them, owing a start, or waiting in awaiting_children, with no entry for one no open child
+	// holds. It is what the admission pass moves a started parent into awaiting_children by and
+	// returns one by, to the step ReturnStep gives its held start (admit's childrenWaits), and the
+	// children the held word awaiting_children names (HeldReasonOf). It is apart from ChildWaits,
+	// the wait of an issue whose first phase has not started: a started parent's children hold no
+	// first phase, so no children-first notice, no children_first word and no wait of a started
+	// issue on another issue (Waits) reads them. ReadLineFacts fills it, since the judgement reads
+	// the mirror against the daemon's records in the transaction the line is never given; it is
+	// never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
 	// RetroHolds is the three holds on the acceptance of each parent held before its retro
 	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
@@ -706,6 +767,118 @@ type LineFacts struct {
 	// (passOver); nil in facts ReadLineFacts did not read. Its maps fill on first read, so the
 	// facts of one pass are read on one goroutine.
 	pass *passChain
+}
+
+// KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
+// mark read beside it: an issue the rule gives its slot back at that mark (Ready) keeps none.
+// It is what the grant (admit's slotFor), the wait judgement (blockers.waitsOf) and the held
+// ladder (HeldReasonOf) ask, so the three read one rule.
+func (f LineFacts) KeepsSlot(issue Issue) bool {
+	if _, ready := f.Ready[issue.Key]; ready {
+		return false
+	}
+	return f.Rule.KeepsSlot(issue)
+}
+
+// InWaitGrace says whether a wait of the slot holder key on another issue keeps its slot for now
+// under the facts' rule's grace (SlotRule.WaitGrace): the rule names a grace, key holds a slot
+// (SlotWaits), and either no pass has marked the start of its wait yet, so the wait begins at this
+// pass, or the grace from that start has not run out at Now (SlotRule.GraceOver). A rule with no
+// grace keeps no slot through such a wait here, and an issue that holds no slot has none to keep.
+func (f LineFacts) InWaitGrace(key string) bool {
+	rule := f.Rule.OrMain()
+	if rule.WaitGrace <= 0 {
+		return false
+	}
+	since, holds := f.SlotWaits[key]
+	return holds && (since == nil || !rule.GraceOver(*since, f.Now))
+}
+
+// IdleReturns says whether the slot holder holder, holding slot, gives that slot back for
+// idleness under the facts' rule (SlotRule.IdleReturn) at Now. The rule names an idle return;
+// holder keeps a slot where it stands (KeepsSlot) and is no root whose architect writes its
+// design at admitted (AtWork) nor one that arrived carrying the row of another tree (QueuedRoot),
+// as the wait judgement leaves those out (blockers.waitsOf); it waits on its children or on a
+// person (IdleWaits, over members, the pass's own records); it owes no worker a start (Owed);
+// and no claim of it has work under way — a turn, a start or a task no turn has taken, as the
+// holder state reads them (HolderClaimFacts) — and none began or ended a turn, nor did holder take
+// its slot, within the idle return before Now. claims are the claims the caller read, of any
+// issue (Store.HolderClaims); holder's own are those on its issue.
+func (f LineFacts) IdleReturns(holder Issue, slot Slot, members []Issue, claims []HolderClaim) bool {
+	rule := f.Rule.OrMain()
+	if rule.IdleReturn <= 0 || !f.KeepsSlot(holder) || (holder.Phase == phase.Admitted && AtWork(holder, f.Gates[holder.Tree])) ||
+		QueuedRoot(holder, f.Lifecycles[holder.Tree], f.Gates[holder.Tree]) {
+		return false
+	}
+	if open, person := IdleWaits(holder, members); !person && len(open) == 0 {
+		return false
+	}
+	if _, owes := f.Owed[holder.Key]; owes {
+		return false
+	}
+	at := HolderFacts{Issue: holder, AdmittedAt: slot.AdmittedAt}
+	HolderClaimFacts(&at, claims, nil)
+	if len(at.InTurn) > 0 || len(at.Starting) > 0 || len(at.PendingTasks) > 0 {
+		return false
+	}
+	last := slot.AdmittedAt
+	for _, c := range claims {
+		if c.Issue == holder.Key {
+			last = later(last, later(c.LastTurnStart, c.LastTurnEnd))
+		}
+	}
+	return !f.Now.Before(last.Add(rule.IdleReturn))
+}
+
+// IdleWaits is what issue waits on as an idle return reads a wait (SlotRule.IdleReturn): the
+// issues beneath it in its tree that are still in the workflow, its children's work, sorted
+// (OpenBeneath over the members of its tree among members), and whether it is a root waiting on
+// a person whom nobody has answered yet (Issue.AwaitingPerson), a wait that names no issue.
+func IdleWaits(issue Issue, members []Issue) ([]string, bool) {
+	return OpenBeneath(issue, treeOf(issue, members)), issue.AwaitingPerson() && !issue.Answered()
+}
+
+// treeOf is the members of issue's tree among members, which the readers of a tree's own order
+// over its members (Beneath, OpenBeneath) are handed.
+func treeOf(issue Issue, members []Issue) []Issue {
+	tree := make([]Issue, 0, len(members))
+	for _, member := range members {
+		if member.Tree == issue.Tree {
+			tree = append(tree, member)
+		}
+	}
+	return tree
+}
+
+// idleKept is the moment that keeps issue's place in the line under a rule with an idle return
+// (SlotRule.IdleReturn): the mark of a release for a wait (Issue.ReleasedForWaitAt) of an issue
+// that holds no row, which the idle release writes as the release for a wait writes it (admit's
+// releaseIdleSlots). It answers false under every other rule, the daemon's own among them, and for
+// an issue that holds a row or carries no mark.
+func idleKept(issue Issue, holds bool, facts LineFacts) (time.Time, bool) {
+	if facts.Rule.OrMain().IdleReturn <= 0 || holds || issue.ReleasedForWaitAt == nil {
+		return time.Time{}, false
+	}
+	return *issue.ReleasedForWaitAt, true
+}
+
+// NeedsSlot is NeedsSlot under the facts' rule: issue's tree is live, its root does not linger,
+// and it keeps a slot where it stands (KeepsSlot). The release (admit's releaseSlots) and the
+// line (Waiting) both ask it, so no pass offers a slot to an issue the release would free.
+func (f LineFacts) NeedsSlot(issue, root Issue, live bool) bool {
+	return live && !root.Lingers() && f.KeepsSlot(issue)
+}
+
+// InSlotlessPhase is the complement of KeepsSlot over the working phases
+// (SlotRule.InSlotlessPhase): issue stands in a phase of phase.Order the facts' rule keeps no slot
+// in, or the rule took its slot back at the merger's ready mark (Ready). The repair of a worker
+// with no task (admit's readSlotHolders) and the state's answer of `why` (projection's
+// atWorkInSlotlessPhase) ask it.
+func (f LineFacts) InSlotlessPhase(issue Issue) bool {
+	if _, ready := f.Ready[issue.Key]; ready {
+		return true
+	}
+	return f.Rule.InSlotlessPhase(issue)
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -881,7 +1054,19 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // false, and the member of that tree read design_gate where the state read the ladder's own
 // word. Read over both, one issue reads one word wherever it is read (C1 of
 // dispatch://INFRA-3107). It costs no further read: the keys join one Gates call.
+//
+// The judgements of the children are made under the daemon's own rule (LineFacts.Rule left
+// unset); ReadLineFactsUnder makes them under the rule its reader was given.
 func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (LineFacts, error) {
+	return readLineFacts(ctx, tx, store, project, issues, steps, SlotRule{})
+}
+
+// readLineFacts is ReadLineFacts with rule set on the facts before the children are judged
+// (LineFacts.Rule), so the children-first candidates and the started parents the read takes are
+// rule's (SlotRule.ChildrenFirstCandidates, SlotRule.StartedParents).
+func readLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep,
+	rule SlotRule,
+) (LineFacts, error) {
 	lifecycles, err := ReadLifecycles(ctx, tx, store, project, issues)
 	if err != nil {
 		return LineFacts{}, err
@@ -910,7 +1095,7 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 			owed[row.Issue] = row
 		}
 	}
-	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}
+	facts := LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows, Rule: rule}
 	// The children are read after the rest, since the gates say which issues are children-first
 	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
 	// crosses the records above the pass's own. The parents held before their retro
@@ -930,6 +1115,49 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 		return LineFacts{}, err
 	}
 	facts.RetroHolds = retroHoldsOf(pass, held, children, resting)
+	return facts, nil
+}
+
+// ReadLineFactsUnder is ReadLineFacts for a reader that judges under rule: the facts with the
+// rule set on them (LineFacts.Rule, rule.OrMain()) before the children are judged, so every
+// judgement made over them — the children's waits, the release, the line, the waits, the held
+// words — reads the one rule its reader was given rather than one of its own choosing. It is how
+// each reader of the slot rule that reads its own facts sets the rule: the admission pass with its
+// engine's (workflow.Engine.SlotRule), and the state projection with the one it was handed
+// (projection.Inputs.SlotRule), which for the daemon is its own.
+//
+// Under a rule that keeps a slot in merging and gives it back at the merger's ready mark
+// (SlotRule.ReleaseAtReady) it also reads that mark (LineFacts.Ready): the merger's phases rows
+// of the issues standing in merging, in one read (Store.MergersReady), which only a replay under
+// such a rule pays. Every other rule, the daemon's own among them, reads nothing beyond
+// ReadLineFacts.
+func ReadLineFactsUnder(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep,
+	rule SlotRule,
+) (LineFacts, error) {
+	facts, err := readLineFacts(ctx, tx, store, project, issues, steps, rule.OrMain())
+	if err != nil {
+		return LineFacts{}, err
+	}
+	if !facts.Rule.ReadsReadyMark() {
+		return facts, nil
+	}
+	facts.Ready = make(map[string]struct{})
+	var merging []string
+	for _, issue := range issues {
+		if StandsAt(issue) == phase.Merging {
+			merging = append(merging, issue.Key)
+		}
+	}
+	if len(merging) == 0 {
+		return facts, nil
+	}
+	ready, err := store.MergersReady(ctx, tx, merging)
+	if err != nil {
+		return LineFacts{}, err
+	}
+	for _, key := range ready {
+		facts.Ready[key] = struct{}{}
+	}
 	return facts, nil
 }
 
@@ -1118,45 +1346,19 @@ func AtWork(issue Issue, gate TreeGate) bool {
 	}
 }
 
-// PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
-// a root's architect writes its design and a started child waits to be entered again;
-// awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
-// planning, implementing, testing and reviewing; and held, which is reached here only where the
-// record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
-// retro and merging (in the default steps, the phases after the review); done, which has
-// finished; and awaiting_children, a parent waiting on its open children, which work under slots
-// of their own (dispatch://INFRA-3320 R11). A step after accepting whose phase keeps a slot waits
-// for one again (workflow.StartOrOwe).
-//
-// It is written as one list so that a later change adds or removes one entry and every reader of
-// the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
-// the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
-// waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. InSlotlessPhase is the complement of the three working phases this refuses, for the
-// repair that must reach an issue holding no row.
-func PhaseKeepsSlot(at phase.Phase) bool {
-	switch at {
-	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
-		phase.Reviewing, phase.Held:
-		return true
-	default:
-		return false
-	}
-}
-
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
 // the moment the daemon starts it until it stands in accepting, retro, merging or
 // awaiting_children, which hold none, or until it is done or Dispatch takes it out of the
 // workflow (InWorkflow). Every other phase keeps the row — admitted, awaiting_person, the four
-// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
-// for a person or for its review keeps its place against the cap and wins none back from the line
-// when the wait ends. A parent in awaiting_children gives its row back while its open children
-// work under slots of their own, and a start of planning through reviewing that its return makes
-// waits in the line for one again (workflow's ReturnFromChildren). Any other wait on another
-// issue is not read here: an issue the daemon has started that waits on one gives its row back
-// and stands in the line for one again, by the rule beside this (blockers.waitsOf, admit's
-// releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this one
-// first, so an issue in accepting, retro, merging or awaiting_children waits on nothing there
+// worker phases and a hold the record names no phase for (SlotRule.PhaseKeepsSlot of MainRule) —
+// so an issue waiting for a person or for its review keeps its place against the cap and wins none
+// back from the line when the wait ends. A parent in awaiting_children gives its row back while
+// its open children work under slots of their own, and a start of planning through reviewing that
+// its return makes waits in the line for one again (workflow's ReturnFromChildren). Any other wait
+// on another issue is not read here: an issue the daemon has started that waits on one gives its
+// row back and stands in the line for one again, by the rule beside this (blockers.waitsOf,
+// admit's releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this
+// one first, so an issue in accepting, retro, merging or awaiting_children waits on nothing there
 // (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
 // docs/site/src/content/docs/legion/concepts.md.
 //
@@ -1176,20 +1378,28 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the
 // grant (admit's slotFor, which asks it of every candidate of the waiting line that holds no
 // row). Written apart, one pass could grant a row the next pass takes away, and the issue would
-// queue again for the slot it had just been given.
+// queue again for the slot it had just been given. Inside the pass both ask it of the pass's own
+// rule through its facts (LineFacts.KeepsSlot), so one rule answers both there too.
 //
 // Whether the issue is in the workflow at all is InWorkflow's one statement, which this reads
 // rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
 // the slot rule either, and NeedsSlot asks the tree's own terms beside this.
+//
+// It is the daemon's own rule's half (MainRule.KeepsSlot). The readers inside the admission pass,
+// the engine and the projection ask the rule they were given (LineFacts.KeepsSlot,
+// SlotRule.KeepsSlot), and nothing outside the tests calls this; it stays because it is the name
+// the repository's comments and two migration headers state the rule under
+// (20261109060737_drop_awaiting_slot_notice, 20261110233602_past_review_starts_unmarked), so the
+// rule they name is still stated where they point.
 func KeepsSlot(issue Issue) bool {
-	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
+	return MainRule.KeepsSlot(issue)
 }
 
-// InSlotlessPhase says whether issue stands in a working phase that holds none of the cap's slots,
-// or is held from one (StandsAt): a phase of phase.Order that PhaseKeepsSlot refuses, which in
-// this release is accepting, retro or merging in every order a task's steps run in. It is
-// PhaseKeepsSlot read the other way round over the working phases, and it reads that list rather
-// than a copy of its own.
+// InSlotlessPhase says whether issue stands in a working phase that holds none of the cap's slots
+// under the daemon's own rule, or is held from one (StandsAt): a phase of phase.Order that
+// MainRule's PhaseKeepsSlot refuses, which in this release is accepting, retro or merging in every
+// order a task's steps run in. It is PhaseKeepsSlot read the other way round over the working
+// phases, and it reads that list rather than a copy of its own (MainRule.InSlotlessPhase).
 //
 // It exists so that the list lives in this package alone. The repair of a worker with no task
 // (admit's resumeSlottedWorkers) must reach an issue standing in one of those phases, because
@@ -1197,7 +1407,13 @@ func KeepsSlot(issue Issue) bool {
 // issue at work in one of them is no answer (projection's atWorkInSlotlessPhase). Written there
 // as a list of their own, a phase added to or taken out of PhaseKeepsSlot would move the cap and
 // leave them behind, and the worker of that phase would be repaired by nothing. Read from here,
-// they move together.
+// they move together. Those two readers ask it of the rule they were given
+// (SlotRule.InSlotlessPhase, through LineFacts.InSlotlessPhase), which under MainRule names the
+// same phases and under another rule names the working phases that rule keeps no slot in. This
+// one, the daemon's own rule's answer, is asked by the readers that mean the phases after the
+// review of the default steps whatever rule they judge under: the cover's wait
+// (blockers.CoverWaits), and the replay's measures of the work past the review, whose recorded
+// windows ran the default steps.
 //
 // It is not Accepted, and the two must not be merged: Accepted names the two phases whose head,
 // the one the last step of the task passed, the daemon has accepted, which is the rule the
@@ -1205,8 +1421,7 @@ func KeepsSlot(issue Issue) bool {
 // parent held before its retro for its children; this one is the slot rule's complement and
 // counts accepting, and that parent, with them.
 func InSlotlessPhase(issue Issue) bool {
-	at := StandsAt(issue)
-	return slices.Contains(phase.Order, at) && !PhaseKeepsSlot(at)
+	return MainRule.InSlotlessPhase(issue)
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
@@ -1225,9 +1440,10 @@ func InSlotlessPhase(issue Issue) bool {
 // otherwise count a parked root's slot against the cap for good.
 //
 // It is the one statement of the release of an issue that needs no slot at all, and the two
-// readers that must never disagree both call it: admission releases the slot of every issue it
-// answers false for (admit's releaseSlots), and the waiting line offers a returning issue a slot
-// only where it answers true (Waiting). The other release, of a started issue that goes on
+// readers that must never disagree both ask it, of the rule the pass's facts carry
+// (LineFacts.NeedsSlot): admission releases the slot of every issue it answers false for
+// (admit's releaseSlots), and the waiting line offers a returning issue a slot only where it
+// answers true (Waiting). The other release, of a started issue that goes on
 // working and waits on another issue, is not stated here: it is admit's releaseSlotsForWaits,
 // judged by blockers.waitsOf. This answers true of such an issue all the same, so the issue
 // keeps its place in the line while it holds no slot. root is the record of
@@ -1235,8 +1451,11 @@ func InSlotlessPhase(issue Issue) bool {
 // by no part of this: a gate open or closed changes neither whether the tree runs nor whether
 // the issue's phase keeps a row (KeepsSlot). The slot is accounting only: taking one away
 // suspends no claim, moves no phase and writes no Dispatch status.
+//
+// It is the daemon's own rule's statement (MainRule.NeedsSlot), kept under this name for the
+// reason KeepsSlot is (20261111214351_issue_released_for_wait's header names it).
 func NeedsSlot(issue, root Issue, live bool) bool {
-	return live && !root.Lingers() && KeepsSlot(issue)
+	return MainRule.NeedsSlot(issue, root, live)
 }
 
 // CanWaitOnPerson says whether root may enter awaiting_person now: it is a root of a tree in the
@@ -1257,7 +1476,7 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 //
 // It is the one statement of the rule, and the two readers that must never disagree both call
 // it: the pass that starts a wait (workflow's decideAwait, rule 0) and the boot's catch-up of
-// the roots that pass can move (the daemon's catchesUp). A root this answers false for starts no
+// the roots that pass can move (CatchesUp). A root this answers false for starts no
 // wait on a person, so the boot need not read its Dispatch window either. gate is the root's own
 // design gate, the zero value for a root with no step of it registered.
 //
@@ -1267,6 +1486,43 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 // the daemon has started (KeepsSlot).
 func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 	return slotted && root.Phase == phase.Admitted && !root.Lingers() && InWorkflow(root) && AtWork(root, gate)
+}
+
+// CatchesUp says whether a boot's catch-up reads issue: a tree root, which the records it is read
+// from hold of the daemon's project alone, not lingering, and one of three things —
+//
+//   - a root in awaiting_person;
+//   - a root the boot's admission pass could move into it (workflow's ReconcileAwaiting) — at
+//     admitted, with a row of its own saying the daemon started it (slotted), its design gate
+//     never opened (CanWaitOnPerson, which is workflow's decideAwait's rule 0);
+//   - a root whose tree this boot's own step list opens and whose work that opening releases: one
+//     standing at admitted, whose first phase the waiting line offers a slot to (Waiting classes it
+//     LineFirstPhase, and workflow's StartFirstPhase runs it).
+//
+// gate is the root's own design gate under this boot's step list, the zero value for a root with
+// no step of it registered; slotted says the root holds an admission slot. A root in a phase of
+// its own tree is read by neither this nor ReconcileAwaiting: the phase's worker holds the work,
+// and the root's architect waits for it.
+//
+// The third case is broader than the trees a changed list actually releases, and nothing narrower
+// would do: a step dropped from gates.design before anything registered it leaves no row behind,
+// so no rule over the stored rows can tell that the list changed, and the boot reads its list
+// before the catch-up has applied anything. The daemon's boot holds every root this names out of
+// its admission pass until its catch-up has applied it, and a replay of a recorded window holds
+// the same roots at each boot it makes.
+func CatchesUp(issue Issue, gate TreeGate, slotted bool) bool {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+		return false
+	}
+	if issue.Phase == phase.AwaitingPerson {
+		return true
+	}
+	if gate.Open() {
+		if issue.Phase == phase.Admitted {
+			return true
+		}
+	}
+	return CanWaitOnPerson(issue, gate, slotted)
 }
 
 // WaitingLineBand is where the line puts an issue whose work came back: in the band of the
@@ -1291,7 +1547,9 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // entry is placed by its priority and passed over while its wait lasts, as before, and an entry
 // that already holds a slot is placed by its priority and promoted at its place, taking no slot.
 // The members of a re-admitted tree stand in no line until their root's promotion, so they wait
-// behind their root's band.
+// behind their root's band. The band is a choice of the rule the facts carry
+// (SlotRule.PriorityFirst): the daemon's own rule bands the line, and a rule that does not, as the
+// rules of the releases before the band did not, lays the line out in its order alone.
 //
 // First, by when their work came back, oldest first: the issues the daemon has already started
 // whose work has come back to them. Four kinds of record say that work came back, and each
@@ -1329,6 +1587,23 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // open design gate. Each takes its tree root's place in the board's order, so a started tree's
 // children go before the roots ranked below their root, and a root ranked above a tree is not
 // kept out by a tree that keeps filing children.
+//
+// Those two orders are the daemon's own rule's (LineReturnedOldestFirst). The facts carry the
+// rule the line is built under (LineFacts.Rule), and five other orders are a rule's to choose: a
+// rule may place the returned part by the board's rank as the starting part is placed
+// (LineReturnedByRank), or by the moment of each issue's first slot in its current generation
+// (LineReturnedByFirstSlot, LineFacts.FirstSlots), or put first in the starting part each issue
+// that an issue the daemon has started waits on (LineBlockersFirst); it may burn down work in
+// progress first in, first out — the returned part by first slots, then the issues of trees
+// already open by each tree's first slot and each issue's arrival, and only then the trees not yet
+// opened by the board (LineReworkFirst, LineFacts.Arrivals); or it may order the whole line by each
+// issue's arrival, with no part ahead of another and no rank (LineArrival). Under a rule that bands
+// the line by priority, each of them is the order within one band. Which issues are in the line is
+// the same under each of them, save where the
+// rule's phases decide whether an issue needs a slot (LineFacts.NeedsSlot). A rule with an idle
+// return (SlotRule.IdleReturn) places too an issue that gave its slot back for idleness by the
+// mark of that release, as a release for a wait places it, and passes it over while it waits on
+// its children (IdleWaits); one a person has not answered stands in no line until its answer.
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
@@ -1374,10 +1649,11 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // issue reads one word (C1). Four of its eighteen skips report nothing: three place the
 // candidate, and one passes over an issue released for a wait, which the first loop has placed
 // already (LineWaitingOnIssue), so such an issue stands in the line and in no held row. The
-// other fourteen report. Two of those fourteen are deferrals — a queued root the second loop may
-// place, and an answered root the first loop places — and a deferral reports a row the other
-// loop may then place: HeldList drops a row for a key the line names, so a deferral that is
-// placed costs one row and no wrong answer.
+// other fourteen report. Seven of those fourteen are the holds of the starting part, which one
+// function reads (FirstPhaseStartsNow) and one site reports. Two of the fourteen are deferrals —
+// a queued root the second loop may place, and an answered root the first loop places — and a
+// deferral reports a row the other loop may then place: HeldList drops a row for a key the line
+// names, so a deferral that is placed costs one row and no wrong answer.
 func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []HeldIssue) {
 	slotted := make(map[string]struct{}, len(slots))
 	for _, slot := range slots {
@@ -1399,12 +1675,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// been promoted already, and its members stand in the line as the members of any tree that
 	// runs. The ladder's tree_closed word reads the open-gate members of these trees
 	// (reopensAtPromotion), which is the same set of roots wherever their gate is open.
-	unopened := make(map[string]struct{}, len(queued))
+	unopened := unopenedRoots(queued, slotted, facts)
 	for _, issue := range queued {
 		queuedKeys[issue.Key] = struct{}{}
-		if _, holds := slotted[issue.Key]; AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
-			unopened[issue.Key] = struct{}{}
-		}
 	}
 	inUnopenedTree := func(issue Issue) bool {
 		_, unopenedTree := unopened[issue.Tree]
@@ -1413,28 +1686,21 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// Every drop site reports what it left behind through one ladder, built over the facts the
 	// line itself is judged on, so that the word an issue reads here and the word the assembly
 	// reads for an issue no site saw are read from one set of facts (HeldList).
-	heldFacts := HeldFacts{ByKey: byKey, Live: live, Chain: chain, Facts: facts}
+	heldFacts := HeldFacts{ByKey: byKey, Live: live, Chain: chain, Facts: facts, Unopened: unopened}
 	var heldRows []HeldIssue
 	hold := func(issue Issue) {
 		reason, heldBy := HeldReasonOf(issue, heldFacts)
 		heldRows = append(heldRows, HeldIssue{Issue: issue.Key, Reason: reason, HeldBy: heldBy})
 	}
 
-	// The tree of a candidate must be live and must not linger, and the root must be recorded:
-	// the whole line is work the daemon is about to start, and a tree that has left runs nothing.
-	runs := func(issue Issue) bool {
-		root, recorded := byKey[issue.Tree]
-		if !recorded || root.Lingers() {
-			return false
-		}
-		_, running := live[issue.Tree]
-		return running
-	}
-
+	// timed is one entry of the returned part with the moment its work came back (at), the owed
+	// row's id that breaks a tie of moments, and, under a rule that places the part by first slots
+	// (LineReturnedByFirstSlot, LineReworkFirst), the moment it is placed by (first).
 	type timed struct {
 		entry LineEntry
 		at    time.Time
 		id    int64
+		first time.Time
 	}
 	var returned []timed
 	// The issues this first loop puts in the line as LineWaitingOnIssue, which the branches
@@ -1446,10 +1712,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			// An answered root belongs to this part whether or not its tree lifecycle still
 			// stands open, and whether or not it holds a slot row: its wait kept that row
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
-			// or, when a person's approval opened its gate later than that, the approval.
+			// or, when a person's approval opened its gate later than that, the approval. Under a
+			// rule with an idle return (SlotRule.IdleReturn) a root that gave its row back while
+			// it waited keeps the place of that release where it stands earlier (idleKept).
 			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
-				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
+			at := later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())
+			if kept, ok := idleKept(issue, holds, facts); ok && kept.Before(at) {
+				at = kept
+			}
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds}, at: at})
 			continue
 		}
 		// A root whose tree is not open yet is in the second part whatever rows it owes: its
@@ -1471,14 +1742,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// The issue must need a slot where it stands (NeedsSlot), the same question the release
-		// of one asks, so that no issue the release would free is offered one here: an issue
-		// that owes a start its phase has moved past — a run that ended before its slot came,
-		// whose row the repair pass finishes (admit's finishFencedStarts) — waits for nothing
-		// and must not take a slot from an issue that does.
+		// The issue must need a slot where it stands (NeedsSlot, under the facts' own rule:
+		// LineFacts.NeedsSlot), the same question the release of one asks, so that no issue the
+		// release would free is offered one here: an issue that owes a start its phase has moved
+		// past — a run that ended before its slot came, whose row the repair pass finishes
+		// (admit's finishFencedStarts) — waits for nothing and must not take a slot from an issue
+		// that does.
 		root, recorded := byKey[issue.Tree]
 		_, running := live[issue.Tree]
-		if !recorded || !NeedsSlot(issue, root, running) {
+		if !recorded || !facts.NeedsSlot(issue, root, running) {
 			hold(issue)
 			continue
 		}
@@ -1500,9 +1772,27 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			if marked {
 				at, id = *issue.ReleasedForWaitAt, 0
 			}
+			on := facts.Waits[issue.Key]
+			// Under a rule with an idle return (SlotRule.IdleReturn) a marked issue that owes no
+			// start waits on its children and on a person too (IdleWaits): a root a person has
+			// not answered stands in no line until its answer, as every such root does, and an
+			// issue whose children are still at work stands at its mark, passed over until they
+			// are done or a worker of it is owed a start.
+			if _, ok := idleKept(issue, false, facts); ok && !owes {
+				open, person := IdleWaits(issue, issues)
+				if person {
+					hold(issue)
+					continue
+				}
+				on = slices.Clip(on)
+				for _, key := range open {
+					if !slices.Contains(on, key) {
+						on = append(on, key)
+					}
+				}
+			}
 			releasedForWait[issue.Key] = struct{}{}
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue,
-				Waits: facts.Waits[issue.Key]}, at: at, id: id})
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue, Waits: on}, at: at, id: id})
 			continue
 		}
 		if !owes {
@@ -1563,68 +1853,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		if _, waits := releasedForWait[issue.Key]; waits {
 			continue
 		}
-		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
-			hold(issue)
-			continue
-		}
-		// A member of a tree whose root waits for its promotion takes no first phase before that
-		// promotion opens the tree (inUnopenedTree). Such a root's gate is shut, and the gate's own
-		// skip below holds the member, but in two cases: a re-admitted root whose tree has no
-		// lifecycle open under the workflow, whose gate says nothing until its promotion (ran), and
-		// a root another tree handed over with an open gate (dispatch://INFRA-5471). A root whose
-		// label a person took off while its re-admission still owes its members their return takes
-		// no first phase of its own either: nothing hands its tree to the daemon, so the admission
-		// pass brings no member back (record.MembersReturnOwed), and a first phase would start its
-		// work ahead of them. A marked root that is still handed over is not held here: the pass
-		// brings its members back before the line is judged, and a root that pass passes over for
-		// the promotion's hold (admit's heldKeys) is offered its first phase here and stopped by
-		// the promotion loop through the same hold, so the candidates behind it keep waiting.
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) || inUnopenedTree(issue) ||
-			(issue.MembersOwed && !issue.HandedOver) {
-			hold(issue)
-			continue
-		}
-		// A root that handed work to a person starts nothing of its tree while it waits: its
-		// members start with its resume (admit's promotion of the answered root).
-		if root := byKey[issue.Tree]; root.AwaitingPerson() {
+		// The starting part's holds are one function's (FirstPhaseStartsNow), which reads each
+		// of them over the pass's own facts, so a reader outside the line asks the question the
+		// line asks. Each hold it reads is a skip that reports its row here.
+		_, waitingAsRoot := queuedKeys[issue.Key]
+		if !FirstPhaseStartsNow(issue, waitingAsRoot, heldFacts) {
 			hold(issue)
 			continue
 		}
 		gate := facts.Gates[issue.Tree]
-		if !gate.Open() {
-			hold(issue)
-			continue
-		}
-		// A child an unfinished Dispatch issue holds where it stands waits for that issue, not
-		// for a slot: offered one here it would take it from an issue that can work, and its own
-		// first phase would start on work its blocker has still to land. The architect above it is
-		// told when it starts, and the state names it under admission.blocked meanwhile.
-		if _, blocked := facts.Held[issue.Key]; blocked {
-			hold(issue)
-			continue
-		}
-		// A parent whose own Dispatch children are still open does its work after theirs
-		// (LineFacts.ChildWaits): offered a slot here it would build beside the children whose
-		// merges its own head is meant to carry. The architect that owns it is told once per issue
-		// and run of its tree when the wait begins (admit's tellChildrenFirst): the root's own
-		// architect for a root, and for a child the architect above it, since the child's own
-		// starts only with that first phase. A person's todo on a child that ran or was held starts
-		// and stops nothing (workflow's ReenterChild), so its own architect, if it held its role,
-		// still holds it and is told. The state names it under admission.blocked meanwhile.
-		if _, waits := facts.ChildWaits[issue.Key]; waits {
-			hold(issue)
-			continue
-		}
-		// An issue beneath an ancestor the daemon has already accepted waits while that ancestor
-		// stands in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
-		// head does not carry. A person's move of such an issue to todo records it here at
-		// admitted and leaves it here; the architect is told why when it enters. The chain is
-		// walked over the records above this pass's own as well, so that a parent already done
-		// does not hide the merging issue above it.
-		if HeldUnderAccepted(issue, chain) {
-			hold(issue)
-			continue
-		}
 		_, holds := slotted[issue.Key]
 		entry := LineEntry{Issue: issue, Kind: LineFirstPhase, Holds: holds}
 		// A tree's own root has held a slot since its architect began the design (KeepsSlot).
@@ -1645,8 +1882,57 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		starting = append(starting, entry)
 	}
+	// Each part is ordered as the facts' rule orders the line (SlotRule.Order). byRank is the
+	// board's order, which the starting part is read in under every rule: a root of its own tree
+	// compares by its own rank, which is its tree root's, and a child takes its tree root's place
+	// in the board's order and then its own. It is a strict order of distinct issues (RankLess
+	// breaks a tie of ranks by key), so a part sorted by it alone needs no tie of its own.
+	order := facts.Rule.OrMain().Order
+	byRank := func(left, right Issue) bool {
+		if left.Tree != right.Tree {
+			return RankLess(byKey[left.Tree], byKey[right.Tree])
+		}
+		return RankLess(left, right)
+	}
+	// arrivalOf is the moment issue arrived in the line in its current generation, which a rule
+	// that places by arrival reads (LineReworkFirst, LineArrival): the moment the facts hold
+	// (LineFacts.Arrivals), its first slot where they hold none (LineFacts.FirstSlots), and the
+	// moment its record last moved where they hold neither (Issue.MovedAt).
+	arrivalOf := func(issue Issue) time.Time {
+		if at, kept := facts.Arrivals[issue.Key]; kept {
+			return at
+		}
+		if at, kept := facts.FirstSlots[issue.Key]; kept {
+			return at
+		}
+		return issue.MovedAt
+	}
+	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot, and
+	// LineReworkFirst, which burns that work down first in, first out) places each entry by the
+	// moment of its issue's first slot in its current generation where the facts hold one
+	// (LineFacts.FirstSlots), and by the moment its work came back where they hold none; a tie of
+	// those moments falls to the daemon's own order below.
+	if order == LineReturnedByFirstSlot || order == LineReworkFirst {
+		for i := range returned {
+			first, kept := facts.FirstSlots[returned[i].entry.Issue.Key]
+			if !kept {
+				first = returned[i].at
+			}
+			returned[i].first = first
+		}
+	}
 	sort.Slice(returned, func(i, j int) bool {
 		left, right := returned[i], returned[j]
+		// A rule that places work that came back by the board's rank (LineReturnedByRank)
+		// orders the returned part as the starting part is ordered, and the moment the work came
+		// back still stands on the entry (LineEntry.Since) as what put it in this part, as it does
+		// under a rule that places it by first slots.
+		if order == LineReturnedByRank {
+			return byRank(left.entry.Issue, right.entry.Issue)
+		}
+		if !left.first.Equal(right.first) {
+			return left.first.Before(right.first)
+		}
 		if !left.at.Equal(right.at) {
 			return left.at.Before(right.at)
 		}
@@ -1655,14 +1941,58 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		return left.entry.Issue.Key < right.entry.Issue.Key
 	})
+	// A rule that puts first what started work waits on (LineBlockersFirst) places each issue of
+	// the starting part that an issue the daemon has started waits on (LineFacts.Waits) ahead of
+	// the rest of that part, each half in the board's order: the slot such a waiter gave back
+	// goes to the work that ends its wait. Under every other rule the set is empty and the part
+	// is the board's order alone.
+	var waitedOn map[string]struct{}
+	if order == LineBlockersFirst {
+		waitedOn = make(map[string]struct{})
+		for _, keys := range facts.Waits {
+			for _, key := range keys {
+				waitedOn[key] = struct{}{}
+			}
+		}
+	}
+	// A rule that burns down work in progress first (LineReworkFirst) places the issues of trees
+	// already open that have not started themselves (LineFirstPhase) ahead of the trees not yet
+	// opened (LineQueuedRoot): each tree by the moment its root first took a slot in its current
+	// generation (LineFacts.FirstSlots, the root's arrival where the facts hold none), a tie falling
+	// to the tree's key, and each issue within a tree by its own arrival (arrivalOf), a tie falling
+	// to its key. The trees not yet opened stand by the board after them.
+	treeStarted := func(issue Issue) time.Time {
+		if at, kept := facts.FirstSlots[issue.Tree]; kept {
+			return at
+		}
+		return arrivalOf(byKey[issue.Tree])
+	}
 	sort.Slice(starting, func(i, j int) bool {
 		left, right := starting[i].Issue, starting[j].Issue
-		// A root of its own tree compares by its own rank, which is its tree root's; a child
-		// takes its tree root's place in the board's order and then its own.
-		if left.Tree != right.Tree {
-			return RankLess(byKey[left.Tree], byKey[right.Tree])
+		_, leftFirst := waitedOn[left.Key]
+		_, rightFirst := waitedOn[right.Key]
+		if leftFirst != rightFirst {
+			return leftFirst
 		}
-		return RankLess(left, right)
+		if order == LineReworkFirst {
+			leftOpen, rightOpen := starting[i].Kind == LineFirstPhase, starting[j].Kind == LineFirstPhase
+			if leftOpen != rightOpen {
+				return leftOpen
+			}
+			if leftOpen {
+				if a, b := treeStarted(left), treeStarted(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				if left.Tree != right.Tree {
+					return left.Tree < right.Tree
+				}
+				if a, b := arrivalOf(left), arrivalOf(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				return left.Key < right.Key
+			}
+		}
+		return byRank(left, right)
 	})
 
 	// Each entry's part is the slice it ended in, set here rather than where the entry was
@@ -1673,31 +2003,135 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// (LineEntry.Since); and the rank that placed a starting entry is its tree root's, which the
 	// sort above read the same record for.
 	//
-	// Priority is the first key of the whole line: each entry stands in
-	// the band of the priority that places it (PriorityOf: its own, else its tree root's, else
-	// after P3), and within one band the returned part comes first, oldest first, and then the
-	// starting part by its tree root's rank and then its own, the order each part was just
-	// sorted into. So the two parts are laid out one after the other and sorted again by band
-	// alone, stably, which keeps that order within each band; an entry's place within its part
-	// counts within its band and part, read off that final order.
+	// Priority is the first key of the whole line under a rule that bands it (SlotRule.PriorityFirst,
+	// the daemon's own): each entry stands in the band of the priority that places it (PriorityOf:
+	// its own, else its tree root's, else after P3), and within one band the line keeps the rule's
+	// order, which under the daemon's own is the returned part first, oldest first, and then the
+	// starting part by its tree root's rank and then its own, the order each part was just sorted
+	// into. So the two parts are laid out one after the other, ordered whole where the rule orders
+	// the line whole (LineArrival), and sorted again by band alone, stably, which keeps that order
+	// within each band; an entry's place within its part counts within its band and part, read off
+	// that final order. Under a rule that does not band the line no priority places an entry, so
+	// each entry carries NoPriority (PlacingPriority) and its place counts within its part alone,
+	// and a reader of the entry's band (projection's parts) reads the one band the line has.
+	banded := facts.Rule.OrMain().PriorityFirst
+	placedBy := func(issue Issue) Priority {
+		return PlacingPriority(issue, byKey[issue.Tree], banded)
+	}
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for _, waiting := range returned {
 		entry := waiting.entry
-		entry.Part, entry.Since, entry.Priority = PartReturned, waiting.at, PriorityOf(entry.Issue, byKey[entry.Issue.Tree])
+		entry.Part, entry.Since, entry.Priority = PartReturned, waiting.at, placedBy(entry.Issue)
 		line = append(line, entry)
 	}
 	for _, entry := range starting {
-		entry.Part, entry.RootRank, entry.Priority = PartStarting, byKey[entry.Issue.Tree].Rank, PriorityOf(entry.Issue, byKey[entry.Issue.Tree])
+		entry.Part, entry.RootRank, entry.Priority = PartStarting, byKey[entry.Issue.Tree].Rank, placedBy(entry.Issue)
 		line = append(line, entry)
 	}
-	sort.SliceStable(line, func(i, j int) bool { return line[i].Priority.band() < line[j].Priority.band() })
+	// A rule with one queue in arrival order (LineArrival) keeps each entry's part, which says what
+	// kind of work it is, and orders the whole line by each issue's arrival (arrivalOf), with no
+	// part ahead of another and no rank; a tie falls to the key, and the line carries each issue
+	// once, so the order is strict.
+	if order == LineArrival {
+		sort.Slice(line, func(i, j int) bool {
+			if a, b := arrivalOf(line[i].Issue), arrivalOf(line[j].Issue); !a.Equal(b) {
+				return a.Before(b)
+			}
+			return line[i].Issue.Key < line[j].Issue.Key
+		})
+	}
+	if banded {
+		sort.SliceStable(line, func(i, j int) bool { return line[i].Priority.band() < line[j].Priority.band() })
+	}
+	// places counts the entries met so far of each band and part, by band (1 to 5, Priority.band)
+	// and part (1 or 2, LinePart).
+	var places [6][3]int
 	for i := range line {
-		line[i].PartPlace = 1
-		if i > 0 && line[i-1].Priority == line[i].Priority && line[i-1].Part == line[i].Part {
-			line[i].PartPlace = line[i-1].PartPlace + 1
-		}
+		band := line[i].Priority.band()
+		places[band][line[i].Part]++
+		line[i].PartPlace = places[band][line[i].Part]
 	}
 	return line, heldRows
+}
+
+// FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,
+// waiting on no person and in the workflow by its status. It is the first test of
+// FirstPhaseStartsNow, the one that reads the issue's own record alone, so a reader holding no
+// facts of a pass asks it here: an issue finished, past its first phase or out of the workflow
+// cannot take its first start.
+func FirstPhaseMayStart(issue Issue) bool {
+	return issue.Phase == phase.Admitted && !issue.AwaitingPerson() && !OutOfWorkflow(issue.Status)
+}
+
+// FirstPhaseStartsNow says whether issue's first phase may start now, by the facts of the pass
+// that builds the waiting line (line, as Waiting builds them over its issues): every hold of the
+// line's starting part, read in Waiting's order. queued says whether issue is a root that waits
+// for its tree to be opened (QueuedRoot over its tree's lifecycle and its own gate), which its
+// promotion starts and not this branch. It is the one statement of those holds: Waiting reads it
+// of each issue it may offer a first phase, and a replay of a recorded window reads it of each
+// issue whose recorded first start it has still to make, to rank that issue's tree by a start the
+// daemon would make.
+//
+// The issue must stand where its first phase can start (FirstPhaseMayStart), and its tree must
+// run: its root recorded among the pass's issues, not lingering, and live, since the line is
+// work the daemon is about to start and a tree that has left runs nothing. A root that handed
+// work to a person starts nothing of its tree while it waits: its members start with its resume
+// (admit's promotion of the answered root). The tree's design gate must stand open.
+//
+// A member of a tree whose root waits for its promotion takes no first phase before that
+// promotion opens the tree (HeldFacts.Unopened). Such a root's gate is shut, and the gate's own
+// hold holds the member, but in two cases: a re-admitted root whose tree has no lifecycle open
+// under the workflow, whose gate says nothing until its promotion (ran), and a root another tree
+// handed over with an open gate (cybermonklabs/legion#5303). A root whose label a person took off
+// while its re-admission still owes its members their return takes no first phase of its own
+// either: nothing hands its tree to the daemon, so the admission pass brings no member back
+// (MembersReturnOwed), and a first phase would start its work ahead of them. A marked root that
+// is still handed over is not held here: the pass brings its members back before the line is
+// judged, and a root that pass passes over for the promotion's hold (admit's heldKeys) is offered
+// its first phase here and stopped by the promotion loop through the same hold, so the candidates
+// behind it keep waiting.
+//
+// A child an unfinished Dispatch issue holds where it stands (LineFacts.Held) waits for that
+// issue, not for a slot: offered one it would take it from an issue that can work, and its own
+// first phase would start on work its blocker has still to land. The architect above it is told
+// when it starts, and the state names it under admission.blocked meanwhile.
+//
+// A parent whose own Dispatch children are still open does its work after theirs
+// (LineFacts.ChildWaits): offered a slot it would build beside the children whose merges its own
+// head is meant to carry. The architect that owns it is told once per issue and run of its tree
+// when the wait begins (admit's tellChildrenFirst): the root's own architect for a root, and for
+// a child the architect above it, since the child's own starts only with that first phase. A
+// person's todo on a child that ran or was held starts and stops nothing (workflow's
+// ReenterChild), so its own architect, if it held its role, still holds it and is told. The state
+// names it under admission.blocked meanwhile.
+//
+// An issue beneath an ancestor the daemon has already accepted waits while that ancestor stands
+// in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
+// head does not carry. A person's move of such an issue to todo records it at admitted and leaves
+// it there; the architect is told why when it enters. The chain is walked over the records above
+// the pass's own as well (HeldFacts.Chain), so that a parent already done does not hide the
+// merging issue above it.
+func FirstPhaseStartsNow(issue Issue, queued bool, line HeldFacts) bool {
+	if !FirstPhaseMayStart(issue) || queued {
+		return false
+	}
+	root, recorded := line.ByKey[issue.Tree]
+	if _, live := line.Live[issue.Tree]; !recorded || root.Lingers() || !live {
+		return false
+	}
+	if _, unopened := line.Unopened[issue.Tree]; unopened || (issue.MembersOwed && !issue.HandedOver) {
+		return false
+	}
+	if root.AwaitingPerson() || !line.Facts.Gates[issue.Tree].Open() {
+		return false
+	}
+	if _, blocked := line.Facts.Held[issue.Key]; blocked {
+		return false
+	}
+	if _, waits := line.Facts.ChildWaits[issue.Key]; waits {
+		return false
+	}
+	return !HeldUnderAccepted(issue, line.Chain)
 }
 
 // WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the
@@ -1725,6 +2159,20 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 		}
 	}
 	return queued
+}
+
+// unopenedRoots is the roots of queued (queuedRoots) whose promotion has still to open their tree
+// (AwaitsPromotion), by key, slotted being the keys that hold a slot row: Waiting's unopened set,
+// written once so that the line and a reader that asks the line's question outside it
+// (HeldFactsOf) read the same roots.
+func unopenedRoots(queued []Issue, slotted map[string]struct{}, facts LineFacts) map[string]struct{} {
+	unopened := make(map[string]struct{}, len(queued))
+	for _, issue := range queued {
+		if _, holds := slotted[issue.Key]; AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
+			unopened[issue.Key] = struct{}{}
+		}
+	}
+	return unopened
 }
 
 // QueuedRoot says whether issue is a root handed to Legion that waits in the line for its tree

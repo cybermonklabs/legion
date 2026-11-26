@@ -1,0 +1,127 @@
+[
+  {
+    "event": "committed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "cross-referenced"
+  },
+  {
+    "event": "labeled"
+  },
+  {
+    "event": "closed"
+  },
+  {
+    "event": "reopened"
+  },
+  {
+    "event": "unlabeled"
+  },
+  {
+    "event": "closed"
+  },
+  {
+    "event": "reopened"
+  },
+  {
+    "event": "reviewed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "renamed"
+  },
+  {
+    "event": "reviewed"
+  },
+  {
+    "event": "commented"
+  },
+  {
+    "event": "labeled"
+  },
+  {
+    "event": "closed"
+  },
+  {
+    "event": "reopened"
+  },
+  {
+    "event": "cross-referenced"
+  },
+  {
+    "id": 36963821391,
+    "node_id": "ATMQE_lADORFy7ds8AAAABhZEFKc8AAAAImzcnTw",
+    "url": "https://api.github.com/repos/cybermonklabs/legion/issues/events/36963821391",
+    "actor": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "added_to_merge_queue",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-11-23T02:36:07Z",
+    "performed_via_github_app": null
+  },
+  {
+    "id": 37040372393,
+    "node_id": "RFMQE_lADORFy7ds8AAAABhZEFKc8AAAAIn8c6qQ",
+    "url": "https://api.github.com/repos/cybermonklabs/legion/issues/events/37040372393",
+    "actor": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "removed_from_merge_queue",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-11-23T17:55:05Z",
+    "performed_via_github_app": null
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "reviewed"
+  }
+]

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -91,12 +92,12 @@ func TestTheTickRereadReadsTheChildrenOfAnIssueWhosePhasesStarted(t *testing.T) 
 	t.Run("above the single-read bound", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{summaries: []dispatch.IssueSummary{filed}}
-		for i := 1; i <= blockerReadFanout+1; i++ {
+		for i := 1; i <= blockers.ReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "in_progress", LastSeq: 1})
 		}
 		w := tickRuntime(t, pool, client)
 		seedStartedParent(t, pool, startedParent)
-		seedBlockedRoots(t, pool, blockerReadFanout+1)
+		seedBlockedRoots(t, pool, blockers.ReadFanout+1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 

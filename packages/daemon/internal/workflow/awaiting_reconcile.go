@@ -36,7 +36,7 @@ import (
 // decideAwait's rule 0); the wait itself keeps that row (record.KeepsSlot). For an admitted
 // root the work it hands over is the architect writing the spec, before
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
-// the roots this pass can move (the daemon's catchesUp) by that same predicate.
+// the roots this pass can move (record.CatchesUp) by that same predicate.
 func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
 	changed, err := e.answerOpenGates(ctx, tx, issues, held)
 	if err != nil {
@@ -338,7 +338,7 @@ type awaitDecision struct {
 // its first slot holds none, so it starts no wait however its architect's hand-back stands —
 // a re-admitted root the old architect declared on again before the linger's suspend ran is
 // kept out by this rule, not by rule 1. The boot's catch-up of the roots this pass can move
-// calls the same predicate (the daemon's catchesUp).
+// calls the same predicate (record.CatchesUp).
 //
 // The predicate reads the design gate as well, because a root whose gate has opened waits for
 // its children by the children-first rule: the row says the daemon started the root and nothing

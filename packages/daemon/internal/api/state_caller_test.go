@@ -410,6 +410,23 @@ func withoutPausedKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutSlotsReadingBody is a state body without the five keys slotsReadingContract added, which
+// is what a caller below that contract is served of a state (api's withoutSlotsReading,
+// withoutRanksAndSlotStates). It serves the table below as withoutQuietKeys does.
+func withoutSlotsReadingBody(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	withoutSlotsReadingKeys(served)
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its slots reading: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -997,6 +1014,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.caches {
 					want = withoutCachesSources(t, want)
 				}
+				if tc.contract < entryNumber(slotsReadingContract) {
+					want = withoutSlotsReadingBody(t, want)
+				}
 				if !tc.giveUps {
 					want = withoutIntakeGiveUpsKey(t, want)
 				}
@@ -1079,6 +1099,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			delete(want, "contract")
 			delete(want, "paused")
 			delete(want, "dispatchCredential")
+			// And with the slots reading gone, the five keys slotsReadingContract added
+			// (withoutSlotsReading, withoutRanksAndSlotStates).
+			withoutSlotsReadingKeys(want)
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

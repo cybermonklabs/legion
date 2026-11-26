@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T02:22:11.479739820Z",
+    "jsonPayload": {
+      "issue": "ACME-13",
+      "level": "INFO",
+      "msg": "workflow: root waits on a person and keeps its admission slot",
+      "reason": "spec version 20 is awaiting a person's review",
+      "since_seq": 111,
+      "time": "2026-11-21T02:22:11.47949729Z",
+      "tree": "ACME-13"
+    }
+  }
+]

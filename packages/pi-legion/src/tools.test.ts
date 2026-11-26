@@ -3188,6 +3188,25 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
 });
 
+// What the controller reads of the slots in `read_state` with no field (spec R6): the slots line
+// the daemon wrote, on the line after the admission cap, and the legend naming it. A summary that
+// leaves the line out, or prints another, gives the controller another reading than the one
+// `legion state` prints and the tick notice carries. The state is the daemon's golden, read
+// through the client.
+test("read_state's summary prints the slots line", async () => {
+  const { admission } = daemonFixture("state.json") as {
+    readonly admission: { readonly slots: { readonly line: string } };
+  };
+  const lines = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+
+  const capLine = lines.indexOf("admission cap 5");
+  expect(capLine).toBeGreaterThan(0);
+  expect(lines[capLine + 1]).toBe(admission.slots.line);
+  expect(lines.filter((line) => line.startsWith("slots: "))).toEqual([admission.slots.line]);
+  // The legend says what each line of the summary is, the slots line among them.
+  expect(lines[0]).toContain("slots");
+});
+
 // What the controller reads of the intake's give-ups in `read_state` with no field: one line for
 // each consumer with open give-ups, with how many and the newest stream sequence among them, which
 // is the throughSeq of a replay or a discard of all of them, and one line saying none is open.

@@ -1,0 +1,90 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T16:00:00Z",
+      "unplaced": 0,
+      "done": 2,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0.21428571428571427,
+        "max": 1,
+        "hours": 1.5
+      },
+      "startedWithoutSlot": {
+        "average": 0.35714285714285715,
+        "max": 1,
+        "hours": 2.5
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.2857142857142857,
+        "max": 1,
+        "hours": 2
+      },
+      "priorityTaken": 0.21428571428571427,
+      "priorityTakenBanded": 0.21428571428571427,
+      "loops": {},
+      "waits": {
+        "child_moved_out": {
+          "count": 1,
+          "hours": 1
+        }
+      },
+      "slotHoursInTurn": 5.416666666666667,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 1.4166666666666667,
+        "max": 2,
+        "hours": 9.916666666666666
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 3
+      },
+      "medianSlotWaitMinutes": 20,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z",
+        "ACME-3": "2001-03-05T09:30:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T15:30:00Z",
+        "ACME-3": "2001-03-05T13:00:00Z"
+      },
+      "assumptions": [1, 2, 4, 9, 10, 11, 17],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      }
+    }
+  }
+}

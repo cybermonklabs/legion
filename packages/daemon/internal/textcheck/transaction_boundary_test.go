@@ -76,6 +76,21 @@ var allowances = []allowance{
 	{"internal/store", "(*Store).apply", "R1", 1},
 	// DISCARD ALL and pgx's DeallocateAll on the migration's connection before it goes back.
 	{"internal/store", "releaseMigrationConn", "R3", 2},
+	// A replay's own database is made and dropped on a connection of its own to the database its
+	// DSN names, which holds nothing of the daemon's: CREATE DATABASE and DROP DATABASE run in no
+	// transaction block, so neither can go through Transact. The same connection then sets the new
+	// database's synchronous_commit, which must be set before the run's own pool opens on it. That
+	// connection is one *pgx.Conn, on which Transact's read of a lost commit's outcome has no second
+	// connection to read on (internal/ompsessions' reason below).
+	{"internal/replay", "openReplayDatabase", "R3", 2},
+	{"internal/replay", "(replayDatabase).drop", "R3", 1},
+	// The template a replay's database is copied from is made on that same connection, once for
+	// each set of migrations: a session advisory lock, taken and released there, spans the read of
+	// whether the template stands, its CREATE DATABASE, which runs in no transaction block, and the
+	// ALTER DATABASE that closes it to connections and renames it to its keyed name, one statement
+	// string the server runs as one implicit transaction. No transaction of Transact's can hold a
+	// lock across a CREATE DATABASE, and the connection is the one *pgx.Conn above.
+	{"internal/replay", "replayTemplate", "R3", 5},
 }
 
 // excludedPackages are the packages the guard does not walk, each with its reason.

@@ -580,7 +580,7 @@ func pwMoves(t *testing.T) []pwMove {
 func pwHoldsMove(t *testing.T, move pwMove) {
 	pool := migratedPool(t)
 	admission := pwAdmission(t, 2)
-	spSeedParent(t, pool, spParent, move.from, record.PhaseKeepsSlot(move.from), nil)
+	spSeedParent(t, pool, spParent, move.from, record.MainRule.PhaseKeepsSlot(move.from), nil)
 	pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 	seedMirrorChild(t, pool, spChild, "todo", spParent)
 	if move.seed != nil {
@@ -677,7 +677,7 @@ func pwPaths(t *testing.T) []pwPath {
 		paths = append(paths, pwPath{name: move.name, at: move.from,
 			seed: func(t *testing.T, pool *pgxpool.Pool) *Admission {
 				admission := pwAdmission(t, 2)
-				spSeedParent(t, pool, spParent, move.from, record.PhaseKeepsSlot(move.from), nil)
+				spSeedParent(t, pool, spParent, move.from, record.MainRule.PhaseKeepsSlot(move.from), nil)
 				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 				if move.seed != nil {
 					move.seed(t, pool)

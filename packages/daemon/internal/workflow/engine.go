@@ -174,6 +174,12 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// SlotRule is the slot rule this engine's transitions read (record.SlotRule): the slot mark
+	// each start of a phase worker carries (StartOrOwe) and the rows of the moves a conflicting
+	// head makes, which each issue's walk adds to the table of its line (TableFor, Walk). The zero
+	// value is the daemon's own rule (record.SlotRule.OrMain), which every engine a caller builds
+	// without one runs; a replay of a recorded window sets the rule it replays.
+	SlotRule record.SlotRule
 	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
 	// working copy, which the task of each start and resume of a phase's worker names (the working
 	// copy line of task and of resumeText). The daemon reads it from the runtime it runs
@@ -183,12 +189,19 @@ type Config struct {
 	WorkspaceDir func(record.Issue) string
 }
 
-// Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)
-// and writes only records and outbox rows through the supplied Store.
+// Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line,
+// with the rows its slot rule adds: TableFor over Config.SlotRule) and writes only records and
+// outbox rows through the supplied Store.
 type Engine struct {
 	store record.Store
 	cfg   Config
 	log   *slog.Logger
+	// conflict is the trigger by which this engine's slot rule moves a conflicting head back to
+	// implementing (conflictTrigger), "" under the daemon's own rule, whose conflicting head keeps
+	// its phase. Each walk the engine reads carries it (walk), so the table of the walk's line has
+	// that move's rows (Walk.table, TableFor). It is read once here: the rule is the engine's for
+	// its whole life.
+	conflict TriggerKind
 	// droppedSettlements is the identities of the checks settlements whose drop checks has logged,
 	// the last intake.DroppedSettlementsKept of them (logDroppedSettlement). It is marked once a
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
@@ -199,7 +212,8 @@ type Engine struct {
 var _ intake.Handler = (*Engine)(nil)
 
 // New constructs a workflow engine, taking the shipped review round cap, production check bound,
-// default steps and clock for every one of them a caller omits.
+// default steps and clock for every one of them a caller omits, and the daemon's own slot rule
+// (record.MainRule) where it names none.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
@@ -219,10 +233,24 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
+	cfg.SlotRule = cfg.SlotRule.OrMain()
+	conflict, _ := conflictTrigger(cfg.SlotRule)
+	return &Engine{store: store, cfg: cfg, log: log, conflict: conflict,
+		droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
+
+// SlotRule is the slot rule this engine runs (Config.SlotRule, the daemon's own where its caller
+// named none): the rule the admission pass that shares the engine judges by too, so the slot mark
+// of each start, the transition table and the pass's judgement all read one rule.
+func (e *Engine) SlotRule() record.SlotRule { return e.cfg.SlotRule }
+
+// PhaseHeldLine is the line the engine writes once its fact commits at each move into held
+// (claimFailed) and at each escalation of a hold (retryOrEscalate), naming the issue, its tree,
+// the phase it was held from, the role and the reason. A replay of a recorded window starts a
+// hold at this line (internal/replay's PhaseHeld).
+const PhaseHeldLine = "workflow: a phase is held"
 
 // ExperimentSource is the random source every `random` experiment is drawn with
 // (Config.ExperimentSource): this engine's draw of each child it records, and admission's of each
@@ -611,17 +639,42 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		return e.restartTask(ctx, tx, released, w, restartReason)
 	}
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, ReleaseReason, false)
 	if err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
 
-// releaseReason is the daemon's own reason for that release, which the restarted role's task and
+// ReleaseReason is the daemon's own reason for that release, which the restarted role's task and
 // the log line of the release both carry: it names the status write that made it, since no caller
-// of the status route names a reason of its own (R7).
-const releaseReason = "the issue was set to todo while its phase was held"
+// of the status route names a reason of its own (R7). A replay of a recorded window reads the
+// release of a held root by it.
+const ReleaseReason = "the issue was set to todo while its phase was held"
+
+// OperatorRetryReason is the reason of the operator's retry of a phase (restartPhase), which the
+// restarted role's task and the log line of the retry carry, and by which a replay of a recorded
+// window tells that retry from the release of a hold.
+const OperatorRetryReason = "the operator retried this phase's worker"
+
+// SignOffChildInWorkflow is the code of the refusal of a sign-off (signOff) and of a tree's close
+// (closeRoot) while an issue beneath is still in the workflow, which a replay of a recorded window
+// reads as a held sign-off.
+const SignOffChildInWorkflow = "SIGNOFF_CHILD_IN_WORKFLOW"
+
+// SignOffHeld says whether code is the code of a refusal of a sign-off that holds it for the work
+// under the issue rather than refusing it: an issue beneath still in the workflow
+// (SignOffChildInWorkflow), a root that rests on its approval still in the workflow, an open
+// Dispatch child, or the parent's own wait in awaiting_children on its open children
+// (the spec of #4592, R8 and R11). A replay of a recorded window reads each as a held sign-off,
+// which it applies again as the work under the issue moves.
+func SignOffHeld(code string) bool {
+	switch code {
+	case SignOffChildInWorkflow, signOffRestingRoot, signOffChildOpen, waitingOnChildren:
+		return true
+	}
+	return false
+}
 
 // restartReason is the daemon's own reason for a todo's end of a stopped task's stop, which the task
 // of its first step's worker and the log line of the restart carry, for the same reason, and the log
@@ -1369,6 +1422,18 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
+	// The hold's beginning is kept beside it (record.Hold.Since), the time `legion state` and the
+	// tick's slots reading date a held holder's `stopped` by. This is the one move into held, so
+	// the row always dates the hold the issue stands in.
+	if err := e.store.MarkHoldBegan(ctx, tx, issue.Key, e.now()); err != nil {
+		return intake.Result{}, err
+	}
+	// The hold's beginning is a line of its own once the fact commits, so a window of the daemon's
+	// log read later says when the phase stopped and why: the cause the failed claim names, or
+	// unrecorded for a fact that names none (noticeFailure). A replay of the window starts the
+	// hold at this line, which a phase changed line does not carry.
+	e.logOnCommit(ctx, PhaseHeldLine, "issue", issue.Key, "tree", issue.Tree, "from", from,
+		"role", fact.Role, "reason", cmp.Or(string(fact.Cause), string(supervise.CauseUnrecorded)))
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
 		Failure: failure}); err != nil {
 		return intake.Result{}, err
@@ -2251,6 +2316,12 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 			return intake.Result{}, err
 		}
+		// The escalation is a line of its own once the fact commits, as the hold's beginning is
+		// (claimFailed): it is the moment the hold became the controller's to act on. The role is
+		// the held phase's, as the held notice names it (HeldNotice).
+		held := HeldNotice(*issue)
+		e.logOnCommit(ctx, PhaseHeldLine, "issue", issue.Key, "tree", issue.Tree, "from", held.Phase,
+			"role", held.Role, "reason", held.Reason)
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it
 		// acts on. They travel in a field of their own, since Reason is the word `escalated`
@@ -2300,7 +2371,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
+	_, err = e.retryPhase(ctx, tx, *issue, working, OperatorRetryReason, fact.FreshSession)
 	return intake.Result{}, err
 }
 
@@ -2540,7 +2611,7 @@ const childrenLeave = "A child you released and a child you did not release leav
 // work under it, by their refusal codes, in the order the daemon answers them when more than one
 // holds (dispatch://INFRA-3320, R8).
 const (
-	signOffChildInWorkflow = "SIGNOFF_CHILD_IN_WORKFLOW"
+	signOffChildInWorkflow = SignOffChildInWorkflow
 	signOffRestingRoot     = "SIGNOFF_RESTING_ROOT_IN_WORKFLOW"
 	signOffChildOpen       = "SIGNOFF_CHILD_OPEN"
 )
@@ -3127,6 +3198,10 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and no verdict and cannot tell it from a worker that finished its phase.
+//
+// A move back by a slot rule's conflict path (TriggerConflict, TriggerChecksRed:
+// conflictMovesBack) is told the same way, as the phase left with the reason the head moved it,
+// since no worker finished that phase and no handoff row says why.
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
@@ -3134,6 +3209,9 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+	case TriggerConflict, TriggerChecksRed:
+		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
+			Reason: fmt.Sprintf("moved back to %s: %s", to, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}

@@ -3386,6 +3386,60 @@ Run them only when every daemon of the database is stopped, and roll back every 
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
 
+#### Rolling back the release that reads the slots
+
+This release reads what each holder of an admission slot is doing, and since when: the slots reading of `legion state`, of `admission.slots` in its JSON body, and of the field `slots` of the controller's tick notice.
+Its migration `20261121103000_slots_reading_times` adds the three times that reading dates a holder by, which the record did not hold before.
+The table `issue_holds` holds when the hold of a held issue began.
+The table `slot_waits` holds when a slot holder began to wait on another issue while it keeps its slot.
+The column `claims.stopped_at` holds when a suspended or a retired claim stopped.
+The earlier release names none of the three, so after a rollback each would go stale.
+
+Stop every daemon of the database before running the rollback steps.
+If the target image predates the production-check backoff, first run the way back in `20261125000600_production_check_failed_looks.up.sql`.
+It removes `wakeAt` from queued `check_wake` rows, drops the counter, and removes the migration's version row.
+If the target image predates step-record variants, also follow [Rolling back the release that names the variant on each step record](#rolling-back-the-release-that-names-the-variant-on-each-step-record) for each project before restarting its daemon.
+
+**A queued tick notice that carries `slots` must go before the earlier image is pinned.**
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no field `slots`.
+A tick notice still queued at the rollback then fails on every attempt, and the tick reaches nobody.
+Run this with every daemon of the database stopped, before the earlier image is pinned, through `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`:
+
+```sql
+begin;
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tick' and payload ? 'slots';
+drop table if exists slot_waits;
+drop table if exists issue_holds;
+alter table claims drop column if exists stopped_at;
+delete from schema_version where version = 20261121103000;
+commit;
+```
+
+The header of `20261121103000_slots_reading_times.up.sql` carries this same block.
+The delete costs one tick: the next tick of the daemon that runs queues another.
+The delete of the version row is what lets the roll forward run the migration again.
+After the roll forward, each state that began before it reads with no time, as at the first upgrade.
+
+The claim cause times migration, `20261124073512_claim_cause_times`, needs no rollback SQL.
+Leave its four cause time and digest columns and its version row in place.
+The slots rollback above removes only `claims.stopped_at` from `claims`.
+If the earlier daemon predates the cause times, it can rewrite a cause without updating its time or digest.
+After a roll forward, the daemon suppresses a time whose digest does not match the current cause, and a start failure time that predates the last ready.
+A rewrite with identical cause text can still show the older time until this release records the next cause of that kind.
+
+The release teardown migration, `20261124143026_issue_release_teardown`, also needs no rollback SQL.
+Leave its columns, index, and version row in place.
+If the earlier daemon predates that migration, its release marks default to `reached`, and its release records name no mark, so the unique index does not cover them.
+
+The issue pod disks migration, `20261124182040_issue_pod_disks`, needs no rollback SQL either.
+Leave its table `issue_pod_disks` and its version row in place.
+If the earlier daemon predates that migration, it writes no row of the table and deletes none.
+After a roll forward, the first pod of a kept volume this release records is not marked as holding the work of the pods of that volume that ran under the earlier daemon, since those left no row.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the two tables, the claims table and the outbox hold the rows of every project.
+Upgrade, and roll back, every daemon of one database in the same change.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3965,6 +4019,7 @@ The migrations recorded above this one are these.
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
+20261121103000_slots_reading_times, of cybermonklabs/legion#4771, adds the tables `issue_holds` and `slot_waits` and the column `claims.stopped_at`, and touches none of the six, so the block holds over it, and a rollback to a release before it runs the way back of its own section first, [Rolling back the release that reads the slots](#rolling-back-the-release-that-reads-the-slots), which deletes the queued tick notices that carry `slots`, drops the two tables and the column and deletes its version row.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261122154643_outbox_kinds_with_the_basis_seeds, of dispatch://INFRA-3320, writes the outbox's kind check again with `pending_basis_seed` and `reparent_seed` added to the design news's list and touches none of the six, so the block holds over it, and a rollback to a release before it deletes the rows of both kinds as [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open) says and deletes no version row, so after the eleven statements a store that cybermonklabs/legion#4592's release migrated still records it.
 20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.

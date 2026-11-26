@@ -1,0 +1,11 @@
+[
+  {
+    "timestamp": "2026-11-21T01:54:55.884757308Z",
+    "jsonPayload": {
+      "level": "INFO",
+      "msg": "legion workflow boot stage",
+      "stage": "prompts",
+      "time": "2026-11-21T01:54:55.884463509Z"
+    }
+  }
+]

@@ -505,6 +505,12 @@ type Notice struct {
 	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
 	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
+	// Slots is the project's slots reading at the tick (SlotsReading): what the slots in use are
+	// spent on, the started work that waits without a slot and the holders that rank below the
+	// first issue that waits for one, with the sentence `legion state` prints for it. Only a tick
+	// controller notice carries it, as Silent is carried: the tick is the turn that posts the
+	// day's report, and the reading is read there from the same function the state reads it from.
+	Slots *SlotsReading `json:"slots,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
@@ -1340,8 +1346,8 @@ type SuperviseRequest struct {
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
-	// that waits for its issue's admission slot. The cap counts the issues the daemon has
+	// NeedsSlot marks a start whose phase holds one of the cap's slots (SlotRule.PhaseKeepsSlot)
+	// as one that waits for its issue's admission slot. The cap counts the issues the daemon has
 	// started whose change is still to write, so what it must bound is the start of a phase that
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's
@@ -2782,6 +2788,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
 		}
+		if value.Slots != nil {
+			return fmt.Errorf("a %s notice carries a slots reading; only the controller's tick notice does", value.Kind)
+		}
 		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
 			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
 		}
@@ -2819,6 +2828,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
+		}
+		if value.Kind != TickNotice && value.Slots != nil {
+			return fmt.Errorf("a %s notice carries a slots reading only when it is a tick", value.Kind)
 		}
 		pauseKind := value.Kind == ProjectPausedNotice || value.Kind == ProjectResumedNotice
 		if pauseKind != (value.Pause != nil) {

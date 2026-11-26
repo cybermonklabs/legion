@@ -1,0 +1,52 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "rank",
+        "rootRank",
+        "slot.since",
+        "slot.state"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "admission.slots",
+        "admission.slots.belowFirstWaiting",
+        "admission.slots.belowFirstWaiting.count",
+        "admission.slots.belowFirstWaiting.first",
+        "admission.slots.cap",
+        "admission.slots.idle",
+        "admission.slots.idle.count",
+        "admission.slots.idle.oldest",
+        "admission.slots.inUse",
+        "admission.slots.issue",
+        "admission.slots.issue.count",
+        "admission.slots.line",
+        "admission.slots.person",
+        "admission.slots.person.count",
+        "admission.slots.person.oldest",
+        "admission.slots.startedWithoutSlot",
+        "admission.slots.startedWithoutSlot.count",
+        "admission.slots.startedWithoutSlot.oldest",
+        "admission.slots.stopped",
+        "admission.slots.stopped.count",
+        "admission.slots.stopped.oldest",
+        "admission.slots.waitOnlyForSlot",
+        "admission.slots.waitOnlyForSlot.count",
+        "admission.slots.waitOnlyForSlot.oldest",
+        "admission.slots.working",
+        "admission.slots.working.count",
+        "admission.slots.working.oldest",
+        "issues.*.rank",
+        "issues.*.rootRank",
+        "issues.*.slot.since",
+        "issues.*.slot.state"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

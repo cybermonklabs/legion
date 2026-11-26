@@ -1,0 +1,245 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:55:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 3,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.6857142857142857,
+        "max": 1,
+        "hours": 0.4
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {
+        "open": {
+          "count": 1,
+          "hours": 0.5833333333333334
+        }
+      },
+      "slotHoursInTurn": 0.9833333333333333,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 2.3714285714285714,
+        "max": 3,
+        "hours": 1.3833333333333333
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-2": "2001-03-05T10:31:00Z",
+        "ACME-3": "2001-03-05T10:31:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 4, 6, 7, 9, 10, 11, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 11,
+            "p90Minutes": 11,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 35,
+            "p90Minutes": 35,
+            "cut": 1
+          }
+        }
+      },
+      "from": "2001-03-05T10:20:00Z"
+    },
+    "signals": {
+      "source": "replay",
+      "rule": "signals",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:55:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 3,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.6857142857142857,
+        "max": 1,
+        "hours": 0.4
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {
+        "open": {
+          "count": 1,
+          "hours": 0.5833333333333334
+        }
+      },
+      "slotHoursInTurn": 0.8333333333333334,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 2.1142857142857143,
+        "max": 3,
+        "hours": 1.2333333333333334
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 4.5,
+      "firstSlot": {
+        "ACME-2": "2001-03-05T10:31:00Z",
+        "ACME-3": "2001-03-05T10:40:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 4, 6, 7, 9, 10, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 1,
+          "firstSlot": {
+            "medianMinutes": 11,
+            "p90Minutes": 11,
+            "cut": 0
+          },
+          "done": {
+            "medianMinutes": 35,
+            "p90Minutes": 35,
+            "cut": 1
+          }
+        }
+      },
+      "from": "2001-03-05T10:20:00Z"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T10:31:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": 2,
+            "approvals": null
+          }
+        },
+        "deadlines": [],
+        "slotPasses": [
+          {
+            "issue": "ACME-1",
+            "at": "2001-03-05T10:31:00Z",
+            "action": "take",
+            "passKind": "tick"
+          },
+          {
+            "issue": "ACME-2",
+            "at": "2001-03-05T10:31:00Z",
+            "action": "give",
+            "passKind": "tick"
+          },
+          {
+            "issue": "ACME-3",
+            "at": "2001-03-05T10:31:00Z",
+            "action": "give",
+            "passKind": "tick"
+          }
+        ]
+      }
+    },
+    "signals": {
+      "run": {
+        "limits": {
+          "kills": 2
+        },
+        "ceiling": 3,
+        "slotPasses": [
+          {
+            "issue": "ACME-1",
+            "at": "2001-03-05T10:31:00Z",
+            "action": "take",
+            "passKind": "tick"
+          },
+          {
+            "issue": "ACME-2",
+            "at": "2001-03-05T10:31:00Z",
+            "action": "give",
+            "passKind": "tick"
+          },
+          {
+            "issue": "ACME-3",
+            "at": "2001-03-05T10:40:00Z",
+            "action": "give",
+            "passKind": "deadline"
+          }
+        ],
+        "deadlines": [
+          {
+            "action": "set",
+            "at": "2001-03-05T10:31:00Z",
+            "due": "2001-03-05T10:40:00Z",
+            "signal": "kills"
+          },
+          {
+            "action": "fired",
+            "at": "2001-03-05T10:40:00Z",
+            "due": "2001-03-05T10:40:00Z",
+            "signal": "kills"
+          }
+        ],
+        "signalValues": {
+          "2001-03-05T10:31:00Z": {
+            "kills": 2
+          },
+          "2001-03-05T10:40:00Z": {
+            "kills": 1
+          }
+        }
+      }
+    }
+  }
+}

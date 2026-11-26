@@ -876,7 +876,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
-	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
+	return startOrOwe(ctx, tx, e.store, e.cfg.SlotRule, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
 		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
 		FreshSession: marks.freshSession}, e.now(), move)
@@ -928,10 +928,11 @@ const (
 // `awaiting_merge` cutover left released (cutoverMergerRepair) all come through here, and all five
 // come through Engine.started, so each of them waits where the phase it starts holds a row. The mark
 // is this function's and not the caller's: it is the one reading of the phase the start carries
-// (record.PhaseKeepsSlot), never a decision of one request. Every caller writes the phase on the
-// record before it calls, so the payload's phase is the phase the issue stands in. The row
-// carries its task while it waits, so the delivery is made as soon as the slot comes and the
-// worker is up.
+// under a slot rule (record.SlotRule.PhaseKeepsSlot) — the daemon's own here, and the engine's
+// own for every start Engine.started writes (Config.SlotRule) — never a decision of one request.
+// Every caller writes the phase on the record before it calls, so the payload's phase is the
+// phase the issue stands in. The row carries its task while it waits, so the delivery is made as
+// soon as the slot comes and the worker is up.
 //
 // A start the rule leaves unmarked stands in no waiting line — Store.OwedStarts lists a marked
 // row alone, since that line is about slot-waiting — and it is coalesced like every other start
@@ -991,21 +992,24 @@ const (
 // for in any case. The work of an entry that same ready worker stands below is sent through
 // SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
-	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
+	return startOrOwe(ctx, tx, store, record.MainRule, issue, payload, at, newsOfTheIssue)
 }
 
-// startOrOwe is StartOrOwe told whether the start is news of its issue (movement). The starts
-// that are not are written through here all the same, so they take the slot mark, the one
-// statement that writes a start and the refusal of a start with no task or no phase from the one
-// implementation rather than from a second start path that would have to keep in step with this
-// one.
-func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time,
-	move movement,
+// startOrOwe is StartOrOwe under rule, told whether the start is news of its issue (movement).
+// The starts that are not are written through here all the same, so they take the slot mark, the
+// one statement that writes a start and the refusal of a start with no task or no phase from the
+// one implementation rather than from a second start path that would have to keep in step with
+// this one. rule is the slot rule whose phases mark the start (record.SlotRule.PhaseKeepsSlot):
+// the engine's own for every start it writes (Engine.started, Config.SlotRule), so a replay under
+// a rule that keeps a slot in another phase writes the start of that phase waiting for one, and
+// the daemon's own for the exported StartOrOwe its tests call.
+func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, rule record.SlotRule, issue string, payload record.SuperviseRequest,
+	at time.Time, move movement,
 ) error {
 	if payload.Task == "" || payload.Phase == "" {
 		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
 	}
-	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
+	payload.NeedsSlot = rule.PhaseKeepsSlot(payload.Phase)
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
 		return err

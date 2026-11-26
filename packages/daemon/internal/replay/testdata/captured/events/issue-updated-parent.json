@@ -1,0 +1,87 @@
+[
+  {
+    "id": 868069,
+    "issue_key": "ACME-55",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-4000-8000-000000000013",
+      "origin": {
+        "host": "omp",
+        "machine": "machine-1",
+        "cwd": "/work/1",
+        "session_title": "session 1"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-20T17:44:47.764822Z",
+    "payload": {
+      "key": "ACME-55",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzj",
+      "repo": null,
+      "claim": {
+        "at": "2026-11-20T17:44:47.232289Z",
+        "actor": {
+          "id": "00000000-0000-4000-8000-000000000013",
+          "kind": "session",
+          "origin": {
+            "cwd": "/work/1",
+            "host": "omp",
+            "machine": "machine-1",
+            "session_title": "session 1"
+          }
+        }
+      },
+      "route": null,
+      "title": "text 14",
+      "labels": [],
+      "number": 55,
+      "parent": "ACME-54",
+      "status": "in_progress",
+      "changed": ["status", "parent", "external_links"],
+      "project": "ACME",
+      "advances": [],
+      "assignee": "person-1@example.invalid",
+      "last_seq": 3,
+      "priority": null,
+      "ancestors": ["ACME-54"],
+      "closed_at": null,
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "inherit",
+        "reason": null,
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-20T17:44:18.983128Z",
+      "created_by": {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "kind": "session",
+        "origin": {
+          "cwd": "/work/1",
+          "host": "omp",
+          "machine": "machine-1",
+          "session_title": "session 1"
+        }
+      },
+      "updated_at": "2026-11-20T17:44:47.86462Z",
+      "resolved_repo": "cybermonklabs/legion",
+      "thread_logins": [],
+      "external_links": [
+        {
+          "url": "https://github.com/acme/repo-2/pull/5111",
+          "kind": "url"
+        }
+      ],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "primary_artifact_id": "00000000-0000-4000-8000-000000000014",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": ""
+    }
+  }
+]

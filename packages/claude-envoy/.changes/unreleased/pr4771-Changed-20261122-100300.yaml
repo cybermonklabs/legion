@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The packed plugin declares the daemon API contract that includes entry `20261125162112`
+    (`slots-reading`), which adds the slots reading to the state:
+    `admission.slots`, each slot's holder `state` and `since`, and each issue's `rank` and
+    `rootRank`.
+time: 2026-11-22T10:03:00.000000000Z
+custom:
+    Issue: pr4771

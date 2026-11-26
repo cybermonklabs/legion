@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2026-11-21T06:18:17.149997849Z",
+    "jsonPayload": {
+      "chargedBefore": false,
+      "claim": "legion-acme-acme-1-architect",
+      "detail": "pod legion-acme-acme-1 (uid 00000000-0000-4000-8000-000000000006) Failed: OutOfcpu: Pod was rejected: Node didn't have enough resource: cpu, requested: 2000, used: 7654, capacity: 7910; last lines of architect:\n(the log could not be read: container \"roles\" in pod \"legion-acme-acme-1\" is not available)",
+      "incarnation": "00000000-0000-4000-8000-000000000006/150",
+      "level": "WARN",
+      "msg": "supervise: process died",
+      "observed": "gone",
+      "time": "2026-11-21T06:18:17.149745489Z"
+    }
+  }
+]

@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "project": "ACME",
+  "from": "2001-03-05T09:00:00Z",
+  "to": "2001-03-05T12:00:00Z",
+  "before": "0s",
+  "caps": [
+    {
+      "at": "2001-03-05T09:00:00Z",
+      "cap": 1
+    }
+  ],
+  "parts": [
+    {
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T12:00:00Z",
+      "release": "fixture",
+      "commit": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+      "rule": "main"
+    }
+  ],
+  "tickInterval": "30m0s",
+  "gateSteps": [],
+  "linger": "2h0m0s",
+  "reviewRoundCap": 3,
+  "stalledTreeNotice": "6h0m0s",
+  "workerSilence": "4h0m0s",
+  "workerBackground": "4h0m0s",
+  "experiments": [],
+  "lines": [
+    "daemon: opening the store; a connection error that the next attempt can clear is tried again"
+  ],
+  "collector": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
+  "files": {
+    "launcher/log.jsonl": "660182b9f5f66d7a94ae2296edf6b0f91005e9b2039ea6c1b724032dcc4e49b5",
+    "log.jsonl": "0df727c3a50df9f97ddb060b3398ded546f75c9b7047f24ef4c60d7d6fac6b27"
+  },
+  "signals": {
+    "kills": [
+      {
+        "from": "2001-03-05T09:00:00Z",
+        "to": "2001-03-05T12:00:00Z"
+      }
+    ]
+  }
+}

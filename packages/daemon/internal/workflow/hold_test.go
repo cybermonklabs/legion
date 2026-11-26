@@ -801,6 +801,9 @@ func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t
 		Author: testReviewApp, Body: reviewBody("Name the rollback path.", headOne)}
 	todo := intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
 		Title: "root", Rank: "U", HandedOver: true}
+	// The claim's failure dates the hold at testEngine's fixed clock. A review recorded while
+	// held must not replace that timestamp.
+	wantHold := &record.Hold{From: phase.Reviewing, Since: new(time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))}
 	// heldFromReviewing is the root in reviewing with the rounds before behind it, held from
 	// reviewing by its reviewer's failed claim, with its counts and its one slot read.
 	heldFromReviewing := func(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.Fact) intake.Result, record.Issue) {
@@ -814,8 +817,8 @@ func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t
 			ConflictRounds: before.ConflictRounds, BackwardMoves: before.BackwardMoves, CapTold: before.CapTold})
 		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
 		held := storedIssue(t, pool, root)
-		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Reviewing}) {
-			t.Fatalf("the root after its reviewer failed stands in %s with hold %+v, want held from reviewing", held.Phase, held.Hold)
+		if held.Phase != phase.Held || !reflect.DeepEqual(held.Hold, wantHold) {
+			t.Fatalf("the root after its reviewer failed stands in %s with hold %+v, want held with %+v", held.Phase, held.Hold, wantHold)
 		}
 		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
 			t.Fatalf("the counts before the todo = %+v, want the %+v seeded", got, before)
@@ -858,8 +861,8 @@ func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t
 
 		apply("changes-requested", changesRequested)
 
-		if still := storedIssue(t, pool, root); still.Phase != phase.Held || still.Hold == nil || *still.Hold != (record.Hold{From: phase.Reviewing}) {
-			t.Fatalf("the root after the request for changes stands in %s with hold %+v, want it still held from reviewing: a held round decides nothing", still.Phase, still.Hold)
+		if still := storedIssue(t, pool, root); still.Phase != phase.Held || !reflect.DeepEqual(still.Hold, wantHold) {
+			t.Fatalf("the root after the request for changes stands in %s with hold %+v, want held with %+v: a held round decides nothing", still.Phase, still.Hold, wantHold)
 		}
 		if decision := reviewerDecision(t, pool); decision == nil || decision.State != "changes_requested" {
 			t.Fatalf("the reviewer's decision after the request for changes = %+v, want changes_requested recorded on the held round", decision)

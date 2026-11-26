@@ -1,0 +1,210 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:00:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 2,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0.3333333333333333,
+      "priorityTakenBanded": 0.3333333333333333,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 1.75,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 1.75,
+        "max": 2,
+        "hours": 1.75
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z",
+        "ACME-2": "2001-03-05T09:10:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 8, 9, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 2,
+          "firstSlot": {
+            "medianMinutes": 15,
+            "p90Minutes": 30,
+            "cut": 1
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 50,
+            "cut": 2
+          }
+        }
+      },
+      "from": "2001-03-05T09:00:00Z"
+    },
+    "p0-at-once": {
+      "source": "replay",
+      "rule": "p0-at-once",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "to": "2001-03-05T10:00:00Z",
+      "unplaced": 0,
+      "done": 0,
+      "workLeft": 2,
+      "waitOnlyForSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "startedWithoutSlot": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.0,
+        "max": 0,
+        "hours": 0.0
+      },
+      "priorityTaken": 0.3333333333333333,
+      "priorityTakenBanded": 0.3333333333333333,
+      "loops": {},
+      "waits": {},
+      "slotHoursInTurn": 1.75,
+      "slotHoursNoTurn": 0.0,
+      "inFlight": {
+        "average": 1.75,
+        "max": 2,
+        "hours": 1.75
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z",
+        "ACME-2": "2001-03-05T09:10:00Z"
+      },
+      "doneAt": {},
+      "assumptions": [1, 8, 9, 15],
+      "scenario": "none",
+      "urgentWaits": {
+        "P0": {
+          "issues": 2,
+          "firstSlot": {
+            "medianMinutes": 15,
+            "p90Minutes": 30,
+            "cut": 1
+          },
+          "done": {
+            "medianMinutes": 40,
+            "p90Minutes": 50,
+            "cut": 2
+          }
+        }
+      },
+      "from": "2001-03-05T09:00:00Z"
+    }
+  },
+  "checks": {
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      },
+      "log": [
+        {
+          "time": "2001-03-05T09:30:00Z",
+          "msg": "admission holds a P0 issue at the P0 bound",
+          "issue": "ACME-3",
+          "p0_holders": 1,
+          "p0_bound": 1,
+          "other_holders": 1,
+          "cap": 1
+        }
+      ]
+    },
+    "p0-at-once": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        }
+      },
+      "log": [
+        {
+          "time": "2001-03-05T09:30:00Z",
+          "msg": "admission holds a P0 issue at the P0 bound",
+          "issue": "ACME-3",
+          "p0_holders": 1,
+          "p0_bound": 1,
+          "other_holders": 1,
+          "cap": 1
+        }
+      ]
+    }
+  }
+}

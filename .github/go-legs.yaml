@@ -122,12 +122,14 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/signals
       - internal/subreaper
       - internal/startwalk
     3:
       - internal/workspace                      # 176 s
       - internal/runtime/sandbox                # 156 s
       - internal/workflow                       # 156 s
+      - internal/replay                         # ~131 s, from a build Job, not the ten-run CI median
       - internal/admit                          # 129 s
       - internal/api                            # 84 s
       - internal/runtime/tmux                   # 38 s

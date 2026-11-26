@@ -522,6 +522,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.caches {
 				stripCachesSources(want)
 			}
+			// A pod below slotsReadingContract is served no slots reading, the five keys that
+			// contract added (api's withoutSlotsReading, withoutRanksAndSlotStates), which is every
+			// pod of every band here.
+			if tc.contract < entryNumber(slotsReadingContract) {
+				withoutSlotsReadingKeys(want)
+			}
 			// A pod below retiredStrandedContract is served the report of claims nothing will
 			// wake without its retired entries, the state contract 56 added (api's
 			// withoutUnadmittedStrandedStates), which is every pod of every band below this

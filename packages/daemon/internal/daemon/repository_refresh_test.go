@@ -930,7 +930,7 @@ func deliver(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue
 	t.Helper()
 	client.show(issue)
 	fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Type: "issue.updated", Status: issue.Status, Title: issue.Title, Rank: issue.Rank,
-		Parent: parentKey(issue.Parent), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
+		Parent: intake.ParentKey(issue.Parent), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
 	prepared, err := prepareAsDelivered(t, w, fact)
 	if err != nil {
 		t.Fatal(err)

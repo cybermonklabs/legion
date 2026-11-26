@@ -1333,10 +1333,10 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
 	// deferred is each issue of the listing that the pass reads GitHub for and does not record:
-	// unrecorded, in scope, one admission would record (admissionBound), and resolved to a
-	// repository still unread as the pass took its set. An issue admission would not record reads
-	// GitHub for nothing (prepareUnrecorded), so it is reconciled as before: noted silent, it would
-	// keep its repository listed for ever, since nothing would ever record it.
+	// unrecorded, in scope, one admission would record (intake.DispatchIssue.AdmissionBound), and
+	// resolved to a repository still unread as the pass took its set. An issue admission would not
+	// record reads GitHub for nothing (prepareUnrecorded), so it is reconciled as before: noted
+	// silent, it would keep its repository listed for ever, since nothing would ever record it.
 	var deferred []dispatch.IssueSummary
 	// scopedOn is the repository that brought each issue of the scope into it (recoveredOn).
 	scopedOn := map[string]string{}
@@ -1349,7 +1349,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 				return false
 			}
 			scopedOn[summary.Key] = repo
-			if records[summary.Key] == nil && admissionBound(intake.ListedIssue(summary)) && unread[strings.ToLower(summary.ResolvedRepo)] {
+			if records[summary.Key] == nil && intake.ListedIssue(summary).AdmissionBound() && unread[strings.ToLower(summary.ResolvedRepo)] {
 				deferred = append(deferred, summary)
 				return false
 			}
@@ -2029,7 +2029,7 @@ func recoveredOn(repos map[string]bool, silenced map[string]string, listing []di
 			return repo, true
 		}
 		seen := map[string]bool{summary.Key: true}
-		for parent := parentKey(summary.Parent); parent != "" && !seen[parent]; {
+		for parent := intake.ParentKey(summary.Parent); parent != "" && !seen[parent]; {
 			above, listed := byKey[parent]
 			if !listed {
 				return "", false
@@ -2038,7 +2038,7 @@ func recoveredOn(repos map[string]bool, silenced map[string]string, listing []di
 				return repo, true
 			}
 			seen[parent] = true
-			parent = parentKey(above.Parent)
+			parent = intake.ParentKey(above.Parent)
 		}
 		return "", false
 	}
@@ -2063,12 +2063,6 @@ func (w *workflowRuntime) repositoryUnread(resolved string) bool {
 	defer w.recoveringMu.Unlock()
 	_, waiting := w.unread[strings.ToLower(resolved)]
 	return waiting
-}
-
-// admissionBound is whether issue's event is one admission records an unrecorded issue from: in
-// todo, handed to Legion or a child of a tree.
-func admissionBound(issue intake.DispatchIssue) bool {
-	return issue.Status == "todo" && (issue.HandedOver || issue.Parent != "")
 }
 
 // heardAtBoot is what GitHub intake hears when the boot opens it: every repository a record of
@@ -2575,7 +2569,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 	if recorded != nil {
 		return w.withAncestry(ctx, w.prepareRecorded(issue, recorded), recorded, observe)
 	}
-	if !admissionBound(issue) {
+	if !issue.AdmissionBound() {
 		if issue.LabelledTriageRoot() {
 			if issue.LabelSetter, err = w.labelSetter(ctx, issue.Key); err != nil {
 				return issue, err
@@ -2695,7 +2689,7 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 		}
 		issue = prepared
 	}
-	if !queuesUnderParent(issue, recorded) {
+	if !issue.QueuesUnderParent(recorded) {
 		return issue, nil
 	}
 	chain, err := w.chainOf(ctx, walk, issue.Key, issue.Parent)
@@ -2731,7 +2725,7 @@ func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch
 	}
 	walk := make(ancestry, len(listed))
 	for _, summary := range listed {
-		walk[summary.Key] = parentKey(summary.Parent)
+		walk[summary.Key] = intake.ParentKey(summary.Parent)
 	}
 	return records, walk, nil
 }
@@ -2740,8 +2734,8 @@ func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch
 // it), with what its preparation reads up Dispatch's parent chains, outside the fact lock as the
 // rest of the preparation reads. Its Ancestry (intake.DispatchIssue.Ancestry) is read for a
 // labelled todo of an issue unrecorded or recorded as a root under a parent, recorded or not
-// (queuesUnderParent); any other issue's is empty: an unlabelled todo never queues, and a child
-// already runs in its tree.
+// (intake.DispatchIssue.QueuesUnderParent); any other issue's is empty: an unlabelled todo never
+// queues, and a child already runs in its tree.
 //
 // With reread set, an event of an issue the workflow does not record, or a fresh event of a
 // recorded issue whose Dispatch parent differs from its record's (a person moved it), reads again
@@ -2759,7 +2753,7 @@ func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch
 // record, and holds no transaction open across a read of Dispatch.
 func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, reread bool) (intake.DispatchIssue, error) {
 	walk := ancestry{}
-	if queuesUnderParent(issue, recorded) {
+	if issue.QueuesUnderParent(recorded) {
 		chain, err := w.chainOf(ctx, walk, issue.Key, issue.Parent)
 		if err != nil {
 			return issue, err
@@ -2769,7 +2763,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
 	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
 	// by the keys as Dispatch gave them.
-	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == intake.ParentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
 	var roots []record.Issue
@@ -2785,7 +2779,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 	}
 	for i := range roots {
 		root := &roots[i]
-		chain, err := w.chainOf(ctx, walk, root.Key, parentKey(root.Parent))
+		chain, err := w.chainOf(ctx, walk, root.Key, intake.ParentKey(root.Parent))
 		if err != nil {
 			w.log.Warn("workflow: a queued root's Dispatch chain was not read again, so its record keeps the one it has",
 				"root", root.Key, "event", issue.Key, "ancestry", root.Ancestry, "error", err)
@@ -2800,14 +2794,6 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		issue.Reread[root.Key] = chain
 	}
 	return issue, nil
-}
-
-// queuesUnderParent says whether issue, recorded as recorded (nil when the workflow does not record
-// it), is a root the waiting line may hold under an unreleased child of an ancestor's tree (the
-// ancestry hold): a labelled todo under a Dispatch parent, unrecorded or recorded as a root.
-func queuesUnderParent(issue intake.DispatchIssue, recorded *record.Issue) bool {
-	return issue.Status == "todo" && issue.HandedOver && issue.Parent != "" &&
-		(recorded == nil || claim.IsTreeRoot(recorded.Key, recorded.Tree))
 }
 
 // ancestry is what one preparation's walks up Dispatch's parent chains read, each issue once: the
@@ -2828,7 +2814,7 @@ func (w *workflowRuntime) chainOf(ctx context.Context, walk ancestry, key, paren
 			if err != nil {
 				return nil, fmt.Errorf("read %s from Dispatch, an ancestor of %s: %w", ancestor, key, err)
 			}
-			next = parentKey(detail.Parent)
+			next = intake.ParentKey(detail.Parent)
 			walk[ancestor] = next
 		}
 		ancestor = next
@@ -2836,16 +2822,9 @@ func (w *workflowRuntime) chainOf(ctx context.Context, walk ancestry, key, paren
 	return chain, nil
 }
 
-// parentKey is the key a Dispatch parent names, "" for none.
-func parentKey(parent *string) string {
-	if parent == nil {
-		return ""
-	}
-	return *parent
-}
-
 // prepareUnrecorded readies the event of an issue the workflow does not record, as
-// prepareRepository says. Only an issue admission would record reads anything (admissionBound):
+// prepareRepository says. Only an issue admission would record reads anything
+// (intake.DispatchIssue.AdmissionBound):
 // admission records an unrecorded issue only from a todo handed to Legion or released under a
 // parent (admission's putNewRoot, the engine's recordChild), so a person's own todo issue, whose
 // apply never resolves its repository, reads GitHub for nothing and leaves nothing unread, since
@@ -2868,7 +2847,7 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 		}
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = detail.ResolvedRepo, false
 	}
-	if !admissionBound(issue) || issue.ResolvedRepo == "" {
+	if !issue.AdmissionBound() || issue.ResolvedRepo == "" {
 		return issue, nil
 	}
 	read, recorded := w.repositories.lookup(issue.ResolvedRepo)

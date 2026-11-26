@@ -78,8 +78,9 @@ const (
 	HeldTaskStopped HeldReason = "task_stopped"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
-	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
-	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
+	// no other issue holds. KeepsSlot is asked of the rule the ladder's facts carry
+	// (LineFacts.KeepsSlot): under the daemon's own it is InWorkflow and a phase that keeps a slot
+	// (SlotRule.PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
 	// issues that read this word are the ones in accepting, retro or merging (InSlotlessPhase), whose
 	// sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
@@ -170,6 +171,11 @@ type HeldFacts struct {
 	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
 	// reads a root's linger against.
 	Facts LineFacts
+	// Unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion),
+	// by key: Waiting's unopened set, which the starting part's hold of those trees' members reads
+	// (FirstPhaseStartsNow). The ladder reads none of it: its word for those members reads the same
+	// roots with no slot term wherever their gate is open (reopensAtPromotion).
+	Unopened map[string]struct{}
 }
 
 // treeRoot is the record of an issue's tree root as the ladder reads it: the pass's own records
@@ -379,11 +385,12 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// The two holds an owner's plan makes stand here, below every word above, each of which holds
 	// the issue whatever its own hold is, and above at_work and unclassified (each word's doc says
 	// why). A stopped task that keeps its slot is not one of them: it stands in the active set, and
-	// one that holds no slot row there is the gap unclassified reports.
+	// one that holds no slot row there is the gap unclassified reports. Whether it keeps one is
+	// asked of the rule the facts carry (LineFacts.KeepsSlot), as at_work's clause below asks it.
 	switch {
 	case HeldForChildren(issue):
 		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
-	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
+	case HeldFor(issue, HoldTaskStopped) && !facts.Facts.KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
@@ -391,8 +398,9 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue reads the word of its hold above where it has one,
 	// and falls to unclassified where it has none. The stalled-tree measure is unmoved: none of
-	// these four words silences a tree (admit's silencedTree says why).
-	if !KeepsSlot(issue) && issue.Phase != phase.Held {
+	// these four words silences a tree (admit's silencedTree says why). The phases are the rule's
+	// the facts carry (LineFacts.KeepsSlot), the rule the line itself was built under.
+	if !facts.Facts.KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}
 	return HeldUnclassified, nil
@@ -420,14 +428,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
 func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
-	pass := passOver(issues, facts)
-	queued := queuedRoots(issues, facts)
-	held := HeldFacts{
-		ByKey: pass.own(),
-		Live:  liveRoots(issues, facts, queued),
-		Chain: pass.chain(),
-		Facts: facts,
-	}
+	held := HeldFactsOf(issues, slots, facts)
 	placed := make(map[string]struct{}, len(slots)+len(line))
 	for _, slot := range slots {
 		placed[slot.Issue] = struct{}{}
@@ -458,4 +459,27 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Issue < rows[j].Issue })
 	return rows
+}
+
+// HeldFactsOf is the facts the ladder and the starting part's holds read beside each issue
+// (HeldFacts), built over issues, the whole list a pass gave Waiting, slots, the slot rows it gave
+// Waiting, and that pass's facts from the same calls Waiting makes: the pass's one chain
+// (passOver: the records by key and the chain over them), one queuedRoots, and over it one
+// liveRoots and one unopenedRoots. HeldList builds its facts here, and so does a reader outside
+// the line that asks the line's own question of an issue (FirstPhaseStartsNow), such as a replay
+// of a recorded window.
+func HeldFactsOf(issues []Issue, slots []Slot, facts LineFacts) HeldFacts {
+	pass := passOver(issues, facts)
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	queued := queuedRoots(issues, facts)
+	return HeldFacts{
+		ByKey:    pass.own(),
+		Live:     liveRoots(issues, facts, queued),
+		Chain:    pass.chain(),
+		Facts:    facts,
+		Unopened: unopenedRoots(queued, slotted, facts),
+	}
 }

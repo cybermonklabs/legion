@@ -1,0 +1,88 @@
+[
+  {
+    "id": 891022,
+    "issue_key": "ACME-58",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-4000-8000-000000000015",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-15",
+        "session_title": "Legion architect · ACME-15"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-21T01:54:00.399322Z",
+    "payload": {
+      "key": "ACME-58",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzZ",
+      "repo": "acme/repo-2",
+      "claim": null,
+      "route": null,
+      "title": "text 15",
+      "labels": [],
+      "number": 58,
+      "parent": "ACME-15",
+      "status": "triage",
+      "changed": ["components", "blocked_by"],
+      "project": "ACME",
+      "advances": [
+        {
+          "id": "priority-1",
+          "inherited": true
+        }
+      ],
+      "assignee": "person-1@example.invalid",
+      "last_seq": 3,
+      "priority": null,
+      "ancestors": ["ACME-15"],
+      "closed_at": null,
+      "blocked_by": ["ACME-42", "ACME-52", "ACME-53"],
+      "components": {
+        "ids": [],
+        "mode": "none",
+        "reason": "text 16",
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-21T01:51:40.645213Z",
+      "created_by": {
+        "id": "00000000-0000-4000-8000-000000000015",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/scratch/tmp/moves-v2",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-15"
+        }
+      },
+      "updated_at": "2026-11-21T01:54:00.412306Z",
+      "resolved_repo": "acme/repo-2",
+      "external_links": [],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "references_changed": [
+        {
+          "id": "ACME-42",
+          "kind": "issue"
+        },
+        {
+          "id": "ACME-52",
+          "kind": "issue"
+        },
+        {
+          "id": "ACME-53",
+          "kind": "issue"
+        }
+      ],
+      "primary_artifact_id": "00000000-0000-4000-8000-000000000016",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": "00000000-0000-4000-8000-000000000017"
+    }
+  }
+]

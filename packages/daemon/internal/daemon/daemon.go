@@ -3741,10 +3741,17 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.wakes != nil {
 		held = s.wakes()
 	}
+	// The slots reading names the cap beside the slots in use, and reads each holder's claims
+	// through the statement the tick's own reading reads them through, the one that holds when a
+	// suspended or a retired claim stopped (record.Store.HolderClaims).
+	holderClaims, err := records.HolderClaims(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
 		Claims: claims, Stranded: stranded, Reports: s.reports(),
-		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Wakes: api.WakesWaitingOf(held, paced), Now: now, Cap: s.admissionCap, HolderClaims: holderClaims,
 	})
 	if err != nil {
 		return api.State{}, nil, err

@@ -81,6 +81,11 @@ func assertControllerNotices(t *testing.T, pool *pgxpool.Pool, want []effect) {
 	var got []effect
 	for _, row := range effects(t, pool) {
 		if row.kind == record.OutboxKindControllerNotice {
+			// The tick's slots reading is TestTickNoticeCarriesTheSlotsLine's to hold.
+			if notice, isNotice := row.payload.(record.ControllerNotice); isNotice {
+				notice.Slots = nil
+				row.payload = notice
+			}
 			got = append(got, row)
 		}
 	}

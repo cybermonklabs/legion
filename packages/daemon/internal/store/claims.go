@@ -139,7 +139,8 @@ func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) er
 // the session chooses every field of what it sends, and one reading dated ahead of the daemon's
 // clock — a session whose host stepped its clock forward, corrected back afterwards — would
 // drop every honest report after it under that same ordering guard, while the stale reading it
-// left behind went on counting as current, background work and all.
+// left behind went on counting as current, background work and all. The daemon's clock here is
+// the store's (UseClock), and the claim is stamped with it as every claim write is.
 func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
 	if generation > math.MaxInt64 {
 		// No row holds it (putClaim refuses one), so no launch of the claim is this.
@@ -151,20 +152,20 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 		reminder = &at
 	}
 	at := a.At.UTC()
-	if received := time.Now().UTC(); at.After(received) {
+	if received := s.clockNow().UTC(); at.After(received) {
 		at = received
 	}
 	var known bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `with reported as (
 			update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
-				activity_next_reminder_at = $5, updated_at = now()
+				activity_next_reminder_at = $5, updated_at = coalesce($7::timestamptz, now())
 			where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
 			select exists (select 1 from claims where token = $1 and generation = $6)`,
 			// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
 			// architect's worker-background-stalled notice and the daemon's log.
 			string(token), at, a.BackgroundWork.Running,
-			strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
+			strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation), s.stamp(),
 		).Scan(&known)
 	})
 	if err != nil {
@@ -218,13 +219,13 @@ func (s *Store) PutClaimStep(ctx context.Context, token claim.Token, step superv
 				step_args_hash = case when $5 = '' then step_args_hash else $7 end,
 				step_started_at = case when $5 = '' then step_started_at else $8 end,
 				step_ended_at = case when $5 = '' then step_ended_at else $9 end,
-				updated_at = now()
+				updated_at = coalesce($10::timestamptz, now())
 			where token = $1 and ($2::timestamptz is null or step_at is null or step_at <= $2)
 			returning token)
 			select exists (select 1 from claims where token = $1)`,
 			string(token), instant(step.At.UTC()), instant(step.TurnStartedAt.UTC()),
 			step.Tool, step.CallID, step.ArgsBytes, step.ArgsHash,
-			instant(step.StartedAt.UTC()), instant(step.EndedAt.UTC()),
+			instant(step.StartedAt.UTC()), instant(step.EndedAt.UTC()), s.stamp(),
 		).Scan(&known)
 	})
 	if err != nil {
@@ -321,19 +322,19 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // commit that queued it.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
-		return upsertClaim(ctx, tx, c)
+		return upsertClaim(ctx, tx, c, s.stamp())
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
-	if err := upsertClaim(ctx, tx, c); err != nil {
+	if err := upsertClaim(ctx, tx, c, s.stamp()); err != nil {
 		return err
 	}
 	if roleHolder(c.State, c.Session) == stored {
 		return nil
 	}
-	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
+	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, s.clockNow().UTC())
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
@@ -343,7 +344,9 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	return nil
 }
 
-// upsertClaim writes the row of claim c inside tx, putClaim's transaction.
+// upsertClaim writes the row of claim c inside tx, putClaim's transaction. The row is stamped at
+// stamp, the store's clock (Store.stamp), whose null is Postgres's now(): updated_at on the insert
+// and on every update alike.
 //
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
@@ -372,7 +375,15 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
-func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
+//
+// The write that moves a claim into suspended or retired from a state that is neither stamps
+// stopped_at with this write's own time (the store's clock, as updated_at), a move between the
+// two keeps the moment the claim first stopped, and every write of a claim in any other state
+// clears it. It is taken from SQL on the transition, as the write mark is, so a machine's write
+// carries no time of its own for it, and supervise.Claim holds none: its one reader is the slots
+// reading, which dates a stranded claim's `stopped` by it (record.Store.HolderClaims). A claim an
+// earlier release stopped holds none, which reads as a stop the record holds no time for.
+func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, stamp *time.Time) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
 	}
@@ -446,11 +457,12 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, held_for,
-		retired_at_write_mark)
+		retired_at_write_mark, stopped_at, updated_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64,
-		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end,
+		case when $11 in ('suspended', 'retired') then coalesce($65::timestamptz, now()) end, coalesce($65::timestamptz, now()))
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		session = excluded.session, session_file = excluded.session_file,
@@ -465,6 +477,12 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		-- retired and left alone by every other write (this function's doc).
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
+		-- When the claim stopped, for a suspended or a retired claim (record.HolderClaim.StoppedAt):
+		-- this write's own stamp on the move into either from a state that is neither, the moment
+		-- already held on a move between the two, and nothing once it runs again (this function's
+		-- doc).
+		stopped_at = case when excluded.state not in ('suspended', 'retired') then null
+			when claims.state in ('suspended', 'retired') then claims.stopped_at else excluded.updated_at end,
 		serving_generation = excluded.serving_generation,
 		given_entry = excluded.given_entry,
 		served_entry = excluded.served_entry,
@@ -528,7 +546,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 			then '' else claims.activity_kinds end,
 		activity_next_reminder_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_next_reminder_at end,
-		updated_at = now()`,
+		updated_at = excluded.updated_at`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
@@ -544,7 +562,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt),
-		heldFor(c),
+		heldFor(c), stamp,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)

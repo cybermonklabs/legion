@@ -81,10 +81,11 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 	t.Helper()
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
-		var err error
-		if _, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
+		read, err := admission.tickRead(context.Background(), tx)
+		if err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}
+		blocked = read.blocked
 	})
 	return blocked
 }
@@ -333,7 +334,7 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	// Keyed on the generation alone the old tree's mark would answer for this tree's first run
 	// and its architect would never be told. Its own architect has written that tree's spec and a
 	// person has approved it, which is what puts a root's own children-first wait in the line at
-	// all (record.ChildrenFirstCandidates).
+	// all (record.SlotRule.ChildrenFirstCandidates).
 	handedOver := issue(t, pool, cfFirst).Generation + 1
 	if handedOver != readmitted {
 		t.Fatalf("the handed-over sub-parent's run = %d and the tree it left is on %d, want the fixture's own premise: the two numbers collide", handedOver, readmitted)

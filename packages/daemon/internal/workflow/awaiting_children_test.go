@@ -557,7 +557,7 @@ func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
 		{name: "a todo on a held root", at: phase.Held, change: heldFrom(phase.Implementing),
 			fact: intake.DispatchIssue{Key: cwParent, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
 				Title: "parent", Rank: "U", HandedOver: true},
-			start: phase.Implementing, reason: releaseReason,
+			start: phase.Implementing, reason: ReleaseReason,
 			status: []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "todo", "")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

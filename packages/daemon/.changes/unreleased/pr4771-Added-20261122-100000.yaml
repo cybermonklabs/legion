@@ -1,0 +1,116 @@
+kind: Added
+body: |-
+    `legion replay` is a new tool for a developer who changes how the daemon gives out its admission
+    slots. It replays a recorded window of a project's daemon through the daemon's own admission
+    pass, under a slot rule that the caller names, on a simulated clock. It reports the issues
+    finished, the started work that waits for a slot, the priority that holders take and the other
+    delays, and names each assumption that a result rests on. `collect` collects a window from the
+    daemon's log lines and from Dispatch, and its `--after` adds a run-out past the window's end, so
+    a replay runs the work recorded after the end while it measures the window alone.
+    `collect-merges` adds each base branch's first-parent history from GitHub. It uses the merge
+    event's time when GitHub names the exact commit and base branch, marks committer-time
+    estimates separately, and writes each commit's committer's time beside it as `committed`.
+    `collect-git` adds, for each pull request of the window, its heads, the paths each head changes
+    and git's own verdict of merging each head with each later commit of its base that changes one
+    of those paths, and names each input it could not get with its reason. The three GitHub
+    collectors send only GET requests, wait out GitHub's rate limit, leave the daemon and the other
+    roles a reserve of the quota they share (`--github-reserve`, 3,000 requests by default) and send
+    at most `--github-rate` requests a second (0.6 by default). `neutralize` renames the private
+    names of a window for test data. `run` replays a window, and `scorecard` reads the same
+    measures from the record of a window.
+    `run` writes a line of its own to the run's log for each conflict draw, `replay: a stretch's
+    conflict drawn`, with the issue, its stretch, the running and the fitted phase, the chance, the
+    number drawn and the outcome; no daemon writes that line, and no measure reads it.
+    The main branch keeps recorded conflicts. The git branch uses stored verdicts and draws
+    unanswered reads. The drawn branch draws from the generator fitted on touching merges.
+    `validate` checks all three conflict branches and reports Git read counts and conflict hours.
+    `--main-only` runs just the main branch at slowdown 1. `forecast` checks the tool against
+    a recorded change of rule. `compare` compares rules on two windows and writes each issue's first slot
+    and done time under each rule beside the record. It judges each rule against `main` seed by
+    seed on the issues finished, the owner's three costs and the wait of P0 and P1 work: a rule is
+    better or worse on a measure only where the 95% interval of the paired difference excludes zero
+    and its near end is past the replay's own error across the change of rule, every other
+    difference is a tie with the seeds it would need, and only a rule that keeps the owner's
+    direction (`signals`, `signals-backoff`) can be named best. `run.json` gives each draw of a
+    stretch's conflict with its key and value, and `compare` counts the draws that each rule's runs
+    share with `main`'s and gives each run's admissions with no recorded work. `rules` prints the
+    twenty rules that a replay can run, each with its commit: the daemon's own, the rules of three
+    recorded windows
+    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and sixteen candidates. The
+    daemon's own rule and every candidate place the line by Dispatch priority first, as the daemon
+    does, and the rules of the recorded windows, whose releases came before that order, do not; the
+    replay gives each issue the priority its recorded Dispatch events show. The daemon's own rule
+    and every candidate but `cover` also move a started parent with an open Dispatch child into
+    `awaiting_children`, as the daemon does since #4592, and the rules of the recorded windows do
+    not; under `cover` such a parent keeps its phase, and its child starts on the parent's slot
+    and holds it for the parent. Among the candidates,
+    `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another issue for its
+    first five minutes or its first hour, `returned-by-first-slot`, `rework-first` and
+    `rework-first-keep` place returned work first, `arrival-order` places every issue by its
+    arrival, `p0-at-once` starts a P0 issue above the cap, `idle-return-1h` gives back the slot of
+    a holder that waits on its children or on a person once none of its roles has had a turn for an
+    hour, and `p0-idle` joins the last two. `signals` and `signals-backoff` admit below P0 by
+    signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
+    each signal's limit, `--idle-after` the idle time that the idle share counts, and `--probe`
+    each moment at which `run.json` gives each limited signal's value. `--token-limit` gives `run`,
+    `signals`, `validate`, `forecast` and `compare` the project's token limit, which a replay takes
+    in each minute whose provider record holds no limit of the project's own. A replay reads the idle
+    share and the approvals from its own course, and the provider's headroom, its refusals, the
+    kills and the merge queue from the load models, which move with the replay's work in flight.
+    Under these two rules it runs an admission pass at each moment that a signal would cross its
+    limit with no event, the deadline's pass, and `run.json` names the limits, the ceiling, each
+    slot that each pass gave out or took back with the pass's kind, and each change of the
+    deadline. The daemon keeps no first slot or arrival after a slot
+    goes back, so a replay keeps them in tables of its own. For each rule with a grace, `compare`
+    names how many of the waits that gave a slot back in each window's record the grace keeps the
+    slot through, and the slot-hours that it keeps. The tool writes nothing to a running daemon, to
+    Dispatch or to GitHub. The page "Replaying a recorded window" of the docs says how to collect a
+    window and how to run each command, and gives each measure, each rule and each assumption.
+
+    `legion replay limits` plans the limit test that names each signal's limit. From window one's
+    record it lists each signal's 50th, 75th, 90th, 95th and 99th percentile and off, and leaves out
+    with its reason any percentile that `signals.CheckLimit` refuses. A signal that a load model
+    gives has steps only where its model passed R11's daily test and its test across the two records
+    in both outputs of `legion replay models --against --json`, and the provider's limits also rest
+    on `--token-limit`. It plans the runs of its three steps at the recorded cap and at `--ceiling`
+    as the entries of an indexed Job, reads their directories back, and names, for each signal and
+    ceiling, the limit with the most issues finished at which no other measure of the owner's three
+    costs or of the wait of urgent work is worse than under today's rule on any branch that passes
+    R5, or that none holds, and whether that limit is an extrapolation past the range of work in
+    flight that the windows record. Beside each limit it says what it rests on. `run.json` gains
+    `signalSummaries`, `signals` and `suppliedRefused`: how each limited signal read over the window,
+    its limit with the value it read at it, and the minutes by day that the tokens model refused
+    under `--token-limit` where the record holds no limit. A directory of runs written before them
+    is refused, and `compare` gives each run's signals at their limits.
+
+    `legion state` prints a `slots:` line under its admission line. It says what each holder of a
+    slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
+    it), how many started issues wait for a slot, in two readings, and how many holders rank below
+    the first issue that waits for one in the line's own order, which puts priority first. The
+    second reading, `in all`, also counts each started parent in `awaiting_children` that holds no
+    slot. With
+    daemon API entry `20261125162112` (`slots-reading`), `legion state --json` carries the same
+    reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
+    each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
+    without them. The controller's tick notice carries the reading as `slots`.
+
+    The daemon writes one `admission: a pass moved slots` line for each admission pass that gives
+    out or takes back a slot. The line gives the slots in use, the cap, each slot given out or taken
+    back with its issue and reason, and each issue of the line that the pass went past, with its
+    reason. It also writes one `admission: slots reading` line at each controller tick, with that
+    tick's slots reading, one `workflow: a phase is held` line at each move of a phase into held
+    and at each escalation of a hold, with the issue, its tree, the phase, the role and the reason,
+    and one `workflow: GitHub's merge state of a pull request was read` line at each read of a
+    pull request's merge state that the record takes, a clean read included, with the pull request,
+    the head GitHub answered for, the base and the base commit GitHub names.
+    The daemon's slot rule does not change. Its admission pass can read signals through the pass's
+    own transaction from a reader that its caller supplies, and the daemon supplies none, so it
+    admits as before.
+
+    The migration `20261121103000_slots_reading_times` adds the tables `issue_holds` and
+    `slot_waits` and the column `claims.stopped_at`. Before a rollback below this release, stop
+    every daemon of the database and run the way back that docs/kubernetes.md gives in "Rolling back
+    the release that reads the slots".
+time: 2026-11-22T10:00:00.000000000Z
+custom:
+    Issue: pr4771

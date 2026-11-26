@@ -11,51 +11,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// ChildrenFirstCandidates is every issue of issues whose own first phase has not started yet and
-// could: it stands at phase.Admitted, Dispatch still shows it in the workflow, its tree is not
-// lingering, and its tree's design gate stands open. Those are the only issues whose first phase
-// the children-first rule can hold, so they are the only parents whose Dispatch children this
-// judgement reads (readChildWaits). A parent whose phases started is read by StartedParents, since
-// an open child holds every later phase start of it too (dispatch://INFRA-3320 R9). The keys come
-// out sorted, so one pass reads the same set in the same order whatever order the records arrived
-// in.
-//
-// The open gate is what puts the start of the wait where the spec puts it: at the gate's
-// opening, before the architect's design-approved turn releases the wave. Before that opening a
-// root's architect is still writing the spec and its own first phase is nothing the line would
-// offer a slot to, so a root there waits for nothing and is told nothing; from the opening the
-// root and every released member of its tree are issues whose first phase the line does offer a
-// slot to, and each of them waits for whatever Dispatch still shows hanging under it.
-func ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	keys := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		// The root must be among the records and must not linger. A root whose tree has left the
-		// workflow is no part of a live read at all — its phase is done and its status is not
-		// todo (Store.LiveIssues) — so an unrecorded root is a tree that has gone, and reading
-		// the zero record's linger would answer false for exactly the case this test is for.
-		root, recorded := byKey[issue.Tree]
-		if issue.Phase != phase.Admitted || !InWorkflow(issue) || !recorded || root.Lingers() {
-			continue
-		}
-		if !gates[issue.Tree].Open() {
-			continue
-		}
-		keys = append(keys, issue.Key)
-	}
-	slices.Sort(keys)
-	return keys
-}
-
 // StartedParents is every issue of issues whose phases have started and whose next phase start an
-// open Dispatch child of it holds (dispatch://INFRA-3320 R9): it is in the workflow (InWorkflow)
-// and stands in a phase whose start an open child holds (OpenChildHolds) or is held from one
-// (StandsAt), owes its worker a start (owed, LineFacts.Owed), or already waits in
+// open Dispatch child of it holds under r (the spec of #4592, R9): it is in the workflow
+// (InWorkflow) and stands in a phase whose start an open child holds (OpenChildHolds) or is held
+// from one (StandsAt), owes its worker a start (owed, LineFacts.Owed), or already waits in
 // awaiting_children. Those are the only started parents whose Dispatch children are read
-// (readChildWaits). The keys come out sorted, as ChildrenFirstCandidates' do.
+// (readChildWaits). The keys come out sorted, as SlotRule.ChildrenFirstCandidates' do.
 //
 // It is a judgement of its own beside ChildrenFirstCandidates rather than a widening of it, and it
 // reads no design gate: the children-first rule waits for an open gate because before it a root's
@@ -64,7 +25,20 @@ func ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string
 // by no children-first notice (admit's tellChildrenFirst), no children_first held word and no wait
 // of a started issue on another issue (LineFacts.Waits, blockers.waitsOf), since all of those read
 // LineFacts.ChildWaits.
-func StartedParents(issues []Issue, owed map[string]OwedStart) []string {
+//
+// It is the reader of r's wait that stops the phase under way (SlotRule.WaitStopsPhase), the
+// daemon's own since cybermonklabs/legion#4592: under a rule whose wait stops nothing, the rules
+// the recorded windows ran, it names no issue, so no open child holds a started parent's start or
+// moves it into awaiting_children, and a parent that stands there all the same (one a window's
+// start state places there) has no open child read, so the admission pass takes it back
+// (admit's childrenWaits). The one exception is a rule whose start may take a cover (TakeCover):
+// its wait stops no phase either, and a started parent's open children are waits a cover reads
+// (blockers.CoverWaits), so it names the started parents as the daemon's own rule does, and their
+// open children move no parent (workflow's StopForChildren reads the rule's wait).
+func (r SlotRule) StartedParents(issues []Issue, owed map[string]OwedStart) []string {
+	if rule := r.OrMain(); !rule.WaitStopsPhase && rule.Take != TakeCover {
+		return nil
+	}
 	keys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		if !InWorkflow(issue) {
@@ -99,16 +73,18 @@ func OpenChildHolds(p phase.Phase) bool {
 // readChildWaits is the three judgements of a parent's open Dispatch children that one pass makes
 // (ReadLineFacts), from one read of the mirror's children of every parent any of them judges and
 // one read of the daemon's own record of every child, whatever the number of parents: the
-// children-first waits of the issues whose first phase has not started (ChildrenFirstCandidates,
-// childWaits), the open children of every started parent (StartedParents), and the open children
-// of every parent held before its retro, held (RetroHeldParents, LineFacts.RetroHolds), the
-// last two with the one child withoutHeldUnderAccepted leaves out. childWaits judges each parent
-// on its own, from that parent's rows and its children's records alone, so one read split by
-// parent gives each judgement exactly what a read of its own parents would; an issue in more than
-// one set — one at admitted that owes a start — is judged in each. A parent with none has no entry
-// in any of the three maps. facts are the pass's own, which carry the gates each candidate is read
-// against and the starts the project owes (LineFacts.Owed), and pass the pass's own records
-// (passChain.issues) with the pass's one chain (passChain).
+// children-first waits of the issues whose first phase has not started
+// (SlotRule.ChildrenFirstCandidates, childWaits), the open children of every started parent
+// (SlotRule.StartedParents), and the open children of every parent held before its retro, held
+// (RetroHeldParents, LineFacts.RetroHolds), the last two with the one child
+// withoutHeldUnderAccepted leaves out. childWaits judges each parent on its own, from that
+// parent's rows and its children's records alone, so one read split by parent gives each
+// judgement exactly what a read of its own parents would; an issue in more than one set — one at
+// admitted that owes a start — is judged in each. A parent with none has no entry in any of the
+// three maps. facts are the pass's own, which carry the rule both candidate sets are judged under
+// (LineFacts.Rule), the gates each candidate is read against and the starts the project owes
+// (LineFacts.Owed), and pass the pass's own records (passChain.issues) with the pass's one chain
+// (passChain).
 //
 // It is two queries whatever the number of parents, and none where no issue can wait on its
 // children (Store.DispatchChildren reads nothing for no parents, judgeChildren nothing for no
@@ -125,8 +101,9 @@ func OpenChildHolds(p phase.Phase) bool {
 func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, held []string, facts LineFacts,
 	pass *passChain,
 ) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
-	candidates := ChildrenFirstCandidates(pass.issues, facts.Gates)
-	parents := StartedParents(pass.issues, facts.Owed)
+	rule := facts.Rule.OrMain()
+	candidates := rule.ChildrenFirstCandidates(pass.issues, facts.Gates)
+	parents := rule.StartedParents(pass.issues, facts.Owed)
 	all := slices.Concat(candidates, parents, held)
 	slices.Sort(all)
 	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(all))
@@ -356,12 +333,13 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 }
 
 // ChildWaitsOf is the children-first judgement of the pass facts were read for: the open
-// Dispatch children of every issue whose first phase has not started (ChildrenFirstCandidates),
-// judged (childWaits) from the one read of the children ReadLineFacts judged the started parents
-// from (readChildWaits), so the judgement costs the pass no read of its own. It is the caller's
-// to hand the line as LineFacts.ChildWaits (blockers.JudgeLine), which the line reads and
-// ReadLineFacts leaves empty. Facts ReadLineFacts did not read carry none, which says that
-// nothing waits for its children.
+// Dispatch children of every issue whose first phase has not started
+// (SlotRule.ChildrenFirstCandidates, under the rule facts carry: LineFacts.Rule), judged
+// (childWaits) from the one read of the children ReadLineFacts judged the started parents from
+// (readChildWaits), so the judgement costs the pass no read of its own. It is the caller's to hand
+// the line as LineFacts.ChildWaits (blockers.JudgeLine), which the line reads and ReadLineFacts
+// leaves empty. Facts ReadLineFacts did not read carry none, which says that nothing waits for its
+// children.
 func ChildWaitsOf(facts LineFacts) map[string]ChildWait {
 	return facts.childrenFirst
 }

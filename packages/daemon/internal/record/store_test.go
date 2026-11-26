@@ -1561,20 +1561,20 @@ func TestNextDueIsTheEarliestLaterMomentAnUnleasedRowComesDue(t *testing.T) {
 		}
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		next, ok, err := records.NextDue(ctx, tx, "LEGION-208", LaneKinds(LaneLifecycle), now)
+		next, ok, err := records.NextDue(ctx, tx, "LEGION", "LEGION-208", LaneKinds(LaneLifecycle), now)
 		must(t, err)
 		if !ok || !next.Equal(now.Add(4*time.Minute)) {
 			t.Errorf("LEGION-208's lifecycle lane is next due at %s, %v, want %s: the row whose lease lapsed", next, ok, now.Add(4*time.Minute))
 		}
-		next, ok, err = records.NextDue(ctx, tx, "LEGION-208", nil, now)
+		next, ok, err = records.NextDue(ctx, tx, "LEGION", "LEGION-208", nil, now)
 		must(t, err)
 		if !ok || !next.Equal(now.Add(3*time.Minute)) {
 			t.Errorf("LEGION-208 is next due at %s, %v, want %s: its notice", next, ok, now.Add(3*time.Minute))
 		}
-		if next, ok, err := records.NextDue(ctx, tx, "LEGION-208", LaneKinds(LaneLifecycle), now.Add(5*time.Minute)); err != nil || ok {
+		if next, ok, err := records.NextDue(ctx, tx, "LEGION", "LEGION-208", LaneKinds(LaneLifecycle), now.Add(5*time.Minute)); err != nil || ok {
 			t.Errorf("LEGION-208's lifecycle lane once every row is due = %s, %v, %v, want nothing later", next, ok, err)
 		}
-		if next, ok, err := records.NextDue(ctx, tx, "LEGION-210", nil, now); err != nil || ok {
+		if next, ok, err := records.NextDue(ctx, tx, "LEGION", "LEGION-210", nil, now); err != nil || ok {
 			t.Errorf("an issue with no rows is next due at %s, %v, %v, want never", next, ok, err)
 		}
 	})

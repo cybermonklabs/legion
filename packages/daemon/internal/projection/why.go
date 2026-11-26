@@ -28,9 +28,9 @@ import (
 // what says the work of an issue in accepting, retro or merging is going on; stranded are the claims the
 // daemon judges nothing will wake, handed to Project because this package may not read
 // internal/workflow; rows is the Dispatch mirror this pass judged the links from, and facts the
-// pass's own (record.LineFacts): its children-first judgement (ChildWaits, record.ChildWaitsOf)
-// and each tree's design gate by its root (Gates), which the design gate's sentence reads
-// (heldReason).
+// pass's own (record.LineFacts): its children-first judgement (ChildWaits, record.ChildWaitsOf),
+// each tree's design gate by its root (Gates), which the design gate's sentence reads
+// (heldReason), and the slot rule the state is read under (Rule).
 //
 // The four states are read in one order, so no issue carries two answers: claim_stopped, then
 // waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
@@ -185,7 +185,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			if atWorkInSlotlessPhase(issue, running) {
+			if atWorkInSlotlessPhase(issue, running, facts) {
 				continue
 			}
 			reason, _ := heldReason(api.WhyUnlisted, causes[issue.Key], facts.Gates)
@@ -273,9 +273,13 @@ func linkReason(waitsOn []string) string {
 // atWorkInSlotlessPhase is an issue whose work is running now in a phase that holds no slot:
 // accepting, where the architect that owns the issue reads the head the issue's worker built, its
 // retro, and its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
-// (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
+// (record.SlotRule.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue: the held list names it
 // instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).
+// "Holds no slot because its phase keeps none" is read of the rule the state is read under
+// (record.LineFacts.InSlotlessPhase over facts): under the daemon's own those are
+// the three phases above, and under a rule that keeps a slot in one of them an issue standing
+// there without its slot is no issue at work this arm leaves alone, and is served `unlisted`.
 //
 // It is served no answer, which is the answer of every issue that is working now: holding a slot
 // and being at work were one thing until that change separated them, and the slot holder at work
@@ -312,14 +316,14 @@ func linkReason(waitsOn []string) string {
 // would tell a reader the work had stopped.
 //
 // A held issue answers false here whatever phase its hold came from, which is the first term of
-// the pair below and not a reading of the raw phase: record.InSlotlessPhase reads the phase a hold
+// the pair below and not a reading of the raw phase: the rule's complement reads the phase a hold
 // came from (record.StandsAt), so an issue held from its retro stands in its retro in every
 // rule the slot is judged by, and the term beside it is what puts the record's own `held` back
 // for this one question. A hold is what stops the work: no worker of a held issue runs, so it is
 // served `unlisted` with its held word's sentence — never at_work's, which the ladder refuses a
 // held issue (record.HeldReasonOf) — and the hold is what a reader of it asks about.
-func atWorkInSlotlessPhase(issue record.Issue, running map[string]struct{}) bool {
-	if issue.Phase == phase.Held || !record.InSlotlessPhase(issue) {
+func atWorkInSlotlessPhase(issue record.Issue, running map[string]struct{}, facts record.LineFacts) bool {
+	if issue.Phase == phase.Held || !facts.InSlotlessPhase(issue) {
 		return false
 	}
 	_, runs := running[issue.Tree]

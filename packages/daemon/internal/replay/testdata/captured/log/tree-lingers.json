@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-20T20:38:12.539322887Z",
+    "jsonPayload": {
+      "generation": 1,
+      "level": "INFO",
+      "msg": "workflow: tree lingers",
+      "time": "2026-11-20T20:38:12.539056207Z",
+      "tree": "ACME-18",
+      "until": "2026-11-23T20:38:12.260483847Z"
+    }
+  }
+]

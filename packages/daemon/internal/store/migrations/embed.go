@@ -68,6 +68,7 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261120042902_claim_agent_resume_generation.up.sql
 //   - 20261120055717_dispatch_issue_value_sequences.up.sql
 //   - 20261120144241_intake_failures.up.sql
+//   - 20261121103000_slots_reading_times.up.sql
 //   - 20261121170714_dispatch_issue_applied_seq.up.sql
 //   - 20261123050533_idle_release_keeps_no_workspace.up.sql
 //   - 20261123224717_members_owed.up.sql

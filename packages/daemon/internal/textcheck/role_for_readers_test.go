@@ -42,20 +42,22 @@ type roleForReader struct {
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for: noticeFor
-// writes the notice of the move out of admitted with no role (R2), Engine.leftItsPhase records no
-// worker's completion while the issue stands at admitted, the completion route's entryFence answers
-// a completion at admitted as one of a phase its role does not work, and the stalled-tree notice's
-// reason tells an issue at admitted as standing in a phase no role works, the words it wrote before
-// RoleFor named the architect there. Every other site reaches its answer through a guard that
-// starts, resumes or reports no architect as a phase worker, or names the role an admitted root's
-// entry numbers are of, or names the architect in the notice of a task its owner stopped in the
-// architect's phase, where the stop ends no process (Engine.taskStopped, at admitted as at
-// accepting), or answers the issue's own phase for the architect's completion there, as its reader
-// took the issue's phase while RoleFor named no role (phase.Of), or reads only the phases of a
-// plan's steps, which admitted never is (reportsBefore, and Engine.restartTask, which reads its
-// task's first step: a planner's or an implementer's, as plan.Supported holds every task to an
-// implementer step with each tester, reviewer and acceptance step after it), or reads the retro's
-// own phase and the phase of the last step of a parent's task, neither of which is admitted
+// writes the notice of the move out of admitted with no role (R2; its read for a conflicting head's
+// move back is of the rows a rule's conflict path adds from testing on, none out of admitted),
+// Engine.leftItsPhase records no worker's completion while the issue stands at admitted, the
+// completion route's entryFence answers a completion at admitted as one of a phase its role does
+// not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
+// no role works, the words it wrote before RoleFor named the architect there. Every other site
+// reaches its answer through a guard that starts, resumes or reports no architect as a phase
+// worker, or names the role an admitted root's entry numbers are of, or names the architect in the
+// notice of a task its owner stopped in the architect's phase, where the stop ends no process
+// (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
+// architect's completion there,
+// as its reader took the issue's phase while RoleFor named no role (phase.Of), or reads only the
+// phases of a plan's steps, which admitted never is (reportsBefore, and Engine.restartTask, which
+// reads its task's first step: a planner's or an implementer's, as plan.Supported holds every task
+// to an implementer step with each tester, reviewer and acceptance step after it), or reads the
+// retro's own phase and the phase of the last step of a parent's task, neither of which is admitted
 // (retroHeldNotice and Engine.StartHeldRetro, which run only for a parent held before its retro for
 // the issues beneath it), or never reads admitted at all because a check before it refuses that
 // phase, which is what each named test holds it to. A parent's wait on its open children
@@ -82,7 +84,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                               {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                                  {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}:                {calls: 1, test: "TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"},
-	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:               {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
+	{file: "internal/record/news_holders.go", fn: "PhaseHolder"}:                      {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                       {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                           {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                            {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
@@ -103,7 +105,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                      {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                    {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 4, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:                   {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:                {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:                {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},

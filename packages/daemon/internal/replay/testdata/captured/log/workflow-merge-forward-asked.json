@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "2026-11-21T19:27:15.063647973Z",
+    "jsonPayload": {
+      "base": "main",
+      "head": "c6a6d5666582d11bac4514ef24a326e89da89117",
+      "issue": "ACME-2",
+      "level": "INFO",
+      "msg": "workflow: merge forward asked",
+      "phase": "implementing",
+      "pullRequest": 2813,
+      "time": "2026-11-21T19:27:15.063200483Z",
+      "tree": "ACME-2",
+      "why": "required-check-not-green"
+    }
+  }
+]

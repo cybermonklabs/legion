@@ -149,6 +149,27 @@ func (i DispatchIssue) LabelledTriageRoot() bool {
 	return i.Status == "triage" && i.Parent == "" && i.HandedOver
 }
 
+// AdmissionBound says whether the fact is an event admission records an unrecorded issue from: in
+// todo, handed to Legion or a child of a tree. The daemon's preparation of an event and of its
+// boot listing, and a replay's stand-in for it, read an unrecorded issue's repository and its
+// view in Dispatch only for such an event.
+func (i DispatchIssue) AdmissionBound() bool {
+	return i.Status == "todo" && (i.HandedOver || i.Parent != "")
+}
+
+// QueuesUnderParent says whether the fact's issue, recorded as recorded (nil when the workflow does
+// not record it), is a root the waiting line may hold under an unreleased child of an ancestor's
+// tree (the ancestry hold): a labelled todo under a Dispatch parent, unrecorded or recorded as a
+// root. Its preparation reads its Dispatch parent chain (Ancestry) for such a fact alone.
+func (i DispatchIssue) QueuesUnderParent(recorded *record.Issue) bool {
+	return i.Status == "todo" && i.HandedOver && i.Parent != "" &&
+		(recorded == nil || claim.IsTreeRoot(recorded.Key, recorded.Tree))
+}
+
+// ParentKey is the key a Dispatch parent names, as Dispatch's issue and listing and the record
+// hold one (nil for none), "" for none.
+func ParentKey(parent *string) string { return deref(parent) }
+
 // LabelSetByPerson says whether a person set the label (LabelSetter), by the one rule the daemon
 // has for who is a person (dispatch.Actor.Person): a session's or Dispatch's own label is not,
 // and neither is a setter nothing read.
@@ -687,6 +708,22 @@ type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
+// SignalDeadline is the moment a signal that admission by signals reads would cross its limit with
+// no event, applied as a synthetic fact and never decoded from an event: the one admission pass
+// that a project's one timer asks for at the next such moment. At is that moment. Admission
+// promotes on it as on every fact that is not a Dispatch issue, as a pass of kind deadline
+// (signals.PassDeadline), which starts below P0 where a tick's pass does not; the workflow engine
+// and the blockers mirror do nothing for it. It carries nothing else, since the pass reads the
+// whole project and the signals as its caller supplies them (admit.Admission.UseSignals).
+//
+// No live code emits it: the daemon registers no timer in this version, and a replay of a recorded
+// window emits none until it supplies the signals to the pass.
+type SignalDeadline struct {
+	At time.Time
+}
+
+func (SignalDeadline) namedIssue() (string, bool) { return "", false }
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string
@@ -968,6 +1005,13 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
 //
+// BaseSHA is the base commit GitHub's answer names: the same answer's `base.sha` on a GET
+// /pulls/{number}, and `baseRefOid` on a base's batch query, empty where GitHub names none. It
+// decides nothing and is recorded nowhere; the engine logs it with the read (workflow's
+// MergeStateReadLine), so a window collected later can name the base of each read. It is the
+// commit the answer names and no more: GitHub does not say it is the base commit its
+// mergeability was computed against (record.ConflictRead).
+//
 // ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
 // rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
 // what it records is the time of the read rather than the time of the apply, and its tests stay
@@ -992,6 +1036,7 @@ type PullRequestMergeability struct {
 	Repo       string
 	Number     int
 	Base       string
+	BaseSHA    string
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
@@ -2327,7 +2372,19 @@ func PlanRatingUnexpected(what string) *Refusal {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
+//
+// It applies on the daemon's own record store (record.NewStore), whose processed_events rows
+// take Postgres's clock; ApplyFactWith is the same path on a store the caller hands in.
 func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+	return ApplyFactWith(ctx, pool, record.NewStore(), source, eventID, fact, handlers...)
+}
+
+// ApplyFactWith is ApplyFact on records: the record store that marks the fact applied
+// (MarkProcessed), forgets a refused report or an unspent fact (ForgetProcessed) and settles an
+// observed issue (settleObserved). A replay of a recorded window hands in the store built on its
+// simulated clock (record.NewStoreWithClock), the one its handlers write through, so a fact's
+// processed_at is the window's time and not the moment the replay ran.
+func ApplyFactWith(ctx context.Context, pool store.TxPool, records *record.Postgres, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	turn := func() {}
 	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
@@ -2346,7 +2403,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		if err := SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 		}
-		firstSeen, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
+		firstSeen, err := records.MarkProcessed(ctx, tx, source, eventID)
 		if err != nil {
 			return err
 		}
@@ -2360,7 +2417,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 			return closeReplayed(ctx, tx, record.IntakeAlreadyApplied)
 		}
 
-		fact, apply, err := settleObserved(ctx, tx, fact)
+		fact, apply, err := settleObserved(ctx, tx, records, fact)
 		if err != nil {
 			return err
 		}
@@ -2387,7 +2444,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// the give as one applied.
 		_, report := fact.(CheckReport)
 		if firstSeen && ((report && result.Refusal != nil) || result.Unspent) {
-			if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+			if err := records.ForgetProcessed(ctx, tx, source, eventID); err != nil {
 				return err
 			}
 		}
@@ -2496,19 +2553,19 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
 // re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
 // edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
-func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
+// It reads the record and the mirror through records, ApplyFactWith's.
+func settleObserved(ctx context.Context, tx pgx.Tx, records *record.Postgres, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
 		return fact, true, nil
 	}
-	store := record.NewStore()
-	recorded, err := store.Issue(ctx, tx, issue.Key)
+	recorded, err := records.Issue(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, false, fmt.Errorf("read the record of %s before applying Dispatch's view of it: %w", issue.Key, err)
 	}
 	switch {
 	case recorded == nil:
-		applied, err := store.DispatchIssueApplied(ctx, tx, issue.Key)
+		applied, err := records.DispatchIssueApplied(ctx, tx, issue.Key)
 		if err != nil {
 			return nil, false, err
 		}

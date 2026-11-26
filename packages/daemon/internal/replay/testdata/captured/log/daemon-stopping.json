@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "2026-11-21T01:54:46.607199038Z",
+    "jsonPayload": {
+      "cause": "terminated signal received",
+      "claims": 9084,
+      "deciding": [
+        "legion-acme-acme-9-implementer (supervise.RequestRuleResume)",
+        "legion-acme-acme-3-architect (supervise.RequestRuleResume)"
+      ],
+      "level": "INFO",
+      "msg": "legion daemon stopping",
+      "project": "ACME",
+      "time": "2026-11-21T01:54:46.606831688Z"
+    }
+  }
+]

@@ -30,10 +30,16 @@ type midPhaseStart struct {
 // startsOf is every supervise start row issue holds, oldest first.
 func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 	t.Helper()
+	return startsOfForProject(t, pool, testProject, issue)
+}
+
+// startsOfForProject is startsOf under a Dispatch project key of its own.
+func startsOfForProject(t *testing.T, pool *pgxpool.Pool, project, issue string) []midPhaseStart {
+	t.Helper()
 	var rows []midPhaseStart
 	inTx(t, pool, func(tx pgx.Tx) {
 		ctx := context.Background()
-		due, err := record.NewStore().DueRows(ctx, tx, testProject, issue, []record.OutboxKind{record.OutboxKindSupervise}, fixedNow)
+		due, err := record.NewStore().DueRows(ctx, tx, project, issue, []record.OutboxKind{record.OutboxKindSupervise}, fixedNow)
 		if err != nil {
 			t.Fatalf("list what a lane may run for %s: %v", issue, err)
 		}
@@ -187,7 +193,7 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		role  claim.Role
 		phase phase.Phase
 		// waits says the child's start waits for an admission slot, which the phase it stands
-		// in decides (record.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
+		// in decides (record.SlotRule.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
 		// waits, and the retro implementer's does not, since retro keeps no row for that start
 		// to wait for.
 		waits bool

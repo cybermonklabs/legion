@@ -496,6 +496,32 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			podHoldContract-1, dropped, narrowings)
 	})
 
+	// The slots reading's narrowing is a row of the table like every other, so the caller below
+	// it is told what it lost: a caller one contract below the entry's number, which states that
+	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
+	// recorded contract at or below it (recordedContractAtOrBelow), so it stands below that row
+	// and the entries' rows above it, and the log holds the slots reading's line first. Its body
+	// carries no `admission.slots`, the one key of the state's own that row takes off. The line is
+	// named here as a literal, so a strip applied beside the loop, which would take the row's
+	// expectation with its answer, fails this subtest alone. The subtest holds no entry to be the
+	// newest: it reads the entry's number through the registry (entryNumber).
+	t.Run("the slots reading narrowing writes its own line", func(t *testing.T) {
+		const droppedSlotsReading = "admission.slots, the issues' rank and rootRank, and the slots' state and since"
+		state := carriedState(t)
+		below := entryNumber(slotsReadingContract) - 1
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
+
+		if _, carried := keysOf(t, keysOf(t, body)["admission"])["slots"]; carried {
+			t.Errorf("the body served to a caller at %d carries `admission.slots`, the key the entry above it added: %s",
+				below, keysOf(t, body)["admission"])
+		}
+		want := narrowingsExpected(state, below)
+		if len(want) == 0 || want[0] != droppedSlotsReading {
+			t.Fatalf("a caller at %d expects the lines %v, want the slots reading row's first", below, want)
+		}
+		wantNarrowings(t, narrowings, below, want)
+	})
+
 	// The repositories line is named as a literal for the reason the assignments line below is:
 	// take the row out of stateNarrowings and write the older block beside the loop as an `if` of
 	// its own, and every subtest that reads the table loses its expectation with its answer, so the

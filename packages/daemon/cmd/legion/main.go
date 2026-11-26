@@ -640,6 +640,12 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// What the slots in use are spent on, as the daemon wrote it (api.Admission.Slots, its line):
+	// one sentence the tick notice carries too, printed as it stands so the two never differ. A
+	// daemon that serves no reading, one before the contract that added it, prints no line.
+	if slots := state.Admission.Slots; slots != nil {
+		fmt.Fprintln(stdout, slots.Line)
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {

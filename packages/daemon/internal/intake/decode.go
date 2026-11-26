@@ -404,7 +404,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}
-		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
+		claimedBy, claimKnown := IssueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
@@ -567,7 +567,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		// A claim event whose claim cannot be named records nothing: the next issue event, the
 		// periodic re-read or the next boot's listing carries the claim Dispatch shows.
-		holder, known := issueEventClaim(payload.Claim, unread)
+		holder, known := IssueEventClaim(payload.Claim, unread)
 		if known && event.Type == "issue.claimed" && holder == "" {
 			*unread = append(*unread, "claim is null on issue.claimed")
 			known = false
@@ -581,10 +581,11 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	}
 }
 
-// issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event
-// showed it at all: an absent field, or a claim naming no actor, is unknown, the latter named in
-// unread.
-func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
+// IssueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event
+// showed it at all: an absent field is unknown, and so is a claim that is no claim object or one
+// naming no actor, each of those two named in unread. The daemon's decoder reads every claim an
+// event carries by it, and a replay reads the claims of its copy of Dispatch by it.
+func IssueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	if raw == nil {
 		return "", false
 	}

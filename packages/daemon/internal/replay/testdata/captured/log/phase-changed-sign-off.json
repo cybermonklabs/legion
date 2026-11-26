@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-21T04:33:31.534167356Z",
+    "jsonPayload": {
+      "from": "accepting",
+      "issue": "ACME-37",
+      "level": "INFO",
+      "msg": "workflow: phase changed",
+      "status": "retro",
+      "time": "2026-11-21T04:33:31.533872396Z",
+      "to": "retro",
+      "tree": "ACME-37",
+      "trigger": "sign_off"
+    }
+  }
+]

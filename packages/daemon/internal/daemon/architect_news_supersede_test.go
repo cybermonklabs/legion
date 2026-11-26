@@ -159,7 +159,7 @@ func TestANewerEntrysTaskTakesTheUntakenNewsOfARootArchitectAndTellsIt(t *testin
 // A root's architect holds a phases row of the entries it is handed, as a phase worker does
 // (dispatch://INFRA-2614), and its claim records the entry it was given. So the reconcile queues
 // the news-only start of its summary, and that start reaches its claim, on the one rule every role's
-// news is held to (newsClaimTakes): the claim was given the entry its row names. An architect level
+// news is held to (record.NewsClaimTakes): the claim was given the entry its row names. An architect level
 // with its row is told its summary by the news-only start now. An architect behind its row is owed
 // that entry's start, which carries the summary itself (the start executor's newsForStart), so no
 // news-only start is queued in front of it. Read as an architect that works no entry, as it was

@@ -1,0 +1,62 @@
+[
+  {
+    "id": 502249,
+    "issue_key": "ACME-27",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 99,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
+    "notify": false,
+    "created_at": "2026-11-13T21:26:48.67625Z",
+    "payload": {
+      "key": "ACME-27",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzr",
+      "repo": "acme/repo-1",
+      "claim": null,
+      "route": null,
+      "title": "text 1",
+      "labels": [],
+      "number": 27,
+      "parent": "ACME-24",
+      "status": "done",
+      "changed": ["status", "closed_at"],
+      "project": "ACME",
+      "assignee": "person-1@example.invalid",
+      "last_seq": 99,
+      "priority": null,
+      "ancestors": ["ACME-24"],
+      "closed_at": "2026-11-13T21:26:48.67625Z",
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "none",
+        "reason": "text 2",
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-11T22:53:00.892942Z",
+      "created_by": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/scratch/tmp",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-24"
+        }
+      },
+      "updated_at": "2026-11-13T21:26:48.681787Z",
+      "resolved_repo": "acme/repo-1",
+      "thread_logins": [],
+      "external_links": [],
+      "plan_artifact_id": "00000000-0000-4000-8000-000000000005",
+      "primary_artifact_id": "00000000-0000-4000-8000-000000000006",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": "00000000-0000-4000-8000-000000000007"
+    }
+  }
+]

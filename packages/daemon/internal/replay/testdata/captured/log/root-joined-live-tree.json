@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-17T09:11:21.164402764Z",
+    "jsonPayload": {
+      "generation": 2,
+      "issue": "ACME-6",
+      "level": "INFO",
+      "msg": "workflow: a queued root joined a live tree",
+      "time": "2026-11-17T09:11:21.164178694Z",
+      "tree": "ACME-8"
+    }
+  }
+]

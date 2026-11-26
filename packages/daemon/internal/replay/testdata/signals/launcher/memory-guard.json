@@ -1,0 +1,29 @@
+[
+  {
+    "timestamp": "2026-11-25T01:36:21.123091849Z",
+    "resource": {
+      "labels": {
+        "pod_name": "legion-acme-acme-1"
+      }
+    },
+    "textPayload": "launcher: memory guard: ended pid=56126 role=implementer size=2315661312 reading=7305846784 counter=8205848576 shmem=466944 limit=8589934592 executable=\"node\""
+  },
+  {
+    "timestamp": "2026-11-25T01:41:29.753880822Z",
+    "resource": {
+      "labels": {
+        "pod_name": "legion-acme-acme-2"
+      }
+    },
+    "textPayload": "launcher: memory guard: stopped for this rise reason=nothing to end reading=7303979008 endable=0 protected=7429586944 unread=0 unheld=-125607936 limit=8589934592 left_out=0"
+  },
+  {
+    "timestamp": "2026-11-25T01:42:28.744419695Z",
+    "resource": {
+      "labels": {
+        "pod_name": "legion-acme-acme-3"
+      }
+    },
+    "textPayload": "launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=8589934592 reading=23052288"
+  }
+]

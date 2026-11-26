@@ -1,0 +1,125 @@
+[
+  {
+    "event": "committed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "committed"
+  },
+  {
+    "event": "reviewed"
+  },
+  {
+    "id": 36963393320,
+    "node_id": "ATMQE_lADORFy7ds8AAAABhmkGHc8AAAAImzCfKA",
+    "url": "https://api.github.com/repos/cybermonklabs/legion/issues/events/36963393320",
+    "actor": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "added_to_merge_queue",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-11-23T02:27:46Z",
+    "performed_via_github_app": null
+  },
+  {
+    "id": 37043365149,
+    "node_id": "ME_lADORFy7ds8AAAABhmkGHc8AAAAIn_TlHQ",
+    "url": "https://api.github.com/repos/cybermonklabs/legion/issues/events/37043365149",
+    "actor": {
+      "login": "person-agent[bot]",
+      "id": 1,
+      "node_id": "BOT_capturedOne",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/person-agent%5Bbot%5D",
+      "html_url": "https://github.com/apps/person-agent",
+      "followers_url": "https://api.github.com/users/person-agent%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/person-agent%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/person-agent%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/person-agent%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/person-agent%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/person-agent%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/person-agent%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/person-agent%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/person-agent%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "merged",
+    "commit_id": "df18d9beddb21e3a2755887f68a13318f68b4659",
+    "commit_url": "https://api.github.com/repos/cybermonklabs/legion/commits/df18d9beddb21e3a2755887f68a13318f68b4659",
+    "created_at": "2026-11-23T18:25:55Z",
+    "performed_via_github_app": null
+  },
+  {
+    "id": 37043365837,
+    "node_id": "RFMQE_lADORFy7ds8AAAABhmkGHc8AAAAIn_TnzQ",
+    "url": "https://api.github.com/repos/cybermonklabs/legion/issues/events/37043365837",
+    "actor": {
+      "login": "github-merge-queue[bot]",
+      "id": 118344674,
+      "node_id": "BOT_kgDOBw3L4g",
+      "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/github-merge-queue%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-merge-queue",
+      "followers_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/github-merge-queue%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "removed_from_merge_queue",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-11-23T18:25:55Z",
+    "performed_via_github_app": null
+  },
+  {
+    "event": "closed"
+  },
+  {
+    "event": "head_ref_deleted"
+  },
+  {
+    "event": "cross-referenced"
+  },
+  {
+    "event": "referenced"
+  },
+  {
+    "event": "cross-referenced"
+  }
+]

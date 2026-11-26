@@ -269,6 +269,19 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	// it (PauseStateTx, pauseViewOf): every key of an ended pause, a session at `by` and at
 	// `endedBy`, and `endedAt` (controllerPause).
 	last := pauseViewOf(controllerPause(true))
+	// The slots reading of this project (slotsReadingContract): SHAPES-1 holds the one slot and
+	// waits on a person, and SHAPES-2, whose wait a person declined to answer, is a root whose
+	// work came back holding no slot, so it is the first issue that waits for a slot, with the
+	// holder ranked below it. The first body names no such issue, so `belowFirstWaiting.first` is
+	// realised here.
+	admittedAt := time.Date(2026, 9, 22, 7, 0, 0, 0, time.UTC)
+	slotsReading := record.SlotsReading{InUse: 1, Cap: 1,
+		Person:             record.StateCount{Count: 1, Oldest: &since},
+		WaitOnlyForSlot:    record.StateCount{Count: 1, Oldest: &declinedAt},
+		StartedWithoutSlot: record.StateCount{Count: 1, Oldest: &declinedAt},
+		BelowFirstWaiting:  record.BelowFirstWaiting{Count: 1, First: "SHAPES-2"},
+	}
+	slotsReading.Line = record.SlotsLine(slotsReading)
 	return State{
 		Daemon: DaemonInfo{
 			Project:       "shapes",
@@ -281,10 +294,13 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 		// source of a state answers none, so it is written here, where the walk reads the two
 		// numbers of the key and every record describes them.
 		Contract:  &ContractView{Daemon: DaemonAPIVersion(), Caller: DaemonAPIVersion()},
-		Admission: Admission{Cap: 1, Active: []string{"SHAPES-1"}, Trees: []string{"SHAPES-1", "SHAPES-2"}},
+		Admission: Admission{Cap: 1, Active: []string{"SHAPES-1"}, Trees: []string{"SHAPES-1", "SHAPES-2"}, Slots: &slotsReading},
 		Issues: map[string]Issue{
 			"SHAPES-1": {
 				Key:           "SHAPES-1",
+				Rank:          "b",
+				RootRank:      "b",
+				Slot:          &SlotView{Index: 0, AdmittedAt: admittedAt, State: string(record.HolderPerson), Since: &since},
 				Generation:    1,
 				Phase:         phase.AwaitingPerson,
 				Status:        "in_progress",
@@ -309,6 +325,8 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			// below 68 carries this wait without its answered pair.
 			"SHAPES-2": {
 				Key:           "SHAPES-2",
+				Rank:          "a",
+				RootRank:      "a",
 				Generation:    1,
 				Phase:         phase.AwaitingPerson,
 				Status:        "in_progress",

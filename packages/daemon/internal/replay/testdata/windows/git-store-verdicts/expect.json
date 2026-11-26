@@ -1,0 +1,316 @@
+{
+  "branch": "main+conflicts=git",
+  "rules": {
+    "legion-v20.42.5": {
+      "source": "replay",
+      "rule": "legion-v20.42.5",
+      "branch": "main+conflicts=git",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 2,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.375,
+        "max": 1,
+        "hours": 1.5
+      },
+      "priorityTaken": 0,
+      "loops": {
+        "conflict": {
+          "rounds": 1,
+          "hours": 0.5
+        },
+        "review_changes": {
+          "rounds": 1,
+          "hours": 0.5
+        }
+      },
+      "waits": {},
+      "slotHoursInTurn": 4.25,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 1.4375,
+        "max": 2,
+        "hours": 5.75
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z",
+        "ACME-2": "2001-03-05T09:05:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T11:15:00Z",
+        "ACME-2": "2001-03-05T12:35:00Z"
+      },
+      "assumptions": [1, 2, 3, 9, 13, 18],
+      "scenario": "none"
+    },
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main+conflicts=git",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T13:00:00Z",
+      "unplaced": 0,
+      "done": 2,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.375,
+        "max": 1,
+        "hours": 1.5
+      },
+      "priorityTaken": 0,
+      "loops": {
+        "conflict": {
+          "rounds": 1,
+          "hours": 0.25
+        },
+        "review_changes": {
+          "rounds": 1,
+          "hours": 0.5
+        }
+      },
+      "waits": {},
+      "slotHoursInTurn": 3.75,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 1.3125,
+        "max": 2,
+        "hours": 5.25
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z",
+        "ACME-2": "2001-03-05T09:05:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T11:15:00Z",
+        "ACME-2": "2001-03-05T12:05:00Z"
+      },
+      "assumptions": [1, 2, 3, 9, 13, 18, 23],
+      "scenario": "none"
+    }
+  },
+  "checks": {
+    "legion-v20.42.5": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        },
+        "gitReads": {
+          "acme/widgets": {
+            "clean": 4,
+            "conflict": 1,
+            "order": 0,
+            "after-merge": 0,
+            "missing": 0,
+            "never-ran": 0
+          }
+        },
+        "gitLoopHours": {
+          "acme/widgets": {
+            "answered": 0.5,
+            "drawn": 0
+          }
+        }
+      },
+      "log": [
+        {
+          "time": "2001-03-05T10:15:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "9134632e6104051de637049101740bd310b5d0fc",
+          "recorded": "2001-03-05T10:15:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T11:15:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "e5007700813da5c89b77fd0b5c907659a26901b7",
+          "recorded": "2001-03-05T11:45:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T10:20:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-2",
+          "repo": "acme/widgets",
+          "head": "00f5a4b7aafa493a3cbea2261ac020cc71a265cf",
+          "recorded": "2001-03-05T10:20:00Z",
+          "by": "end",
+          "n": 1,
+          "answer": "conflict"
+        },
+        {
+          "time": "2001-03-05T11:05:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-2",
+          "repo": "acme/widgets",
+          "head": "00f5a4b7aafa493a3cbea2261ac020cc71a265cf",
+          "recorded": "2001-03-05T10:20:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T12:35:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-2",
+          "repo": "acme/widgets",
+          "head": "a9a3e0f773fc4de19377f504346b76307ca394c8",
+          "recorded": "2001-03-05T11:50:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        }
+      ]
+    },
+    "main": {
+      "run": {
+        "limits": {
+          "idle": 0.5,
+          "queue": 2,
+          "provider": 1,
+          "refusals": 4,
+          "kills": 2,
+          "approvals": 3
+        },
+        "signalValues": {
+          "2001-03-05T09:00:00Z": {
+            "idle": null,
+            "queue": null,
+            "provider": null,
+            "refusals": null,
+            "kills": null,
+            "approvals": null
+          }
+        },
+        "gitReads": {
+          "acme/widgets": {
+            "clean": 3,
+            "conflict": 1,
+            "order": 0,
+            "after-merge": 0,
+            "missing": 0,
+            "never-ran": 0
+          }
+        },
+        "gitLoopHours": {
+          "acme/widgets": {
+            "answered": 0.25,
+            "drawn": 0
+          }
+        }
+      },
+      "log": [
+        {
+          "time": "2001-03-05T10:15:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "9134632e6104051de637049101740bd310b5d0fc",
+          "recorded": "2001-03-05T10:15:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T11:15:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-1",
+          "repo": "acme/widgets",
+          "head": "e5007700813da5c89b77fd0b5c907659a26901b7",
+          "recorded": "2001-03-05T11:45:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        },
+        {
+          "time": "2001-03-05T10:20:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-2",
+          "repo": "acme/widgets",
+          "head": "00f5a4b7aafa493a3cbea2261ac020cc71a265cf",
+          "recorded": "2001-03-05T10:20:00Z",
+          "by": "end",
+          "n": 1,
+          "answer": "conflict"
+        },
+        {
+          "time": "2001-03-05T12:05:00Z",
+          "msg": "replay: a head's merge state read from git",
+          "issue": "ACME-2",
+          "repo": "acme/widgets",
+          "head": "a9a3e0f773fc4de19377f504346b76307ca394c8",
+          "recorded": "2001-03-05T11:50:00Z",
+          "by": "end",
+          "n": 0,
+          "answer": "clean"
+        }
+      ]
+    }
+  }
+}

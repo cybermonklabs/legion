@@ -1499,11 +1499,12 @@ func TestTwoEventsThatFailInOneWindowStopTheCursorBelowTheFirst(t *testing.T) {
 }
 
 // catchUpApplies records the id of every catch-up event fact a pool's connections begin to apply:
-// each fact transaction's processed_events insert (record.Store.MarkProcessed).
+// each fact transaction's processed_events insert (record.Store.MarkProcessed), whose arguments
+// are the source, the event id and the store's clock (nil on the daemon's own store).
 type catchUpApplies struct{ ids []string }
 
 func (c *catchUpApplies) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "insert into processed_events") && len(data.Args) == 2 {
+	if strings.Contains(data.SQL, "insert into processed_events") && len(data.Args) == 3 {
 		if id, ok := data.Args[1].(string); ok && strings.HasPrefix(id, catchUpEventID("event:")) {
 			c.ids = append(c.ids, id)
 		}

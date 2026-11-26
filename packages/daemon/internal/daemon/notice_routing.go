@@ -204,19 +204,6 @@ func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
 
-// claimEnded is whether a claim in state will not hold its role again: this daemon does not
-// supervise it (""), or it failed or retired. A child's own architect that failed does start again,
-// at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
-// catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
-// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
-// does the workflow's next start of its role for a claim the workflow suspended, which for a
-// child's own architect is the child's next first phase start (workflow's StartFirstPhase), or,
-// after its tree's linger, the re-admission's start of a child past admitted (admit's
-// startMidPhaseMembers).
-func claimEnded(state supervise.ClaimState) bool {
-	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
-}
-
 // supervisedClaim is token's claim as this daemon supervises it, or the zero view, whose state is
 // "", when it does not supervise it. It is the machine's View, which never waits on a decision in
 // flight: the outbox runs one row at a time, and an architect's relaunch can hold its machine for
@@ -248,7 +235,7 @@ func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
 	if tree.root.Lingers() {
 		return "its tree lingers or has closed"
 	}
-	if claimEnded(state) {
+	if record.ClaimEnded(state) {
 		return "its claim has failed, retired, or is not supervised"
 	}
 	return ""

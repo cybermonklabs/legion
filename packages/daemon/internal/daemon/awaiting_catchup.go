@@ -11,10 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -64,61 +62,6 @@ const (
 	catchUpRetryDelay = 2 * time.Second
 )
 
-// catchesUp says whether the boot's catch-up reads issue: a tree root, which the records it is
-// read from hold of the daemon's project alone (projectRecords), not lingering, and one of three
-// things —
-//
-//   - a root in awaiting_person;
-//   - a root ReconcileAwaiting could move into it — at admitted, with a row of its own saying the
-//     daemon started it, its design gate never opened (record.CanWaitOnPerson, which is
-//     decideAwait's rule 0);
-//   - a root whose tree this boot's own step list opens and whose work that opening releases: one
-//     standing at admitted, whose first phase the waiting line offers a slot to (record.Waiting
-//     classes it LineFirstPhase, and StartFirstPhase runs it).
-//
-// gate is the root's own design gate under this boot's step list, the zero value for a root with
-// no step of it registered; slotted is the key of every issue holding an admission slot. A root in
-// a phase of its own tree is read by neither this nor ReconcileAwaiting: the phase's worker holds
-// the work, and the root's architect waits for it.
-//
-// The boot must read every root that pass can move, or it would decide one on a mirror of its
-// asks that has not caught up with what Dispatch recorded while the daemon was down — a person's
-// answer given then would read as unanswered, and the root would enter awaiting_person; and a
-// tree a shorter list releases would be started at a document version a waiting event supersedes,
-// which nothing moves back. A root waiting in line for its
-// first slot is not one of them: its gate stands at no open step, its architect has never run and
-// has handed nothing back, its admission is a handout of its own, and the event log below that
-// handout is history this release must not replay.
-//
-// The third case is broader than the trees a changed list actually releases, and nothing narrower
-// would do: a step dropped from gates.design before anything registered it leaves no row behind,
-// so no rule over the stored rows can tell that the list changed, and the boot reads its list
-// before the catch-up has applied anything. What it costs, per boot and for each root whose
-// design this list reads as open: the root's own event window, read a page at a time from its
-// cursor (Events, one call for a root nothing happened to, more where a window is long); one
-// read of each gate's document, one call per registered step, where the mirror holds no approval
-// request for it (bindGateRequest); and the hold itself, which keeps that root out of the boot's
-// own admission pass — no pass decides whether it waits on a person, and none resumes it once
-// answered, until the catch-up applies its window and releases it, which the same boot does. It
-// keeps its place in the waiting line while held,
-// within its priority, among the issues whose work came back, oldest first, so the cost is the boot's reads
-// and a pass of latency, not a lost turn, and that is what buys the hold.
-func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted map[string]struct{}) bool {
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
-		return false
-	}
-	if issue.Phase == phase.AwaitingPerson {
-		return true
-	}
-	if gate.Open() {
-		if issue.Phase == phase.Admitted {
-			return true
-		}
-	}
-	_, holds := slotted[issue.Key]
-	return record.CanWaitOnPerson(issue, gate, holds)
-}
-
 // slottedIssues is the key of every issue holding an admission slot.
 func (w *workflowRuntime) slottedIssues(ctx context.Context, tx pgx.Tx) (map[string]struct{}, error) {
 	slots, err := w.records.Slots(ctx, tx)
@@ -132,10 +75,29 @@ func (w *workflowRuntime) slottedIssues(ctx context.Context, tx pgx.Tx) (map[str
 	return slotted, nil
 }
 
-// holdForCatchUp holds every root the catch-up will read, and has not finished in an earlier
-// attempt of this boot, out of admission's decision whether it waits on a person, inside the
-// boot's reconcile transaction and before its admission pass. Without a Dispatch client nothing is
-// caught up, and nothing is held.
+// holdForCatchUp holds every root the catch-up will read (record.CatchesUp), and has not finished
+// in an earlier attempt of this boot, out of admission's decision whether it waits on a person,
+// inside the boot's reconcile transaction and before its admission pass. Without a Dispatch client
+// nothing is caught up, and nothing is held.
+//
+// The boot must read every root that pass can move, or it would decide one on a mirror of its
+// asks that has not caught up with what Dispatch recorded while the daemon was down — a person's
+// answer given then would read as unanswered, and the root would enter awaiting_person; and a
+// tree a shorter list releases would be started at a document version a waiting event supersedes,
+// which nothing moves back. A root waiting in line for its first slot is not one of them: its gate
+// stands at no open step, its architect has never run and has handed nothing back, its admission is
+// a handout of its own, and the event log below that handout is history this release must not
+// replay.
+//
+// What the catch-up costs, per boot and for each root whose design this list reads as open: the
+// root's own event window, read a page at a time from its cursor (Events, one call for a root
+// nothing happened to, more where a window is long); one read of each gate's document, one call
+// per registered step, where the mirror holds no approval request for it (bindGateRequest); and
+// the hold itself, which keeps that root out of the boot's own admission pass — no pass decides
+// whether it waits on a person, and none resumes it once answered, until the catch-up applies its
+// window and releases it, which the same boot does. It keeps its place in the waiting line while
+// held, within its priority, among the issues whose work came back, oldest first, so the cost is
+// the boot's reads and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) holdForCatchUp(ctx context.Context, tx pgx.Tx) error {
 	if w.dispatch == nil {
 		return nil
@@ -154,7 +116,8 @@ func (w *workflowRuntime) holdForCatchUp(ctx context.Context, tx pgx.Tx) error {
 	}
 	var keys []string
 	for _, issue := range issues {
-		if _, done := w.caughtUp[caughtUpKey(issue)]; w.catchesUp(issue, gates[issue.Key], slotted) && !done {
+		_, holds := slotted[issue.Key]
+		if _, done := w.caughtUp[caughtUpKey(issue)]; record.CatchesUp(issue, gates[issue.Key], holds) && !done {
 			keys = append(keys, issue.Key)
 		}
 	}
@@ -217,7 +180,7 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 			return err
 		}
 		for _, issue := range issues {
-			if !w.catchesUp(issue, gates[issue.Key], slotted) {
+			if _, holds := slotted[issue.Key]; !record.CatchesUp(issue, gates[issue.Key], holds) {
 				continue
 			}
 			root := catchUpRoot{issue: issue, mirrored: map[string]bool{}}

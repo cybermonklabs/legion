@@ -305,10 +305,11 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		}
 		var held []record.HeldIssue
 		inTx(t, pool, func(tx pgx.Tx) {
-			var err error
-			if held, _, _, err = admission.tickRows(context.Background(), tx); err != nil {
+			reading, err := admission.tickRead(context.Background(), tx)
+			if err != nil {
 				t.Fatalf("read what is held: %v", err)
 			}
+			held = reading.held
 		})
 		want := record.HeldIssue{Issue: spParent, Reason: record.HeldAwaitingChildren, HeldBy: []string{spChild}}
 		if !slices.ContainsFunc(held, func(row record.HeldIssue) bool { return reflect.DeepEqual(row, want) }) {

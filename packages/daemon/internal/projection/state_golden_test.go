@@ -122,7 +122,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 				StartedAt: admitted.Add(55 * time.Second),
 			},
 		},
-	}, Reports: reports, Now: admitted.Add(time.Minute)})
+	}, Reports: reports, Now: admitted.Add(time.Minute), Cap: 2})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
