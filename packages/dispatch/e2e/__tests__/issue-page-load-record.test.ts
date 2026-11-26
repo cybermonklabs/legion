@@ -73,6 +73,7 @@ function row(fields: Partial<PageRow>): PageRow {
     level: 1,
     links: [],
     rowKey: null,
+    tabStop: false,
     tabStops: [],
     type: null,
     words: "",
@@ -96,10 +97,9 @@ const POST_ROW = row({
   id: POST,
   links: ["/issues/LAY-1", `/issues/LAY-1/comments/${POST}`],
   rowKey: `${ISSUE}>${POST}`,
-  tabStops: [
-    { name: "The tree read draws every node", role: "treeitem", tag: "div" },
-    { name: "LAY-1", role: null, tag: "a" },
-  ],
+  // The tree's one tab stop rests on it, and its link is a tab stop of its own.
+  tabStop: true,
+  tabStops: [{ name: "LAY-1", role: null, tag: "a" }],
   type: "comment",
   words: "The tree read draws every node, as LAY-1 does. alice · 26 Nov",
 });
@@ -211,10 +211,8 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
         level: 1,
         links: ["/issues/{key}", "/issues/{key}/comments/{posts[0]}"],
         parentKey: null,
-        tabStops: [
-          { name: "The tree read draws every node", role: "treeitem", tag: "div" },
-          { name: "{key}", role: null, tag: "a" },
-        ],
+        tabStop: true,
+        tabStops: [{ name: "{key}", role: null, tag: "a" }],
         words: "The tree read draws every node, as {key} does. alice · {day}",
       },
       {
@@ -231,6 +229,7 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
         level: 2,
         links: [],
         parentKey: "{key}>{posts[0]}",
+        tabStop: false,
         tabStops: [],
         words: "The outline keeps it. bob · {day}",
       },
@@ -272,7 +271,7 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
           ...POST_ROW,
           aria: POST_ROW.aria.replace('link "LAY-1"', 'link "the issue"'),
           links: POST_ROW.links.slice(1),
-          tabStops: POST_ROW.tabStops.slice(0, 1),
+          tabStops: [],
         },
         REPLY_ROW,
       ],
@@ -288,7 +287,7 @@ test("each recorded row holds its links, its tab stops and its accessible tree",
     },
     {
       clause: "tab stops",
-      line: '{key}>{posts[0]}: the base stops at [{"name":"The tree read draws every node","role":"treeitem","tag":"div"},{"name":"{key}","role":null,"tag":"a"}], the page at [{"name":"The tree read draws every node","role":"treeitem","tag":"div"}]',
+      line: '{key}>{posts[0]}: the base stops at [{"name":"{key}","role":null,"tag":"a"}], the page at []',
     },
     {
       clause: "accessible tree",
@@ -363,6 +362,7 @@ function recordedRow(
     level,
     links: [],
     parentKey,
+    tabStop: false,
     tabStops: [],
     words: key,
   };
@@ -672,6 +672,55 @@ test("the children's section may hold other children at its page's edge, ordered
     {
       clause: "paging",
       line: "at the top the base draws 2 rows before the control that pages them, and the page 3",
+    },
+  ]);
+});
+
+test("the tree's one tab stop rests on the row the rule names on each seed, and on no other", () => {
+  // The tab stop rests on the view's first row, an ask the server took first on each seed: A on
+  // the base's seed, B on the page's.
+  const holding = (row: RecordedRow): RecordedRow => ({ ...row, tabStop: true });
+  const rowsOf = (rows: readonly RecordedRow[]): ViewRecord => ({
+    focus: null,
+    keys: null,
+    paging: [],
+    rows,
+  });
+  const statement = recordedRow("spec#b-r1", null, []);
+  const base = rowsOf([
+    holding(recordedRow("A", null, [made("A", 0)])),
+    recordedRow("B", null, [made("B", 1)]),
+    statement,
+  ]);
+  const otherSeed = rowsOf([
+    holding(recordedRow("B", null, [made("B", 0)])),
+    recordedRow("A", null, [made("A", 1)]),
+    statement,
+  ]);
+  expect(viewDifferences(base, otherSeed)).toEqual([]);
+
+  // A row the seed places is no row the server's order puts first, and a second row of the
+  // page's that rests a tab stop on itself is one too many.
+  const onTheStatement = rowsOf([
+    recordedRow("B", null, [made("B", 0)]),
+    recordedRow("A", null, [made("A", 1)]),
+    holding(statement),
+  ]);
+  expect(viewDifferences(base, onTheStatement)).toEqual([
+    {
+      clause: "tab stops",
+      line: "the base's tree rests its tab stop on A at the top, and the page's on spec#b-r1 at the top",
+    },
+  ]);
+  const twice = rowsOf([
+    holding(recordedRow("B", null, [made("B", 0)])),
+    recordedRow("A", null, [made("A", 1)]),
+    holding(statement),
+  ]);
+  expect(viewDifferences(base, twice)).toEqual([
+    {
+      clause: "tab stops",
+      line: "the base's trees rest their tab stops on 1 rows (A at the top), and the page's on 2 (B at the top, spec#b-r1 at the top)",
     },
   ]);
 });

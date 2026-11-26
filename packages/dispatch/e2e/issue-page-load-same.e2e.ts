@@ -69,7 +69,10 @@ import {
  *   control's words are the base's; (3) which statement each chip of a row names (a plan task's
  *   statement chips), where two of the row's own anchors stand in another order or at one rank:
  *   its links may differ only block for block, and its words and accessible tree with them. Two
- *   focused rows at one place under one parent, each anchored, are the same focus. The head of
+ *   focused rows at one place under one parent, each anchored, are the same focus, and two such
+ *   rows that each hold their tree's one tab stop hold the same one (the tab stop rests on the
+ *   row the page opens on, the view's first row on this seed, which follows the server's order
+ *   of the asks the seed wrote in one burst); no other row holds one. The head of
  *   `e2e/tools/issue-page-load-record.ts` holds the whole rule, and its test
  *   `e2e/__tests__/issue-page-load-record.test.ts` each part of it.
  * - `a row drawn late is reached by j, k, an address, the Contents pane and z`, in `chromium`

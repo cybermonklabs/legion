@@ -16,11 +16,12 @@
  *    (the nearest row before it one `aria-level` up), its level, its address (`rowAddress` of
  *    `e2e/issue-page-load.ts`, for an ask, a comment, a message or a block), its words (the text
  *    of the row that no row inside it holds, each of which is read as a row of its own), its
- *    links by `href` in order, its tab stops (each element of it whose `tabIndex` is 0 or more,
- *    in order, by its tag, its `role` and its accessible name), its accessible tree
- *    (`locator.ariaSnapshot()`, each row inside it standing as one `- treeitem` line, since it is
- *    read as a row of its own: `withoutNestedRows`), the words of it no reader sees (`hidden`:
- *    the text of an element that fails
+ *    links by `href` in order, its tab stops (each element inside it whose `tabIndex` is 0 or
+ *    more, in order, by its tag, its `role` and its accessible name), whether the row itself is
+ *    a tab stop (`tabStop`: a tree is one tab stop, which rests on one of its rows), its
+ *    accessible tree (`locator.ariaSnapshot()`, each row inside it standing as one `- treeitem`
+ *    line, since it is read as a row of its own: `withoutNestedRows`), the words of it no reader
+ *    sees (`hidden`: the text of an element that fails
  *    `checkVisibility({ opacityProperty: true, visibilityProperty: true })`, or that an element
  *    from it up to its row clips, an element whose `overflow` is not `visible` and whose
  *    `scrollHeight` is larger than its `clientHeight`), and the writes of the server its place
@@ -89,9 +90,15 @@
  *     seed wrote in one burst.
  *
  *  Two focused rows that stand at one place in the view, under one parent, each with anchors, are
- *  the same focus. Everything else is compared exactly: every row the seed places, each paired
- *  row's address, tab stops and visible words, each row's words, links and accessible tree but
- *  for the third exception, and the Keys list.
+ *  the same focus, and two such rows that each hold their tree's one tab stop hold the same one:
+ *  the tree's tab stop rests on the row the reader last stood on, else its first row
+ *  (`IssueTree.tsx`'s `tabStop`), and as the load ends both are the row the page opens on, the
+ *  view's first row where no address and no waiting question names one; which row that is
+ *  follows where the server put the asks the seed wrote in one burst. So the rows that hold a
+ *  tree's tab stop are compared as the focus is, one for one, and every other row holds none on
+ *  both sides. Everything else is compared exactly: every row the seed places, each paired row's
+ *  address, the tab stops inside it and its visible words, each row's words, links and
+ *  accessible tree but for the third exception, and the Keys list.
  *
  *  How to make it, at the base, with this branch's test files carried by `--patch`, in a builds
  *  Job: run the row `record the rows the base draws @phone` of `e2e/issue-page-load-same.e2e.ts`
@@ -151,7 +158,7 @@ export const RECORD_DIRECTORY = new URL("../fixtures/issue-page-load-rows/", imp
 
 /** The shape of what the record row prints and the record holds. A line or a file of another
  *  shape was made by another recorder, and the record is made again. */
-export const RECORD_FORMAT = 3;
+export const RECORD_FORMAT = 4;
 
 /** What begins the line the record row prints for its width. */
 export const RECORD_LINE = "LOAD-RECORD";
@@ -190,6 +197,9 @@ export interface PageRow {
   readonly links: readonly string[];
   /** `data-row-key`, which a filter's row and a child's entry draw none of. */
   readonly rowKey: string | null;
+  /** Whether the row itself is a tab stop (its `tabIndex` is 0 or more). */
+  readonly tabStop: boolean;
+  /** The tab stops inside the row. */
   readonly tabStops: readonly TabStop[];
   /** `data-node-type`. */
   readonly type: string | null;
@@ -271,6 +281,9 @@ export interface RecordedRow {
   readonly links: readonly string[];
   /** The key of the row it stands under, null at the top. */
   readonly parentKey: string | null;
+  /** Whether the row itself is a tab stop: its tree's one, which rests on one of its rows. */
+  readonly tabStop: boolean;
+  /** The tab stops inside the row. */
   readonly tabStops: readonly TabStop[];
   readonly words: string;
 }
@@ -529,6 +542,7 @@ function namedRows(
       level: row.level,
       links: row.links.map(name),
       parentKey,
+      tabStop: row.tabStop,
       tabStops: row.tabStops.map((stop) => ({
         name: name(stop.name),
         role: stop.role,
@@ -882,24 +896,36 @@ function newlyHidden(base: readonly string[], page: readonly string[]): string[]
   });
 }
 
-/** Whether two focused rows are one focus: the same row, or rows at one place in the view under
- *  one parent, each with anchors, which two seeds fill with different writes. */
-function sameFocus(base: ViewRecord, page: ViewRecord): boolean {
-  if (base.focus === null || page.focus === null) return base.focus === page.focus;
-  const baseFocus = pairOf(base.focus);
-  const pageFocus = pairOf(page.focus);
-  if (baseFocus === pageFocus) return true;
-  const at = base.rows.findIndex((row) => pairOf(row) === baseFocus);
-  const before = base.rows[at];
-  const now = page.rows[at];
+/** Whether two rows, one of each view, are one row as far as the seed fixes it: the same row, or
+ *  rows at one place in the view under one parent, each with anchors, which two seeds fill with
+ *  different writes. The focused row and the row that holds a tree's tab stop are each compared
+ *  by it. */
+function samePlace(
+  base: ViewRecord,
+  page: ViewRecord,
+  before: RowName | null,
+  now: RowName | null
+): boolean {
+  if (before === null || now === null) return before === now;
+  const baseRow = pairOf(before);
+  const pageRow = pairOf(now);
+  if (baseRow === pageRow) return true;
+  const at = base.rows.findIndex((row) => pairOf(row) === baseRow);
+  const there = base.rows[at];
+  const here = page.rows[at];
   return (
-    before !== undefined &&
-    now !== undefined &&
-    pairOf(now) === pageFocus &&
-    before.parentKey === now.parentKey &&
-    before.anchors.length > 0 &&
-    now.anchors.length > 0
+    there !== undefined &&
+    here !== undefined &&
+    pairOf(here) === pageRow &&
+    there.parentKey === here.parentKey &&
+    there.anchors.length > 0 &&
+    here.anchors.length > 0
   );
+}
+
+/** A row by its key and its parent's, in words. */
+function rowWords(row: RowName | null): string {
+  return row === null ? "no row" : `${row.key} ${placeWords(row.parentKey)}`;
 }
 
 /** An entry of the Keys list, in words. */
@@ -1071,12 +1097,33 @@ export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Differ
     }
   }
 
-  if (!sameFocus(recorded, drawn)) {
-    const focusWords = (focus: RowName | null) =>
-      focus === null ? "no row" : `${focus.key} ${placeWords(focus.parentKey)}`;
+  // The rows that hold their tree's tab stop, one for one and each by the place rule, and no
+  // other row holds one (the head comment).
+  const holders = (view: ViewRecord) => view.rows.filter((row) => row.tabStop);
+  const heldAtBase = holders(recorded);
+  const heldOnPage = holders(drawn);
+  if (heldAtBase.length !== heldOnPage.length) {
+    say(
+      "tab stops",
+      `the base's trees rest their tab stops on ${heldAtBase.length} rows ` +
+        `(${heldAtBase.map(rowWords).join(", ")}), and the page's on ${heldOnPage.length} ` +
+        `(${heldOnPage.map(rowWords).join(", ")})`
+    );
+  } else {
+    for (const [at, held] of heldAtBase.entries()) {
+      const here = heldOnPage[at] ?? null;
+      if (samePlace(recorded, drawn, held, here)) continue;
+      say(
+        "tab stops",
+        `the base's tree rests its tab stop on ${rowWords(held)}, and the page's on ${rowWords(here)}`
+      );
+    }
+  }
+
+  if (!samePlace(recorded, drawn, recorded.focus, drawn.focus)) {
     say(
       "focus",
-      `the base puts the focus on ${focusWords(recorded.focus)}, and the page on ${focusWords(drawn.focus)}`
+      `the base puts the focus on ${rowWords(recorded.focus)}, and the page on ${rowWords(drawn.focus)}`
     );
   }
 
@@ -1337,7 +1384,8 @@ function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
         .filter(own)
         .map((link) => link.getAttribute("href") ?? ""),
       rowKey: row.getAttribute("data-row-key"),
-      tabStops: [row, ...row.querySelectorAll("*")]
+      tabStop: row instanceof HTMLElement && row.tabIndex >= 0,
+      tabStops: [...row.querySelectorAll("*")]
         .filter(
           (element) =>
             (element instanceof HTMLElement || element instanceof SVGElement) &&
