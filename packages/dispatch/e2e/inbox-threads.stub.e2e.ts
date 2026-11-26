@@ -5,7 +5,8 @@
  *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). Two rows
  *  of this family stayed in `inbox-threads.e2e.ts`, each with its reason written there.
  *
- *  Two seeds, because the first row counts a whole Inbox of its own.
+ *  Three seeds, because the first row counts a whole Inbox of its own and the last reads one
+ *  thread whose root its author deleted.
  *
  *  Everything here is made up: this repository is public, so nothing names a real person, host or
  *  project.
@@ -13,7 +14,14 @@
 import { expect } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { createAsk, createIssue, createProject, fixedKey } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  deleteComment,
+  fixedKey,
+} from "./api";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import {
   agentRowId,
@@ -28,7 +36,9 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import { openField } from "./inbox-view";
+import { measureLayout } from "./layout-measure";
 import { stubbed } from "./stub/stub-test";
+import { fixedLogin } from "./users";
 
 /** The key this file's recordings were made under. */
 const CORE = fixedKey("CORE", "this file's recordings were made under it");
@@ -186,3 +196,67 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
   await expect(page.locator('[data-inbox-filter-token="type:approval"]')).toHaveCount(1);
   await expect(page.locator('[data-inbox-filter-token="type:reply"]')).toHaveCount(1);
 });
+
+// ---------------------------------------------------------------------------
+// A deleted root, deleted by a person whose name alone is wider than a phone.
+// ---------------------------------------------------------------------------
+
+/** A person whose login has no cap a phone's row can hold. The deleted line names the deleting
+ *  actor by its label, which for a person is the login itself, whole. Only this file's seed signs
+ *  it in, in record mode alone, after the stubbed row's `resetDatabase` (e2e/stub/stub-test.ts),
+ *  whose next run deletes the person again. */
+const LONG_LOGIN = fixedLogin(
+  "maximiliana-featherstonehaugh-cholmondeley-worthington-smythe",
+  "this file's recordings were made under it"
+);
+
+/** A thread the reader wrote in, rooted on that person's note, which they then deleted. */
+const deletedRoot = stubbed(async () => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: CORE, name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Mirror replay" });
+  const root = await createComment(
+    issue.key,
+    { body: "The mirror replay note, soon withdrawn." },
+    { login: LONG_LOGIN }
+  );
+  await createComment(issue.key, { body: "Which mirror?", reply_to: root.id });
+  await createComment(
+    issue.key,
+    { body: "The nightly one.", reply_to: root.id },
+    { login: LONG_LOGIN }
+  );
+  await deleteComment(root.id, { login: LONG_LOGIN });
+  return { row: replyRowId(root.id) };
+});
+
+deletedRoot(
+  "below 1280 px a deleted root's line ends in an ellipsis inside the row's title, however long the deleting name @phone @pr",
+  async ({ page, scene }) => {
+    // Below 1280 px the title's link is an `inline-flex` touch target, so the deleted line is a
+    // flex item of it, which the link's own ellipsis does not reach: the line cuts itself.
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto("/");
+    const line = page.locator(`[data-inbox-row="${scene.row}"] a [data-post-deleted]`);
+    await expect(line).toContainText(LONG_LOGIN);
+    const cut = await line.evaluate((element) => ({
+      ellipsis: getComputedStyle(element).textOverflow === "ellipsis",
+      overflows: element.scrollWidth > element.clientWidth,
+      text: element.textContent,
+      title: element.getAttribute("title"),
+    }));
+    // The name is long enough to be cut, and it is cut inside the line, with its whole text
+    // as the line's title.
+    expect(cut.overflows, "the deleted line runs past its box").toBe(true);
+    expect(cut.ellipsis, "the deleted line ends in an ellipsis").toBe(true);
+    expect(cut.title).toBe(cut.text);
+    // And the layout rule's own instrument finds nothing of it cut bare. A breach names its
+    // element's text cut to 80 characters, so it is found by the line's opening words.
+    const reading = await page.evaluate(measureLayout);
+    expect(
+      reading.breaches.filter(
+        (breach) => breach.kind === "clipped" && breach.text.includes("Deleted by")
+      )
+    ).toEqual([]);
+  }
+);

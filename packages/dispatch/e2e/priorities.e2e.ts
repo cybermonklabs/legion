@@ -32,7 +32,7 @@ import {
   patchPriority,
   type RowKey,
 } from "./api";
-import { actionBar } from "./editor";
+import { actionBar, placeCaretAtEnd } from "./editor";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { sql } from "./psql";
@@ -3205,8 +3205,10 @@ test("a writer's keystroke on a description the editor cannot keep whole writes 
     await page.goto(`/priorities/${kept.id}`);
     const editor = page.getByRole("textbox", { exact: true, name: "Description" });
     await expect(editor).toBeVisible();
-    await editor.click();
-    await page.keyboard.press("ControlOrMeta+End");
+    // ProseMirror holds the caret at the end before the first key (`placeCaretAtEnd`). A click
+    // and ControlOrMeta+End typed the word where the click fell when ProseMirror's focus handler
+    // ran between the key's caret move and its read of that move.
+    await placeCaretAtEnd(editor);
     await page.keyboard.type(" Done.");
     await editor.blur();
     await expect.poll(() => stored(kept.id), { timeout: 15_000 }).not.toBe(plain);

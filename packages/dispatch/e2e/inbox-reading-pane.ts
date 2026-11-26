@@ -157,6 +157,7 @@ export interface Seed {
   decisionAskId: string;
   decisionIssueKey: string;
   documentAskId: string;
+  firstApprovalArtifactId: string;
   firstApprovalAskId: string;
   plainAskId: string;
 }
@@ -280,13 +281,16 @@ export async function seedInbox(project: RowKey, login: SignInLogin = "alice"): 
           { login }
         );
         await patchIssue(issue.key, { priority: 2 });
-        return withOpenedAsk(
-          await requestApproval(
-            issue.primary_artifact_id,
-            { summary: "The first handover draft." },
-            session
-          )
-        );
+        return {
+          ...withOpenedAsk(
+            await requestApproval(
+              issue.primary_artifact_id,
+              { summary: "The first handover draft." },
+              session
+            )
+          ),
+          artifactId: issue.primary_artifact_id,
+        };
       })(),
       (async () => {
         const anchoredIssue = await createIssue(
@@ -334,6 +338,7 @@ export async function seedInbox(project: RowKey, login: SignInLogin = "alice"): 
     decisionAskId: decision.row.id,
     decisionIssueKey: decision.issueKey,
     documentAskId: documentDecision.id,
+    firstApprovalArtifactId: firstApproval.artifactId,
     firstApprovalAskId: firstApproval.ask.id,
     plainAskId: plain.id,
   };

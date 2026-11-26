@@ -188,8 +188,11 @@ async function seedTwoDocuments(): Promise<Seed> {
   };
 }
 
-// @pr: An approval: the reading pane has to draw the request's whole question above the document it asks about.
-test("the reading pane draws the request's whole question as markdown above the document @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the approval rows of `approval.e2e.ts` and
+// `inbox-pane-scroll.e2e.ts` keep an approval read in the Inbox on the lane. The full lane runs
+// this one.
+test("the reading pane draws the request's whole question as markdown above the document", async ({
   browser,
 }) => {
   const seed = await seedApproval(RICH_SUMMARY);

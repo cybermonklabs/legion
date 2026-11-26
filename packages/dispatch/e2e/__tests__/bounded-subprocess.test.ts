@@ -202,9 +202,12 @@ test.skipIf(!present("/proc/self/stat"))(
 // The child writes a marker of its own to each pipe, the stdout's after 250 numbered lines and
 // before a made-up password, and then sleeps past every wait of this row, so only its bound ends
 // it. The markers and the password reach it in its environment, whose values its name never
-// prints, so only what the failure says the child wrote can carry them into the message.
+// prints, so only what the failure says the child wrote can carry them into the message. The
+// failure also names the processes the child still ran when its bound passed, rather than leave a
+// later reader with only its command and elapsed time. `e2e/tools/forced-bounded-diagnostic.sh`
+// runs this row by its title.
 test.skipIf(!commandLinesListed)(
-  "a bounded child its bound kills fails with the last lines it wrote to each pipe",
+  "a bounded child at its bound reports its last output and the processes it still runs",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
     // command line holds it is this row's child. It is this row's own limit, so a sleep the kill
@@ -255,7 +258,15 @@ test.skipIf(!commandLinesListed)(
       marks.stderr
     );
     expect(failure, "the failure printed the password the child wrote").not.toContain(password);
-    expect(below.join("\n"), "what the failure says below its first line").toBe(
+    expect(failure, "the failure printed output older than its last lines").not.toContain(
+      "line 1\n"
+    );
+    expect(failure, "the failure names no process still running").toMatch(
+      /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
+    );
+    // The processes come first below the first line, and what the child wrote after them.
+    const wrote = below.findIndex((line) => line.startsWith("it wrote "));
+    expect(below.slice(wrote).join("\n"), "what the failure says the child wrote").toBe(
       [
         "it wrote 252 lines to its stdout, the last 200 of them here:",
         ...Array.from({ length: 198 }, (_, at) => `  line ${53 + at}`),

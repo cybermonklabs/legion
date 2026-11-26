@@ -77,7 +77,7 @@ function postAsPage(page: Page, path: string, data?: object) {
   return page.request.post(path, { data, headers: { Origin: dashboardOrigin } });
 }
 
-// The row reads its own ask as the Inbox's first card on a phone, and presses the review panel's
+// The row reads its own ask as the Inbox's first row on a phone, and presses the review panel's
 // toggle there, so its default context is a person of its own (`own`, e2e/test.ts), who makes the
 // row's project, issue, ask and comments as alice did: alice's Inbox holds every earlier row's
 // questions, and her counts give the phone's header a second line.
@@ -215,7 +215,8 @@ test.describe(() => {
 
     if (testInfo.project.name === "iphone") {
       await page.goto("/");
-      await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
+      // A phone's Inbox lists short rows; the question reads on its row's first line.
+      await expect(page.locator("[data-inbox-row]").first()).toContainText("Can this ship?");
       await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
 
       const openNavigation = page.getByRole("button", { name: "Open navigation" });

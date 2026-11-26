@@ -218,8 +218,10 @@ test("architecture: an attached issue's new title shows in its component's open 
   }
 });
 
-// @pr: A two-context race: alice's snooze in her other tab moves the row to Later here within 2 s.
-test("inbox: a snooze from alice's other tab moves the row to Later in this tab within 2 s @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and `live.e2e.ts`'s row on bob's ask keeps another
+// context's write reaching an open Inbox with no reload on the lane. The full lane runs this one.
+test("inbox: a snooze from alice's other tab moves the row to Later in this tab within 2 s", async ({
   browser,
 }) => {
   const core = rowKey("CORE");

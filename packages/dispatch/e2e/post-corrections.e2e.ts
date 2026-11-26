@@ -14,7 +14,7 @@ import {
   search,
 } from "./api";
 import { marginCard, openSpec } from "./editor";
-import { hasReadingPane, inboxPane } from "./inbox-pane";
+import { inboxPane, selectRow } from "./inbox-pane";
 import {
   asSession,
   holdReadMarks,
@@ -222,13 +222,10 @@ test("the Inbox thread of a reply to a deleted comment reads that comment as del
     await page.goto("/");
     const row = page.locator(`[data-inbox-row="${replyRowId(root)}"]`);
     await expect(row).toBeVisible();
-    const body = hasReadingPane(page)
-      ? inboxPane(page).locator("[data-inbox-thread-body]")
-      : row.locator("[data-inbox-thread-body]");
-    if (hasReadingPane(page)) {
-      await row.locator("time").first().click();
-      await expect(row).toHaveAttribute("data-inbox-selected", "true");
-    }
+    // The thread is read in the pane its row opens: beside the list from 1280 px, in place of
+    // it below.
+    await selectRow(page, replyRowId(root));
+    const body = inboxPane(page).locator("[data-inbox-thread-body]");
     await expect(body).toBeVisible();
 
     const rootTurn = body.locator(`[data-inbox-thread-turn="${root}"]`);

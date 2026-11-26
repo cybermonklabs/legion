@@ -20,6 +20,7 @@ import {
 } from "./agent-name";
 import { setLiveSessions } from "./agents";
 import { createIssue, createMessage, createProject, fixedKey } from "./api";
+import { askCard } from "./inbox-pane";
 import { stubbed } from "./stub/stub-test";
 
 /** The key this file's recordings were made under. */
@@ -48,7 +49,8 @@ test("on a phone the ask card's asker still opens its copy handles, and the live
   scene,
 }) => {
   await page.goto("/");
-  const card = page.getByTestId(`ask-${scene.runAsk}`);
+  // The card of the row the reader opens, read in place of the list on a phone.
+  const card = await askCard(page, scene.runAsk);
   const asker = card.getByRole("button", { expanded: false, name: /Running agent \(current\)/ });
   const live = card.getByRole("link", {
     exact: true,

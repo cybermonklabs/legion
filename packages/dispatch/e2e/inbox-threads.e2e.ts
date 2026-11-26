@@ -1,6 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
-import { hasReadingPane, inboxPane } from "./inbox-pane";
+import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId, rowThreadSession, seedCommentThread, seedTwelve } from "./inbox-threads";
 import { expect, type Locator, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
@@ -133,31 +133,36 @@ test("a long reply shows whole in the reading pane and on a card @phone", async 
   try {
     const page = await alice.newPage();
     await page.goto("/");
-    const row = page.locator(`[data-inbox-row="${replyRowId(thread)}"]`);
-    await expect(row).toBeVisible();
-    // The pane shows the thread of the selected row; below its width the row is its own card.
-    const body = hasReadingPane(page)
-      ? inboxPane(page).locator("[data-inbox-thread-body]")
-      : page.locator(`[data-inbox-row="${replyRowId(thread)}"] [data-inbox-thread-body]`);
-    if (hasReadingPane(page)) {
-      await row.locator("time").first().click();
-      await expect(row).toHaveAttribute("data-inbox-selected", "true");
-    }
-    await expect(body).toBeVisible();
+    await expect(inboxRow(page, replyRowId(thread))).toBeVisible();
+    // The pane shows the thread of the row the reader picks: beside the list from 1280 px, in
+    // place of it below. The drawer's row is its own card at every width.
+    await selectRow(page, replyRowId(thread));
+    await expectWholeReply(inboxPane(page).locator("[data-inbox-thread-body]"));
 
-    // The reply renders as what it is: a list, a code block and a table.
-    const turn = body.locator("[data-inbox-thread-turn]").last();
-    await expect(turn.locator("li")).toHaveCount(10);
-    await expect(turn.locator("pre")).toHaveCount(1);
-    await expect(turn.locator("table")).toHaveCount(1);
-    await expect(turn.locator("table td")).toHaveCount(12);
-
-    // Its last line is reachable by scrolling, and nothing of it is clamped or cut.
-    const last = turn.getByText(LAST_LINE);
-    await last.scrollIntoViewIfNeeded();
-    await expect(last).toBeInViewport();
-    expect(await clampedParts(turn)).toEqual([]);
+    await page.goto("/agents");
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    const drawer = page.getByRole("dialog", { name: "Inbox" });
+    await expect(drawer).toBeVisible();
+    await expectWholeReply(
+      drawer.locator(`[data-inbox-row="${replyRowId(thread)}"] [data-inbox-thread-body]`)
+    );
   } finally {
     await alice.close();
   }
 });
+
+/** The long reply as `body` draws it: as what it is - a list, a code block and a table - with
+ *  its last line reachable by scrolling, and nothing of it clamped or cut. */
+async function expectWholeReply(body: Locator): Promise<void> {
+  await expect(body).toBeVisible();
+  const turn = body.locator("[data-inbox-thread-turn]").last();
+  await expect(turn.locator("li")).toHaveCount(10);
+  await expect(turn.locator("pre")).toHaveCount(1);
+  await expect(turn.locator("table")).toHaveCount(1);
+  await expect(turn.locator("table td")).toHaveCount(12);
+  const last = turn.getByText(LAST_LINE);
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+  expect(await clampedParts(turn)).toEqual([]);
+}

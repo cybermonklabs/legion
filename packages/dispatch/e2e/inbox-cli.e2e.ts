@@ -23,8 +23,9 @@ import {
 } from "./api";
 import { cliSession, runDispatch } from "./dispatch-cli";
 import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
-import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { askCard, inboxRow } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 

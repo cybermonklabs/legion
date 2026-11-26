@@ -18,9 +18,9 @@ import { sql } from "./psql";
 import { settledState } from "./settled";
 import { expect, own, rowKey, rowPerson, test } from "./test";
 
-// The Inbox draws a question's card in its row below 1280 px and in the reading column for the
-// row selected from there, and it opens on its first row: a person's whole Inbox is the list. So
-// each row that reads an ask's card on the Inbox is a person of its own (`rowPerson`,
+// The Inbox draws a question's card in the view its row opens below 1280 px and in the reading
+// column for the row selected from there, and it opens on its first row: a person's whole Inbox is
+// the list. So each row that reads an ask's card on the Inbox is a person of its own (`rowPerson`,
 // e2e/test.ts), who holds the issue its asks are asked on, and whose Inbox holds those asks and no
 // other row's.
 test.describe(() => {
@@ -86,7 +86,8 @@ test.describe(() => {
     ).resolves.toBe(true);
 
     await page.goto("/");
-    const phoneCard = page.getByTestId(`ask-${decision.id}`);
+    // At 390 px the Inbox lists short rows; the question's card is read in the view its row opens.
+    const phoneCard = await askCard(page, decision.id);
     await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
     await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
       `Message · ${source.key}`

@@ -106,7 +106,8 @@
  *   under it, the legs given no input or nothing behind their inputs too, which end in under a
  *   second; the shapes row runs its script under it as well, and `runLeg` runs
  *   `e2e/acceptance/outside-agent-grants.sh` under it for the browser gate's row that runs that
- *   script alone against its stand-in Dispatch.
+ *   script alone against its stand-in Dispatch. The one leg not under it is the run of the row of
+ *   `outside-agent-public.test.ts` whose T5 hold never closes, which `publicT5Diagnostic` ends.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -156,14 +157,19 @@
  *   a time without them at most 18.0 ms. No harness lane ran beside them, and its load can be
  *   heavier than those loops. Three times 309.8 ms, rounded up to the next 5 s, is 5 s. Every run
  *   of the lane waits that row's whole bound, so the bound is seconds and not `short`'s minute.
+ * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
+ *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
+ *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
+ *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
+ *   rounded up to 30 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * leg or the shapes script of the outside agent's acceptance (`legRun`) after 4 minutes, a listing
- * after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 8 minutes, a run
- * of the edge check after 9 minutes, and the two-stack build after 30 minutes. The child of
- * `bounded-subprocess.test.ts` that never ends by itself (`stuckOnPurpose`) is killed after 5 s,
- * as its row means it to be.
+ * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
+ * row's driver (`stoppedLeg`) after 90 s, a leg or the shapes script of the outside agent's
+ * acceptance (`legRun`) after 4 minutes, a listing after 6 minutes, the generation after 6.5
+ * minutes, a run of the Codex leg after 8 minutes, a run of the edge check after 9 minutes, and
+ * the two-stack build after 30 minutes. The child of `bounded-subprocess.test.ts` that never ends
+ * by itself (`stuckOnPurpose`) is killed after 5 s, as its row means it to be.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -215,6 +221,8 @@ export const bounds = Object.freeze({
    *  writes to both pipes and then sleeps, so its bound passes on purpose and the row reads the
    *  failure. */
   stuckOnPurpose: 5_000,
+  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
+  publicT5Diagnostic: 30_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */
@@ -361,8 +369,8 @@ function statFields(stat: string): string[] {
   return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
 }
 
-/** A file of a `/proc/<pid>` directory that the table reads. */
-type ProcFile = "cgroup" | "environ" | "stat";
+/** A file this module reads from a `/proc/<pid>` directory. */
+type ProcFile = "cgroup" | "comm" | "environ" | "stat";
 
 /** The text of `<root>/<pid>/<file>`, where `root` is `/proc` or a directory laid out as it is
  *  (`ProcTree`), or undefined where it cannot be read: where the process is gone (ENOENT), and,
@@ -630,6 +638,31 @@ function treeOf(table: readonly Listed[], token: string, root: number | undefine
   return found;
 }
 
+/** The processes a bounded child still had when a bound passed, as a failure says them: a process
+ * table makes the child's token and descendants exact, and `/proc/<pid>/comm` gives the executable
+ * name without printing its arguments, which can hold a credential. On a host without `/proc`,
+ * `ps` still gives the pids and parents and each name says why it could not be read. */
+function runningAtBound(run: Running, table: readonly Listed[] | undefined): string {
+  if (table === undefined) return "the process table did not answer before the child was killed";
+  const alive = run.child.exitCode === null && run.child.signalCode === null;
+  const pids = treeOf(table, run.token, alive ? run.child.pid : undefined);
+  const processes = table
+    .filter(({ pid }) => pids.has(pid))
+    .sort((one, other) => one.pid - other.pid);
+  if (processes.length === 0) {
+    return "the process table listed no process of the child when its bound passed";
+  }
+  const count = `${processes.length} ${processes.length === 1 ? "process" : "processes"}`;
+  return [
+    `it had ${count} still running when its bound passed:`,
+    ...processes.map(({ pid, ppid }) => {
+      const comm = machineTree === undefined ? undefined : procText(machineTree.root, pid, "comm");
+      const name = comm === undefined ? "unreadable" : masked(oneLine(comm.trim()));
+      return `  pid=${pid} ppid=${ppid} name=${JSON.stringify(name)}`;
+    }),
+  ].join("\n");
+}
+
 /** The most reads of the process table one kill makes. Each read kills what it finds, so only a
  *  tree that keeps forking faster than it is killed reaches this, or an `unknown` process started
  *  since the child in this process's cgroup that stays unknown, such as one started with an empty
@@ -688,6 +721,9 @@ interface YieldingCollaborators {
   readonly read?: () => readonly Listed[] | undefined | Promise<readonly Listed[] | undefined>;
   readonly signal?: (pid: number) => void;
   readonly pause?: () => void | Promise<void>;
+  /** Sees each process table before this kill signals from it. The timeout diagnostic takes the
+   * first one, while every later read remains part of the kill's race-free cleanup. */
+  readonly observe?: (table: readonly Listed[] | undefined) => void;
 }
 
 /** The real `signal` of both kills: SIGKILL through `process.kill`, read when it is called, so the
@@ -842,13 +878,16 @@ export async function stopTreeYielding(
     read = processTableYielding,
     signal = sigkill,
     pause = () => Bun.sleep(execPause),
+    observe,
   }: YieldingCollaborators = {}
 ): Promise<void> {
   const steps = killSteps(run, fromProc, signal);
   let step = steps.next();
   while (step.done !== true) {
     if (step.value === "read") {
-      step = steps.next(await read());
+      const table = await read();
+      observe?.(table);
+      step = steps.next(table);
     } else {
       await pause();
       step = steps.next();
@@ -1210,11 +1249,11 @@ function wroteTo(pipe: "stderr" | "stdout", text: string): string {
  *  `stopTreeYielding` kills the child and every process it started, the pipes get `pipeGrace` to
  *  end and are then cancelled, and this throws a message naming the file that started the child,
  *  the command with its arguments, the environment the caller gave it, the bound and the time
- *  waited. Below that first line the message also carries what the child wrote before its kill:
- *  the last `tailLines` lines of its stdout and the last `tailLines` of its stderr, each under a
- *  heading of its own that names the pipe and how many lines the child wrote to it, and one line
- *  for a pipe it wrote nothing to (`wroteTo`), so the failure of a stuck child shows where it
- *  waited. */
+ *  waited. Below that first line the message names the processes the child still ran when its
+ *  bound passed (`runningAtBound`), then carries what the child wrote before its kill: the last
+ *  `tailLines` lines of its stdout and the last `tailLines` of its stderr, each under a heading of
+ *  its own that names the pipe and how many lines the child wrote to it, and one line for a pipe
+ *  it wrote nothing to (`wroteTo`), so the failure of a stuck child shows where it waited. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const { argv, bound, cwd, env, from, relaysLines = false } = options;
   const started = performance.now();
@@ -1248,6 +1287,7 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     drain(stderrReader, stderrChunks),
   ]);
   let stuck = false;
+  let stuckProcesses = "";
   // Read once the child and its pipes ended, before its kill; a stuck child throws instead.
   let endedAt = Number.NaN;
   try {
@@ -1255,7 +1295,11 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     endedAt = Date.now();
     if (settled === pastDeadline) {
       stuck = true;
-      await stopTreeYielding(run);
+      await stopTreeYielding(run, {
+        observe: (table) => {
+          if (stuckProcesses === "") stuckProcesses = runningAtBound(run, table);
+        },
+      });
       if ((await beforeDeadline(whole, performance.now() + pipeGrace)) === pastDeadline) {
         // Each pending read ends as the end of its stream would; what each pipe carried so far
         // stays in its chunks.
@@ -1297,6 +1341,7 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     throw new Error(
       `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
         `it and every process it started were killed after ${ms} ms\n` +
+        `${stuckProcesses || "the process table was not read before the child was killed"}\n` +
         `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`
     );
   }

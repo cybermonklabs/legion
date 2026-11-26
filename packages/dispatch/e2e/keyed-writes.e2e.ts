@@ -894,8 +894,11 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 // SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
-// @pr: Sign-in and tokens across two tabs: a confirmed sign-out sends nothing after the confirm, in the tab that signed out and the one that did not.
-test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the row below on bob's sign-in from another tab
+// keeps a pending write that another tab's change of session drops on the lane. The full lane runs
+// this one.
+test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
   browser,
 }, testInfo) => {
   const kw = rowKey("KW");

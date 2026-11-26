@@ -137,7 +137,7 @@ export function cursorLabel(page: Page, name: string): Locator {
  * does: a DOM Range plus the selectionchange ProseMirror's DOMObserver listens to. A quote no one
  * text node holds - text another mark's span splits - is found across the text nodes in order. */
 export async function selectEditorText(page: Page, quote: string): Promise<void> {
-  await setEditorRange(page, { extent: "whole", quote });
+  await setEditorRange(documentEditor(page), { extent: "whole", quote });
   await actionBar(page).waitFor({ state: "visible" });
 }
 
@@ -146,7 +146,7 @@ export async function selectEditorText(page: Page, quote: string): Promise<void>
  *  closed issue's document, where no caret can enter) included. `selectTextIn` is the same for a
  *  quote inside one element of an editable document. */
 export function selectEditorQuote(page: Page, quote: string): Promise<void> {
-  return setEditorRange(page, { anyText: true, extent: "whole", quote });
+  return setEditorRange(documentEditor(page), { anyText: true, extent: "whole", quote });
 }
 
 /** Puts the caret directly before or after the first occurrence of `quote` among the text a caret
@@ -159,14 +159,22 @@ export function placeCaret(
   quote: string,
   scope?: Locator
 ): Promise<void> {
-  return setEditorRange(page, { extent: edge, quote }, scope);
+  return setEditorRange(documentEditor(page), { extent: edge, quote }, scope);
 }
 
 /** Selects the first occurrence of `quote` among the text a caret can enter inside `scope`, an
  * element inside the editor, as `selectEditorText` does but without waiting for the selection bar.
  * Its text nodes read as one text, so a quote may run from one paragraph into the next. */
 export function selectTextIn(page: Page, scope: Locator, quote: string): Promise<void> {
-  return setEditorRange(page, { extent: "whole", quote }, scope);
+  return setEditorRange(documentEditor(page), { extent: "whole", quote }, scope);
+}
+
+/** Puts the caret at the end of the last text a caret can enter in `editor`, a ProseMirror editor
+ *  other than a document's own, such as a priority's description, so that ProseMirror holds the
+ *  caret there before the next key (`setEditorRange`). A click and ControlOrMeta+End do not: the
+ *  key's caret move reaches ProseMirror after the focus handler has put the click's caret back. */
+export function placeCaretAtEnd(editor: Locator): Promise<void> {
+  return setEditorRange(editor, { extent: "end" });
 }
 
 /** Over, before or after the first occurrence of `quote`, or the end of the last text a caret can
@@ -175,14 +183,17 @@ type EditorRange =
   | { anyText?: boolean; extent: "whole" | "before" | "after"; quote: string }
   | { extent: "end" };
 
-/** Sets the page's selection and dispatches the selectionchange ProseMirror's DOMObserver reads, so
- * the editor takes the selection before this returns. Every target is found only in the text a
- * caret can enter (any text, for `anyText`), inside `scope` when one is given, else the whole
- * editor. Without that read,
+/** Sets the page's selection in `editor` and dispatches the selectionchange ProseMirror's
+ * DOMObserver reads, so the editor takes the selection before this returns. Every target is found
+ * only in the text a caret can enter (any text, for `anyText`), inside `scope` when one is given,
+ * else the whole editor. Without that read,
  * ProseMirror's focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection
  * back to the page 20 ms after focus and undoes a caret placed in between. */
-async function setEditorRange(page: Page, target: EditorRange, scope?: Locator): Promise<void> {
-  const editor = documentEditor(page);
+async function setEditorRange(
+  editor: Locator,
+  target: EditorRange,
+  scope?: Locator
+): Promise<void> {
   await editor.waitFor();
   await editor.focus();
   await (scope ?? editor).evaluate((root, target) => {
@@ -237,7 +248,7 @@ export async function deleteEditorText(page: Page, quote: string): Promise<void>
 /** Presses Enter at the end of the document's last text, then types `text`: after a heading or a
  * paragraph, that is a paragraph of its own. */
 export async function typeAtEnd(page: Page, text: string): Promise<void> {
-  await setEditorRange(page, { extent: "end" });
+  await setEditorRange(documentEditor(page), { extent: "end" });
   await page.keyboard.press("Enter");
   await page.keyboard.type(text);
 }

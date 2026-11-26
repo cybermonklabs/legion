@@ -17,7 +17,7 @@
 #      wrapper runs, /usr/local/bin/jj, so a later pin needs no change here.
 #   3. `legion workspace-init cache` in the background, `workspace-init fetch` from it, and
 #      `workspace-init provision`, which looks jj up on PATH once (cmd/legion/workspace_init.go,
-#      provisioningTools) and so runs every jj command of its own through the measuring jj this
+#      workspaceProcess.tools) and so runs every jj command of its own through the measuring jj this
 #      probe puts first on PATH: one RESULT line each, with its argv, peak and wall time.
 #   4. Under the role's own GIT_CONFIG block, which the harness put on this container, the four
 #      pack settings at command scope, with the clone's local value beside each.
@@ -1097,7 +1097,7 @@ fi
 if going; then
   echo
   say "== legion workspace-init provision, its jj commands through the measuring jj"
-  # Provisioning resolves jj from PATH once, at its start (provisioningTools), and passes that path
+  # Provisioning resolves jj from PATH once, at its start (workspaceProcess.tools), and passes that path
   # to every jj command it runs, so this jj, first on PATH for provisioning alone, is the one it
   # runs: each command runs the image's jj under the sampler, keeps its own stdin, stdout and
   # stderr for provisioning to read, and appends its RESULT line to the results.
