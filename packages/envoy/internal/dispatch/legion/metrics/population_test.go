@@ -149,9 +149,9 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 // TestTheTitleReadsSkipTheLegionDaemonsSession: the Legion daemon writes on its issues as
 // `legion-daemon:<PROJECT>` (its role-holder publications among them), a session that stamps no
 // title, so delivery.ResolveSessionTitles would read it to the end of its own events for nothing:
-// its title can never be a WorkerTitle. The test holds that no title read names it. Its control is
-// the corpus's merger, which only readRoleEvents and phase work hold: exactly their two title
-// reads name it.
+// its title can never be a WorkerTitle. The test records just the two title reads that must omit
+// it, readRoleEvents' and phase work's. Its control is the corpus's merger, which only those two
+// reads hold: exactly their two title reads name it.
 func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 	database := corpus(t)
 	for seq, kind := range []string{"issue.role_holders_changed", "issue.updated"} {
@@ -161,21 +161,33 @@ func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 			t.Fatalf("seed the daemon's %s: %v", kind, err)
 		}
 	}
+	population, err := Read(t.Context(), database.Pool, nil, "INFRA", after(-2), after(24))
+	if err != nil {
+		t.Fatalf("read the population's facts: %v", err)
+	}
 	sent := &storetest.SentStatements{}
 	recorded := storetest.SentStore(t, database, sent)
-	if _, err := Read(t.Context(), recorded.Pool, nil, "INFRA", after(-2), after(24)); err != nil {
-		t.Fatalf("read the population: %v", err)
+	if err := population.readRoleEvents(t.Context(), recorded.Pool, population.Keys); err != nil {
+		t.Fatalf("read the role events: %v", err)
+	}
+	if _, err := legion.PhaseWorkKeys(t.Context(), recorded.Pool); err != nil {
+		t.Fatalf("read the phase work: %v", err)
 	}
 	if blind := sent.Blind(); len(blind) != 0 {
 		t.Fatalf("the recorder could not read %v, so a title read may be unseen", blind)
 	}
 	mergerTitleReads := 0
 	const merger = "s-Legion merger · INFRA-2"
+	var titleReadDetails []string
 	for _, statement := range sent.Statements() {
 		if !strings.Contains(statement.SQL, "from unnest($1::text[]) s(id)") {
 			continue
 		}
-		ids, _ := statement.Text(0)
+		ids, ok := statement.Text(0)
+		if !ok {
+			ids = "<no first parameter>"
+		}
+		titleReadDetails = append(titleReadDetails, fmt.Sprintf("%q", ids))
 		if strings.Contains(ids, "legion-daemon:") {
 			t.Errorf("a title read names the daemon's session: %q", ids)
 		}
@@ -184,8 +196,8 @@ func TestTheTitleReadsSkipTheLegionDaemonsSession(t *testing.T) {
 		}
 	}
 	if mergerTitleReads != 2 {
-		t.Fatalf("the read sent %d title reads that name %q, want readRoleEvents' and phase work's two",
-			mergerTitleReads, merger)
+		t.Fatalf("the read sent %d title reads that name %q, want readRoleEvents' and phase work's two; title reads: %v",
+			mergerTitleReads, merger, titleReadDetails)
 	}
 }
 
