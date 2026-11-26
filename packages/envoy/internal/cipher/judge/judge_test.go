@@ -626,23 +626,22 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	// The phase is the one requests.JudgeDispatch makes, with its deadline, but held
-	// (holdPhase): only the judge's own cancel or the run's end ends it, never the wall clock
-	// passing that deadline. Its three reads, the project check's and the issue's two GETs,
-	// answer a third of the bound apart and the last at the deadline itself, so the phase
-	// spends its whole bound. When the phase ended on the wall clock, a read that answered a
-	// fixed margin before the deadline still lost the race on a loaded runner: the judge took
-	// the answer after the deadline (119 ms at p99 over 225 loaded runs, past 300 ms in 4 of
-	// 450), the issue check failed, and the run wrote its row after 7 s, the model unasked. The
-	// row holds the deadline instead: the judge gave the phase dispatchBound from when it made
-	// it, and the phase's first read saw that same deadline, which a judge that cut the phase
-	// short would not show. The ask read, under a bound of its own, takes a third of it.
-	opts := testOptions(t, dispatch, model, machine)
-	opts.dispatchPhase = machine.holdPhase
+	// The run's Dispatch phase is held (holdPhase), so the wall clock does not end it. Its three
+	// reads, the project check's and the issue's two GETs, answer a third of the bound apart and
+	// the last at the phase's deadline itself, so the phase spends its whole bound. Before, the
+	// phase ended on the wall clock, and a read that answered a fixed margin before the deadline
+	// still lost the race on a loaded runner: the judge took the answer after the deadline (119 ms
+	// at p99 over 225 loaded runs, past 300 ms in 4 of 450), the issue check failed, and the run
+	// wrote its row after 7 s, the model unasked. The row holds the deadline instead: the judge
+	// gave the phase dispatchBound from when it made it, and the phase's first read saw that same
+	// deadline, which a judge that cut the phase before its first read would not show; a cut made
+	// later cuts the last read, which answers at the deadline itself, and the model goes unasked.
+	// The ask read, under a bound of its own, takes a third of it.
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	runner.dispatchPhase = machine.holdPhase
 	machine.projectBeforeEnd = 2 * dispatchBound / 3
 	dispatch.answerAt = func(earlier int) time.Time {
-		_, _, end, _ := machine.dispatchPhase()
-		return end.Add(-time.Duration(1-earlier) * dispatchBound / 3)
+		return machine.phaseTimes().end.Add(-time.Duration(1-earlier) * dispatchBound / 3)
 	}
 	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
@@ -650,7 +649,7 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	// The row's own transaction, which has to commit inside what is left of the budget.
 	machine.writeTakes = 2 * time.Second
 	started := time.Now()
-	New(t.Context(), opts).Consider(citedPending())
+	runner.Consider(citedPending())
 
 	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
 		_, logged := machine.rows()
@@ -659,14 +658,14 @@ func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	if took := time.Since(started); took < dispatchBound+modelBound {
 		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
 	}
-	before, after, end, seen := machine.dispatchPhase()
+	phase := machine.phaseTimes()
 	switch {
-	case end.IsZero():
+	case phase.end.IsZero():
 		t.Error("the judge made no Dispatch phase with a deadline")
-	case end.Before(before.Add(dispatchBound)) || end.After(after.Add(dispatchBound)):
-		t.Errorf("the judge gave its Dispatch phase a deadline %s after it made the phase; want dispatchBound, %s", end.Sub(before), dispatchBound)
-	case !seen.Equal(end):
-		t.Errorf("the phase's first read saw a deadline %s after the phase was made; want the one the judge gave the phase, %s after", seen.Sub(before), end.Sub(before))
+	case phase.end.Before(phase.before.Add(dispatchBound)) || phase.end.After(phase.after.Add(dispatchBound)):
+		t.Errorf("the judge gave its Dispatch phase a deadline %s after it made the phase; want dispatchBound, %s", phase.end.Sub(phase.before), dispatchBound)
+	case !phase.seen.Equal(phase.end):
+		t.Errorf("the phase's first read saw a deadline %s after the phase was made; want the one the judge gave the phase, %s after", phase.seen.Sub(phase.before), phase.end.Sub(phase.before))
 	}
 	row := theOneRow(t, machine)
 	if row["asked"] != true {

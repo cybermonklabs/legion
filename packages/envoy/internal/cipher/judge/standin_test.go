@@ -477,18 +477,17 @@ type fakeRequests struct {
 	// private and projectErr are what JudgeProject answers, projectAsked the names it was
 	// asked about and projectReasons the signed reasons, and projectTakes how long it takes to
 	// answer: like the real read of Dispatch, it gives up when its context ends first.
-	// projectBeforeEnd, when not zero, has it answer that long before phaseEnd instead.
+	// projectBeforeEnd, when not zero, has it answer that long before the deadline holdPhase
+	// recorded instead, and only under holdPhase: without it there is no such deadline, and the
+	// call fails, naming the knob.
 	private          bool
 	projectErr       error
 	projectAsked     []string
 	projectReasons   []string
 	projectTakes     time.Duration
 	projectBeforeEnd time.Duration
-	// phaseBefore and phaseAfter are the wall clock just before and just after the run's
-	// Dispatch phase was made, and phaseEnd the deadline requests.JudgeDispatch gave it
-	// (holdPhase); phaseSeen is the deadline on the context of the phase's first read, the
-	// phase's first JudgePolicy call (notePhase).
-	phaseBefore, phaseAfter, phaseEnd, phaseSeen time.Time
+	// phase is what holdPhase and notePhase recorded of the run's Dispatch phase (phaseTimes).
+	phase dispatchTimes
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it. LogJudged reads state too, for the verdict of the row it writes.
 	state      string
@@ -586,7 +585,11 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 	f.notePhase(ctx)
 	takes := f.projectTakes
 	if f.projectBeforeEnd > 0 {
-		takes = time.Until(f.phaseEnd.Add(-f.projectBeforeEnd))
+		if f.phase.end.IsZero() {
+			f.mu.Unlock()
+			return false, errors.New("stand-in: projectBeforeEnd is set, but no holdPhase made the run's Dispatch phase, so there is no deadline to answer before")
+		}
+		takes = time.Until(f.phase.end.Add(-f.projectBeforeEnd))
 	}
 	f.mu.Unlock()
 	if takes > 0 {
@@ -604,20 +607,21 @@ func (f *fakeRequests) JudgeProject(ctx context.Context, _, name, reason string)
 // notePhase records the deadline on the context of the first call made under the run's Dispatch
 // phase. f.mu is held.
 func (f *fakeRequests) notePhase(ctx context.Context) {
-	if !f.phaseSeen.IsZero() || !requests.UnderJudgeDispatch(ctx) {
+	if !f.phase.seen.IsZero() || !requests.UnderJudgeDispatch(ctx) {
 		return
 	}
-	f.phaseSeen, _ = ctx.Deadline()
+	f.phase.seen, _ = ctx.Deadline()
 }
 
-// holdPhase is an Options.dispatchPhase: it makes the run's Dispatch phase as
-// requests.JudgeDispatch does and records the deadline JudgeDispatch gave it, with the wall clock
-// just before and after, and answers a phase that carries that deadline and JudgeDispatch's
-// marker but that only the judge's own cancel or the run's end ends, never the wall clock passing
-// the deadline. A read can then answer at the deadline itself, and however late the judge takes
-// its answer on a loaded runner, the read is not cut short: the test holds the judge to the
-// phase's whole bound without racing it. A judge that cut the phase short itself still cuts its
-// reads short, since a context it derives keeps its own, earlier deadline.
+// holdPhase replaces the Runner's dispatchPhase: it makes the run's Dispatch phase as
+// requests.JudgeDispatch does, records the deadline JudgeDispatch gave it with the wall clock just
+// before and after, and answers a phase that carries that deadline and JudgeDispatch's marker but
+// that only the judge's own cancel or the run's end ends, never the wall clock passing the
+// deadline. A read can then answer at the deadline itself, and however late the judge takes its
+// answer on a loaded runner, the read is not cut short: a test holds the judge to the phase's
+// whole bound without racing it. A judge that cut the phase short itself still cuts its reads
+// short, since a context it derives keeps its own, earlier deadline. Production never takes this:
+// New sets requests.JudgeDispatch, and only this package's tests reach the field.
 func (f *fakeRequests) holdPhase(ctx context.Context) (context.Context, context.CancelFunc) {
 	before := time.Now()
 	made, stop := requests.JudgeDispatch(ctx)
@@ -627,7 +631,7 @@ func (f *fakeRequests) holdPhase(ctx context.Context) (context.Context, context.
 	stop()
 	unhook := context.AfterFunc(ctx, cancel)
 	f.mu.Lock()
-	f.phaseBefore, f.phaseAfter, f.phaseEnd = before, after, deadline
+	f.phase.before, f.phase.after, f.phase.end = before, after, deadline
 	f.mu.Unlock()
 	return heldPhase{Context: held, deadline: deadline}, func() { unhook(); cancel() }
 }
@@ -641,12 +645,19 @@ type heldPhase struct {
 
 func (p heldPhase) Deadline() (time.Time, bool) { return p.deadline, true }
 
-// dispatchPhase is the wall clock just before and after the run's Dispatch phase was made, the
-// deadline the judge gave it, and the deadline its first read saw: zero times before each came.
-func (f *fakeRequests) dispatchPhase() (before, after, end, seen time.Time) {
+// dispatchTimes are the times recorded for a run's Dispatch phase: the wall clock just before and
+// just after holdPhase made it, the deadline requests.JudgeDispatch gave it (end), and the
+// deadline on the context of the phase's first read, its first JudgePolicy call (seen). Each is
+// zero until it is recorded.
+type dispatchTimes struct {
+	before, after, end, seen time.Time
+}
+
+// phaseTimes is what was recorded of the run's Dispatch phase so far.
+func (f *fakeRequests) phaseTimes() dispatchTimes {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.phaseBefore, f.phaseAfter, f.phaseEnd, f.phaseSeen
+	return f.phase
 }
 
 // projectsAsked is every name JudgeProject was asked about, in order, and reasonsAsked every
