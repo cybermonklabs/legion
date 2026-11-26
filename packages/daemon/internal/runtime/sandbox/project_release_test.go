@@ -245,6 +245,31 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 	})
 }
 
+// A launch into a live pod an update round covers is refused while the project release holds
+// before RoundPodEnds is asked, so the daemon neither reads the workspace nor records a
+// replacement for a launch that will be refused anyway.
+func TestProjectReleaseRefusesALaunchIntoACoveredPodBeforeRoundPodEnds(t *testing.T) {
+	held := &atomic.Bool{}
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.ProjectReleaseHolds = held.Load
+		o.RoundPodEnds = func(_ context.Context, token claim.Token, podUID string) (bool, error) {
+			t.Errorf("RoundPodEnds was asked for %s on pod %s while the project release holds, want refusal first", token, podUID)
+			return true, nil
+		}
+	}))
+	loc := g.spawn(workerSpec(t))
+	name := loc.Sandbox.Name
+	spec := workerSpec(t)
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	held.Store(true)
+	g.clearActions()
+	_, err := g.r.Resume(g.ctx, &loc, spec)
+	wantReleased(t, g, "the launch into the covered pod", err)
+	if mode := g.sandbox(name).mode(); mode != modeRunning {
+		t.Fatalf("the refused launch left the Sandbox %s, want it running", mode)
+	}
+}
+
 // A project release's delete of the controller's Sandbox, or of a repository cache's, refuses a
 // Sandbox written since its delete was decided, where the runtime's own deletes keep it for the
 // next orphan sweep and answer nil: the release holds that sweep until the daemon's next boot, and

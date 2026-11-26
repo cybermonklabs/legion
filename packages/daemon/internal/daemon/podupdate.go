@@ -1146,9 +1146,11 @@ type podReplacement struct {
 // failed ReplacePod is logged and its record left for the next sweep, which finishes the
 // replacement where the runtime shows the suspension landed, and forgets the record and decides
 // the round afresh where it did not (finishReplacements): until then nothing is ended, so the round
-// still holds every answered worker's next task. A ReplacePod that keeps failing holds the round
-// past its bound, which only a person can end, so it is told to the operator's side once the
-// bound has come (tellLateRound, failedReplacementReason) and names what holds the round. One
+// still holds every answered worker's next task. Where the project release holds the pod
+// (runtime.ErrProjectReleased), the runtime refuses before any suspension, so the record is
+// forgotten, no late round is told, and the round stays open. A ReplacePod that keeps failing holds
+// the round past its bound, which only a person can end, so it is told to the operator's side once
+// the bound has come (tellLateRound, failedReplacementReason) and names what holds the round. One
 // round is told once.
 //
 // A replacement made is logged on one line that holds for a round that ended either way, by its
@@ -1313,9 +1315,12 @@ type roundCall struct {
 // (recordRoundReplacement), so the last word is the last decision before the suspension, and a last
 // word that refuses takes it away again (recordedDue), which also says whether the runtime asked
 // the last word (asked). The call is bounded to one sweep interval. A last word that refuses is the
-// daemon's own and is logged only, and the round stays open. A call that fails otherwise is logged
-// and its record left for the next sweep (finishReplacements), and past the bound it holds the
-// round, so it is told to the operator's side once (tellLateRound, failedReplacementReason).
+// daemon's own and is logged only, and the round stays open. A call that the project release
+// refused (runtime.ErrProjectReleased) refuses before any suspension, so its record is forgotten,
+// one line is logged and no late round is told, and the round stays open. A call that fails
+// otherwise is logged and its record left for the next sweep (finishReplacements), and past the
+// bound it holds the round, so it is told to the operator's side once (tellLateRound,
+// failedReplacementReason).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as
@@ -1354,6 +1359,12 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 	if err := rc.call(limited, s.recordedDue(recorded, &asked, rc.due(issue, round, read.at, &ended))); err != nil {
 		if errors.Is(err, errReplacementNotDue) {
 			s.log.Info(rc.notDue, "issue", issue, "round", round, "pod", pod, "reason", err)
+			return
+		}
+		if errors.Is(err, runtime.ErrProjectReleased) {
+			s.forgetReplacement(ctx, recorded)
+			s.log.Info("supervise: the project release holds this update round's pod; the round's replacement took nothing and the round stays open",
+				"issue", issue, "round", round, "pod", pod, "reason", err)
 			return
 		}
 		if ctx.Err() == nil {

@@ -370,9 +370,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// disk shape is replaced below, as for any other replacement. The image rule of a launch
 	// installing a stale-plugin pair (podImageDrift) reads only a pod no round covers, so it never
 	// meets this one: an installing launch into a covered pod asks the daemon as any launch does,
-	// and where the round is over it installs nothing into the new pod (below).
+	// and where the round is over it installs nothing into the new pod (below). A launch the
+	// project release holds is refused before RoundPodEnds is asked, so the daemon does not read
+	// the workspace or record a replacement for a launch that will be refused anyway.
 	kind := launchReplacement
 	if !replace && covered && r.roundPodEnds != nil {
+		if err := r.releaseHolds("launch " + string(spec.Claim)); err != nil {
+			return runtime.Locator{}, err
+		}
 		ends, err := r.roundPodEnds(bounded, spec.Claim, string(pod.UID))
 		if err != nil {
 			return fail("read the update round over its pod", err)
