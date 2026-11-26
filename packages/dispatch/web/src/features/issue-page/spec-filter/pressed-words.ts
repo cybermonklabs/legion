@@ -43,9 +43,10 @@ const REFERENCE_WRITTEN = "data-row-written";
  *
  * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and what
  * the editor draws as a widget - a reference's title, a collaborator's cursor - stands outside
- * its editable text and is not drawn by the view. What the view draws differently with no mark
- * of it - the words of a statement drawn as stored, with no reading of them (`RowText`'s
- * `StoredText`) - is the pressed word's to find (`CaretAt`).
+ * its editable text and is not drawn by the view. Any other inline shape the view draws
+ * differently from the editor's text with no mark in `HELD_OTHERWISE` - a new inline node kind,
+ * or prose whose drawn characters differ from the editor's - is the pressed word's to find
+ * (`CaretAt`).
  */
 const HELD_OTHERWISE = [
   `[${REFERENCE_WRITTEN}]`,

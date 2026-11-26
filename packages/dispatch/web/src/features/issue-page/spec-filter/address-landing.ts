@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 import { landOnRow } from "../IssueTree";
 import { useFollowing } from "../slots/following";
@@ -69,6 +69,30 @@ export function useAddressLanding({
     landOnRow(item, held);
   }, [acts, drawn, following, id, tree]);
   return held;
+}
+
+/**
+ * Whether the reader has acted since they followed the address (`following`), as read during a
+ * render from the controller the stage hands the view (`acts`, `StageSlot`'s `ReaderActsWatch`).
+ *
+ * The stage starts each following's controller as that following's first commit is laid out, after
+ * its render, which still reads the last following's controller; this hook notes its following as
+ * each of its commits is laid out, after the stage. So a render of a following the view has not
+ * committed in yet reads `acted: false`: the reader cannot have acted in it yet.
+ */
+export function useAddressActed(acts: RefObject<AbortController | undefined> | undefined): {
+  readonly acted: boolean;
+  readonly following: string;
+} {
+  const following = useFollowing();
+  const committed = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    committed.current = following;
+  }, [following]);
+  return {
+    acted: committed.current === following && acts?.current?.signal.aborted === true,
+    following,
+  };
 }
 
 /** The item of `tree` that draws node `id` - a statement, a decision cell, a row of the

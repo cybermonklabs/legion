@@ -345,6 +345,7 @@ function drawBody(
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
       issue={over}
+      namesLine={[]}
       onEditing={onEditing}
       published={published}
       reader={reader}

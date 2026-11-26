@@ -65,8 +65,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
-import { useFollowing } from "../slots/following";
-import { useAddressLanding } from "../spec-filter/address-landing";
+import { useAddressActed, useAddressLanding } from "../spec-filter/address-landing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -354,24 +353,13 @@ export function VerificationFilterBody({
   // drawn without the stage knows of: the row the reader moved to keeps the stop, as it keeps
   // the focus, as the Spec view keeps the row the reader moved to first (`SpecFilterBody`'s
   // `stop`).
-  const following = useFollowing();
-  // The following of the controller the stage hands the body (`actsFollowing`). The stage starts
-  // each following's controller as that following's first commit is laid out (`ReaderActsWatch`),
-  // after its render, which still reads the last following's; the body notes its following as
-  // each of its commits is laid out, after the stage. So a render of a following the body has not
-  // committed in yet reads no act: the reader cannot have acted in it yet.
-  const actsFollowing = useRef<string | undefined>(undefined);
-  useLayoutEffect(() => {
-    actsFollowing.current = following;
-  }, [following]);
+  const { acted, following } = useAddressActed(addressActs);
   const addressRow =
     readsSettled && reveal !== undefined && rows.includes(reveal) ? reveal : undefined;
   const [stopGiven, setStopGiven] = useState<string | undefined>(undefined);
   const [keyMovedIn, setKeyMovedIn] = useState<string | undefined>(undefined);
   if (addressRow !== undefined && stopGiven !== `${following}:${addressRow}`) {
     setStopGiven(`${following}:${addressRow}`);
-    const acted =
-      actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
     if (keyMovedIn !== following && !acted) setRovingId(addressRow);
   }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
