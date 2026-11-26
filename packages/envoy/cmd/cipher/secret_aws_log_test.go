@@ -52,6 +52,7 @@ func captureStderr(t *testing.T, fn func()) string {
 // default logger writes the planted header there, so the SDK still logs that line and the row
 // tests what it claims.
 func TestTheAWSSDKsOwnLogWritesNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_log_test.go:68); it replaces a value of the whole process (main.captureStderr, os.Stderr set at secret_aws_log_test.go:36).
 	planted := "hunter2pw-" + "datehdr-" + "8e1f"
 	var called atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

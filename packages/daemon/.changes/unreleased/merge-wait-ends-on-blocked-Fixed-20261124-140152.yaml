@@ -1,0 +1,33 @@
+kind: Fixed
+body: |-
+  An approved review round no longer waits for good on a head GitHub answers `blocked` for. GitHub's
+  merge state is its answer to the reader, not its verdict on the merge: a token without the
+  workflows permission reads `blocked` for every pull request that changes `.github/workflows/`, and
+  another pull request's check suite on the same commit can hold a required check `expected` that
+  passed on this one. The round now ends on `blocked` once the head is MERGEABLE, no check run or
+  commit status of it is running in GitHub's counts of the head's rollup by state (the rollup's own
+  state reads FAILURE as soon as one check fails while others still run), every check run GitHub
+  reported on it has concluded, and GitHub holds no review request open on the pull request; the
+  merger's merge is then what GitHub answers, accepted or refused with its reason, and the merger's
+  instructions name the `Required status check "<name>" is expected` refusal and its two remedies.
+  A required status nobody reported (EXPECTED) is not counted as running, since nothing is under
+  way to report it. A `blocked` head with a review request open waits, and the architect and the
+  reviewer are told once, with the count; a `blocked` or `unknown` head whose `mergeable` GitHub
+  answers null waits quietly while GitHub computes and is told when a null read of the run comes
+  at least 90 s after the run's first, read to read, whatever state GitHub gave beside each, or
+  when thirty minutes have passed since the first by the clock (90 s is six times the longest
+  computation measured after 6 pushes to main, 14.9 s); one a check of which runs, or whose count or rollup no read has
+  given, waits quietly while the daemon reads it again. A head is told of once for each finding -
+  its state, or the null `mergeable` or review request that holds it - and the decision keeps every
+  finding told, so findings that take turns on one head are not told again. The verdict, the count
+  and the rollup come from one GraphQL answer (a base's batch, or the query a REST read of a
+  `blocked`, MERGEABLE head asks), and the record keeps the read time of the read that wrote the
+  count and the rollup and reads them as unread beside any other read (migration 20261124130001,
+  which adds five columns of `pull_requests`, all unread on every existing row). A review request
+  opened or withdrawn asks for a read, so does a CI settlement that concludes the head's last check
+  under a recorded `blocked`; a climb or a start read that fails or is rate-limited hands the head
+  to its base's reads, and a read that fails, a mint of the implement token among them, asks the
+  round again so the thirty-minute bound holds.
+time: 2026-11-24T14:01:52.986536229Z
+custom:
+    Issue: INFRA-4192
