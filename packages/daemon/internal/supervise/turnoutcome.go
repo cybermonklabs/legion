@@ -32,7 +32,7 @@ import (
 // Task is the number of the task the report named, 0 for none, and ProviderError whether it
 // carried the provider error its turn ended in, with that error's HTTP status
 // (ProviderErrorStatus, 0 for none) and the class the producer gave it (ProviderErrorCode,
-// RequestTurnOutcome.Code: codeCyberPolicy or none). ProviderErrorRetries is, for a report whose
+// RequestTurnOutcome.Code: codeCyberPolicy, codeCostCap or none). ProviderErrorRetries is, for a report whose
 // provider error reached the ladder (Claim.reportOfTake), the count of the task's sends the
 // ladder's step makes it (Delivery.ProviderErrorRetries), and 0 for every other report. They are
 // what tells a daemon that read the window back what an applied report did to the claim's pending
@@ -482,6 +482,11 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // The report of the turn the daemon gave the take can also make the claim's count of its
 // process's turns known again, where that count is not known (learnTurns): the report names the
 // turn's sequence, and the take's number places it among the turns the machine saw.
+//
+// A cost-cap report can also describe a drop before the turn starts. If the take still awaits
+// its start, do not infer a start or reserve the next frame for it. A drop uses a report sequence
+// but sends no frame. A report that beat its start frame looks the same. The turn count is no
+// longer known until a later take's report places it (learnTurns).
 func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if !m.claim.reportOfTake(r.Generation, r.Task) {
@@ -498,7 +503,11 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	return m.settleThenAfterTurn(ctx, func() error {
 		var started error
 		if m.takeAwaitsTurn() {
-			started = m.startedUnseen(ctx, r)
+			if r.Code == codeCostCap && r.ProviderError != nil {
+				m.counted().lose()
+			} else {
+				started = m.startedUnseen(ctx, r)
+			}
 		} else {
 			m.learnTurns(ctx, r)
 		}

@@ -45,6 +45,16 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * own report names its number and the class, which fails the claim, so the race costs one take at
  * most (`packages/daemon/internal/supervise/providererror.go`'s codeCyberPolicy).
  *
+ * A take dropped at the session's cost cap starts no turn. `TaskTake` calls `reportDrop` when
+ * the host rejects its text. The daemon keeps the task on the provider-error ladder.
+ * At the Oh My Pi pin in 34021711, the gate emits an aborted message only with turnOpen
+ * (agent-loop.ts:1541). The preceding step cleared turnOpen (:1904). An extension has no
+ * mid-run cap signal, unlike the RPC prompt result on main (#5505). The plugin reports the
+ * run as it ends. Once a host exposes the stop, only the plugin needs to start reporting it.
+ *
+ * A drop also uses a report sequence for deduplication but has no stream frames. The daemon
+ * does not infer a start from such a report when the take still awaits its turn (`reportedTask`).
+ *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
  * only one of them can own the number a report is keyed by. It starts at 1 within a claim's
@@ -146,6 +156,13 @@ export interface TurnOutcomeReporter {
     task?: number,
     held?: number
   ) => Promise<TurnReportAnswer | undefined>;
+  /** Reports the host's refusal to start the accepted take at the cost cap. */
+  readonly reportDrop: (
+    sessionID: string,
+    task: number,
+    code: "cost_cap",
+    message: string
+  ) => Promise<void>;
   /** The session ended (`session_shutdown`): every report of it still being sent stops. */
   readonly sessionEnded: (sessionID: string) => void;
 }
@@ -225,74 +242,105 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
     }
   };
 
+  const nextSequence = (generation: number): number => {
+    if (generation !== counting) {
+      counting = generation;
+      sequence = 0;
+    }
+    sequence += 1;
+    return sequence;
+  };
+
+  const stopFor = (sessionID: string): AbortSignal => {
+    let stop = stops.get(sessionID);
+    if (stop === undefined) {
+      stop = new AbortController();
+      stops.set(sessionID, stop);
+    }
+    return stop.signal;
+  };
+
+  const send = async (
+    claim: ReportedClaim,
+    request: LegionTurnOutcomeRequestBody,
+    stop: AbortSignal
+  ): Promise<TurnReportAnswer | undefined> => {
+    const lines = {
+      ...(claim.issue === undefined ? {} : { issue: claim.issue }),
+      role: claim.role,
+      sequence: request.sequence,
+      outcome: request.outcome,
+      ...(request.task === undefined ? {} : { task: request.task }),
+      ...(request.held === undefined ? {} : { held: request.held }),
+      ...(request.code === undefined ? {} : { code: request.code }),
+    };
+    try {
+      const outcome = await sendUntilAnswered(
+        "claims/turn-outcome",
+        (signal) => deps.daemon().turnOutcome(request, { signal }),
+        { stop, alsoSendAgain: recordFailed, warn: deps.log.warn, wait: deps.wait }
+      );
+      deps.log.debug("legion: reported a turn's outcome", {
+        ...lines,
+        refusedRun: outcome.refusedRun,
+        failed: outcome.failed,
+      });
+      return "recorded";
+    } catch (error) {
+      deps.log.warn("legion: a turn's outcome did not reach the daemon", {
+        ...lines,
+        error: messageFor(error),
+      });
+      // A 4xx, coded or not, is not sent again, and the report it refused applied nothing.
+      return error instanceof LegionDaemonApiError && error.status >= 400 && error.status < 500
+        ? "refused"
+        : undefined;
+    }
+  };
+
   return {
     report: async (sessionID, event, task, held) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return undefined;
       const { caller } = claim;
-      // Taken before the first await, so two turns can never take the same number nor take them
-      // out of the order they ended in. A generation this producer has not counted within starts
-      // the count again, as a fresh launch's does.
-      if (caller.generation !== counting) {
-        counting = caller.generation;
-        sequence = 0;
-      }
-      sequence += 1;
-      // The number this report owns: `sequence` moves on as the next turn ends, and the lines
-      // below are written after an await.
-      const mine = sequence;
+      // Take the sequence before the classifier awaits, so reports keep their original order.
+      const mine = nextSequence(caller.generation);
+      const stop = stopFor(sessionID);
       const { last, refusal } = endOf(event);
-      // The host's class of the refusal, read after the number is taken: the classifier may wait
-      // on the host's module, and the turns' order is fixed above.
       const cyberPolicy = refusal !== undefined && (await classify(last));
-      const request = {
-        ...caller,
-        sequence: mine,
-        outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
-        ...(refusal === undefined ? {} : { message: refusal }),
-        ...(task === undefined ? {} : { task }),
-        ...(held === undefined ? {} : { held }),
-        ...(refusal === undefined || last === undefined
-          ? {}
-          : { providerError: providerError(last, refusal) }),
-        ...(cyberPolicy ? { code: "cyber_policy" as const } : {}),
-      };
-      let stop = stops.get(sessionID);
-      if (stop === undefined) {
-        stop = new AbortController();
-        stops.set(sessionID, stop);
-      }
-      const lines = {
-        ...(claim.issue === undefined ? {} : { issue: claim.issue }),
-        role: claim.role,
-        sequence: mine,
-        outcome: request.outcome,
-        ...(task === undefined ? {} : { task }),
-        ...(held === undefined ? {} : { held }),
-        ...(cyberPolicy ? { code: "cyber_policy" as const } : {}),
-      };
-      try {
-        const outcome = await sendUntilAnswered(
-          "claims/turn-outcome",
-          (signal) => deps.daemon().turnOutcome(request, { signal }),
-          { stop: stop.signal, alsoSendAgain: recordFailed, warn: deps.log.warn, wait: deps.wait }
-        );
-        deps.log.debug("legion: reported a turn's outcome", {
-          ...lines,
-          refusedRun: outcome.refusedRun,
-          failed: outcome.failed,
-        });
-        return "recorded";
-      } catch (error) {
-        deps.log.warn("legion: a turn's outcome did not reach the daemon", {
-          ...lines,
-          error: messageFor(error),
-        });
-        // A 4xx, coded or not, is not sent again, and the report it refused applied nothing.
-        return error instanceof LegionDaemonApiError && error.status >= 400 && error.status < 500
-          ? "refused"
-          : undefined;
-      }
+      return send(
+        claim,
+        {
+          ...caller,
+          sequence: mine,
+          outcome: refusal === undefined ? "clean" : "refused",
+          ...(refusal === undefined ? {} : { message: refusal }),
+          ...(task === undefined ? {} : { task }),
+          ...(held === undefined ? {} : { held }),
+          ...(refusal === undefined || last === undefined
+            ? {}
+            : { providerError: providerError(last, refusal) }),
+          ...(cyberPolicy ? { code: "cyber_policy" } : {}),
+        },
+        stop
+      );
+    },
+    reportDrop: async (sessionID, task, code, message) => {
+      const claim = deps.claim(sessionID);
+      if (claim === undefined) return;
+      await send(
+        claim,
+        {
+          ...claim.caller,
+          sequence: nextSequence(claim.caller.generation),
+          outcome: "refused",
+          task,
+          message,
+          providerError: { status: 0, provider: "", model: "", message, retryable: false },
+          code,
+        },
+        stopFor(sessionID)
+      );
     },
     sessionEnded: (sessionID) => {
       stops.get(sessionID)?.abort();

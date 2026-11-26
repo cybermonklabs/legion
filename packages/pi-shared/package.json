@@ -77,6 +77,10 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
+    "./cost-cap": {
+      "types": "./src/cost-cap.ts",
+      "default": "./src/cost-cap.ts"
+    },
     "./task-take": {
       "types": "./src/task-take.ts",
       "bun": "./src/task-take.ts"

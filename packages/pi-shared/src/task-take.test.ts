@@ -88,6 +88,8 @@ async function flush(): Promise<void> {
  * answers that the host is not idle and hands nothing, as pi-legion's `runTask` does.
  */
 function rig() {
+  const dropReports: { task: number; code: string; message: string }[] = [];
+  const dropAnswer = Promise.withResolvers<void>();
   const calls: Call[] = [];
   const takes: Attempt<LegionTake>[] = [];
   const seens: Attempt<undefined>[] = [];
@@ -128,6 +130,10 @@ function rig() {
       const hand = Promise.withResolvers<void>();
       handed.push(hand);
       return hand.promise;
+    },
+    reportDrop: (task, code, message) => {
+      dropReports.push({ task, code, message });
+      return dropAnswer.promise;
     },
     setPending: (pending) => marks.push(pending),
     log: { info: () => undefined, warn: (message) => warned.push(message) },
@@ -173,7 +179,22 @@ function rig() {
   const routed = (route: Call["route"]) =>
     calls.filter((call) => call.route === route).map((call) => call.body);
 
-  return { take, calls, takes, seens, ran, handed, marks, warned, waits, advance, routed, host };
+  return {
+    take,
+    calls,
+    takes,
+    seens,
+    ran,
+    handed,
+    marks,
+    warned,
+    waits,
+    advance,
+    routed,
+    host,
+    dropReports,
+    dropAnswer,
+  };
 }
 
 const body = (number: number, revision: number) => ({
@@ -714,6 +735,37 @@ test("a take whose text the host dropped before its turn started is taken at the
   // The mark comes down at the drop, since nothing is pending until the daemon writes the value
   // again, and goes up again with the take at the newer revision, until the task's turn starts.
   expect(marks).toEqual([true, false, true, false]);
+});
+
+test("a capped take drop reports its number and cost_cap once, and an ordinary drop reports nothing", async () => {
+  const { take, takes, handed, advance, routed, dropReports, dropAnswer, ran } = rig();
+  const message =
+    "Cost cap reached: this session spent $5.00 of its $1.00 cap (--max-cost / session.maxCost), so the next model request was not sent.";
+  const cap = Object.assign(new Error(message), { name: "PromptDroppedError" });
+
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(handed).toHaveLength(1);
+  handed[0]?.reject(cap);
+  await advance(0);
+  expect(dropReports).toEqual([{ task: 4, code: "cost_cap", message }]);
+
+  takes.push({ answer: ACCEPTED_AFRESH });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([TEXT]);
+  dropAnswer.resolve();
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, AFRESH_TEXT]);
+
+  const ordinary = Object.assign(new Error(DROP.message), { name: "PromptDroppedError" });
+  handed[1]?.reject(ordinary);
+  await advance(0);
+  expect(dropReports).toEqual([{ task: 4, code: "cost_cap", message }]);
 });
 
 // The host can drop the text after the daemon wrote the value again and answered the take at that

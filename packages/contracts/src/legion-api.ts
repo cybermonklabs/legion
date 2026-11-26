@@ -1700,8 +1700,8 @@ const legionProviderError = z.strictObject({
   retryable: z.boolean(),
 });
 
-/** The half of `claim.TurnOutcomeRequest` that is the turn rather than the caller: `sequence` is
- * the producer's own count of the turns it has ended at `generation`, from 1, and the daemon
+/** The half of `claim.TurnOutcomeRequest` that is the outcome rather than the caller.
+ * `sequence` counts the producer's reports at `generation`, from 1. The daemon
  * keeps the report under the pair, so a report that arrives late or out of order lands in its own
  * place and the run of refused turns it derives is the same either way. `message` is what the
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
@@ -1727,13 +1727,14 @@ const legionProviderError = z.strictObject({
  * says. The daemon judges every turn that was not the take's from its own report: a refusal whose
  * status cannot clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other
  * refusal counts in the claim's run of provider-error turns. A clean report ends that run when no
- * later turn's report has reached the daemon before it (`claim.TurnOutcomeRequest`). `code` is
- * the class the producer gave a refused turn with the host's own classifier (Oh My Pi's
- * `isCyberPolicyRefusal`, the reading that sets a prompt result's `code`): `cyber_policy` alone,
- * OpenAI's refusal of the session's content, which fails the claim at once under cause
- * `cyber_policy`, whatever its status, on the report of the take's turn, which takes that task
- * back first, and on the report of any other turn alike. A daemon before contract entry
- * 20261125174608 (cyber-policy) refuses a body that carries it. */
+ * later turn's report has reached the daemon before it (`claim.TurnOutcomeRequest`).
+ *
+ * `code` identifies a refusal. `cyber_policy` (entry 20261125174608) fails the claim regardless
+ * of HTTP status. `cost_cap` (task-take entry 20261125171504) identifies a refusal by Oh My Pi's
+ * session cost gate. The report can name a turn that stopped or a take that never started.
+ * A statusless `cost_cap` with `task` and `providerError` puts the take on the provider-error
+ * ladder. A plugin below the task-take entry does not send this value.
+ */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1744,7 +1745,7 @@ const turnOutcomeFields = {
   held: z.number().int().positive().optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   unprompted: z.boolean().optional(),
-  code: z.literal("cyber_policy").optional(),
+  code: z.enum(["cyber_policy", "cost_cap"]).optional(),
 };
 
 /** `claim.AgentCaller` — the worker inside the agent's own session, which holds the secret its

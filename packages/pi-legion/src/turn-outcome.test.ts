@@ -9,7 +9,6 @@ import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import {
   createTurnOutcomeReporter,
   type ReportedClaim,
-  reportsProviderError,
   type TurnOutcomeLog,
   type TurnOutcomeReporter,
 } from "./turn-outcome";
@@ -594,72 +593,4 @@ test("a classifier that fails leaves the refused turn reported with no code, and
   expect(warned).toEqual([
     "legion: the host could not class a refused turn; it is reported with no code",
   ]);
-});
-
-// Oh My Pi's cost gate stops a run before the next model call (`agent-loop.ts`'s
-// `createGateStopMessage`): the last assistant message carries `stopReason: "aborted"` and
-// `errorMessage` equal to the cost gate's refusal (`cost-gate.ts`). Both `reportsProviderError`
-// (which keeps `TaskTake.runEnded` from marking the task finished) and the turn-outcome report
-// must read that stop as a `cost_cap` refusal carrying `providerError`, while another abort (such
-// as a user abort) stays clean with no code.
-test("a run stopped by Oh My Pi's cost gate is reported as a cost_cap refusal, not a clean finish", async () => {
-  const costCapMessage =
-    "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.";
-  const costGateStopped: AgentEndEvent = {
-    messages: [
-      { role: "user" },
-      {
-        role: "assistant",
-        stopReason: "aborted",
-        errorMessage: costCapMessage,
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-      },
-    ],
-  };
-  const userAborted: AgentEndEvent = {
-    messages: [
-      { role: "user" },
-      {
-        role: "assistant",
-        stopReason: "aborted",
-        errorMessage: "Request was aborted.",
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-      },
-    ],
-  };
-
-  const { report, posted } = rig();
-  await report(SESSION, costGateStopped, 4);
-  await report(SESSION, userAborted, 5);
-
-  const [capped, aborted] = posted.map(
-    ({ sequence, outcome, task, message, providerError, code }) => ({
-      sequence,
-      outcome,
-      task,
-      message,
-      providerError,
-      code,
-    })
-  );
-  expect(posted).toHaveLength(2);
-  expect(capped).toMatchObject({
-    sequence: 1,
-    outcome: "refused",
-    task: 4,
-    message: costCapMessage,
-    providerError: { status: 0, message: costCapMessage },
-    code: "cost_cap",
-  });
-  expect(aborted).toMatchObject({
-    sequence: 2,
-    outcome: "clean",
-    task: 5,
-  });
-  expect(aborted?.code).toBeUndefined();
-  expect(aborted?.providerError).toBeUndefined();
-  expect(reportsProviderError(costGateStopped)).toBeTrue();
-  expect(reportsProviderError(userAborted)).toBeFalse();
 });

@@ -7,6 +7,9 @@ body: |-
     back first. Before, a refusal a gateway relayed as a 503 climbed the provider-error ladder with
     no attempt limit, and each take of the task again started a turn from outside the session,
     which ended Oh My Pi's own hold and sent the refused content to OpenAI again.
+    A take reported as `cost_cap` with no HTTP status follows the provider-error ladder.
+    The daemon does not charge the worker. The next take and the controller's notice
+    identify the session's cost cap.
 time: 2026-11-25T00:42:42Z
 custom:
     Issue: cyber-policy-holds-the-issue

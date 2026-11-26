@@ -30,10 +30,7 @@ const (
 	providerErrorRunTold = 6
 )
 
-// The class of a refused turn's report (RequestTurnOutcome.Code) that decides something here. Oh
-// My Pi declares it on `RpcPromptError.code` (packages/coding-agent/src/modes/rpc/rpc-types.ts of
-// cybermonklabs/oh-my-pi at the pinned tag); pi-legion classifies a refused turn with the host's
-// own `isCyberPolicyRefusal`, the classifier that sets that code (packages/pi-legion/src/turn-outcome.ts).
+// The classes of a refusal (RequestTurnOutcome.Code) that the daemon reads.
 const (
 	// codeCyberPolicy is OpenAI refusing the session's content for cybersecurity risk, or Oh My Pi
 	// holding the request because such a refusal earlier in the session still holds OpenAI's
@@ -56,6 +53,9 @@ const (
 	// fails the claim here, if the first report has not failed it already: the race costs one take
 	// at most, never a second (TestARaceBetweenTheTurnsEndAndItsReportCostsOneTakeAtMost).
 	codeCyberPolicy = claim.TurnCodeCyberPolicy
+	// codeCostCap is Oh My Pi refusing a model request at session.maxCost. No request was
+	// sent. The cap can clear, so a statusless refusal uses the ladder without a charge.
+	codeCostCap = claim.TurnCodeCostCap
 )
 
 // promptRetryDelay is the wait before the value of a task a provider error took back is written
@@ -73,9 +73,9 @@ func promptRetryDelay(attempt int) time.Duration {
 
 // providerErrored is a task's turn reported over with a provider error (reportedTask). The task
 // is kept whatever the decision: it is taken back under its number, its take gone (ladderStep) and
-// the claim's TaskTaken kept, because the turn ran and the agent read it. No prompt budget is
-// charged — chargePrompt retires and then fails a claim past Limits.PromptFailures, which would
-// fail every claim at once in a provider outage, and R2 forbids an attempt limit — so the claim
+// the claim's TaskTaken kept. This is also the path for a take that Oh My Pi drops with
+// codeCostCap before a turn starts. No prompt budget is charged. A charge could retire or fail
+// every claim in a provider outage, and R2 forbids an attempt limit. The claim
 // counts its own run of such turns instead, and a turn that ends with no error puts that run back
 // to zero (turnOutcome).
 //
@@ -168,7 +168,7 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 // it: the status, the class the producer gave the failure and the model the error named (each
 // zero where it named none), the warning line's message and its own attributes, the notice's words
 // for what the daemon does now, and how an error that cannot clear fails the claim, given its
-// class. A turn-outcome report carries the class only for a cyber-policy refusal.
+// class. A report can name a cyber-policy refusal or the session's cost cap.
 type providerErrorTurn struct {
 	status int
 	code   string
@@ -359,8 +359,8 @@ type providerErrorClass struct {
 // producer gave it alone: the words that name it and whether it fails the claim. A new class of
 // error is added here and nowhere else.
 //
-// The words are a cyber-policy refusal by name, with the status when the refusal carried one,
-// else the HTTP status the provider answered, else nothing more than that a provider failed. A
+// The words name the session's cost cap or the cyber-policy refusal. Otherwise they give
+// the HTTP status if the provider gave one, or say only that a provider failed. A
 // refusal's own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
 // note the next take carries nor the notice at providerErrorRunTold. A content filter's refusal carries no
@@ -384,8 +384,8 @@ type providerErrorClass struct {
 //     cannot serve for a while) ends with the error of its last auto-retry, `retryable` and with
 //     no status; the plugin reads it as a provider error and moves nothing, and the key, like a
 //     401 or a 403, is the fleet's to restore, so the task goes again on the same model. A
-//     Claude Code worker's bridge names a status only for a result Claude Code marked api_error
-//     (internal/claudebridge's result), so its statusless turns go again here too.
+//     statusless cost cap goes again after the wait. Raising the cap applies to the next request.
+//     A Claude Code worker's bridge names a status only for a result marked api_error.
 //
 // A cyber-policy refusal is the one class that decides alone. Giving the task again on the ladder
 // is what Oh My Pi's hold exists to stop, and the ladder cannot stop it itself: each take starts a
@@ -406,6 +406,9 @@ func classifyProviderError(status int, code string) providerErrorClass {
 		return providerErrorClass{cause: withStatus("OpenAI's cyber_policy refusal of this session's content"), fails: CauseCyberPolicy}
 	}
 	class := providerErrorClass{cause: withStatus("a provider error")}
+	if code == codeCostCap {
+		class.cause = "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)"
+	}
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
 		return class

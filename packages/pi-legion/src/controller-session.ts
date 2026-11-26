@@ -118,6 +118,10 @@ export function createControllerSession(deps: {
   readonly pi: PiApi;
   /** An accepted take's text to the host (`TaskTakeDeps.run`). */
   readonly runTask: TaskTakeDeps["run"];
+  readonly reportDrop: (
+    sessionID: string,
+    ...drop: Parameters<NonNullable<TaskTakeDeps["reportDrop"]>>
+  ) => Promise<void>;
   readonly exitProcess: (code: number) => never;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
@@ -169,7 +173,13 @@ export function createControllerSession(deps: {
   const takeFor = (client: LegionDaemonClient, caller: ClaimCaller): Taking => {
     taking?.take.close();
     const entry = {
-      ...takeClaimTask({ daemon: client, caller, run: deps.runTask, log: logger }),
+      ...takeClaimTask({
+        daemon: client,
+        caller,
+        run: deps.runTask,
+        reportDrop: (...drop) => deps.reportDrop(caller.sessionId, ...drop),
+        log: logger,
+      }),
       caller,
     };
     taking = entry;

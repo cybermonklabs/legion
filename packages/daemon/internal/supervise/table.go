@@ -810,10 +810,9 @@ type RequestExit struct {
 	Reason     string
 }
 
-// RequestTurnOutcome is the outcome of one turn, reported by the producer that ended it: the
-// pi-legion agent_end hook for an Oh My Pi session, the Claude bridge for a Claude Code one, each
-// over the claim's own HTTP route. Sequence is that producer's own count of the turns it has
-// ended at Generation, from 1, and the pair is the key the claim keeps the report under
+// RequestTurnOutcome is the producer's report of a turn or a cost-cap drop. pi-legion and the
+// Claude bridge send reports over the claim's HTTP route. Only pi-legion reports drops.
+// Sequence counts reports at Generation, from 1. The claim stores reports by that pair
 // (recordTurnOutcome).
 //
 // Task is the number of the task whose turn this was, 0 for a turn the producer names none for:
@@ -831,10 +830,8 @@ type RequestExit struct {
 // ran no task the daemon handed, which a plugin from before the task's number sends and a current
 // one says by naming no Task (claim.TurnOutcomeRequest). A report marked Unprompted is read as one
 // that names no task, whatever its Task says (turnOutcome): its refusal is judged as every turn's
-// that was not the take's (unpromptedTurnEnded), and it finishes nothing. Code is the class the
-// producer gave the refusal, codeCyberPolicy or nothing (the route takes any other word as none),
-// which judges a refused turn beside its status, the take's (providerErrored) and any other
-// (unpromptedTurnEnded) alike (classifyProviderError).
+// that was not the take's (unpromptedTurnEnded), and it finishes nothing. Code identifies a
+// cyber-policy refusal or a cost cap. The daemon uses it with the status (classifyProviderError).
 //
 // None of them is fenced by generation. A report naming a generation the claim has left is not
 // stale: it is a turn of that generation, which belongs in its own place in the order the run is

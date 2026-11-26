@@ -334,11 +334,9 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		status = 0
 	}
 	code := req.Code
-	if code != "" && code != claim.TurnCodeCyberPolicy {
-		// The daemon reads one class off a report (claim.TurnOutcomeRequest.Code), and the class
-		// decides whether the claim fails, so a word it does not know is taken as none, which
-		// changes nothing the status decides. Warn-first, as a status outside the HTTP range is:
-		// the report is not refused, so its turn is still counted, and the warning names the word.
+	if code != "" && code != claim.TurnCodeCyberPolicy &&
+		(code != claim.TurnCodeCostCap || !taskTakeCostCap(r, m.Claim().PluginContract)) {
+		// An unknown code changes nothing the status decides. Keep the report and warn.
 		s.log.Warn("api: a turn outcome named a code the daemon does not read; it is taken as no code",
 			"claim", token, "generation", req.Generation, "sequence", req.Sequence, "code", code)
 		code = ""

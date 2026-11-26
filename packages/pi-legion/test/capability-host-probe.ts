@@ -4,7 +4,7 @@
 // binary's bundle, and `capability-report.test.ts` and `turn-outcome.test.ts` fake them, so only
 // an extension the real binary loads shows what they answer.
 //
-// It measures two things. The capability report through the production host
+// It measures the capability report through the production host
 // (`ompCapabilityHost`): the repository-extensions row is the one measured on the host's own
 // discovery, since its two members, `discoverExtensionPaths` and `loadSkills`, are the production
 // ones, and every other member answers at once with nothing, so no other row reaches a network, a
@@ -13,7 +13,9 @@
 // turn-outcome reporter: pi-legion's one runtime import of a pi-ai subpath, which a reporter that
 // cannot read it absorbs as a report with no `code` (`src/turn-outcome.ts`), so no other case
 // would see it fail.
+// A separate command measures the rejection from a real send in a capped session.
 import { rename, writeFile } from "node:fs/promises";
+import { costCapDrop } from "@legion/pi-shared/cost-cap";
 import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import {
   type CapabilityHost,
@@ -23,6 +25,9 @@ import {
 
 /** The variable that names the file the probe writes. */
 export const CAPABILITY_PROBE_OUT = "LEGION_TEST_CAPABILITY_PROBE_OUT";
+
+/** The output file for the dropped-send test. */
+export const COST_CAP_PROBE_OUT = "LEGION_TEST_COST_CAP_PROBE_OUT";
 
 /**
  * The messages the probe asks the host's cyber-policy classifier about, each the assistant message
@@ -125,12 +130,30 @@ async function probe(context: SessionContext, out: string): Promise<void> {
       };
     }),
   };
+  await writeReport(out, report);
+}
+
+async function writeReport(out: string, report: unknown): Promise<void> {
   // Whole or not at all: the test reads the file as soon as it exists.
   await writeFile(`${out}.partial`, JSON.stringify(report));
   await rename(`${out}.partial`, out);
 }
 
 export default function capabilityHostProbe(pi: PiApi): void {
+  const dropOut = process.env[COST_CAP_PROBE_OUT];
+  if (dropOut !== undefined) {
+    pi.registerCommand("probe-cost-cap", {
+      description: "Test the host's reply to a send at the session cost cap",
+      handler: async () => {
+        try {
+          await pi.sendUserMessage("This send must not start a turn.");
+          await writeReport(dropOut, { dropped: false });
+        } catch (error) {
+          await writeReport(dropOut, { dropped: true, message: costCapDrop(error) ?? null });
+        }
+      },
+    });
+  }
   const out = process.env[CAPABILITY_PROBE_OUT];
   if (out === undefined) return;
   pi.on("session_start", async (_event, context) => {

@@ -121,11 +121,12 @@ const (
 	TurnRefused = "refused"
 )
 
-// TurnCodeCyberPolicy is the one class of a refused turn the daemon reads off its report
-// (TurnOutcomeRequest.Code): OpenAI refused the session's content for cyber policy, or Oh My Pi
-// held a request after such a refusal. It is Oh My Pi's own word for the class, the `code` its
-// prompt_result carries for the same refusal.
+// TurnCodeCyberPolicy names OpenAI's refusal of the session's content for cyber policy, or Oh My Pi
+// held a request after such a refusal. Oh My Pi uses that word in its RPC prompt result too.
 const TurnCodeCyberPolicy = "cyber_policy"
+
+// TurnCodeCostCap names Oh My Pi refusing a model request at the session's cost cap.
+const TurnCodeCostCap = "cost_cap"
 
 // Caller is one of the two identities a claim route's worker calls under — the turn outcome and
 // the three task routes (TaskRequest, TaskSeenRequest, TakeRequest) — and the type of whichever
@@ -215,15 +216,14 @@ func callerOf(agent AgentCaller, boot BootCaller) (Caller, bool) {
 // ends the claim's run of provider-error turns when no later turn's report has reached the daemon
 // before it.
 //
-// Code is the class the producer gave a refused turn, where it gives one: TurnCodeCyberPolicy, set
-// by pi-legion from Oh My Pi's own classifier (`isCyberPolicyRefusal` of `@oh-my-pi/pi-ai/error`,
-// the same reading that sets a prompt_result's `code`), and nothing for every other refusal and
-// every clean turn. A Claude Code producer sends none. The daemon reads it beside the status off
-// every refused report: such a refusal fails the claim at once with cause cyber_policy, whatever
-// the status, whether the report names the take's task (supervise's providerErrored, which takes
-// the task back first) or is of any other turn (supervise's unpromptedTurnEnded), since a later
-// turn of the session would send the refused content to OpenAI again. It takes any other word as
-// no code, with a warning that names it (api's turnOutcome).
+// Code identifies a refusal. pi-legion reads TurnCodeCyberPolicy from Oh My Pi's
+// isCyberPolicyRefusal classifier. The daemon fails the claim under cyber_policy regardless
+// of HTTP status. If the report names a take, the daemon takes the task back first.
+// TurnCodeCostCap names a refusal at Oh My Pi's session.maxCost. The report can describe
+// a turn that stopped or a take that did not start a turn. A statusless cost cap keeps the
+// task on the provider-error ladder. It does not fail the claim.
+// A Claude Code producer sends no code. The route warns and clears an unknown code, including
+// cost_cap from a plugin below the task-take contract.
 //
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same

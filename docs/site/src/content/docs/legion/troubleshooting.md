@@ -650,8 +650,21 @@ turn goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are given again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
-any other and the `provider-errors` notice at six (below) is what tells a person. A newer
-task for that claim replaces the one the error took back and is written at once (`supervise: a
+any other and the `provider-errors` notice at six (below) is what tells a person.
+
+**Oh My Pi can reject a take at the session's cost cap (`session.maxCost`).** The plugin reports
+the drop as `cost_cap` with the take's task number. The daemon does not charge the take. It puts
+the task on the same ladder without failing the claim. The task text and the controller's notice
+give the cause. Raise the cap to let the next take run.
+
+At the Oh My Pi pin in `34021711`, an extension cannot see that the cost gate stopped a run.
+The gate emits an aborted assistant message only when a turn is open
+(`agent-loop.ts:1541`). The preceding step closed the turn (`agent-loop.ts:1904`).
+The plugin reports the run as it ends. This differs from #5505, where Oh My Pi reported
+`cost_cap` in the RPC prompt result. The daemon already accepts `cost_cap` in turn-outcome
+reports. Only the plugin needs to change when Oh My Pi exposes the stop to extensions.
+
+A newer task for that claim replaces the one the error took back and is written at once (`supervise: a
 newer task replaces the one a provider error took back`), so it does not wait out a ladder that
 reaches ten minutes a step; while that claim's session is being compacted it waits for the
 compaction's end instead, as everything the claim is owed does. An update round waits for none of

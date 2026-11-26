@@ -1,6 +1,7 @@
 import type { LegionTake, LegionTask } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
+import { costCapDrop } from "./cost-cap";
 import { type ClaimCaller, type LegionDaemonClient, sendUntilAnswered } from "./daemon-client";
 import { takeTaskSignals, taskTurnMark } from "./task-values";
 
@@ -78,6 +79,10 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * task back: it is Oh My Pi's handoff, which aborts no prompt and parks a text it receives while
  * the handoff runs until the handoff is over.
  *
+ * A cost-cap drop is different. The take reports it as soon as the host rejects the text.
+ * It asks for no next take until that report is answered. The daemon then offers the task at
+ * a new revision after the provider-error wait.
+ *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
  * refused, reset or closed connection, an unreachable host or network, a timeout, a DNS failure
@@ -116,6 +121,10 @@ export interface TaskTakeDeps {
    * the run that setup starts.
    */
   readonly run: (text: string) => "not idle" | void | Promise<void>;
+  /** Reports a cost-cap drop before any turn starts. Resolves when sending ends. */
+  readonly reportDrop?:
+    | ((task: number, code: "cost_cap", message: string) => Promise<void>)
+    | undefined;
   /** Sets the task-turn mark for the claim's session, or clears it. */
   readonly setPending: (pending: boolean) => void;
   readonly log: TaskTakeLog;
@@ -252,6 +261,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   // (`hand`).
   let accepted: Accepted = NONE;
   let handings = 0;
+  let reportingDrop = false;
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
@@ -309,6 +319,31 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       task: number,
       error: messageFor(error),
     });
+    const cap = costCapDrop(error);
+    if (cap !== undefined && deps.reportDrop !== undefined) {
+      accepted = NONE;
+      reportingDrop = true;
+      // A newer revision can arrive before the report's answer. Do not ask for it until then.
+      taking?.stop.abort();
+      taking = undefined;
+      const report = deps.reportDrop;
+      const send = async (): Promise<void> => {
+        try {
+          await report(number, "cost_cap", cap);
+        } catch (error) {
+          log.warn("legion: could not report a take dropped at the cost cap", {
+            task: number,
+            error: messageFor(error),
+          });
+        } finally {
+          reportingDrop = false;
+          if (!closed) settle();
+        }
+      };
+      void send();
+      settle();
+      return;
+    }
     if (again === undefined) accepted = NONE;
     else hand(number, again);
     settle();
@@ -407,13 +442,14 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   /** Asks about the held value where it may, and keeps the task-turn mark to what is pending. */
   const settle = (): void => {
     const key = held === undefined ? undefined : keyOf(held);
-    if (armed && !busy && owed(held) && key !== undefined && !asked.has(key)) {
+    if (armed && !busy && !reportingDrop && owed(held) && key !== undefined && !asked.has(key)) {
       asked.add(key);
       ask(held, key);
     }
     const pending =
       reading > 0 ||
       (owed(held) && key !== undefined && !asked.has(key)) ||
+      reportingDrop ||
       taking !== undefined ||
       accepted.kind === "held" ||
       accepted.kind === "handed";
@@ -562,6 +598,7 @@ export function takeClaimTask(deps: {
   readonly daemon: Pick<LegionDaemonClient, "task" | "taskSeen" | "take">;
   readonly caller: ClaimCaller;
   readonly run: TaskTakeDeps["run"];
+  readonly reportDrop: TaskTakeDeps["reportDrop"];
   readonly log: TaskTakeLog;
 }): ClaimTaskTake {
   const { daemon, caller, log } = deps;
@@ -569,6 +606,7 @@ export function takeClaimTask(deps: {
     daemon,
     caller,
     run: deps.run,
+    reportDrop: deps.reportDrop,
     setPending: taskTurnMark(caller.sessionId),
     log,
   });

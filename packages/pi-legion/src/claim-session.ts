@@ -116,6 +116,10 @@ export function createClaimSession(deps: {
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
   /** An accepted take's text to the host (`TaskTakeDeps.run`). */
   readonly runTask: TaskTakeDeps["run"];
+  readonly reportDrop: (
+    sessionID: string,
+    ...drop: Parameters<NonNullable<TaskTakeDeps["reportDrop"]>>
+  ) => Promise<void>;
   readonly exitProcess: (code: number) => never;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
@@ -144,7 +148,16 @@ export function createClaimSession(deps: {
       },
       afterRegister: async (claim) => {
         const caller = claimCaller(claim, sessionID);
-        taking = { ...takeClaimTask({ daemon, caller, run: deps.runTask, log: logger }), caller };
+        taking = {
+          ...takeClaimTask({
+            daemon,
+            caller,
+            run: deps.runTask,
+            reportDrop: (...drop) => deps.reportDrop(sessionID, ...drop),
+            log: logger,
+          }),
+          caller,
+        };
         taking.take.read(claim);
         readAnswered = taking.take.awaitRead();
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);

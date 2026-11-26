@@ -22,6 +22,10 @@ import (
 // The second wait is for a turn to start after an accepted take. When Timeouts.TurnStart passes
 // the worker is charged (why naming WaitTurnStart) and the task taken back under its number; the
 // value is written again once it can be taken again, as a retake (offerPending).
+// For a cost-cap drop, the plugin sends a refusal as soon as the host rejects the text.
+// The plugin asks for no next take until the daemon answers that report. Once the daemon
+// applies the report, the take goes to the provider-error ladder and the second wait stops
+// without a charge. If the report cannot reach the daemon before this bound, R5 still applies.
 //
 // A turn's start or end resets the count (resetPromptBudgets); a take does not, so a worker that
 // takes after every charge and never starts a turn is still retired at the third. A hold that

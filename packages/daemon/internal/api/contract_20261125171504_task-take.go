@@ -1,6 +1,10 @@
 package api
 
-import "github.com/sjawhar/legion/daemon/internal/supervise"
+import (
+	"net/http"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
 
 // 20261125171504 task-take: a claim's task is a value its worker takes, not a prompt the daemon
 // pushes. The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
@@ -21,8 +25,15 @@ import "github.com/sjawhar/legion/daemon/internal/supervise"
 // began the turn with it and the agent never took it — which puts that take back to await its own
 // turn also where the daemon has lost its count of the process's turns (a daemon restarted under
 // it, or a hello that does not say its backlog is whole); each is optional, and a report without
-// `held` is read as before. A plugin before this contract reports as 232 says, with `httpStatus`
-// and `unprompted`, and this daemon reads both: a status in `providerError` is read before
+// `held` is read as before.
+// This entry also adds `cost_cap` to the values of the turn-outcome request's `code`.
+// A cost-cap report names the task whose turn the cap stopped or prevented and carries
+// a statusless `providerError`. It keeps the task on the provider-error ladder and does not
+// charge the worker. The route treats `cost_cap` below this contract as an unknown code.
+// The request fixture tracks field paths, not the values of `code`.
+//
+// A plugin before this contract reports as 232 says, with `httpStatus` and `unprompted`.
+// A status in `providerError` is read before
 // `httpStatus`, which is read where `providerError` names none, and a report marked `unprompted`
 // is read as one naming no task, whatever its `task` says, so its refusal is judged as the turn
 // that was not the take's that it is and it finishes nothing. A plugin at this contract sends
@@ -87,6 +98,14 @@ const taskTakeContract = 20261125171504
 // daemon hands this number to supervise and to the idle release, and the claim routes compare a
 // caller's contract with it.
 func TaskTakeContract() int { return entryNumber(taskTakeContract) }
+
+// taskTakeCostCap reports whether the registered producer can send cost_cap. A request that
+// declares an older contract cannot use that value either.
+func taskTakeCostCap(r *http.Request, registered int) bool {
+	stated, ok := statedContract(r)
+	return !supervise.TakesNoTask(registered, TaskTakeContract()) &&
+		(!ok || !supervise.TakesNoTask(stated, TaskTakeContract()))
+}
 
 // The answers this entry adds: a worker's read of its claim's task value, and the answer to its
 // take of the task that value names.
