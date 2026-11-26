@@ -224,7 +224,8 @@ export function useInboxSelection({
   // One pick, over the ids the bar is counting: the same optimistic moment and rollback the
   // per-row control makes, once per ask, with the rows kept where the reader saw them while the
   // write is out (`snoozing`), save under the Blocked on you narrowing, which lists no snoozed
-  // ask and keeps a row only while the reader's hand is on it. The ids the server took leave the
+  // ask: there each row leaves at the pick, since a row a press names as leaving is never kept for
+  // the reader's hand in it (`Inbox.tsx`'s `leavingNow`). The ids the server took leave the
   // selection, and their rows the band they were kept in, in one commit; the ones it refused are
   // marked again under its own reason, even if Clear ran while the write was in flight, so a
   // second pick retries exactly those.

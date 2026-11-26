@@ -1919,12 +1919,12 @@ function InboxBody({
       // Below 1280 px the reading view stands in the list's place, so one level out of it is
       // the list, at the row the reader left (`pane-selection.ts`). In the answer box, a text
       // input or the document's editor Escape is that field's own, and leaving the whole view
-      // from there would be a bigger move than the reader pressed for; a select in the view's
-      // head - Snooze, Priority - takes no typed text, so Escape there is the way back to the row,
-      // as it was from the card's own Snooze. Inside the question's card - an option, a button -
-      // one level out is the view itself, its scroller, where the next Escape is the list: the
-      // options the reader picked are the card's own state, and closing the view would drop
-      // them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
+      // from there would be a bigger move than the reader pressed for; a closed pick in the view's
+      // head - Snooze, Priority - holds no text of the reader's, so Escape there is the way back to
+      // the row, as it was from the card's own Snooze. Inside the question's card - an option, a
+      // button - one level out is the view itself, its scroller, where the next Escape is the
+      // list: the options the reader picked are the card's own state, and closing the view would
+      // drop them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
       // Not a palette row, for the reason `clear-selection` gives.
       id: "leave-reading",
       inEditable: true,

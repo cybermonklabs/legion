@@ -154,7 +154,9 @@ export interface MarkedList {
  * focus, leaves no wait behind.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
- * row nor to the page's body.
+ * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
+ * as main's parent-status question does for Move to epic, ends on the body, because the dialog's
+ * confirm is then the armed press and the bar's own gate is not (the pull request's Fast-follow).
  */
 export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -644,8 +646,9 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
- *  counts as the reader's own (`SelectionBar`): Escape there clears the selection the bar holds,
- *  where a component's root reads it as the reader leaving a control. */
+ *  counts as the reader's own (`SelectionBar`): on a page whose keymap clears the selection on
+ *  Escape, as the Inbox's does, Escape there clears the selection the bar holds (the project List
+ *  binds no such key), where a component's root reads it as the reader leaving a control. */
 function armOnBarKey(event: KeyboardEvent<HTMLDivElement>): void {
   if (event.key === "Escape" && event.target instanceof Element) {
     armHandOff(event.target, event.currentTarget);
