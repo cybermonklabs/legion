@@ -586,6 +586,13 @@ const parallelProjects = [
   // menu, closed by one Escape with Details open; `credential-expired`'s row that Enter on a
   // Dismiss takes away; `priorities`' New priority form after Cancel; and `create-document`'s
   // document made from the project's Documents list.
+  // Where the engine leaves the focus once the element that held it is removed or replaced, which
+  // the Inbox's reading view below 1280 px must hand on from: the focus held by the answer box, the
+  // scroller or a card's control that a commit takes off the page as the view closes on the last
+  // item or as another kind of item draws its own scroller. INFRA-2160's round-22 rows of
+  // `keyboard-complete`, whose titles start `inbox reading view:`: the six rows of the only item
+  // answered, approved, sent back or declined, the two rows of Escape in the answer box that
+  // Enter opened, and the row of `k` from a thread to an approval request.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
   // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
   // outside it, close it and leave the next key to the page, as above `webkit`.

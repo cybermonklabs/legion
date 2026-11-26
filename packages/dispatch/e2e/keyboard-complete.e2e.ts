@@ -10,6 +10,10 @@
  *  write is out is held, not disabled, so it keeps the keyboard's focus), in place of a check's
  *  id.
  *
+ *  The rows at the end of the file whose titles start `inbox reading view:` prove no check of the
+ *  document either: they are the tester's red rows of round 22, each of which fails at the head
+ *  e4ece294 by the focus step its message names (the architect's ruling of 2026-11-26T22:59Z).
+ *
  *  The rows write - snoozes, priorities, statuses, assignees, repositories, hand-ons - and count
  *  each write at the server's own route, so they run on the real stack. Their own imports from
  *  `web/src` are of modules this tree does not change (`components/control-names.ts`): what they
@@ -86,6 +90,7 @@ import {
 } from "./inbox-pane-scroll";
 import {
   agentRowId,
+  asSession,
   replyRowId,
   seedAgentThread,
   seedCommentThread,
@@ -11240,4 +11245,229 @@ test("k-keyboard-reach: on today's issue page an Escape in the header's title ed
     step("Escape puts the title back")
   ).toBeVisible();
   await expect(editTitle, step("Escape gives the focus back to Edit title")).toBeFocused();
+});
+
+// ---------------------------------------------------------------------------
+// The tester's rows of round 22 for the Inbox's reading view below 1280 px (INFRA-2160, head
+// e4ece294): the last item's hand-off, Escape in the answer box that Enter opens, and j and k from
+// one kind of item to another. Each is a row that fails at the head by the focus step it names.
+// ---------------------------------------------------------------------------
+
+/** Seeds CORE with one open question that has no options, and answers its row id. */
+async function seedSoleQuestion(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ force: true, project: "CORE", title: "Last rollout" });
+  return (await createAsk(issue.key, { question: "Who owns the last rollout?" }, asker)).id;
+}
+
+/** Waits until the head of the reading view draws `name` as a button that takes a press: the
+ *  head draws Approve and Request changes from its first draw and holds them until the document's
+ *  read returns. */
+async function headButtonTakesPress(
+  page: Page,
+  name: "Approve" | "Request changes",
+  step: string
+): Promise<void> {
+  await expect(
+    paneHead(page).getByRole("button", { disabled: false, exact: true, name }),
+    step
+  ).toBeVisible();
+}
+
+/** Whether the keyboard focus is inside the Inbox's empty message (`data-inbox-empty`). */
+function focusIsInEmptyMessage(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.activeElement?.closest("[data-inbox-empty]") != null);
+}
+
+/** What the only item of the list is acted on by, and where the act is made. */
+const SOLE_ITEM_ACTS = [
+  { act: "answered with Enter, text and Ctrl+Enter", from: "its reading view" },
+  { act: "answered with Enter, text and Ctrl+Enter", from: "its short row" },
+  { act: "approved with a", from: "its reading view" },
+  { act: "approved with a", from: "its short row" },
+  { act: "sent back with Shift+R, a reason and Ctrl+Enter", from: "its reading view" },
+  { act: "declined with its Decline to answer button", from: "its reading view" },
+] as const;
+
+for (const sole of SOLE_ITEM_ACTS) {
+  // The tester's red row of round 22 (R8: "If no item is left, the list's empty message has the
+  // focus"; ruling Q2: "[data-inbox-empty] takes the focus"): the architect's ruling of
+  // 2026-11-26T22:59Z, failure I1. The last item of the list, acted on in its reading view or from
+  // its short row below 1280 px by an answer, an approval, a request for changes or a decline,
+  // leaves the view closed and the empty message with the focus. At e4ece294 the focus falls to the
+  // page's body: those acts hand on through `recordAnswered` (`Inbox.tsx:1445-1449`), which
+  // begins no hand-off, so in the reading view `stillThere` (`pane-selection.ts:495-508`) refuses
+  // it and `landHandOff` returns at `pane-selection.ts:545`, before `focusTo` is set (`:563`);
+  // snooze and dismiss begin one and pass.
+  // SLOW(>=2s): one item seeded and the Inbox opened once at 1024x768, its reading view opened by a
+  // click or a key, and one write sent.
+  // @firefox: where the engine leaves the focus once the element that held it is removed (the view
+  // closes on the last item), which playwright.config.ts names in its clause.
+  test(`inbox reading view: the only item, ${sole.act} from ${sole.from}, leaves the list's empty message focused @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) =>
+      `inbox reading view: the only item, ${sole.act} from ${sole.from}: ${text}`;
+    const fromView = sole.from === "its reading view";
+    let id: string;
+    if (sole.act.startsWith("approved") || sole.act.startsWith("sent back")) {
+      await createProject({ key: "CORE", name: "Core" });
+      id = (await seedApprovalAtVersionTwo("CORE", "Last rollout")).askId;
+    } else {
+      id = await seedSoleQuestion();
+    }
+    await page.setViewportSize(NARROW);
+    await page.goto("/");
+    await expect(inboxRow(page, id), step("the item is listed")).toBeVisible();
+    if (fromView) {
+      await selectRow(page, id);
+    } else {
+      await inboxRow(page, id).focus();
+    }
+    if (sole.act.startsWith("answered")) {
+      await page.keyboard.press("Enter");
+      await expect(
+        page.locator("[data-ask-answer]"),
+        step("Enter puts the caret in the answer box")
+      ).toBeFocused();
+      await page.keyboard.type("Dana.");
+      await page.keyboard.press("Control+Enter");
+    } else if (sole.act.startsWith("approved")) {
+      if (fromView)
+        await headButtonTakesPress(page, "Approve", step("the head's Approve takes a press"));
+      await page.keyboard.press("a");
+    } else if (sole.act.startsWith("sent back")) {
+      if (fromView) {
+        await headButtonTakesPress(
+          page,
+          "Request changes",
+          step("the head's Request changes takes a press")
+        );
+      }
+      await page.keyboard.press("Shift+R");
+      await expect(
+        page.getByRole("dialog", { name: "Request changes" }).getByLabel("Reason"),
+        step("Shift+R puts the caret in the reason")
+      ).toBeFocused();
+      await page.keyboard.type(NEXT_ITEM_REASON);
+      await page.keyboard.press("Control+Enter");
+    } else {
+      await inboxPane(page).getByRole("button", { name: "Decline to answer" }).focus();
+      await page.keyboard.press("Enter");
+      const dialog = page.getByRole("dialog", { name: "Decline to answer" });
+      await expect(dialog, step("the Decline box opens")).toBeVisible();
+      await dialog.getByRole("button", { name: "Decline to answer" }).focus();
+      await page.keyboard.press("Enter");
+    }
+    await expect(readingView(page), step("the view closes: nothing is left")).toHaveCount(0);
+    await expect(inboxRow(page, id), step("the item has left the list")).toHaveCount(0);
+    await expect
+      .poll(() => focusIsInEmptyMessage(page), {
+        message: step(
+          "the empty message has the focus (R8: 'If no item is left, the list's empty message has the focus')"
+        ),
+      })
+      .toBe(true);
+  });
+}
+
+for (const draft of ["", "A half answer"]) {
+  // The tester's red row of round 22 (keys table, Inbox Escape: "Go back: from the document to the
+  // list"; ruling Q1: Enter on a short row puts the caret in the answer box): the architect's
+  // ruling of 2026-11-26T22:59Z, failure I2. In the answer box that Enter opened, the first Escape
+  // puts the focus on the view's scroller and a second Escape returns to the list at the row. At
+  // e4ece294 Escape does nothing there, however often it is pressed: `inbox.back` stands down in the
+  // reading view (`useInboxKeymap.ts:877-880`) and `inbox.leave-reading` stands down in a text
+  // field (`useInboxKeymap.ts:900-904`), so no binding takes the key, while beside the column and in
+  // the drawer the same Escape leaves the box.
+  // SLOW(>=2s): one question seeded and the Inbox opened once at 1024x768, its reading view opened
+  // by Enter on the short row, then two Escapes.
+  // @firefox: where the engine leaves the focus when Escape is pressed in a textarea and the focus
+  // moves to the scroller that holds it (playwright.config.ts names the clause).
+  test(`inbox reading view: Escape in the answer box that Enter opened, ${draft === "" ? "empty" : "holding a draft"}, puts the focus on the view's scroller, and a second Escape returns to the list at its row @firefox`, async ({
+    page,
+  }) => {
+    const step = (text: string) =>
+      `inbox reading view: Escape in the answer box, ${draft === "" ? "empty" : "holding a draft"}: ${text}`;
+    const id = await seedSoleQuestion();
+    await page.setViewportSize(NARROW);
+    await page.goto("/");
+    await expect(inboxRow(page, id), step("the question is listed")).toBeVisible();
+    await inboxRow(page, id).focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      page.locator("[data-ask-answer]"),
+      step("Enter on the short row puts the caret in the answer box")
+    ).toBeFocused();
+    if (draft !== "") await page.keyboard.type(draft);
+    await page.keyboard.press("Escape");
+    await expect(
+      paneScroller(page),
+      step("the first Escape puts the focus on the view's scroller")
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(readingView(page), step("a second Escape leaves the view")).toHaveCount(0);
+    await expect(
+      inboxRow(page, id),
+      step("a second Escape puts the focus on the question's row")
+    ).toBeFocused();
+  });
+}
+
+// The tester's red row of round 22 (ruling Q2: the focus on the view's scroller, "so Space scrolls
+// it"; the column's `j` and `k` leave the focus where it is): the architect's ruling of
+// 2026-11-26T22:59Z, failure I3. In the reading view `k` from a thread to an approval request keeps
+// the focus on the view's scroller, so PageDown and the arrows keep scrolling the request. At
+// e4ece294 the focus falls to the page's body whenever the next item is another kind, since the
+// new kind draws its own scroller and `move` has forgotten the focus the view held
+// (`useInboxKeymap.ts:374-381`, which sets `paneFocus.current` to null before it steps), so the
+// hand-off of `useInboxKeymap.ts:452-464` has nothing to give to the new scroller.
+// SLOW(>=2s): a thread with a reply and two tall approval requests seeded and the Inbox opened
+// once at 1024x768, the thread's reading view opened by a click, then one k and one PageDown.
+// @firefox: where the engine leaves the focus once the element that held it, the scroller of the
+// thread's frame, is replaced by the request's (playwright.config.ts names the clause).
+test("inbox reading view: k from a thread to an approval request keeps the focus on the view's scroller, where PageDown scrolls @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `inbox reading view: k from a thread to a request: ${text}`;
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const threadIssue = await createIssue({ force: true, project: "CORE", title: "Plain thread" });
+  const root = await createComment(threadIssue.key, { body: "Root of the plain thread?" });
+  await createComment(
+    threadIssue.key,
+    { body: "One reply.", reply_to: root.id },
+    asSession(THREAD_SESSION)
+  );
+  const [, tall] = await seedTallAsks("CORE");
+  if (tall === undefined) throw new Error("two tall approval requests were seeded");
+  const thread = replyRowId(root.id);
+  await page.setViewportSize(NARROW);
+  await page.goto("/");
+  await expect(page.locator("[data-inbox-row]"), step("the list holds three items")).toHaveCount(3);
+  await selectRow(page, thread);
+  await expect(
+    paneScroller(page),
+    step("the click puts the focus on the thread's scroller")
+  ).toBeFocused();
+  await page.keyboard.press("k");
+  await expect(
+    readingView(page),
+    step("k reads the approval request above the thread")
+  ).toHaveAttribute("data-inbox-reading-row", tall.askId);
+  await expect(
+    paneScroller(page),
+    step(
+      "after k the focus is still on the view's scroller, where PageDown, ArrowDown and Space scroll"
+    )
+  ).toBeFocused();
+  await expect
+    .poll(() => paneScroller(page).evaluate((node) => node.scrollHeight - node.clientHeight), {
+      message: step("the request's document is drawn, with room to scroll"),
+    })
+    .toBeGreaterThan(200);
+  const before = await settledScrollTop(paneScroller(page), 3);
+  await page.keyboard.press("PageDown");
+  const after = await settledScrollTop(paneScroller(page), 5);
+  expect(after, step("PageDown after k scrolls the request")).toBeGreaterThan(before);
 });
