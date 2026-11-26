@@ -1858,6 +1858,9 @@ function InboxBody({
     },
   ]);
 
+  /** The rows a Snooze of this view took, by id, from the pick until the list no longer holds the
+   *  row in the band the reader saw it in. Written where the held rows are read, below. */
+  const snoozedHere = useRef<Set<string>>(new Set());
   // The bar's hand-off (`useLastMarkedPlace`): the mark of the row the reader marked last while
   // the list draws it and no press is taking it away, out of sight or not. After a press that took
   // that row away: a row the reader can see at its place, else before it. With no row marked: the
@@ -1871,15 +1874,16 @@ function InboxBody({
   // their going leaves the row at the place wholly above the view, the nearest row after it in
   // sight takes the focus. A mark that will move up into sight then takes the focus with no
   // scroll, and the anchor shows it whole once those rows have gone. A row a Snooze is over is
-  // passed over the same way, the bar's (`bulkSnoozing`) and a row's own (`snoozing`): the list
-  // keeps such a row in its band only until the write lands, and its move into a folded Later then
-  // is no press's doing, so a focus put on it falls to the page's body - which is what the bar's
-  // Snooze left in WebKit, eight times in eight repeats (builds Job
-  // `infra-3135-infra-3135-r29t-snp-vfht5`, which read the hand-off's own answer).
+  // passed over the same way, the bar's and a row's own (`snoozedHere`): the list keeps such a row
+  // in its band only until the write lands, and its move into a folded Later then is no press's
+  // doing, so a focus put on it falls to the page's body - which is what the bar's Snooze left in
+  // WebKit, eight times in eight repeats (builds Job `infra-3135-infra-3135-r29t-snp-vfht5`, which
+  // read the hand-off's own answer). The name stands from the pick until the row leaves its band,
+  // so the landing passes it over whatever the read's own pace.
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,
-    leaving: (id) => dismissedHere(id) || bulkSnoozing.has(id) || snoozing.has(id),
+    leaving: (id) => dismissedHere(id) || snoozedHere.current.has(id),
     list: () => listScroller.current,
     order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
     shown: bulkBarShown,
@@ -1953,6 +1957,14 @@ function InboxBody({
   // leaving, as it is told of the rows an ask write keeps.
   const replying = new Set<string>();
   let handHeld: PlacedRow | undefined;
+  // The rows a Snooze of this view took, by id, from the pick until the list no longer holds the
+  // row in the band the reader saw it in. The bar's hand-off is told of them as it is told of the
+  // rows a Dismiss took (`leaving` below), because the band keeps such a row only until the write
+  // lands: its move into a folded Later then is no press's doing, so a focus put on it falls to
+  // the page's body (builds Job `infra-3135-infra-3135-r29v-land-6wg77` measured exactly that).
+  // The ids outlive `snoozing` and `bulkSnoozing`, which empty when the write settles, whereas the
+  // row stands until the read that drops it lands, however long that takes.
+  const snoozedStill = new Set<string>();
   for (const placed of presented.current) {
     const id = rowId(placed.row);
     const inHand = seen !== undefined && rowId(seen.row) === id;
@@ -1962,6 +1974,7 @@ function InboxBody({
         ? askWriteOut(id)
         : placed.row.thread.kind === "ask" && repliesOut.has(placed.row.thread.thread_id);
     if (written && placed.row.kind !== "ask") replying.add(id);
+    if (out) snoozedHere.current.add(id);
     if (!inHand && !out && !written) continue;
     const listed = byId.get(id);
     const kept = heldRow(
@@ -1978,11 +1991,17 @@ function InboxBody({
       { kept: inHand || written, snoozeOut: out }
     );
     if (kept === undefined) continue;
+    if (snoozedHere.current.has(id)) snoozedStill.add(id);
     held.push(kept);
     if (sameLayout && ((inHand && listed !== undefined) || out || written)) {
       keptBands.add(kept.group);
     }
     if (inHand) handHeld = kept;
+  }
+  // A snoozed row the list no longer holds where the reader saw it has left its band, so the
+  // hand-off may land on it again: the refusal that rolls one back puts it there too.
+  for (const id of snoozedHere.current) {
+    if (!snoozedStill.has(id)) snoozedHere.current.delete(id);
   }
   heldUnder.current =
     handHeld === undefined ? undefined : { id: rowId(handHeld.row), words: typed };

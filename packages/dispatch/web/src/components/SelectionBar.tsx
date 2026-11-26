@@ -332,15 +332,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     placeAgain(landing);
   }, [again, forget]);
   read.current = finish;
-  // After every commit, with a fresh count of frames: `READINGS` bounds the frames one draw of the
-  // page is read over, and a commit is the page drawing again rather than a frame of this reading,
-  // so the landing is read over the frames of each commit until the reader acts. WebKit draws the
-  // row of a snoozed list's landing again seconds after the rows go, and drops the focus to the
-  // page's body as it does (builds Job `infra-3135-infra-3135-r29p-rb-b9h95`).
-  useLayoutEffect(() => {
-    if (landed.current !== null) readings.current = 0;
-    finish();
-  });
+  // After every commit, so the commit that takes the press's rows away keeps the reading before
+  // it. The count of frames is the landing's own, not each commit's: a landing nothing settles
+  // costs `READINGS` frames and no more, whatever the page draws meanwhile.
+  useLayoutEffect(finish);
   /** Records a landing, by the row of the mark it is on, and sees it read again as the hand-off's
    *  own landings are. */
   const owe = (
@@ -685,7 +680,7 @@ function markShown(
  * elsewhere moves nothing, and neither does one whose going left the focus somewhere other than
  * the body, since the reader put it there, nor the later going of a control the reader had moved
  * the focus off, nor the going of one they had scrolled out of their sight - the bar's line of
- * actions scrolls sideways (`outOfSight`). Nor does a going the reader did not cause - a refetch
+ * actions may scroll sideways (`outOfSight`; the compact line wraps instead, `BAR_LINE`). Nor does a going the reader did not cause - a refetch
  * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
  * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
  * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so does Escape from
@@ -716,6 +711,19 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   if (bar.count === 0 && bar.state === undefined) return null;
   return <DrawnBar {...bar} wentHolding={wentHolding} />;
 }
+
+/** How the bar's line of actions stands at each size. The compact line wraps onto more lines, for
+ *  the project List's bar, whose actions hold more room than its box at 360 and 900 px: main's
+ *  layout rule reads a box that scrolls sideways as a breach, and read that bar with two rows
+ *  marked as one (builds Job `infra-3135-infra-3135-r29m-lay-z5wrh`, and cybermonklabs/legion#4304,
+ *  whose own fix this is). The comfortable line, the Inbox's, and the toolbar line keep the one
+ *  line they had, which scrolls sideways where it must. Each control keeps its own text on one line
+ *  and its own size at every size. */
+const BAR_LINE: Record<ControlSize, string> = {
+  comfortable: "flex-nowrap overflow-x-auto",
+  compact: "flex-wrap",
+  toolbar: "flex-nowrap overflow-x-auto",
+};
 
 /** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
  *  size is the smaller box of a page whose controls are compact, in the padding the compact
@@ -845,7 +853,7 @@ function DrawnBar({
       // the press it answered took the row they came from off the list.
       tabIndex={-1}
     >
-      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap [&>*]:shrink-0">
+      <div className={`flex items-center gap-2 whitespace-nowrap [&>*]:shrink-0 ${BAR_LINE[size]}`}>
         <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>
         {children}
       </div>

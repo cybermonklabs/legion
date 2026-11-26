@@ -1236,6 +1236,43 @@ test("a landing whose row leaves the list hands the place off again", async () =
   }
 });
 
+// INFRA-3135, round 29 (the architect's rulings of 2026-11-26 04:0xZ): the readings are owed only
+// until the reader's own next action (`READER_ACTS`), which is the invariant that keeps this
+// hand-off from being the app-wide rescue this pull request removes. The key moves no focus of its
+// own, so nothing but the watch can answer for what the going does after it.
+test.each([
+  ["a key", () => new KeyboardEvent("keydown", { bubbles: true, key: "j" })],
+  ["a press", () => new PointerEvent("pointerdown", { bubbles: true })],
+  ["a wheel", () => new WheelEvent("wheel", { bubbles: true })],
+] as const)("%s of the reader's own ends the readings", async (_what, act_) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={2} last="CORE-13" listed={PLACED_KEYS} />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    const mark = rowBox("CORE-14");
+    expect(mark).toHaveFocus();
+    // The reader acts, and their action moves no focus: the landing still holds it.
+    document.dispatchEvent(act_());
+    expect(mark).toHaveFocus();
+    // The focus then falls to the page's body inside the readings. Nothing of this takes it back,
+    // because the readings ended with the reader's action.
+    (mark as HTMLElement).blur();
+    await act(nextFrame);
+    await act(nextFrame);
+    expect(document.body).toHaveFocus();
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29: a landing nothing settles costs `READINGS` frames and no more, so the
 // readings of a landing the reader never answers stop of their own accord.
 test("the readings of a landing stop at the bound", async () => {

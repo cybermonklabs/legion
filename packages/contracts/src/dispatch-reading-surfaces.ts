@@ -1292,11 +1292,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "ref-picker-row-label",
   },
-  // The five places a record's text is still written into an element that can hold no markup.
+  // The places a record's text is still written as the characters it is: four into an element that
+  // can hold no markup, and the shared pick's own option, which takes its label as a string.
   {
     files: ["packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx"],
     reach: "/agents, the options of a row composer's issue pick (`components/MultiSelect.tsx`)",
-    reason: `${NO_MARKUP_REASON} The shared pick takes each option's label as a string (\`optionLabel\`) and draws it as the characters it is, so an issue's key and title are that one line; the plain-text projection (\`PlainText\`) is for a record's own markdown, which a title is not.`,
+    reason:
+      "The shared pick takes each option's label as a string (`optionLabel`) and draws it as the characters it is, so an issue's key and title are that one line; the plain-text projection (`PlainText`) is for a record's own markdown, which a title is not.",
     record: false,
     rendered: false,
     surface: "agent-message-issue-option",

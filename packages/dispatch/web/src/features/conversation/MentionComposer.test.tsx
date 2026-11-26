@@ -722,9 +722,7 @@ test("a seeded mention with /btw posts the canonical target and stripped body", 
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
     await waitFor(() => expect(field.value).toBe("/btw [@Planner](dispatch://agent/A) "));
@@ -785,9 +783,7 @@ test("a draft naming one party twice names it once and sends one mode", async ()
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A) "));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(field.value.length, field.value.length);
     await user.paste("and [Planner](dispatch://agent/A) again");
     expect(
@@ -1278,9 +1274,7 @@ test("a refusal held for a reply to a message deleted since names no Reply to go
  *  that presses this way installs the fake clock before it renders. */
 async function pressSend(user: UserEvent, field: HTMLElement): Promise<void> {
   await user.click(screen.getByRole("button", { name: "Send" }));
-  act(() => {
-    act(() => field.focus());
-  });
+  act(() => field.focus());
   await user.keyboard("{Control>}{Enter}{/Control}");
   await tick(20);
 }
@@ -1510,9 +1504,7 @@ test("every mention in the draft survives the edits around it", async () => {
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${planners} ${workers} `));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/btw ");
     await waitFor(() => expect(field.value).toBe(`/btw ${planners} ${workers} `));
@@ -1823,9 +1815,7 @@ test("two seeded mentions receive one comment-level delivery mode", async () => 
         "[@Planner](dispatch://agent/A) [@legion-planner](dispatch://role/legion-planner) "
       )
     );
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("/aside ");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -1855,9 +1845,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/A) "));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("hello /btw ");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -2296,9 +2284,7 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
       )
     );
     await user.click(screen.getByRole("button", { name: "Cancel reply" }));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     await user.keyboard("{Escape}");
     expect(cancelled).toBe(2);
   } finally {
@@ -2689,9 +2675,7 @@ test("a draft entering a channel that owes a mention is seeded in front of it", 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${workerLink} `));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("hello ");
     await waitFor(() => expect(field.value).toBe(`hello ${workerLink} `));
@@ -2726,9 +2710,7 @@ test("a draft that already holds the channel's mention is not seeded twice, wher
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await waitFor(() => expect(field.value).toBe(`${plannerLink} `));
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     field.setSelectionRange(0, 0);
     await user.paste("y");
     field.setSelectionRange(field.value.length, field.value.length);
@@ -4300,9 +4282,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     expect(send).toHaveAttribute("aria-disabled", "true");
     expect(send).not.toHaveAttribute("disabled");
     await user.click(send);
-    act(() => {
-      act(() => field.focus());
-    });
+    act(() => field.focus());
     await user.keyboard("{Control>}{Enter}{/Control}");
     // A send's mutation function runs a task after the press (`pressSend`).
     await tick(20);

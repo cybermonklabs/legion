@@ -2258,7 +2258,7 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   {
     file: `${FEATURES}/project/issues-table-actions.ts`,
     holds:
-      "the List's own line for what a table action did, joined to its own words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
     written: "notice.text",
   },
   {

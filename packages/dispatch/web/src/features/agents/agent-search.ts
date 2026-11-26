@@ -24,8 +24,9 @@ export interface AgentFilters {
 
 /** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). These names are the page's own, and a link from another page reaches them only
- *  through `agentsAddress`, below, so nothing else spells them. Every one of them is absent
+ *  `?role=`). A link from another page reaches them through `agentsAddress`, below, with one
+ *  exception: a `dispatch://role/<token>` reference opens the page with its `?role=` written from
+ *  `AGENTS_ROLE_PARAM` (`features/refs/routes.ts`), which names that one parameter for both sides. Every one of them is absent
  *  while nothing is picked, so a plain `/agents` is the page as it opens and unticking the last
  *  value does not bring the filter back on reload. A module-level constant, since its identity
  *  is what `useAddressFields` memoizes on. */

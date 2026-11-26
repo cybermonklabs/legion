@@ -567,7 +567,8 @@ export function buildMachinePath(host: string): string {
 }
 
 /** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
- *  opens (`buildReferencePath`), named here beside the filter it stands with. */
+ *  opens (`buildReferencePath`), named here so this file and the page's own spelling of it
+ *  (`features/agents/agent-search.ts`) cannot drift apart. */
 export const AGENTS_ROLE_PARAM = "role";
 
 /** The `?component=` the Architecture pane holds its selected component in, the page a
