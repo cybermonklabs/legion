@@ -1,6 +1,6 @@
 package api
 
-//ci:reads packages/contracts/src/dispatch-api.generated.ts TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved
+//ci:reads packages/contracts/schemas/dispatch-openapi.json TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved
 
 import (
 	"context"

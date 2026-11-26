@@ -7,6 +7,7 @@ import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { CONTROL_LABELS, LENS_WORDS } from "../web/src/features/issue-page/page-words";
 import { createComment, editArtifact, getComment } from "./api";
+import { holdFirstRequest } from "./editor";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import { DESKTOP, PHONE, rowWords } from "./issue-page-g";
 import {
@@ -737,10 +738,20 @@ test("a block indents, outdents and moves from the menu @phone", async ({ browse
     const traffic = watchApiRequests(page);
     await landOn(page, key, statement3, "the third statement");
     await markDocument(page);
+    const indentWrite = await holdFirstRequest(
+      page,
+      new RegExp(`/api/v1/issues/${key}/nodes/${encodeURIComponent(statement3)}$`, "u"),
+      { method: "PATCH" }
+    );
     await openRowMenu(page, "press", "the third statement");
     await menuEntry(page, EDIT_LABELS.edit_indent).click();
-    await openRowMenu(page, "press", "the third statement");
-    await menuEntry(page, EDIT_LABELS.edit_outdent).click();
+    const pendingIndent = await indentWrite.held;
+    try {
+      await openRowMenu(page, "press", "the third statement");
+      await menuEntry(page, EDIT_LABELS.edit_outdent).click();
+    } finally {
+      await pendingIndent.continue();
+    }
     const indent = await expectMove(sent, 1, {
       after: null,
       id: statement3,

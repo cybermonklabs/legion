@@ -1150,7 +1150,8 @@ export function RowActs({
     });
   }
   const reference = node.reference;
-  if (acts.length === 0 && reference === undefined) return null;
+  const hasGraphMenu = focused && edit !== undefined;
+  if (acts.length === 0 && reference === undefined && !hasGraphMenu) return null;
   return (
     <p className={pageRowActs} data-row-acts="">
       {acts.map(({ act, label, run }) => (
