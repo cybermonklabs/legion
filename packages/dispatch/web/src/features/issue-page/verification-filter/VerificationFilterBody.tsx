@@ -522,11 +522,13 @@ export function VerificationFilterBody({
     const toId = along === -1 ? undefined : stepTarget(key, rows, along);
     const toUnit = toId === undefined ? undefined : unitOf.get(toId);
     if (toUnit !== undefined) drawing.slices.drawUpTo(toUnit);
+    // The row is found by its dataset and not by a selector built from its id, so no tree text
+    // stands in a template literal (`surface-lists.test.ts`).
     const to =
       toId === undefined
         ? moveTarget(key, row)
-        : event.currentTarget.querySelector<HTMLElement>(
-            `[data-verification-row="${CSS.escape(toId)}"]`
+        : [...event.currentTarget.querySelectorAll<HTMLElement>("[data-verification-row]")].find(
+            (element) => element.dataset.verificationRow === toId
           );
     if (to != null) {
       event.preventDefault();
@@ -570,8 +572,11 @@ export function VerificationFilterBody({
           issue's row and the table, or in their place the one line that says the issue holds
           nothing to draw. While a read is out or has failed it holds nothing, and is still the
           tree `t k` and the stage focus; the stage hands a focus on it to a refused read's Retry,
-          or to the tree's tab stop once the rows come (`ViewStage`). */}
+          or to the tree's tab stop once the rows come (`ViewStage`). It reads busy while the
+          reads are out and none has failed, so a press on Verification shows the view loading in
+          the press's commit, and the commit that draws its rows takes the mark off (R2). */}
       <div
+        aria-busy={reads.state === "waiting" || undefined}
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onKeyDown={keyDown}
