@@ -907,9 +907,6 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 		terms = append(terms, fmt.Sprintf("Its production check of generation %d at merge commit %s is %s since %s.", production.Generation, production.Merge, state, since(production.Since)),
 			"Its way out is a pass at its look, one more look after a late result, or the next change of a fail.")
 	}
-	for _, defect := range stored.Defects {
-		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
-	}
 	if change := stored.NextChange; change != nil {
 		terms = append(terms, fmt.Sprintf("Its next change %d is open since %s.", change.Generation, since(change.Since)))
 	}
