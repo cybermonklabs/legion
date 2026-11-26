@@ -254,17 +254,18 @@ var (
 // makeStreams makes, as the admin, every bucket the operator's grant names, envoy_sessions holding
 // entries of entryBytes random bytes each, three copies of it and one of the others, and
 // ENVOY_NOTIFICATIONS capped at maxConsumers (0 for the server's default), and returns the admin's
-// JetStream context.
+// JetStream context. Each create is sent until the cluster answers it (testnats.SendCreate): a
+// create can land while its reply is lost, and the same create sent again is answered with the
+// stream it made.
 func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumers int) nats.JetStreamContext {
 	t.Helper()
-	_, js := r.admin(t)
+	admin, js := r.admin(t)
 	for _, bucket := range slices.Concat(copiedBuckets, []string{sessionConsumers}, otherProtected) {
 		replicas := 1
 		if bucket == bus.SessionBucket {
 			replicas = 3
 		}
-		kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
-		require.NoError(t, err, "create bucket %s", bucket)
+		kv := testnats.CreateKeyValueOn(t, admin, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: replicas})
 		if bucket == sessionConsumers {
 			_, err := kv.Put("listener.example-hub", []byte(`{"name":"session-a"}`))
 			require.NoError(t, err)
@@ -278,8 +279,7 @@ func (r *operatorRig) makeStreams(t *testing.T, entries, entryBytes, maxConsumer
 			}
 		}
 	}
-	_, err := js.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
-	require.NoError(t, err)
+	testnats.CreateStreamOn(t, admin, nats.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Storage: nats.FileStorage, MaxConsumers: maxConsumers})
 	return js
 }
 
@@ -389,13 +389,24 @@ type apiAnswer struct {
 // ten seconds (testnats.jetStreamWait says so): one such create here got no answer within ten.
 const answerWait = 30 * time.Second
 
+// requestAnswer sends one request and returns its decoded answer. A caller that can safely retry
+// a request after its reply is lost reads the timeout rather than failing here.
+func requestAnswer(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error) {
+	t.Helper()
+	msg, err := nc.Request(subject, encoded(t, body), answerWait)
+	if err != nil {
+		return apiAnswer{}, err
+	}
+	answer := apiAnswer{raw: msg.Data}
+	require.NoError(t, json.Unmarshal(msg.Data, &answer), "%s answered %q", subject, msg.Data)
+	return answer, nil
+}
+
 // answered requires a request on subject to be answered, and returns the answer.
 func answered(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	t.Helper()
-	msg, err := nc.Request(subject, encoded(t, body), answerWait)
+	answer, err := requestAnswer(t, nc, subject, body)
 	require.NoError(t, err, "%s got no answer", subject)
-	answer := apiAnswer{raw: msg.Data}
-	require.NoError(t, json.Unmarshal(msg.Data, &answer), "%s answered %q", subject, msg.Data)
 	return answer
 }
 
@@ -418,6 +429,37 @@ func succeeds(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	}
 	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
 	return answer
+}
+
+type streamRequester func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error)
+
+// createsStream creates config's named stream with a raw create on subject, sent on nc until the
+// cluster answers it (testnats.SendCreate). A create can land while its reply is lost, and the
+// same create sent again is answered with the stream it made. Any refusal fails the test at once
+// and names it: an answer that carries an error, a name in use with other settings among them,
+// and a create nc's grant does not cover, which draws no answer and which the server reports on
+// nc. The held operator's grant names the barrier's create and delete and no read of it, so the
+// answer alone decides.
+func createsStream(t *testing.T, nc *nats.Conn, subject string, config map[string]any) {
+	t.Helper()
+	createsStreamWith(t, nc, subject, config, requestAnswer)
+}
+
+// createsStreamWith is createsStream with the request function the test uses. Its caller can make
+// a reply unavailable after the server created the stream, the loss the send again recovers.
+func createsStreamWith(t *testing.T, nc *nats.Conn, subject string, config map[string]any, ask streamRequester) {
+	t.Helper()
+	err := testnats.SendCreate(t, nc, subject, answerWait, []string{subject}, func() error {
+		answer, err := ask(t, nc, subject, config)
+		if err != nil {
+			return err
+		}
+		if answer.Error != nil {
+			return fmt.Errorf("answered %s", answer.raw)
+		}
+		return nil
+	})
+	require.NoError(t, err, "%s was refused", subject)
 }
 
 // refused requires a request on subject to get no answer, and the server to report a publish

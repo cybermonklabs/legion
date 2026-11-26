@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -542,6 +543,33 @@ func TestHealthzFailsWhileDrainingAndNothingElseDoes(t *testing.T) {
 	}
 	if status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil); status != http.StatusOK {
 		t.Fatalf("GET /v1/settings while draining = %d %s, want the 200 it always answers", status, body)
+	}
+}
+
+// TestHealthzFailsWhileTheProxyHoldsNoIntermediate: a pod whose proxy has nothing to sign a
+// bound host's leaf with answers 503 NO_INTERMEDIATE, so a readiness probe keeps traffic away and
+// a roll keeps the old pods, while every other route answers as it always does; once the proxy
+// is ready again so is the pod. The reason the proxy gives is in the body.
+func TestHealthzFailsWhileTheProxyHoldsNoIntermediate(t *testing.T) {
+	var holds atomic.Bool
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.ProxyReady = func() error {
+			if holds.Load() {
+				return nil
+			}
+			return errors.New("the proxy holds no intermediate yet")
+		}
+	})
+	status, body := ts.req(t, http.MethodGet, "/healthz", nil, nil)
+	if status != http.StatusServiceUnavailable || decode[wireError](t, body).Code != "NO_INTERMEDIATE" || !strings.Contains(string(body), "holds no intermediate") {
+		t.Fatalf("GET /healthz with no intermediate = %d %s, want 503 NO_INTERMEDIATE with the proxy's reason", status, body)
+	}
+	if status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil); status != http.StatusOK {
+		t.Fatalf("GET /v1/settings with no intermediate = %d %s, want the 200 it always answers", status, body)
+	}
+	holds.Store(true)
+	if status, body := ts.req(t, http.MethodGet, "/healthz", nil, nil); status != http.StatusOK {
+		t.Fatalf("GET /healthz once the proxy holds one = %d %s, want 200", status, body)
 	}
 }
 

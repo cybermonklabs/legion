@@ -189,6 +189,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/issues/pod-update":                      reads("issue"),
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
+		"POST /legion/v1/project/p0-bound":                       reads("reason"),
+		"POST /legion/v1/project/p0-bound/clear":                 reads("reason"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
 		"POST /legion/v1/plans/register":                         reads("artifactId"),
 		"POST /legion/v1/tasks/stop":                             reads("task"),
@@ -218,6 +220,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/project/resume":                noString,
 		"POST /legion/v1/operator/project/release":               reads("bound"),
 		"GET /legion/v1/operator/project/release":                noBody,
+		"POST /legion/v1/operator/project/p0-bound":              reads("reason"),
+		"POST /legion/v1/operator/project/p0-bound/clear":        reads("reason"),
 	}
 
 	served := (&server{}).routes()

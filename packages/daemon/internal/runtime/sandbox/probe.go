@@ -32,9 +32,9 @@ import (
 // proves the image by running the image's own `legion probe-image --daemon-api-version <N>` in a
 // Sandbox of that image, placed as every worker is placed, and reading the OK line back from the
 // pod's log.
-// Only a pod on this cluster proves the cluster can pull the image, schedule it on the Legion pool
-// under gVisor, and run its Oh My Pi and plugin there; only the image's CLI can read the image
-// plugin's contract.
+// Only a pod on this cluster proves the cluster can pull the image, schedule it under gVisor on the
+// nodes the operator's scheduling allows, and run its Oh My Pi and plugin there; only the image's
+// CLI can read the image plugin's contract.
 //
 // The Sandbox is `shutdownPolicy: Delete` with a `shutdownTime`, so the controller deletes one the
 // daemon never came back for (sandbox_controller.go:1712-1768 at v1.0.3), a crashed boot's leftover
@@ -1389,8 +1389,8 @@ type probeSpec struct {
 }
 
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed as a gVisor worker is placed — the Legion pool,
-// gVisor, the configured scheduling — whatever runtime.kubernetes.sandbox says, as a repository
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — gVisor, the
+// configured scheduling alone — whatever runtime.kubernetes.sandbox says, as a repository
 // cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
 // the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
 // mounts, and variables, and the providers Secret's configured keys), and a single container

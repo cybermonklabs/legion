@@ -173,7 +173,7 @@ func newProfiledProjectFixture(t *testing.T, file string, team projectaccesstest
 		Issuers:           []oidc.NamedIssuer{{URL: fixtureIssuer}},
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
-	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
+	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
 	return m, enrollmentID, key, answerFrom(t, m, dispatchRows(team))
 }
 

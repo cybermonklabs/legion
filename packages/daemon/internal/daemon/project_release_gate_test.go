@@ -302,7 +302,7 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 
 	t.Run("the controller keeper", func(t *testing.T) {
 		sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-		keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, quietLogger())
+		keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, quietLogger())
 		keeper.release = releasedMark(t)
 		if err := keeper.keep(); err != nil {
 			t.Fatalf("keep while the release holds: %v", err)

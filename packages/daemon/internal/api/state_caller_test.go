@@ -1258,8 +1258,10 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
 // (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
-// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
-// but the ones served this daemon's own body is below it. Those are four rows of
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes), and a caller below
+// p0BoundContract the admission without `p0Holders` and `p0Bound` (withoutP0Start) and each issue
+// without `resolvedPriority` and `priorityFrom` (withoutResolvedPriority): every row of those
+// tables but the ones served this daemon's own body is below both. Those are four rows of
 // TestTheStateRouteServesAPodItsPluginContractsClaimViews's table (a pod at shapedAnswersContract,
 // a pod at the project release entry's number, a pod whose claims record no contract and a caller
 // in no pod) and three of memory_test.go's, whose one pod at this contract stands where this
@@ -1269,6 +1271,18 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
+	if contract < entryNumber(p0BoundContract) {
+		if admission, carries := want["admission"].(map[string]any); carries {
+			delete(admission, "p0Holders")
+			delete(admission, "p0Bound")
+		}
+		if issues, carries := want["issues"].(map[string]any); carries {
+			for _, issue := range issues {
+				delete(issue.(map[string]any), "resolvedPriority")
+				delete(issue.(map[string]any), "priorityFrom")
+			}
+		}
+	}
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
 	}
